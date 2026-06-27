@@ -64,10 +64,6 @@ impl FsBackend {
         self.note_dir(id).join("meta.json")
     }
 
-    fn body_path(&self, id: Uuid) -> PathBuf {
-        self.note_dir(id).join("body.md")
-    }
-
     fn device_log_path(&self) -> PathBuf {
         self.root
             .join("logs")
@@ -181,9 +177,10 @@ impl FsBackend {
     async fn write_note(&self, note: &Note) -> Result<(), StorageError> {
         let dir = self.note_dir(note.id);
         tokio::fs::create_dir_all(&dir).await?;
-        let meta = serde_json::to_string_pretty(note)?;
-        tokio::fs::write(self.meta_path(note.id), meta).await?;
-        tokio::fs::write(self.body_path(note.id), &note.body).await?;
+        let target = self.meta_path(note.id);
+        let tmp = target.with_extension("tmp");
+        tokio::fs::write(&tmp, serde_json::to_string_pretty(note)?).await?;
+        tokio::fs::rename(&tmp, &target).await?;
         Ok(())
     }
 
@@ -201,7 +198,9 @@ impl FsBackend {
 
     async fn write_json<T: serde::Serialize>(&self, path: &Path, value: &T) -> Result<(), StorageError> {
         let raw = serde_json::to_string_pretty(value)?;
-        tokio::fs::write(path, raw).await?;
+        let tmp = path.with_extension("tmp");
+        tokio::fs::write(&tmp, raw).await?;
+        tokio::fs::rename(&tmp, path).await?;
         Ok(())
     }
 

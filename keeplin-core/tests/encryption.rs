@@ -7,7 +7,7 @@ use tempfile::tempdir;
 
 async fn enc_backend(dir: &std::path::Path) -> EncryptedBackend<FsBackend> {
     let fs = FsBackend::new(dir).await.unwrap();
-    EncryptedBackend::new(fs, "test-password").unwrap()
+    EncryptedBackend::new(fs, "test-password").await.unwrap()
 }
 
 #[tokio::test]
@@ -44,16 +44,9 @@ async fn storage_contains_ciphertext_not_plaintext() {
         !raw.contains("plaintext-title"),
         "meta.json should not contain plaintext title"
     );
-
-    let body_path = dir
-        .path()
-        .join("notes")
-        .join(id.to_string())
-        .join("body.md");
-    let raw_body = std::fs::read_to_string(&body_path).unwrap();
     assert!(
-        !raw_body.contains("plaintext-body"),
-        "body.md should not contain plaintext body"
+        !raw.contains("plaintext-body"),
+        "meta.json should not contain plaintext body"
     );
 }
 
@@ -63,14 +56,14 @@ async fn wrong_password_fails_to_decrypt() {
 
     // Write with correct password
     let fs1 = FsBackend::new(dir.path()).await.unwrap();
-    let enc1 = EncryptedBackend::new(fs1, "correct").unwrap();
+    let enc1 = EncryptedBackend::new(fs1, "correct").await.unwrap();
     let note = Note::new("Hello", "World");
     let id = note.id;
     enc1.create_note(note).await.unwrap();
 
     // Read with wrong password
     let fs2 = FsBackend::new(dir.path()).await.unwrap();
-    let enc2 = EncryptedBackend::new(fs2, "wrong").unwrap();
+    let enc2 = EncryptedBackend::new(fs2, "wrong").await.unwrap();
     assert!(
         enc2.read_note(id).await.is_err(),
         "wrong password must fail to decrypt"

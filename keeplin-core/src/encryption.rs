@@ -14,8 +14,6 @@ use crate::{
     storage::StorageBackend,
 };
 
-// Argon2id parameters: 64 MiB memory, 3 iterations, 1 lane
-const KDF_SALT: &[u8] = b"keeplin-e2ee-kdf-salt-v1-202506!";
 const NONCE_LEN: usize = 12;
 
 pub struct EncryptedBackend<B: StorageBackend> {
@@ -24,8 +22,12 @@ pub struct EncryptedBackend<B: StorageBackend> {
 }
 
 impl<B: StorageBackend> EncryptedBackend<B> {
-    pub fn new(inner: B, password: &str) -> Result<Self, StorageError> {
-        let key = derive_key(password)?;
+    /// Create an EncryptedBackend.  The backend's `get_device_id()` is used as
+    /// the Argon2id salt so that the derived key is stable per installation but
+    /// unique across installations even when the same password is used.
+    pub async fn new(inner: B, password: &str) -> Result<Self, StorageError> {
+        let device_id = inner.get_device_id().await?;
+        let key = derive_key(password, device_id.as_bytes())?;
         Ok(Self { inner, key })
     }
 
@@ -114,13 +116,15 @@ impl<B: StorageBackend> EncryptedBackend<B> {
     }
 }
 
-fn derive_key(password: &str) -> Result<[u8; 32], StorageError> {
+/// Derive a 32-byte AES key using Argon2id.
+/// `salt` should be a stable, per-installation value (e.g. the device ID).
+fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32], StorageError> {
     let params = Params::new(65536, 3, 1, Some(32))
         .map_err(|e| StorageError::InvalidState(format!("argon2 params: {e}")))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = [0u8; 32];
     argon2
-        .hash_password_into(password.as_bytes(), KDF_SALT, &mut key)
+        .hash_password_into(password.as_bytes(), salt, &mut key)
         .map_err(|e| StorageError::InvalidState(format!("kdf: {e}")))?;
     Ok(key)
 }

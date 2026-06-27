@@ -1,6 +1,7 @@
 use std::{pin::Pin, sync::Arc};
 
 use keeplin_core::{
+    error::StorageError,
     models::{now, Note as CoreNote, NoteTag, Notebook as CoreNotebook, Resource as CoreResource, Tag as CoreTag},
     storage::StorageBackend,
 };
@@ -84,6 +85,13 @@ fn tag_to_proto(t: CoreTag) -> Tag {
         created_at: t.created_at.to_rfc3339(),
         updated_at: t.updated_at.to_rfc3339(),
         deleted_at: t.deleted_at.map(|d| d.to_rfc3339()).unwrap_or_default(),
+    }
+}
+
+fn storage_err(e: StorageError) -> Status {
+    match &e {
+        StorageError::NotFound(_) => Status::not_found(e.to_string()),
+        _ => Status::internal(e.to_string()),
     }
 }
 
@@ -218,7 +226,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .backend
             .update_note(note)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(UpdateNoteResponse {
             note: Some(note_to_proto(updated)),
         }))
@@ -232,7 +240,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         self.backend
             .delete_note(id)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(DeleteNoteResponse {}))
     }
 
@@ -276,7 +284,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .backend
             .read_notebook(id)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(GetNotebookResponse {
             notebook: Some(notebook_to_proto(notebook)),
         }))
@@ -307,7 +315,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .backend
             .update_notebook(notebook)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(UpdateNotebookResponse {
             notebook: Some(notebook_to_proto(updated)),
         }))
@@ -321,7 +329,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         self.backend
             .delete_notebook(id)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(DeleteNotebookResponse {}))
     }
 
@@ -367,7 +375,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                 tag_id: parse_uuid(&r.tag_id, "tag_id")?,
             })
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(AddNoteTagResponse {}))
     }
 
@@ -382,7 +390,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                 parse_uuid(&r.tag_id, "tag_id")?,
             )
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(RemoveNoteTagResponse {}))
     }
 
@@ -429,7 +437,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .backend
             .update_tag(tag)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(UpdateTagResponse {
             tag: Some(tag_to_proto(updated)),
         }))
@@ -443,7 +451,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         self.backend
             .delete_tag(id)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(DeleteTagResponse {}))
     }
 
@@ -522,7 +530,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         self.backend
             .delete_resource(id)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(DeleteResourceResponse {}))
     }
 

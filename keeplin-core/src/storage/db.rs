@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::Mutex;
+use tokio::time::{timeout, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
 
@@ -23,9 +24,7 @@ type WsStream =
 /// connection to a central server for real-time synchronisation.
 pub struct DbBackend {
     conn: libsql::Connection,
-    #[allow(dead_code)]
     server_url: String,
-    #[allow(dead_code)]
     auth_token: String,
     ws: Arc<Mutex<Option<WsStream>>>,
     device_id: String,
@@ -134,6 +133,10 @@ impl DbBackend {
             CREATE TABLE IF NOT EXISTS device (
                 id TEXT PRIMARY KEY
             );
+
+            CREATE INDEX IF NOT EXISTS idx_notes_updated_at  ON notes(updated_at);
+            CREATE INDEX IF NOT EXISTS idx_note_tags_note_id ON note_tags(note_id);
+            CREATE INDEX IF NOT EXISTS idx_note_tags_tag_id  ON note_tags(tag_id);
             ",
         )
         .await?;
@@ -238,6 +241,20 @@ impl DbBackend {
             updated_at: Self::parse_required_dt(row.get::<String>(3)?)?,
             deleted_at: Self::parse_optional_dt(row.get::<Option<String>>(4)?)?,
         })
+    }
+
+    async fn ensure_ws(guard: &mut Option<WsStream>, url: &str, token: &str) {
+        if guard.is_none() && !url.is_empty() {
+            match Self::connect_ws(url, token).await {
+                Ok(stream) => {
+                    tracing::info!("WebSocket reconnected");
+                    *guard = Some(stream);
+                }
+                Err(e) => {
+                    tracing::warn!("WebSocket reconnect failed: {e}");
+                }
+            }
+        }
     }
 }
 
@@ -660,6 +677,8 @@ impl StorageBackend for DbBackend {
             let note = Self::row_to_note(&row)?;
             let change = if note.deleted_at.is_some() {
                 Change::Delete { id: note.id }
+            } else if note.created_at > since {
+                Change::Create { note }
             } else {
                 Change::Update { note }
             };
@@ -756,18 +775,20 @@ impl StorageBackend for DbBackend {
 
     async fn send_changes(&self, changes: Vec<Change>) -> Result<(), StorageError> {
         let mut guard = self.ws.lock().await;
+        Self::ensure_ws(&mut guard, &self.server_url, &self.auth_token).await;
         match guard.as_mut() {
             None => {
                 tracing::warn!("No WebSocket connection; changes not sent");
             }
             Some(ws) => {
+                let n = changes.len();
                 let payload = serde_json::json!({
                     "type": "changes",
                     "device_id": self.device_id,
                     "changes": changes,
                 });
                 ws.send(Message::Text(payload.to_string())).await?;
-                tracing::info!(count = changes.len(), "Changes sent via WebSocket");
+                tracing::info!(count = n, "Changes sent via WebSocket");
             }
         }
         Ok(())
@@ -775,17 +796,19 @@ impl StorageBackend for DbBackend {
 
     async fn receive_changes(&self) -> Result<Vec<Change>, StorageError> {
         let mut guard = self.ws.lock().await;
+        Self::ensure_ws(&mut guard, &self.server_url, &self.auth_token).await;
         match guard.as_mut() {
             None => {
                 tracing::warn!("No WebSocket connection; no changes received");
                 Ok(vec![])
             }
             Some(ws) => {
-                // Non-blocking: drain all currently buffered messages
+                // Drain all buffered messages; give up after 100 ms of silence.
+                let drain_timeout = Duration::from_millis(100);
                 let mut changes = Vec::new();
-                while let Some(msg) = ws.next().await {
-                    match msg {
-                        Ok(Message::Text(text)) => {
+                loop {
+                    match timeout(drain_timeout, ws.next()).await {
+                        Ok(Some(Ok(Message::Text(text)))) => {
                             let v: serde_json::Value = serde_json::from_str(&text)?;
                             if v["type"] == "changes" {
                                 if let Ok(batch) =
@@ -796,8 +819,9 @@ impl StorageBackend for DbBackend {
                                 }
                             }
                         }
-                        Ok(Message::Close(_)) | Err(_) => break,
-                        _ => {}
+                        Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) | Ok(None) => break,
+                        Err(_elapsed) => break,
+                        Ok(Some(Ok(_))) => {}
                     }
                 }
                 Ok(changes)

@@ -30,14 +30,33 @@ pub struct Config {
     #[serde(default = "default_grpc_addr")]
     pub grpc_addr: String,
 
+    /// Path to the TLS certificate file (PEM format).
+    /// Both tls_cert_path and tls_key_path must be set to enable TLS.
+    #[serde(default)]
+    pub tls_cert_path: Option<String>,
+
+    /// Path to the TLS private key file (PEM format).
+    #[serde(default)]
+    pub tls_key_path: Option<String>,
+
+    /// Maximum gRPC message size in bytes (default: 4 MiB).
+    /// Increase when uploading large resources.
+    #[serde(default = "default_max_message_size")]
+    pub max_message_size: usize,
+
     /// Optional password for at-rest AES-256-GCM encryption (Argon2id key derivation).
-    /// When set, all user content is encrypted before being written to the backend.
+    /// Prefer the KEEPLIN_ENCRYPTION_PASSWORD environment variable over storing the
+    /// password in this file to avoid accidentally committing it to version control.
     #[serde(default)]
     pub encryption_password: Option<String>,
 }
 
 fn default_grpc_addr() -> String {
     "127.0.0.1:50051".to_string()
+}
+
+fn default_max_message_size() -> usize {
+    4 * 1024 * 1024
 }
 
 impl Config {
@@ -56,6 +75,9 @@ impl Default for Config {
             server_url: String::new(),
             auth_token: String::new(),
             grpc_addr: default_grpc_addr(),
+            tls_cert_path: None,
+            tls_key_path: None,
+            max_message_size: default_max_message_size(),
             encryption_password: None,
         }
     }

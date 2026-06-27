@@ -38,5 +38,8 @@ jobs:
       - name: cargo test (keeplin-core)
         run: cargo test -p keeplin-core
 
+      - name: cargo test (keeplin-daemon)
+        run: cargo test -p keeplin-daemon
+
       - name: cargo clippy (workspace)
         run: cargo clippy --workspace -- -D warnings
