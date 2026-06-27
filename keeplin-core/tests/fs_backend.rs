@@ -1,5 +1,5 @@
 use keeplin_core::{
-    models::Note,
+    models::{Note, Notebook, NoteTag, Resource, Tag},
     storage::{fs::FsBackend, StorageBackend},
 };
 use tempfile::tempdir;
@@ -134,4 +134,140 @@ async fn get_changes_since_scans_other_device_logs() {
     let changes = our.get_changes_since(since).await.unwrap();
     assert_eq!(changes.len(), 1);
     assert!(matches!(changes[0], Change::Create { .. }));
+}
+
+// ── Notebook tests ────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn create_and_read_notebook() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    let nb = Notebook::new("Work");
+    let id = nb.id;
+    backend.create_notebook(nb).await.unwrap();
+
+    let read = backend.read_notebook(id).await.unwrap();
+    assert_eq!(read.title, "Work");
+    assert!(read.deleted_at.is_none());
+}
+
+#[tokio::test]
+async fn delete_notebook_soft_deletes() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    let nb = Notebook::new("Temp");
+    let id = nb.id;
+    backend.create_notebook(nb).await.unwrap();
+    backend.delete_notebook(id).await.unwrap();
+
+    let notebooks = backend.list_notebooks().await.unwrap();
+    assert!(!notebooks.iter().any(|n| n.id == id));
+
+    let raw = backend.read_notebook(id).await.unwrap();
+    assert!(raw.deleted_at.is_some());
+}
+
+// ── Tag tests ─────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn create_and_read_tag() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    let tag = Tag::new("rust");
+    let id = tag.id;
+    backend.create_tag(tag).await.unwrap();
+
+    let read = backend.read_tag(id).await.unwrap();
+    assert_eq!(read.title, "rust");
+}
+
+#[tokio::test]
+async fn add_and_list_note_tags() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    let note = Note::new("Tagged", "body");
+    let tag = Tag::new("important");
+    let note_id = note.id;
+    let tag_id = tag.id;
+    backend.create_note(note).await.unwrap();
+    backend.create_tag(tag).await.unwrap();
+    backend
+        .add_note_tag(NoteTag { note_id, tag_id })
+        .await
+        .unwrap();
+
+    let tags = backend.list_note_tags(note_id).await.unwrap();
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].id, tag_id);
+}
+
+#[tokio::test]
+async fn remove_note_tag() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    let note = Note::new("N", "");
+    let tag = Tag::new("T");
+    let note_id = note.id;
+    let tag_id = tag.id;
+    backend.create_note(note).await.unwrap();
+    backend.create_tag(tag).await.unwrap();
+    backend
+        .add_note_tag(NoteTag { note_id, tag_id })
+        .await
+        .unwrap();
+
+    backend.remove_note_tag(note_id, tag_id).await.unwrap();
+    let tags = backend.list_note_tags(note_id).await.unwrap();
+    assert!(tags.is_empty());
+}
+
+// ── Resource tests ────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn create_and_read_resource() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    let data = b"hello world".to_vec();
+    let res = Resource::new("attachment", "text/plain", "hello.txt", data.len() as u64);
+    let id = res.id;
+    backend.create_resource(res, data.clone()).await.unwrap();
+
+    let (meta, bytes) = backend.read_resource(id).await.unwrap();
+    assert_eq!(meta.title, "attachment");
+    assert_eq!(bytes, data);
+}
+
+#[tokio::test]
+async fn list_resources_excludes_data() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    for i in 0..3u8 {
+        let data = vec![i];
+        let res = Resource::new(format!("file{i}"), "application/octet-stream", format!("f{i}.bin"), 1);
+        backend.create_resource(res, data).await.unwrap();
+    }
+
+    let list = backend.list_resources().await.unwrap();
+    assert_eq!(list.len(), 3);
+}
+
+#[tokio::test]
+async fn delete_resource() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    let res = Resource::new("doc", "text/plain", "doc.txt", 0);
+    let id = res.id;
+    backend.create_resource(res, vec![]).await.unwrap();
+    backend.delete_resource(id).await.unwrap();
+
+    let err = backend.read_resource(id).await.unwrap_err();
+    assert!(matches!(err, keeplin_core::error::StorageError::NotFound(_)));
 }

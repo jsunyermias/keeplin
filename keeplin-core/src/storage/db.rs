@@ -173,37 +173,19 @@ impl DbBackend {
     // ── Row → Note ────────────────────────────────────────────────────────────
 
     fn row_to_note(row: &libsql::Row) -> Result<Note, StorageError> {
-        let parse_dt = |s: Option<String>| -> Result<Option<DateTime<Utc>>, StorageError> {
-            match s {
-                None => Ok(None),
-                Some(v) => v
-                    .parse::<DateTime<Utc>>()
-                    .map(Some)
-                    .map_err(|e| StorageError::InvalidState(e.to_string())),
-            }
-        };
-        let parse_required_dt = |s: String| -> Result<DateTime<Utc>, StorageError> {
-            s.parse::<DateTime<Utc>>()
-                .map_err(|e| StorageError::InvalidState(e.to_string()))
-        };
-
-        let id: Uuid = row
-            .get::<String>(0)?
-            .parse()
-            .map_err(|e: uuid::Error| StorageError::Database(e.to_string()))?;
+        let id = Self::parse_uuid(row.get::<String>(0)?)?;
         let title: String = row.get(1)?;
         let body: String = row.get(2)?;
         let notebook_id: Option<Uuid> = row
             .get::<Option<String>>(3)?
-            .as_deref()
-            .map(|s| s.parse().map_err(|e: uuid::Error| StorageError::Database(e.to_string())))
+            .map(Self::parse_uuid)
             .transpose()?;
         let is_todo: bool = row.get::<i64>(4)? != 0;
-        let todo_due = parse_dt(row.get::<Option<String>>(5)?)?;
-        let todo_completed = parse_dt(row.get::<Option<String>>(6)?)?;
-        let created_at = parse_required_dt(row.get::<String>(7)?)?;
-        let updated_at = parse_required_dt(row.get::<String>(8)?)?;
-        let deleted_at = parse_dt(row.get::<Option<String>>(9)?)?;
+        let todo_due = Self::parse_optional_dt(row.get::<Option<String>>(5)?)?;
+        let todo_completed = Self::parse_optional_dt(row.get::<Option<String>>(6)?)?;
+        let created_at = Self::parse_required_dt(row.get::<String>(7)?)?;
+        let updated_at = Self::parse_required_dt(row.get::<String>(8)?)?;
+        let deleted_at = Self::parse_optional_dt(row.get::<Option<String>>(9)?)?;
 
         Ok(Note {
             id,
@@ -216,6 +198,45 @@ impl DbBackend {
             created_at,
             updated_at,
             deleted_at,
+        })
+    }
+
+    fn parse_uuid(s: String) -> Result<Uuid, StorageError> {
+        s.parse().map_err(|e: uuid::Error| StorageError::Database(e.to_string()))
+    }
+
+    fn parse_required_dt(s: String) -> Result<DateTime<Utc>, StorageError> {
+        s.parse::<DateTime<Utc>>()
+            .map_err(|e| StorageError::InvalidState(e.to_string()))
+    }
+
+    fn parse_optional_dt(s: Option<String>) -> Result<Option<DateTime<Utc>>, StorageError> {
+        match s {
+            None => Ok(None),
+            Some(v) => v
+                .parse::<DateTime<Utc>>()
+                .map(Some)
+                .map_err(|e| StorageError::InvalidState(e.to_string())),
+        }
+    }
+
+    fn row_to_notebook(row: &libsql::Row) -> Result<Notebook, StorageError> {
+        Ok(Notebook {
+            id: Self::parse_uuid(row.get::<String>(0)?)?,
+            title: row.get(1)?,
+            created_at: Self::parse_required_dt(row.get::<String>(2)?)?,
+            updated_at: Self::parse_required_dt(row.get::<String>(3)?)?,
+            deleted_at: Self::parse_optional_dt(row.get::<Option<String>>(4)?)?,
+        })
+    }
+
+    fn row_to_tag(row: &libsql::Row) -> Result<Tag, StorageError> {
+        Ok(Tag {
+            id: Self::parse_uuid(row.get::<String>(0)?)?,
+            title: row.get(1)?,
+            created_at: Self::parse_required_dt(row.get::<String>(2)?)?,
+            updated_at: Self::parse_required_dt(row.get::<String>(3)?)?,
+            deleted_at: Self::parse_optional_dt(row.get::<Option<String>>(4)?)?,
         })
     }
 }
@@ -327,82 +348,298 @@ impl StorageBackend for DbBackend {
         Ok(notes)
     }
 
-    // ── Notebooks (deferred) ──────────────────────────────────────────────────
+    // ── Notebooks ─────────────────────────────────────────────────────────────
 
-    async fn create_notebook(&self, _notebook: Notebook) -> Result<Notebook, StorageError> {
-        unimplemented!("Notebook support is planned for a later phase")
+    async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
+        self.conn
+            .execute(
+                "INSERT INTO notebooks (id,title,created_at,updated_at,deleted_at)
+                 VALUES (?1,?2,?3,?4,?5)",
+                libsql::params![
+                    notebook.id.to_string(),
+                    notebook.title.clone(),
+                    notebook.created_at.to_rfc3339(),
+                    notebook.updated_at.to_rfc3339(),
+                    notebook.deleted_at.map(|d| d.to_rfc3339()),
+                ],
+            )
+            .await?;
+        tracing::info!(id = %notebook.id, "Notebook created");
+        Ok(notebook)
     }
 
-    async fn read_notebook(&self, _id: Uuid) -> Result<Notebook, StorageError> {
-        unimplemented!("Notebook support is planned for a later phase")
+    async fn read_notebook(&self, id: Uuid) -> Result<Notebook, StorageError> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id,title,created_at,updated_at,deleted_at
+                 FROM notebooks WHERE id = ?1",
+                [id.to_string()],
+            )
+            .await?;
+        match rows.next().await? {
+            Some(row) => Self::row_to_notebook(&row),
+            None => Err(StorageError::NotFound(id.to_string())),
+        }
     }
 
-    async fn update_notebook(&self, _notebook: Notebook) -> Result<Notebook, StorageError> {
-        unimplemented!("Notebook support is planned for a later phase")
+    async fn update_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
+        let affected = self
+            .conn
+            .execute(
+                "UPDATE notebooks SET title=?2,updated_at=?3,deleted_at=?4 WHERE id=?1",
+                libsql::params![
+                    notebook.id.to_string(),
+                    notebook.title.clone(),
+                    notebook.updated_at.to_rfc3339(),
+                    notebook.deleted_at.map(|d| d.to_rfc3339()),
+                ],
+            )
+            .await?;
+        if affected == 0 {
+            return Err(StorageError::NotFound(notebook.id.to_string()));
+        }
+        tracing::info!(id = %notebook.id, "Notebook updated");
+        Ok(notebook)
     }
 
-    async fn delete_notebook(&self, _id: Uuid) -> Result<(), StorageError> {
-        unimplemented!("Notebook support is planned for a later phase")
+    async fn delete_notebook(&self, id: Uuid) -> Result<(), StorageError> {
+        let affected = self
+            .conn
+            .execute(
+                "UPDATE notebooks SET deleted_at=?2 WHERE id=?1",
+                [id.to_string(), now().to_rfc3339()],
+            )
+            .await?;
+        if affected == 0 {
+            return Err(StorageError::NotFound(id.to_string()));
+        }
+        tracing::info!(%id, "Notebook deleted");
+        Ok(())
     }
 
     async fn list_notebooks(&self) -> Result<Vec<Notebook>, StorageError> {
-        unimplemented!("Notebook support is planned for a later phase")
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id,title,created_at,updated_at,deleted_at
+                 FROM notebooks WHERE deleted_at IS NULL",
+                (),
+            )
+            .await?;
+        let mut notebooks = Vec::new();
+        while let Some(row) = rows.next().await? {
+            notebooks.push(Self::row_to_notebook(&row)?);
+        }
+        Ok(notebooks)
     }
 
-    // ── Tags (deferred) ───────────────────────────────────────────────────────
+    // ── Tags ──────────────────────────────────────────────────────────────────
 
-    async fn create_tag(&self, _tag: Tag) -> Result<Tag, StorageError> {
-        unimplemented!("Tag support is planned for a later phase")
+    async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
+        self.conn
+            .execute(
+                "INSERT INTO tags (id,title,created_at,updated_at,deleted_at)
+                 VALUES (?1,?2,?3,?4,?5)",
+                libsql::params![
+                    tag.id.to_string(),
+                    tag.title.clone(),
+                    tag.created_at.to_rfc3339(),
+                    tag.updated_at.to_rfc3339(),
+                    tag.deleted_at.map(|d| d.to_rfc3339()),
+                ],
+            )
+            .await?;
+        tracing::info!(id = %tag.id, "Tag created");
+        Ok(tag)
     }
 
-    async fn read_tag(&self, _id: Uuid) -> Result<Tag, StorageError> {
-        unimplemented!("Tag support is planned for a later phase")
+    async fn read_tag(&self, id: Uuid) -> Result<Tag, StorageError> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id,title,created_at,updated_at,deleted_at
+                 FROM tags WHERE id = ?1",
+                [id.to_string()],
+            )
+            .await?;
+        match rows.next().await? {
+            Some(row) => Self::row_to_tag(&row),
+            None => Err(StorageError::NotFound(id.to_string())),
+        }
     }
 
-    async fn update_tag(&self, _tag: Tag) -> Result<Tag, StorageError> {
-        unimplemented!("Tag support is planned for a later phase")
+    async fn update_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
+        let affected = self
+            .conn
+            .execute(
+                "UPDATE tags SET title=?2,updated_at=?3,deleted_at=?4 WHERE id=?1",
+                libsql::params![
+                    tag.id.to_string(),
+                    tag.title.clone(),
+                    tag.updated_at.to_rfc3339(),
+                    tag.deleted_at.map(|d| d.to_rfc3339()),
+                ],
+            )
+            .await?;
+        if affected == 0 {
+            return Err(StorageError::NotFound(tag.id.to_string()));
+        }
+        tracing::info!(id = %tag.id, "Tag updated");
+        Ok(tag)
     }
 
-    async fn delete_tag(&self, _id: Uuid) -> Result<(), StorageError> {
-        unimplemented!("Tag support is planned for a later phase")
+    async fn delete_tag(&self, id: Uuid) -> Result<(), StorageError> {
+        let affected = self
+            .conn
+            .execute(
+                "UPDATE tags SET deleted_at=?2 WHERE id=?1",
+                [id.to_string(), now().to_rfc3339()],
+            )
+            .await?;
+        if affected == 0 {
+            return Err(StorageError::NotFound(id.to_string()));
+        }
+        tracing::info!(%id, "Tag deleted");
+        Ok(())
     }
 
     async fn list_tags(&self) -> Result<Vec<Tag>, StorageError> {
-        unimplemented!("Tag support is planned for a later phase")
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id,title,created_at,updated_at,deleted_at
+                 FROM tags WHERE deleted_at IS NULL",
+                (),
+            )
+            .await?;
+        let mut tags = Vec::new();
+        while let Some(row) = rows.next().await? {
+            tags.push(Self::row_to_tag(&row)?);
+        }
+        Ok(tags)
     }
 
-    async fn add_note_tag(&self, _note_tag: NoteTag) -> Result<(), StorageError> {
-        unimplemented!("Tag support is planned for a later phase")
+    // ── Note–Tag relations ────────────────────────────────────────────────────
+
+    async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO note_tags (note_id,tag_id) VALUES (?1,?2)",
+                [note_tag.note_id.to_string(), note_tag.tag_id.to_string()],
+            )
+            .await?;
+        Ok(())
     }
 
-    async fn remove_note_tag(&self, _note_id: Uuid, _tag_id: Uuid) -> Result<(), StorageError> {
-        unimplemented!("Tag support is planned for a later phase")
+    async fn remove_note_tag(&self, note_id: Uuid, tag_id: Uuid) -> Result<(), StorageError> {
+        self.conn
+            .execute(
+                "DELETE FROM note_tags WHERE note_id=?1 AND tag_id=?2",
+                [note_id.to_string(), tag_id.to_string()],
+            )
+            .await?;
+        Ok(())
     }
 
-    async fn list_note_tags(&self, _note_id: Uuid) -> Result<Vec<Tag>, StorageError> {
-        unimplemented!("Tag support is planned for a later phase")
+    async fn list_note_tags(&self, note_id: Uuid) -> Result<Vec<Tag>, StorageError> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT t.id,t.title,t.created_at,t.updated_at,t.deleted_at
+                 FROM tags t
+                 JOIN note_tags nt ON t.id = nt.tag_id
+                 WHERE nt.note_id = ?1 AND t.deleted_at IS NULL",
+                [note_id.to_string()],
+            )
+            .await?;
+        let mut tags = Vec::new();
+        while let Some(row) = rows.next().await? {
+            tags.push(Self::row_to_tag(&row)?);
+        }
+        Ok(tags)
     }
 
-    // ── Resources (deferred) ──────────────────────────────────────────────────
+    // ── Resources ─────────────────────────────────────────────────────────────
 
-    async fn create_resource(
-        &self,
-        _resource: Resource,
-        _data: Vec<u8>,
-    ) -> Result<Resource, StorageError> {
-        unimplemented!("Resource support is planned for a later phase")
+    async fn create_resource(&self, resource: Resource, data: Vec<u8>) -> Result<Resource, StorageError> {
+        self.conn
+            .execute(
+                "INSERT INTO resources (id,title,mime_type,file_name,size,data,created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                libsql::params![
+                    resource.id.to_string(),
+                    resource.title.clone(),
+                    resource.mime_type.clone(),
+                    resource.file_name.clone(),
+                    resource.size as i64,
+                    data,
+                    resource.created_at.to_rfc3339(),
+                ],
+            )
+            .await?;
+        tracing::info!(id = %resource.id, "Resource created");
+        Ok(resource)
     }
 
-    async fn read_resource(&self, _id: Uuid) -> Result<(Resource, Vec<u8>), StorageError> {
-        unimplemented!("Resource support is planned for a later phase")
+    async fn read_resource(&self, id: Uuid) -> Result<(Resource, Vec<u8>), StorageError> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id,title,mime_type,file_name,size,data,created_at
+                 FROM resources WHERE id=?1",
+                [id.to_string()],
+            )
+            .await?;
+        match rows.next().await? {
+            None => Err(StorageError::NotFound(id.to_string())),
+            Some(row) => {
+                let resource = Resource {
+                    id: Self::parse_uuid(row.get::<String>(0)?)?,
+                    title: row.get(1)?,
+                    mime_type: row.get(2)?,
+                    file_name: row.get(3)?,
+                    size: row.get::<i64>(4)? as u64,
+                    created_at: Self::parse_required_dt(row.get::<String>(6)?)?,
+                };
+                let data: Vec<u8> = row.get(5)?;
+                Ok((resource, data))
+            }
+        }
     }
 
-    async fn delete_resource(&self, _id: Uuid) -> Result<(), StorageError> {
-        unimplemented!("Resource support is planned for a later phase")
+    async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError> {
+        let affected = self
+            .conn
+            .execute("DELETE FROM resources WHERE id=?1", [id.to_string()])
+            .await?;
+        if affected == 0 {
+            return Err(StorageError::NotFound(id.to_string()));
+        }
+        tracing::info!(%id, "Resource deleted");
+        Ok(())
     }
 
     async fn list_resources(&self) -> Result<Vec<Resource>, StorageError> {
-        unimplemented!("Resource support is planned for a later phase")
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id,title,mime_type,file_name,size,created_at FROM resources",
+                (),
+            )
+            .await?;
+        let mut resources = Vec::new();
+        while let Some(row) = rows.next().await? {
+            resources.push(Resource {
+                id: Self::parse_uuid(row.get::<String>(0)?)?,
+                title: row.get(1)?,
+                mime_type: row.get(2)?,
+                file_name: row.get(3)?,
+                size: row.get::<i64>(4)? as u64,
+                created_at: Self::parse_required_dt(row.get::<String>(5)?)?,
+            });
+        }
+        Ok(resources)
     }
 
     // ── Synchronisation ───────────────────────────────────────────────────────

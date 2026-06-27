@@ -45,17 +45,16 @@ impl FsBackend {
     pub async fn new(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root: PathBuf = root.into();
 
-        tokio::fs::create_dir_all(root.join("notes")).await?;
-        tokio::fs::create_dir_all(root.join("resources")).await?;
-        tokio::fs::create_dir_all(root.join(".keeplin")).await?;
-        tokio::fs::create_dir_all(root.join("logs")).await?;
+        for dir in &["notes", "resources", ".keeplin", "logs", "notebooks", "tags", "note_tags"] {
+            tokio::fs::create_dir_all(root.join(dir)).await?;
+        }
 
         let device_id = Self::read_or_create_device_id(&root).await?;
 
         Ok(Self { root, device_id })
     }
 
-    // ── Path helpers ──────────────────────────────────────────────────────────
+    // ── Path helpers — Notes ──────────────────────────────────────────────────
 
     fn note_dir(&self, id: Uuid) -> PathBuf {
         self.root.join("notes").join(id.to_string())
@@ -73,6 +72,42 @@ impl FsBackend {
         self.root
             .join("logs")
             .join(format!("{}.log", self.device_id))
+    }
+
+    // ── Path helpers — Notebooks ──────────────────────────────────────────────
+
+    fn notebook_path(&self, id: Uuid) -> PathBuf {
+        self.root.join("notebooks").join(format!("{id}.json"))
+    }
+
+    // ── Path helpers — Tags ───────────────────────────────────────────────────
+
+    fn tag_path(&self, id: Uuid) -> PathBuf {
+        self.root.join("tags").join(format!("{id}.json"))
+    }
+
+    // ── Path helpers — NoteTag ────────────────────────────────────────────────
+
+    fn note_tag_dir(&self, note_id: Uuid) -> PathBuf {
+        self.root.join("note_tags").join(note_id.to_string())
+    }
+
+    fn note_tag_path(&self, note_id: Uuid, tag_id: Uuid) -> PathBuf {
+        self.note_tag_dir(note_id).join(tag_id.to_string())
+    }
+
+    // ── Path helpers — Resources ──────────────────────────────────────────────
+
+    fn resource_dir(&self, id: Uuid) -> PathBuf {
+        self.root.join("resources").join(id.to_string())
+    }
+
+    fn resource_meta_path(&self, id: Uuid) -> PathBuf {
+        self.resource_dir(id).join("meta.json")
+    }
+
+    fn resource_data_path(&self, id: Uuid) -> PathBuf {
+        self.resource_dir(id).join("data")
     }
 
     // ── Device ID ─────────────────────────────────────────────────────────────
@@ -119,7 +154,6 @@ impl FsBackend {
         while let Some(entry) = dir.next_entry().await? {
             let fname = entry.file_name();
             let fname = fname.to_string_lossy();
-            // Skip our own log
             if fname == format!("{}.log", self.device_id) {
                 continue;
             }
@@ -161,6 +195,23 @@ impl FsBackend {
         let raw = tokio::fs::read_to_string(meta_path).await?;
         let note: Note = serde_json::from_str(&raw)?;
         Ok(note)
+    }
+
+    // ── Generic single-file JSON helpers ──────────────────────────────────────
+
+    async fn write_json<T: serde::Serialize>(&self, path: &Path, value: &T) -> Result<(), StorageError> {
+        let raw = serde_json::to_string_pretty(value)?;
+        tokio::fs::write(path, raw).await?;
+        Ok(())
+    }
+
+    async fn read_json<T: serde::de::DeserializeOwned>(&self, path: &Path, id: Uuid) -> Result<T, StorageError> {
+        if !path.exists() {
+            return Err(StorageError::NotFound(id.to_string()));
+        }
+        let raw = tokio::fs::read_to_string(path).await?;
+        let value: T = serde_json::from_str(&raw)?;
+        Ok(value)
     }
 }
 
@@ -211,7 +262,7 @@ impl StorageBackend for FsBackend {
             if let Ok(id) = Uuid::parse_str(&id_str) {
                 match self.load_note(id).await {
                     Ok(n) if n.deleted_at.is_none() => notes.push(n),
-                    Ok(_) => {} // soft-deleted, skip
+                    Ok(_) => {}
                     Err(e) => tracing::warn!("Could not load note {id}: {e}"),
                 }
             }
@@ -219,82 +270,181 @@ impl StorageBackend for FsBackend {
         Ok(notes)
     }
 
-    // ── Notebooks (deferred) ──────────────────────────────────────────────────
+    // ── Notebooks ─────────────────────────────────────────────────────────────
 
-    async fn create_notebook(&self, _notebook: Notebook) -> Result<Notebook, StorageError> {
-        unimplemented!("Notebook support is planned for a later phase")
+    async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
+        self.write_json(&self.notebook_path(notebook.id), &notebook).await?;
+        tracing::info!(id = %notebook.id, "Notebook created");
+        Ok(notebook)
     }
 
-    async fn read_notebook(&self, _id: Uuid) -> Result<Notebook, StorageError> {
-        unimplemented!("Notebook support is planned for a later phase")
+    async fn read_notebook(&self, id: Uuid) -> Result<Notebook, StorageError> {
+        self.read_json(&self.notebook_path(id), id).await
     }
 
-    async fn update_notebook(&self, _notebook: Notebook) -> Result<Notebook, StorageError> {
-        unimplemented!("Notebook support is planned for a later phase")
+    async fn update_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
+        if !self.notebook_path(notebook.id).exists() {
+            return Err(StorageError::NotFound(notebook.id.to_string()));
+        }
+        self.write_json(&self.notebook_path(notebook.id), &notebook).await?;
+        tracing::info!(id = %notebook.id, "Notebook updated");
+        Ok(notebook)
     }
 
-    async fn delete_notebook(&self, _id: Uuid) -> Result<(), StorageError> {
-        unimplemented!("Notebook support is planned for a later phase")
+    async fn delete_notebook(&self, id: Uuid) -> Result<(), StorageError> {
+        let mut nb: Notebook = self.read_json(&self.notebook_path(id), id).await?;
+        nb.deleted_at = Some(now());
+        self.write_json(&self.notebook_path(id), &nb).await?;
+        tracing::info!(%id, "Notebook deleted");
+        Ok(())
     }
 
     async fn list_notebooks(&self) -> Result<Vec<Notebook>, StorageError> {
-        unimplemented!("Notebook support is planned for a later phase")
+        let mut notebooks = Vec::new();
+        let mut dir = tokio::fs::read_dir(self.root.join("notebooks")).await?;
+        while let Some(entry) = dir.next_entry().await? {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if let Some(stem) = fname.strip_suffix(".json") {
+                if let Ok(id) = Uuid::parse_str(stem) {
+                    match self.read_json::<Notebook>(&entry.path(), id).await {
+                        Ok(nb) if nb.deleted_at.is_none() => notebooks.push(nb),
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!("Could not load notebook {id}: {e}"),
+                    }
+                }
+            }
+        }
+        Ok(notebooks)
     }
 
-    // ── Tags (deferred) ───────────────────────────────────────────────────────
+    // ── Tags ──────────────────────────────────────────────────────────────────
 
-    async fn create_tag(&self, _tag: Tag) -> Result<Tag, StorageError> {
-        unimplemented!("Tag support is planned for a later phase")
+    async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
+        self.write_json(&self.tag_path(tag.id), &tag).await?;
+        tracing::info!(id = %tag.id, "Tag created");
+        Ok(tag)
     }
 
-    async fn read_tag(&self, _id: Uuid) -> Result<Tag, StorageError> {
-        unimplemented!("Tag support is planned for a later phase")
+    async fn read_tag(&self, id: Uuid) -> Result<Tag, StorageError> {
+        self.read_json(&self.tag_path(id), id).await
     }
 
-    async fn update_tag(&self, _tag: Tag) -> Result<Tag, StorageError> {
-        unimplemented!("Tag support is planned for a later phase")
+    async fn update_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
+        if !self.tag_path(tag.id).exists() {
+            return Err(StorageError::NotFound(tag.id.to_string()));
+        }
+        self.write_json(&self.tag_path(tag.id), &tag).await?;
+        tracing::info!(id = %tag.id, "Tag updated");
+        Ok(tag)
     }
 
-    async fn delete_tag(&self, _id: Uuid) -> Result<(), StorageError> {
-        unimplemented!("Tag support is planned for a later phase")
+    async fn delete_tag(&self, id: Uuid) -> Result<(), StorageError> {
+        let mut tag: Tag = self.read_json(&self.tag_path(id), id).await?;
+        tag.deleted_at = Some(now());
+        self.write_json(&self.tag_path(id), &tag).await?;
+        tracing::info!(%id, "Tag deleted");
+        Ok(())
     }
 
     async fn list_tags(&self) -> Result<Vec<Tag>, StorageError> {
-        unimplemented!("Tag support is planned for a later phase")
+        let mut tags = Vec::new();
+        let mut dir = tokio::fs::read_dir(self.root.join("tags")).await?;
+        while let Some(entry) = dir.next_entry().await? {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if let Some(stem) = fname.strip_suffix(".json") {
+                if let Ok(id) = Uuid::parse_str(stem) {
+                    match self.read_json::<Tag>(&entry.path(), id).await {
+                        Ok(t) if t.deleted_at.is_none() => tags.push(t),
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!("Could not load tag {id}: {e}"),
+                    }
+                }
+            }
+        }
+        Ok(tags)
     }
 
-    async fn add_note_tag(&self, _note_tag: NoteTag) -> Result<(), StorageError> {
-        unimplemented!("Tag support is planned for a later phase")
+    // ── Note–Tag relations ────────────────────────────────────────────────────
+
+    async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
+        tokio::fs::create_dir_all(self.note_tag_dir(note_tag.note_id)).await?;
+        tokio::fs::write(self.note_tag_path(note_tag.note_id, note_tag.tag_id), b"").await?;
+        Ok(())
     }
 
-    async fn remove_note_tag(&self, _note_id: Uuid, _tag_id: Uuid) -> Result<(), StorageError> {
-        unimplemented!("Tag support is planned for a later phase")
+    async fn remove_note_tag(&self, note_id: Uuid, tag_id: Uuid) -> Result<(), StorageError> {
+        let path = self.note_tag_path(note_id, tag_id);
+        if path.exists() {
+            tokio::fs::remove_file(path).await?;
+        }
+        Ok(())
     }
 
-    async fn list_note_tags(&self, _note_id: Uuid) -> Result<Vec<Tag>, StorageError> {
-        unimplemented!("Tag support is planned for a later phase")
+    async fn list_note_tags(&self, note_id: Uuid) -> Result<Vec<Tag>, StorageError> {
+        let dir_path = self.note_tag_dir(note_id);
+        if !dir_path.exists() {
+            return Ok(vec![]);
+        }
+        let mut tags = Vec::new();
+        let mut dir = tokio::fs::read_dir(&dir_path).await?;
+        while let Some(entry) = dir.next_entry().await? {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if let Ok(tag_id) = Uuid::parse_str(&fname) {
+                match self.read_tag(tag_id).await {
+                    Ok(t) if t.deleted_at.is_none() => tags.push(t),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("Could not load tag {tag_id} for note {note_id}: {e}"),
+                }
+            }
+        }
+        Ok(tags)
     }
 
-    // ── Resources (deferred) ──────────────────────────────────────────────────
+    // ── Resources ─────────────────────────────────────────────────────────────
 
-    async fn create_resource(
-        &self,
-        _resource: Resource,
-        _data: Vec<u8>,
-    ) -> Result<Resource, StorageError> {
-        unimplemented!("Resource support is planned for a later phase")
+    async fn create_resource(&self, resource: Resource, data: Vec<u8>) -> Result<Resource, StorageError> {
+        let dir = self.resource_dir(resource.id);
+        tokio::fs::create_dir_all(&dir).await?;
+        self.write_json(&self.resource_meta_path(resource.id), &resource).await?;
+        tokio::fs::write(self.resource_data_path(resource.id), &data).await?;
+        tracing::info!(id = %resource.id, "Resource created");
+        Ok(resource)
     }
 
-    async fn read_resource(&self, _id: Uuid) -> Result<(Resource, Vec<u8>), StorageError> {
-        unimplemented!("Resource support is planned for a later phase")
+    async fn read_resource(&self, id: Uuid) -> Result<(Resource, Vec<u8>), StorageError> {
+        let meta_path = self.resource_meta_path(id);
+        if !meta_path.exists() {
+            return Err(StorageError::NotFound(id.to_string()));
+        }
+        let resource: Resource = self.read_json(&meta_path, id).await?;
+        let data = tokio::fs::read(self.resource_data_path(id)).await?;
+        Ok((resource, data))
     }
 
-    async fn delete_resource(&self, _id: Uuid) -> Result<(), StorageError> {
-        unimplemented!("Resource support is planned for a later phase")
+    async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError> {
+        let dir = self.resource_dir(id);
+        if !dir.exists() {
+            return Err(StorageError::NotFound(id.to_string()));
+        }
+        tokio::fs::remove_dir_all(dir).await?;
+        tracing::info!(%id, "Resource deleted");
+        Ok(())
     }
 
     async fn list_resources(&self) -> Result<Vec<Resource>, StorageError> {
-        unimplemented!("Resource support is planned for a later phase")
+        let mut resources = Vec::new();
+        let mut dir = tokio::fs::read_dir(self.root.join("resources")).await?;
+        while let Some(entry) = dir.next_entry().await? {
+            let id_str = entry.file_name().to_string_lossy().to_string();
+            if let Ok(id) = Uuid::parse_str(&id_str) {
+                let meta_path = self.resource_meta_path(id);
+                match self.read_json::<Resource>(&meta_path, id).await {
+                    Ok(r) => resources.push(r),
+                    Err(e) => tracing::warn!("Could not load resource {id}: {e}"),
+                }
+            }
+        }
+        Ok(resources)
     }
 
     // ── Synchronisation ───────────────────────────────────────────────────────
@@ -372,16 +522,11 @@ impl StorageBackend for FsBackend {
         Ok(())
     }
 
-    /// In offline mode, Syncthing handles replication; there is nothing to
-    /// *actively* send. Changes are already written to the device log by each
-    /// CRUD operation.
     async fn send_changes(&self, _changes: Vec<Change>) -> Result<(), StorageError> {
         tracing::debug!("Offline mode: changes are replicated passively via the filesystem");
         Ok(())
     }
 
-    /// In offline mode, incoming changes are discovered by `get_changes_since`
-    /// by reading the other devices' log files.
     async fn receive_changes(&self) -> Result<Vec<Change>, StorageError> {
         let since = self.get_last_sync_time().await?;
         self.get_changes_since(since).await
