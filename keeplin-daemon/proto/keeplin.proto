@@ -1,0 +1,271 @@
+syntax = "proto3";
+
+package keeplin;
+
+// ── Common message types ──────────────────────────────────────────────────────
+
+message Note {
+  string id             = 1;
+  string title          = 2;
+  string body           = 3;
+  string notebook_id    = 4;  // empty string = no notebook
+  bool   is_todo        = 5;
+  string todo_due       = 6;  // RFC-3339 or empty
+  string todo_completed = 7;  // RFC-3339 or empty
+  string created_at     = 8;  // RFC-3339
+  string updated_at     = 9;  // RFC-3339
+  string deleted_at     = 10; // RFC-3339 or empty
+}
+
+message Notebook {
+  string id         = 1;
+  string title      = 2;
+  string created_at = 3;
+  string updated_at = 4;
+  string deleted_at = 5;
+}
+
+message Tag {
+  string id         = 1;
+  string title      = 2;
+  string created_at = 3;
+  string updated_at = 4;
+  string deleted_at = 5;
+}
+
+message Resource {
+  string id         = 1;
+  string title      = 2;
+  string mime_type  = 3;
+  string file_name  = 4;
+  int64  size       = 5;
+  string created_at = 6;
+}
+
+// ── Note requests / responses ─────────────────────────────────────────────────
+
+message ListNotesRequest {}
+
+message ListNotesResponse {
+  repeated Note notes = 1;
+}
+
+message CreateNoteRequest {
+  string title       = 1;
+  string body        = 2;
+  string notebook_id = 3;
+  bool   is_todo     = 4;
+  string todo_due    = 5;
+}
+
+message CreateNoteResponse {
+  Note note = 1;
+}
+
+message GetNoteRequest {
+  string id = 1;
+}
+
+message GetNoteResponse {
+  Note note = 1;
+}
+
+message UpdateNoteRequest {
+  Note note = 1;
+}
+
+message UpdateNoteResponse {
+  Note note = 1;
+}
+
+message DeleteNoteRequest {
+  string id = 1;
+}
+
+message DeleteNoteResponse {}
+
+// ── Notebook requests / responses ─────────────────────────────────────────────
+
+message ListNotebooksRequest {}
+
+message ListNotebooksResponse {
+  repeated Notebook notebooks = 1;
+}
+
+message CreateNotebookRequest {
+  string title = 1;
+}
+
+message CreateNotebookResponse {
+  Notebook notebook = 1;
+}
+
+message GetNotebookRequest {
+  string id = 1;
+}
+
+message GetNotebookResponse {
+  Notebook notebook = 1;
+}
+
+message UpdateNotebookRequest {
+  Notebook notebook = 1;
+}
+
+message UpdateNotebookResponse {
+  Notebook notebook = 1;
+}
+
+message DeleteNotebookRequest {
+  string id = 1;
+}
+
+message DeleteNotebookResponse {}
+
+// ── Tag requests / responses ──────────────────────────────────────────────────
+
+message ListTagsRequest {}
+
+message ListTagsResponse {
+  repeated Tag tags = 1;
+}
+
+message CreateTagRequest {
+  string title = 1;
+}
+
+message CreateTagResponse {
+  Tag tag = 1;
+}
+
+message GetTagRequest {
+  string id = 1;
+}
+
+message GetTagResponse {
+  Tag tag = 1;
+}
+
+message UpdateTagRequest {
+  Tag tag = 1;
+}
+
+message UpdateTagResponse {
+  Tag tag = 1;
+}
+
+message DeleteTagRequest {
+  string id = 1;
+}
+
+message DeleteTagResponse {}
+
+message AddNoteTagRequest {
+  string note_id = 1;
+  string tag_id  = 2;
+}
+
+message AddNoteTagResponse {}
+
+message RemoveNoteTagRequest {
+  string note_id = 1;
+  string tag_id  = 2;
+}
+
+message RemoveNoteTagResponse {}
+
+message ListNoteTagsRequest {
+  string note_id = 1;
+}
+
+message ListNoteTagsResponse {
+  repeated Tag tags = 1;
+}
+
+// ── Resource requests / responses ─────────────────────────────────────────────
+
+message ListResourcesRequest {}
+
+message ListResourcesResponse {
+  repeated Resource resources = 1;
+}
+
+message GetResourceRequest {
+  string id = 1;
+}
+
+message GetResourceResponse {
+  Resource resource = 1;
+  bytes    data     = 2;
+}
+
+message CreateResourceRequest {
+  string title     = 1;
+  string mime_type = 2;
+  string file_name = 3;
+  bytes  data      = 4;
+}
+
+message CreateResourceResponse {
+  Resource resource = 1;
+}
+
+message DeleteResourceRequest {
+  string id = 1;
+}
+
+message DeleteResourceResponse {}
+
+// ── Sync ──────────────────────────────────────────────────────────────────────
+
+message SyncRequest {}
+
+message SyncProgress {
+  enum Stage {
+    COLLECTING  = 0;
+    SENDING     = 1;
+    RECEIVING   = 2;
+    APPLYING    = 3;
+    DONE        = 4;
+  }
+  Stage  stage          = 1;
+  int32  changes_count  = 2;
+  string message        = 3;
+}
+
+// ── Service definition ────────────────────────────────────────────────────────
+
+service KeeplinService {
+  // Notes
+  rpc ListNotes    (ListNotesRequest)    returns (ListNotesResponse);
+  rpc CreateNote   (CreateNoteRequest)   returns (CreateNoteResponse);
+  rpc GetNote      (GetNoteRequest)      returns (GetNoteResponse);
+  rpc UpdateNote   (UpdateNoteRequest)   returns (UpdateNoteResponse);
+  rpc DeleteNote   (DeleteNoteRequest)   returns (DeleteNoteResponse);
+
+  // Notebooks
+  rpc ListNotebooks   (ListNotebooksRequest)   returns (ListNotebooksResponse);
+  rpc CreateNotebook  (CreateNotebookRequest)  returns (CreateNotebookResponse);
+  rpc GetNotebook     (GetNotebookRequest)     returns (GetNotebookResponse);
+  rpc UpdateNotebook  (UpdateNotebookRequest)  returns (UpdateNotebookResponse);
+  rpc DeleteNotebook  (DeleteNotebookRequest)  returns (DeleteNotebookResponse);
+
+  // Tags
+  rpc ListTags      (ListTagsRequest)      returns (ListTagsResponse);
+  rpc CreateTag     (CreateTagRequest)     returns (CreateTagResponse);
+  rpc GetTag        (GetTagRequest)        returns (GetTagResponse);
+  rpc UpdateTag     (UpdateTagRequest)     returns (UpdateTagResponse);
+  rpc DeleteTag     (DeleteTagRequest)     returns (DeleteTagResponse);
+  rpc AddNoteTag    (AddNoteTagRequest)    returns (AddNoteTagResponse);
+  rpc RemoveNoteTag (RemoveNoteTagRequest) returns (RemoveNoteTagResponse);
+  rpc ListNoteTags  (ListNoteTagsRequest)  returns (ListNoteTagsResponse);
+
+  // Resources
+  rpc ListResources   (ListResourcesRequest)   returns (ListResourcesResponse);
+  rpc CreateResource  (CreateResourceRequest)  returns (CreateResourceResponse);
+  rpc GetResource     (GetResourceRequest)     returns (GetResourceResponse);
+  rpc DeleteResource  (DeleteResourceRequest)  returns (DeleteResourceResponse);
+
+  // Sync (server-streaming so progress can be reported)
+  rpc Sync (SyncRequest) returns (stream SyncProgress);
+}
