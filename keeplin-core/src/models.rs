@@ -123,7 +123,22 @@ impl Resource {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Change {
-    Create { note: Note },
-    Update { note: Note },
-    Delete { id: Uuid },
+    // Aliases keep compatibility with v1 log files where op was "create"/"update"/"delete".
+    #[serde(alias = "create")]
+    NoteCreate { note: Note },
+    #[serde(alias = "update")]
+    NoteUpdate { note: Note },
+    #[serde(alias = "delete")]
+    NoteDelete { id: Uuid },
+    NotebookCreate { notebook: Notebook },
+    NotebookUpdate { notebook: Notebook },
+    NotebookDelete { id: Uuid },
+    TagCreate { tag: Tag },
+    TagUpdate { tag: Tag },
+    TagDelete { id: Uuid },
+    NoteTagAdd { note_id: Uuid, tag_id: Uuid },
+    NoteTagRemove { note_id: Uuid, tag_id: Uuid },
+    /// Resource metadata only — binary data is fetched separately via GetResource.
+    ResourceCreate { resource: Resource },
+    ResourceDelete { id: Uuid },
 }

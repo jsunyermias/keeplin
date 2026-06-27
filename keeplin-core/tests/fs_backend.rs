@@ -134,7 +134,7 @@ async fn get_changes_since_scans_other_device_logs() {
     let since = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap();
     let changes = our.get_changes_since(since).await.unwrap();
     assert_eq!(changes.len(), 1);
-    assert!(matches!(changes[0], Change::Create { .. }));
+    assert!(matches!(changes[0], Change::NoteCreate { .. }));
 }
 
 // ── Error-path tests ──────────────────────────────────────────────────────────

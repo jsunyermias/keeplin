@@ -115,7 +115,7 @@ async fn get_changes_since_returns_updated_notes() {
     let changes = backend.get_changes_since(before).await.unwrap();
     assert!(!changes.is_empty());
     // A note created after `since` must surface as Create, not Update.
-    assert!(matches!(changes[0], Change::Create { .. }));
+    assert!(matches!(changes[0], Change::NoteCreate { .. }));
 }
 
 // ── Error-path tests ──────────────────────────────────────────────────────────
