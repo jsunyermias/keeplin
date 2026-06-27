@@ -1,4 +1,5 @@
 use keeplin_core::{
+    error::StorageError,
     models::{Note, Notebook, NoteTag, Resource, Tag},
     storage::{fs::FsBackend, StorageBackend},
 };
@@ -76,7 +77,7 @@ async fn read_nonexistent_note_returns_not_found() {
     let id = uuid::Uuid::new_v4();
     let err = backend.read_note(id).await.unwrap_err();
     assert!(
-        matches!(err, keeplin_core::error::StorageError::NotFound(_)),
+        matches!(err, StorageError::NotFound(_)),
         "Expected NotFound, got {err:?}"
     );
 }
@@ -134,6 +135,62 @@ async fn get_changes_since_scans_other_device_logs() {
     let changes = our.get_changes_since(since).await.unwrap();
     assert_eq!(changes.len(), 1);
     assert!(matches!(changes[0], Change::Create { .. }));
+}
+
+// ── Error-path tests ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn update_nonexistent_note_returns_not_found() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+    let note = Note::new("Ghost", "");
+    let err = backend.update_note(note).await.unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn delete_nonexistent_note_returns_not_found() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+    let id = uuid::Uuid::new_v4();
+    let err = backend.delete_note(id).await.unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn update_nonexistent_notebook_returns_not_found() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+    let nb = Notebook::new("Ghost");
+    let err = backend.update_notebook(nb).await.unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn delete_nonexistent_notebook_returns_not_found() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+    let id = uuid::Uuid::new_v4();
+    let err = backend.delete_notebook(id).await.unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn update_nonexistent_tag_returns_not_found() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+    let tag = Tag::new("ghost");
+    let err = backend.update_tag(tag).await.unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn delete_nonexistent_tag_returns_not_found() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+    let id = uuid::Uuid::new_v4();
+    let err = backend.delete_tag(id).await.unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)));
 }
 
 // ── Notebook tests ────────────────────────────────────────────────────────────
@@ -269,5 +326,5 @@ async fn delete_resource() {
     backend.delete_resource(id).await.unwrap();
 
     let err = backend.read_resource(id).await.unwrap_err();
-    assert!(matches!(err, keeplin_core::error::StorageError::NotFound(_)));
+    assert!(matches!(err, StorageError::NotFound(_)));
 }

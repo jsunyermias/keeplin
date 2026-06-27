@@ -10,7 +10,7 @@ pub fn now() -> DateTime<Utc> {
     Utc::now()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Note {
     pub id: Uuid,
     pub title: String,
@@ -42,7 +42,7 @@ impl Note {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Notebook {
     pub id: Uuid,
     pub title: String,
@@ -64,7 +64,7 @@ impl Notebook {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Tag {
     pub id: Uuid,
     pub title: String,
@@ -86,13 +86,13 @@ impl Tag {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct NoteTag {
     pub note_id: Uuid,
     pub tag_id: Uuid,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Resource {
     pub id: Uuid,
     pub title: String,
@@ -120,7 +120,7 @@ impl Resource {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Change {
     Create { note: Note },

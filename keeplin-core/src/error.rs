@@ -29,7 +29,13 @@ pub enum StorageError {
 
 impl From<libsql::Error> for StorageError {
     fn from(e: libsql::Error) -> Self {
-        StorageError::Database(e.to_string())
+        let mut msg = e.to_string();
+        let mut src: Option<&dyn std::error::Error> = std::error::Error::source(&e);
+        while let Some(cause) = src {
+            msg.push_str(&format!("\n  caused by: {cause}"));
+            src = cause.source();
+        }
+        StorageError::Database(msg)
     }
 }
 

@@ -18,7 +18,7 @@ const NONCE_LEN: usize = 12;
 
 pub struct EncryptedBackend<B: StorageBackend> {
     inner: B,
-    key: [u8; 32],
+    cipher: Aes256Gcm,
 }
 
 impl<B: StorageBackend> EncryptedBackend<B> {
@@ -28,17 +28,14 @@ impl<B: StorageBackend> EncryptedBackend<B> {
     pub async fn new(inner: B, password: &str) -> Result<Self, StorageError> {
         let device_id = inner.get_device_id().await?;
         let key = derive_key(password, device_id.as_bytes())?;
-        Ok(Self { inner, key })
-    }
-
-    fn cipher(&self) -> Aes256Gcm {
-        Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&self.key))
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
+        Ok(Self { inner, cipher })
     }
 
     fn encrypt_str(&self, plaintext: &str) -> Result<String, StorageError> {
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let ct = self
-            .cipher()
+            .cipher
             .encrypt(&nonce, plaintext.as_bytes())
             .map_err(|e| StorageError::InvalidState(format!("encrypt: {e}")))?;
         let mut combined = nonce.to_vec();
@@ -55,7 +52,7 @@ impl<B: StorageBackend> EncryptedBackend<B> {
         }
         let nonce = Nonce::from_slice(&combined[..NONCE_LEN]);
         let plain = self
-            .cipher()
+            .cipher
             .decrypt(nonce, &combined[NONCE_LEN..])
             .map_err(|e| StorageError::InvalidState(format!("decrypt: {e}")))?;
         String::from_utf8(plain)
@@ -65,7 +62,7 @@ impl<B: StorageBackend> EncryptedBackend<B> {
     fn encrypt_bytes(&self, data: &[u8]) -> Result<Vec<u8>, StorageError> {
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let ct = self
-            .cipher()
+            .cipher
             .encrypt(&nonce, data)
             .map_err(|e| StorageError::InvalidState(format!("encrypt: {e}")))?;
         let mut combined = nonce.to_vec();
@@ -78,7 +75,7 @@ impl<B: StorageBackend> EncryptedBackend<B> {
             return Err(StorageError::InvalidState("ciphertext too short".into()));
         }
         let nonce = Nonce::from_slice(&data[..NONCE_LEN]);
-        self.cipher()
+        self.cipher
             .decrypt(nonce, &data[NONCE_LEN..])
             .map_err(|e| StorageError::InvalidState(format!("decrypt: {e}")))
     }

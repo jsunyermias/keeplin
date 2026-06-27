@@ -1,4 +1,5 @@
 use keeplin_core::{
+    error::StorageError,
     models::{Note, Notebook, NoteTag, Resource, Tag},
     storage::{db::DbBackend, StorageBackend},
 };
@@ -74,10 +75,7 @@ async fn read_nonexistent_returns_not_found() {
     let backend = in_memory_backend().await;
     let id = uuid::Uuid::new_v4();
     let err = backend.read_note(id).await.unwrap_err();
-    assert!(matches!(
-        err,
-        keeplin_core::error::StorageError::NotFound(_)
-    ));
+    assert!(matches!(err, StorageError::NotFound(_)));
 }
 
 #[tokio::test]
@@ -118,6 +116,56 @@ async fn get_changes_since_returns_updated_notes() {
     assert!(!changes.is_empty());
     // A note created after `since` must surface as Create, not Update.
     assert!(matches!(changes[0], Change::Create { .. }));
+}
+
+// ── Error-path tests ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn update_nonexistent_note_returns_not_found() {
+    let backend = in_memory_backend().await;
+    let note = Note::new("Ghost", "");
+    let err = backend.update_note(note).await.unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn delete_nonexistent_note_returns_not_found() {
+    let backend = in_memory_backend().await;
+    let id = uuid::Uuid::new_v4();
+    let err = backend.delete_note(id).await.unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn update_nonexistent_notebook_returns_not_found() {
+    let backend = in_memory_backend().await;
+    let nb = Notebook::new("Ghost");
+    let err = backend.update_notebook(nb).await.unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn delete_nonexistent_notebook_returns_not_found() {
+    let backend = in_memory_backend().await;
+    let id = uuid::Uuid::new_v4();
+    let err = backend.delete_notebook(id).await.unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn update_nonexistent_tag_returns_not_found() {
+    let backend = in_memory_backend().await;
+    let tag = Tag::new("ghost");
+    let err = backend.update_tag(tag).await.unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn delete_nonexistent_tag_returns_not_found() {
+    let backend = in_memory_backend().await;
+    let id = uuid::Uuid::new_v4();
+    let err = backend.delete_tag(id).await.unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)));
 }
 
 // ── Notebook tests ────────────────────────────────────────────────────────────
@@ -247,8 +295,5 @@ async fn delete_resource() {
     backend.delete_resource(id).await.unwrap();
 
     let err = backend.read_resource(id).await.unwrap_err();
-    assert!(matches!(
-        err,
-        keeplin_core::error::StorageError::NotFound(_)
-    ));
+    assert!(matches!(err, StorageError::NotFound(_)));
 }

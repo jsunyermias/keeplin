@@ -1,9 +1,10 @@
+use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use uuid::Uuid;
 
 use crate::{
@@ -45,7 +46,7 @@ impl FsBackend {
     pub async fn new(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root: PathBuf = root.into();
 
-        for dir in &["notes", "resources", ".keeplin", "logs", "notebooks", "tags", "note_tags"] {
+        for dir in &["notes", "resources", ".keeplin", ".keeplin/offsets", "logs", "notebooks", "tags", "note_tags"] {
             tokio::fs::create_dir_all(root.join(dir)).await?;
         }
 
@@ -144,28 +145,67 @@ impl FsBackend {
         Ok(())
     }
 
+    fn log_offset_path(&self, device_id: &str) -> PathBuf {
+        self.root.join(".keeplin").join("offsets").join(device_id)
+    }
+
+    async fn read_log_offset(&self, device_id: &str) -> u64 {
+        tokio::fs::read_to_string(self.log_offset_path(device_id))
+            .await
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    async fn write_log_offset(&self, device_id: &str, offset: u64) -> Result<(), StorageError> {
+        tokio::fs::write(self.log_offset_path(device_id), offset.to_string()).await?;
+        Ok(())
+    }
+
+    /// Stream new lines from each remote device log starting from the stored
+    /// byte offset, then advance the offset so we never re-read old entries.
     async fn read_other_logs(&self) -> Result<Vec<LogEntry>, StorageError> {
         let mut entries = Vec::new();
         let mut dir = tokio::fs::read_dir(self.root.join("logs")).await?;
-        while let Some(entry) = dir.next_entry().await? {
-            let fname = entry.file_name();
-            let fname = fname.to_string_lossy();
+        while let Some(dir_entry) = dir.next_entry().await? {
+            let fname = dir_entry.file_name().to_string_lossy().into_owned();
             if fname == format!("{}.log", self.device_id) {
                 continue;
             }
             if !fname.ends_with(".log") {
                 continue;
             }
-            let content = tokio::fs::read_to_string(entry.path()).await?;
-            for line in content.lines() {
-                if line.trim().is_empty() {
+            let device_id = fname.trim_end_matches(".log").to_owned();
+            let offset = self.read_log_offset(&device_id).await;
+
+            let mut file = tokio::fs::File::open(dir_entry.path()).await?;
+            file.seek(SeekFrom::Start(offset)).await?;
+
+            let mut reader = BufReader::new(file);
+            let mut line = String::new();
+            let mut new_offset = offset;
+            loop {
+                line.clear();
+                let n = reader.read_line(&mut line).await?;
+                if n == 0 {
+                    break;
+                }
+                new_offset += n as u64;
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
                     continue;
                 }
-                match serde_json::from_str::<LogEntry>(line) {
+                match serde_json::from_str::<LogEntry>(trimmed) {
                     Ok(e) => entries.push(e),
                     Err(err) => {
                         tracing::warn!("Skipping malformed log line: {err}");
                     }
+                }
+            }
+
+            if new_offset > offset {
+                if let Err(e) = self.write_log_offset(&device_id, new_offset).await {
+                    tracing::warn!("Could not save log offset for {device_id}: {e}");
                 }
             }
         }
@@ -512,13 +552,8 @@ impl StorageBackend for FsBackend {
 
     async fn update_sync_time(&self, ts: DateTime<Utc>) -> Result<(), StorageError> {
         let state = SyncState { last_sync: ts };
-        let raw = serde_json::to_string_pretty(&state)?;
-        tokio::fs::write(
-            self.root.join(".keeplin").join("sync_state.json"),
-            raw,
-        )
-        .await?;
-        Ok(())
+        let path = self.root.join(".keeplin").join("sync_state.json");
+        self.write_json(&path, &state).await
     }
 
     async fn send_changes(&self, _changes: Vec<Change>) -> Result<(), StorageError> {
