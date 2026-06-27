@@ -49,6 +49,19 @@ pub struct Config {
     /// password in this file to avoid accidentally committing it to version control.
     #[serde(default)]
     pub encryption_password: Option<String>,
+
+    /// Username for gRPC client authentication (HTTP Basic Auth).
+    /// When both auth_username and auth_password are set, every gRPC call must
+    /// include an `authorization: Basic <base64(user:pass)>` metadata header.
+    /// This applies equally in offline and server mode.
+    #[serde(default)]
+    pub auth_username: Option<String>,
+
+    /// Password for gRPC client authentication.
+    /// Prefer the KEEPLIN_AUTH_PASSWORD environment variable over storing the
+    /// password here to avoid committing credentials to version control.
+    #[serde(default)]
+    pub auth_password: Option<String>,
 }
 
 fn default_grpc_addr() -> String {
@@ -79,6 +92,8 @@ impl Default for Config {
             tls_key_path: None,
             max_message_size: default_max_message_size(),
             encryption_password: None,
+            auth_username: None,
+            auth_password: None,
         }
     }
 }

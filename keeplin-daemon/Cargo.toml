@@ -23,6 +23,7 @@ prost = "0.13"
 clap = { version = "4", features = ["derive"] }
 futures-core = "0.3"
 tokio-stream = "0.1"
+base64 = "0.22"
 
 [build-dependencies]
 tonic-build = "0.12"
