@@ -98,6 +98,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::result_large_err)]
 async fn run_server<B: keeplin_core::storage::StorageBackend>(
     cfg: &Config,
     addr: std::net::SocketAddr,
@@ -138,6 +139,7 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
 
 /// Validate an `Authorization: Basic <base64(user:pass)>` header on every RPC.
 /// If credentials are not configured in the server, all calls are allowed through.
+#[allow(clippy::result_large_err)]
 fn validate_basic_auth(
     req: tonic::Request<()>,
     expected_user: Option<&str>,
