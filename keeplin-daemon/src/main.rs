@@ -3,7 +3,10 @@ mod proto;
 mod server;
 
 use clap::Parser;
-use keeplin_core::storage::{db::DbBackend, fs::FsBackend};
+use keeplin_core::{
+    encryption::EncryptedBackend,
+    storage::{db::DbBackend, fs::FsBackend},
+};
 use tonic::transport::Server;
 use tracing_subscriber::EnvFilter;
 
@@ -42,22 +45,31 @@ async fn main() -> anyhow::Result<()> {
     let addr: std::net::SocketAddr = cfg.grpc_addr.parse()?;
     tracing::info!(mode = ?cfg.mode, addr = %addr, "Starting keeplin-daemon");
 
-    match cfg.mode {
-        Mode::Offline => {
+    let encrypted = cfg.encryption_password.is_some();
+    match (cfg.mode, cfg.encryption_password) {
+        (Mode::Offline, None) => {
             let backend = FsBackend::new(&cfg.data_dir).await?;
-            tracing::info!(data_dir = %cfg.data_dir.display(), "Offline mode");
+            tracing::info!(data_dir = %cfg.data_dir.display(), encrypted, "Offline mode");
             run_server(addr, backend).await?;
         }
-        Mode::Server => {
+        (Mode::Offline, Some(pw)) => {
+            let backend = FsBackend::new(&cfg.data_dir).await?;
+            let enc = EncryptedBackend::new(backend, &pw)?;
+            tracing::info!(data_dir = %cfg.data_dir.display(), encrypted, "Offline mode");
+            run_server(addr, enc).await?;
+        }
+        (Mode::Server, None) => {
             let db_path = cfg.data_dir.join("keeplin.db");
-            let backend =
-                DbBackend::new(&db_path, &cfg.server_url, &cfg.auth_token).await?;
-            tracing::info!(
-                db = %db_path.display(),
-                server = %cfg.server_url,
-                "Server mode"
-            );
+            let backend = DbBackend::new(&db_path, &cfg.server_url, &cfg.auth_token).await?;
+            tracing::info!(db = %db_path.display(), server = %cfg.server_url, encrypted, "Server mode");
             run_server(addr, backend).await?;
+        }
+        (Mode::Server, Some(pw)) => {
+            let db_path = cfg.data_dir.join("keeplin.db");
+            let backend = DbBackend::new(&db_path, &cfg.server_url, &cfg.auth_token).await?;
+            let enc = EncryptedBackend::new(backend, &pw)?;
+            tracing::info!(db = %db_path.display(), server = %cfg.server_url, encrypted, "Server mode");
+            run_server(addr, enc).await?;
         }
     }
 

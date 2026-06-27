@@ -29,6 +29,11 @@ pub struct Config {
     /// gRPC listen address. Defaults to 127.0.0.1:50051.
     #[serde(default = "default_grpc_addr")]
     pub grpc_addr: String,
+
+    /// Optional password for at-rest AES-256-GCM encryption (Argon2id key derivation).
+    /// When set, all user content is encrypted before being written to the backend.
+    #[serde(default)]
+    pub encryption_password: Option<String>,
 }
 
 fn default_grpc_addr() -> String {
@@ -51,6 +56,7 @@ impl Default for Config {
             server_url: String::new(),
             auth_token: String::new(),
             grpc_addr: default_grpc_addr(),
+            encryption_password: None,
         }
     }
 }
