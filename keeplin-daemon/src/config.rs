@@ -39,8 +39,8 @@ pub struct Config {
     #[serde(default)]
     pub tls_key_path: Option<String>,
 
-    /// Maximum gRPC message size in bytes (default: 4 MiB).
-    /// Increase when uploading large resources.
+    /// Maximum gRPC message size in bytes (default: 32 MiB).
+    /// Covers PDFs and images up to ~32 MiB without manual tuning.
     #[serde(default = "default_max_message_size")]
     pub max_message_size: usize,
 
@@ -69,7 +69,7 @@ fn default_grpc_addr() -> String {
 }
 
 fn default_max_message_size() -> usize {
-    4 * 1024 * 1024
+    32 * 1024 * 1024
 }
 
 impl Config {

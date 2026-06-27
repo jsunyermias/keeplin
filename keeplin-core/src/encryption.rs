@@ -111,6 +111,20 @@ impl<B: StorageBackend> EncryptedBackend<B> {
         t.title = self.decrypt_str(&t.title)?;
         Ok(t)
     }
+
+    fn enc_resource(&self, mut r: Resource) -> Result<Resource, StorageError> {
+        r.title = self.encrypt_str(&r.title)?;
+        r.mime_type = self.encrypt_str(&r.mime_type)?;
+        r.file_name = self.encrypt_str(&r.file_name)?;
+        Ok(r)
+    }
+
+    fn dec_resource(&self, mut r: Resource) -> Result<Resource, StorageError> {
+        r.title = self.decrypt_str(&r.title)?;
+        r.mime_type = self.decrypt_str(&r.mime_type)?;
+        r.file_name = self.decrypt_str(&r.file_name)?;
+        Ok(r)
+    }
 }
 
 /// Derive a 32-byte AES key using Argon2id.
@@ -228,21 +242,18 @@ impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
 
     async fn create_resource(
         &self,
-        mut resource: Resource,
+        resource: Resource,
         data: Vec<u8>,
     ) -> Result<Resource, StorageError> {
-        resource.title = self.encrypt_str(&resource.title)?;
         let enc_data = self.encrypt_bytes(&data)?;
-        let mut stored = self.inner.create_resource(resource, enc_data).await?;
-        stored.title = self.decrypt_str(&stored.title)?;
-        Ok(stored)
+        let stored = self.inner.create_resource(self.enc_resource(resource)?, enc_data).await?;
+        self.dec_resource(stored)
     }
 
     async fn read_resource(&self, id: Uuid) -> Result<(Resource, Vec<u8>), StorageError> {
-        let (mut res, enc_data) = self.inner.read_resource(id).await?;
-        res.title = self.decrypt_str(&res.title)?;
+        let (res, enc_data) = self.inner.read_resource(id).await?;
         let data = self.decrypt_bytes(&enc_data)?;
-        Ok((res, data))
+        Ok((self.dec_resource(res)?, data))
     }
 
     async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError> {
@@ -254,10 +265,7 @@ impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
             .list_resources()
             .await?
             .into_iter()
-            .map(|mut r| {
-                r.title = self.decrypt_str(&r.title)?;
-                Ok(r)
-            })
+            .map(|r| self.dec_resource(r))
             .collect()
     }
 
