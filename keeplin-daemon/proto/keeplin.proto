@@ -138,6 +138,28 @@ message CreateTagResponse {
   Tag tag = 1;
 }
 
+message GetTagRequest {
+  string id = 1;
+}
+
+message GetTagResponse {
+  Tag tag = 1;
+}
+
+message UpdateTagRequest {
+  Tag tag = 1;
+}
+
+message UpdateTagResponse {
+  Tag tag = 1;
+}
+
+message DeleteTagRequest {
+  string id = 1;
+}
+
+message DeleteTagResponse {}
+
 message AddNoteTagRequest {
   string note_id = 1;
   string tag_id  = 2;
@@ -151,6 +173,48 @@ message RemoveNoteTagRequest {
 }
 
 message RemoveNoteTagResponse {}
+
+message ListNoteTagsRequest {
+  string note_id = 1;
+}
+
+message ListNoteTagsResponse {
+  repeated Tag tags = 1;
+}
+
+// ── Resource requests / responses ─────────────────────────────────────────────
+
+message ListResourcesRequest {}
+
+message ListResourcesResponse {
+  repeated Resource resources = 1;
+}
+
+message GetResourceRequest {
+  string id = 1;
+}
+
+message GetResourceResponse {
+  Resource resource = 1;
+  bytes    data     = 2;
+}
+
+message CreateResourceRequest {
+  string title     = 1;
+  string mime_type = 2;
+  string file_name = 3;
+  bytes  data      = 4;
+}
+
+message CreateResourceResponse {
+  Resource resource = 1;
+}
+
+message DeleteResourceRequest {
+  string id = 1;
+}
+
+message DeleteResourceResponse {}
 
 // ── Sync ──────────────────────────────────────────────────────────────────────
 
@@ -189,8 +253,18 @@ service KeeplinService {
   // Tags
   rpc ListTags      (ListTagsRequest)      returns (ListTagsResponse);
   rpc CreateTag     (CreateTagRequest)     returns (CreateTagResponse);
+  rpc GetTag        (GetTagRequest)        returns (GetTagResponse);
+  rpc UpdateTag     (UpdateTagRequest)     returns (UpdateTagResponse);
+  rpc DeleteTag     (DeleteTagRequest)     returns (DeleteTagResponse);
   rpc AddNoteTag    (AddNoteTagRequest)    returns (AddNoteTagResponse);
   rpc RemoveNoteTag (RemoveNoteTagRequest) returns (RemoveNoteTagResponse);
+  rpc ListNoteTags  (ListNoteTagsRequest)  returns (ListNoteTagsResponse);
+
+  // Resources
+  rpc ListResources   (ListResourcesRequest)   returns (ListResourcesResponse);
+  rpc CreateResource  (CreateResourceRequest)  returns (CreateResourceResponse);
+  rpc GetResource     (GetResourceRequest)     returns (GetResourceResponse);
+  rpc DeleteResource  (DeleteResourceRequest)  returns (DeleteResourceResponse);
 
   // Sync (server-streaming so progress can be reported)
   rpc Sync (SyncRequest) returns (stream SyncProgress);

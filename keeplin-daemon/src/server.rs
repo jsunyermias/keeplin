@@ -1,7 +1,7 @@
 use std::{pin::Pin, sync::Arc};
 
 use keeplin_core::{
-    models::{now, Note as CoreNote, NoteTag, Notebook as CoreNotebook, Tag as CoreTag},
+    models::{now, Note as CoreNote, NoteTag, Notebook as CoreNotebook, Resource as CoreResource, Tag as CoreTag},
     storage::StorageBackend,
 };
 use tokio_stream::{wrappers::ReceiverStream, Stream};
@@ -11,14 +11,29 @@ use uuid::Uuid;
 use crate::proto::keeplin::{
     keeplin_service_server::KeeplinService,
     sync_progress::Stage,
-    AddNoteTagRequest, AddNoteTagResponse, CreateNoteRequest, CreateNoteResponse,
-    CreateNotebookRequest, CreateNotebookResponse, CreateTagRequest, CreateTagResponse,
-    DeleteNoteRequest, DeleteNoteResponse, DeleteNotebookRequest, DeleteNotebookResponse,
-    GetNoteRequest, GetNoteResponse, GetNotebookRequest, GetNotebookResponse,
-    ListNotebooksRequest, ListNotebooksResponse, ListNotesRequest, ListNotesResponse,
-    ListTagsRequest, ListTagsResponse, Note, Notebook, RemoveNoteTagRequest,
-    RemoveNoteTagResponse, SyncProgress, SyncRequest, Tag, UpdateNoteRequest, UpdateNoteResponse,
+    AddNoteTagRequest, AddNoteTagResponse,
+    CreateNoteRequest, CreateNoteResponse,
+    CreateNotebookRequest, CreateNotebookResponse,
+    CreateResourceRequest, CreateResourceResponse,
+    CreateTagRequest, CreateTagResponse,
+    DeleteNoteRequest, DeleteNoteResponse,
+    DeleteNotebookRequest, DeleteNotebookResponse,
+    DeleteResourceRequest, DeleteResourceResponse,
+    DeleteTagRequest, DeleteTagResponse,
+    GetNoteRequest, GetNoteResponse,
+    GetNotebookRequest, GetNotebookResponse,
+    GetResourceRequest, GetResourceResponse,
+    GetTagRequest, GetTagResponse,
+    ListNotebooksRequest, ListNotebooksResponse,
+    ListNoteTagsRequest, ListNoteTagsResponse,
+    ListNotesRequest, ListNotesResponse,
+    ListResourcesRequest, ListResourcesResponse,
+    ListTagsRequest, ListTagsResponse,
+    Note, Notebook, RemoveNoteTagRequest, RemoveNoteTagResponse,
+    Resource, SyncProgress, SyncRequest, Tag,
+    UpdateNoteRequest, UpdateNoteResponse,
     UpdateNotebookRequest, UpdateNotebookResponse,
+    UpdateTagRequest, UpdateTagResponse,
 };
 
 // ── Conversion helpers ────────────────────────────────────────────────────────
@@ -48,6 +63,17 @@ fn notebook_to_proto(nb: CoreNotebook) -> Notebook {
         created_at: nb.created_at.to_rfc3339(),
         updated_at: nb.updated_at.to_rfc3339(),
         deleted_at: nb.deleted_at.map(|d| d.to_rfc3339()).unwrap_or_default(),
+    }
+}
+
+fn resource_to_proto(r: CoreResource) -> Resource {
+    Resource {
+        id: r.id.to_string(),
+        title: r.title,
+        mime_type: r.mime_type,
+        file_name: r.file_name,
+        size: r.size as i64,
+        created_at: r.created_at.to_rfc3339(),
     }
 }
 
@@ -358,6 +384,146 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
         Ok(Response::new(RemoveNoteTagResponse {}))
+    }
+
+    async fn get_tag(
+        &self,
+        req: Request<GetTagRequest>,
+    ) -> Result<Response<GetTagResponse>, Status> {
+        let id = parse_uuid(&req.into_inner().id, "id")?;
+        let tag = self
+            .backend
+            .read_tag(id)
+            .await
+            .map_err(|e| match &e {
+                keeplin_core::error::StorageError::NotFound(_) => Status::not_found(e.to_string()),
+                _ => Status::internal(e.to_string()),
+            })?;
+        Ok(Response::new(GetTagResponse {
+            tag: Some(tag_to_proto(tag)),
+        }))
+    }
+
+    async fn update_tag(
+        &self,
+        req: Request<UpdateTagRequest>,
+    ) -> Result<Response<UpdateTagResponse>, Status> {
+        let t = req
+            .into_inner()
+            .tag
+            .ok_or_else(|| Status::invalid_argument("tag is required"))?;
+        let tag = CoreTag {
+            id: parse_uuid(&t.id, "id")?,
+            title: t.title,
+            created_at: t
+                .created_at
+                .parse()
+                .map_err(|_| Status::invalid_argument("created_at is invalid"))?,
+            updated_at: t
+                .updated_at
+                .parse()
+                .map_err(|_| Status::invalid_argument("updated_at is invalid"))?,
+            deleted_at: parse_optional_dt(&t.deleted_at)?,
+        };
+        let updated = self
+            .backend
+            .update_tag(tag)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(UpdateTagResponse {
+            tag: Some(tag_to_proto(updated)),
+        }))
+    }
+
+    async fn delete_tag(
+        &self,
+        req: Request<DeleteTagRequest>,
+    ) -> Result<Response<DeleteTagResponse>, Status> {
+        let id = parse_uuid(&req.into_inner().id, "id")?;
+        self.backend
+            .delete_tag(id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(DeleteTagResponse {}))
+    }
+
+    async fn list_note_tags(
+        &self,
+        req: Request<ListNoteTagsRequest>,
+    ) -> Result<Response<ListNoteTagsResponse>, Status> {
+        let note_id = parse_uuid(&req.into_inner().note_id, "note_id")?;
+        let tags = self
+            .backend
+            .list_note_tags(note_id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(ListNoteTagsResponse {
+            tags: tags.into_iter().map(tag_to_proto).collect(),
+        }))
+    }
+
+    // ── Resources ─────────────────────────────────────────────────────────────
+
+    async fn list_resources(
+        &self,
+        _req: Request<ListResourcesRequest>,
+    ) -> Result<Response<ListResourcesResponse>, Status> {
+        let resources = self
+            .backend
+            .list_resources()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(ListResourcesResponse {
+            resources: resources.into_iter().map(resource_to_proto).collect(),
+        }))
+    }
+
+    async fn create_resource(
+        &self,
+        req: Request<CreateResourceRequest>,
+    ) -> Result<Response<CreateResourceResponse>, Status> {
+        let r = req.into_inner();
+        let size = r.data.len() as u64;
+        let resource = CoreResource::new(r.title, r.mime_type, r.file_name, size);
+        let created = self
+            .backend
+            .create_resource(resource, r.data)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(CreateResourceResponse {
+            resource: Some(resource_to_proto(created)),
+        }))
+    }
+
+    async fn get_resource(
+        &self,
+        req: Request<GetResourceRequest>,
+    ) -> Result<Response<GetResourceResponse>, Status> {
+        let id = parse_uuid(&req.into_inner().id, "id")?;
+        let (meta, data) = self
+            .backend
+            .read_resource(id)
+            .await
+            .map_err(|e| match &e {
+                keeplin_core::error::StorageError::NotFound(_) => Status::not_found(e.to_string()),
+                _ => Status::internal(e.to_string()),
+            })?;
+        Ok(Response::new(GetResourceResponse {
+            resource: Some(resource_to_proto(meta)),
+            data,
+        }))
+    }
+
+    async fn delete_resource(
+        &self,
+        req: Request<DeleteResourceRequest>,
+    ) -> Result<Response<DeleteResourceResponse>, Status> {
+        let id = parse_uuid(&req.into_inner().id, "id")?;
+        self.backend
+            .delete_resource(id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(DeleteResourceResponse {}))
     }
 
     // ── Sync (server-streaming) ───────────────────────────────────────────────
