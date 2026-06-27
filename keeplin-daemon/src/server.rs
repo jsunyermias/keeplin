@@ -61,11 +61,13 @@ fn tag_to_proto(t: CoreTag) -> Tag {
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn parse_uuid(s: &str, field: &str) -> Result<Uuid, Status> {
     s.parse::<Uuid>()
         .map_err(|_| Status::invalid_argument(format!("{field} is not a valid UUID")))
 }
 
+#[allow(clippy::result_large_err)]
 fn parse_optional_dt(s: &str) -> Result<Option<chrono::DateTime<chrono::Utc>>, Status> {
     if s.is_empty() {
         return Ok(None);
@@ -75,6 +77,7 @@ fn parse_optional_dt(s: &str) -> Result<Option<chrono::DateTime<chrono::Utc>>, S
         .map_err(|_| Status::invalid_argument(format!("{s} is not a valid RFC-3339 timestamp")))
 }
 
+#[allow(clippy::result_large_err)]
 fn proto_to_note(n: Note) -> Result<CoreNote, Status> {
     Ok(CoreNote {
         id: parse_uuid(&n.id, "id")?,

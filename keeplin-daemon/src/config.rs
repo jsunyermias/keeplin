@@ -1,17 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
+    #[default]
     Offline,
     Server,
-}
-
-impl Default for Mode {
-    fn default() -> Self {
-        Mode::Offline
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

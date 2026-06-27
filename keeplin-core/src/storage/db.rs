@@ -164,7 +164,7 @@ impl DbBackend {
         // Send auth token as first message
         stream
             .send(Message::Text(
-                serde_json::json!({ "type": "auth", "token": token }).to_string().into(),
+                serde_json::json!({ "type": "auth", "token": token }).to_string(),
             ))
             .await?;
         Ok(stream)
@@ -529,7 +529,7 @@ impl StorageBackend for DbBackend {
                     "device_id": self.device_id,
                     "changes": changes,
                 });
-                ws.send(Message::Text(payload.to_string().into())).await?;
+                ws.send(Message::Text(payload.to_string())).await?;
                 tracing::info!(count = changes.len(), "Changes sent via WebSocket");
             }
         }
