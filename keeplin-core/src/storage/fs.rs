@@ -162,9 +162,52 @@ impl FsBackend {
         Ok(())
     }
 
+    /// Read all entries from other devices' logs that are newer than `since`.
+    /// Does NOT advance the stored byte offset — safe to call multiple times.
+    async fn read_other_logs_since(&self, since: DateTime<Utc>) -> Result<Vec<LogEntry>, StorageError> {
+        let mut entries = Vec::new();
+        let logs_dir = self.root.join("logs");
+        let mut dir = match tokio::fs::read_dir(&logs_dir).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(entries),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(dir_entry) = dir.next_entry().await? {
+            let fname = dir_entry.file_name().to_string_lossy().into_owned();
+            if fname == format!("{}.log", self.device_id) {
+                continue;
+            }
+            if !fname.ends_with(".log") {
+                continue;
+            }
+            let file = tokio::fs::File::open(dir_entry.path()).await?;
+            let mut reader = BufReader::new(file);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                let n = reader.read_line(&mut line).await?;
+                if n == 0 {
+                    break;
+                }
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                match serde_json::from_str::<LogEntry>(trimmed) {
+                    Ok(e) if e.timestamp > since => entries.push(e),
+                    Ok(_) => {}
+                    Err(err) => {
+                        tracing::warn!("Skipping malformed log line: {err}");
+                    }
+                }
+            }
+        }
+        Ok(entries)
+    }
+
     /// Stream new lines from each remote device log starting from the stored
     /// byte offset, then advance the offset so we never re-read old entries.
-    async fn read_other_logs(&self) -> Result<Vec<LogEntry>, StorageError> {
+    async fn read_new_entries(&self) -> Result<Vec<LogEntry>, StorageError> {
         let mut entries = Vec::new();
         let mut dir = tokio::fs::read_dir(self.root.join("logs")).await?;
         while let Some(dir_entry) = dir.next_entry().await? {
@@ -489,12 +532,9 @@ impl StorageBackend for FsBackend {
     // ── Synchronisation ───────────────────────────────────────────────────────
 
     async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError> {
-        let entries = self.read_other_logs().await?;
+        let entries = self.read_other_logs_since(since).await?;
         let mut changes = Vec::new();
         for entry in entries {
-            if entry.timestamp <= since {
-                continue;
-            }
             let change = match entry.operation.as_str() {
                 "create" => {
                     let note: Note = serde_json::from_value(entry.data)?;
@@ -562,8 +602,30 @@ impl StorageBackend for FsBackend {
     }
 
     async fn receive_changes(&self) -> Result<Vec<Change>, StorageError> {
-        let since = self.get_last_sync_time().await?;
-        self.get_changes_since(since).await
+        let entries = self.read_new_entries().await?;
+        let mut changes = Vec::new();
+        for entry in entries {
+            let change = match entry.operation.as_str() {
+                "create" => {
+                    let note: Note = serde_json::from_value(entry.data)?;
+                    Change::Create { note }
+                }
+                "update" => {
+                    let note: Note = serde_json::from_value(entry.data)?;
+                    Change::Update { note }
+                }
+                "delete" => {
+                    let id: Uuid = serde_json::from_value(entry.data["id"].clone())?;
+                    Change::Delete { id }
+                }
+                op => {
+                    tracing::warn!("Unknown log operation: {op}");
+                    continue;
+                }
+            };
+            changes.push(change);
+        }
+        Ok(changes)
     }
 
     async fn get_device_id(&self) -> Result<String, StorageError> {

@@ -166,7 +166,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .backend
             .list_notes()
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(ListNotesResponse {
             notes: notes.into_iter().map(note_to_proto).collect(),
         }))
@@ -187,7 +187,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .backend
             .create_note(note)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(CreateNoteResponse {
             note: Some(note_to_proto(created)),
         }))
@@ -202,12 +202,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .backend
             .read_note(id)
             .await
-            .map_err(|e| match &e {
-                keeplin_core::error::StorageError::NotFound(_) => {
-                    Status::not_found(e.to_string())
-                }
-                _ => Status::internal(e.to_string()),
-            })?;
+            .map_err(storage_err)?;
         Ok(Response::new(GetNoteResponse {
             note: Some(note_to_proto(note)),
         }))
@@ -221,7 +216,8 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .into_inner()
             .note
             .ok_or_else(|| Status::invalid_argument("note is required"))?;
-        let note = proto_to_note(note_proto)?;
+        let mut note = proto_to_note(note_proto)?;
+        note.updated_at = now();
         let updated = self
             .backend
             .update_note(note)
@@ -254,7 +250,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .backend
             .list_notebooks()
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(ListNotebooksResponse {
             notebooks: notebooks.into_iter().map(notebook_to_proto).collect(),
         }))
@@ -269,7 +265,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .backend
             .create_notebook(notebook)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(CreateNotebookResponse {
             notebook: Some(notebook_to_proto(created)),
         }))
@@ -343,7 +339,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .backend
             .list_tags()
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(ListTagsResponse {
             tags: tags.into_iter().map(tag_to_proto).collect(),
         }))
@@ -358,7 +354,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .backend
             .create_tag(tag)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(CreateTagResponse {
             tag: Some(tag_to_proto(created)),
         }))
@@ -403,10 +399,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .backend
             .read_tag(id)
             .await
-            .map_err(|e| match &e {
-                keeplin_core::error::StorageError::NotFound(_) => Status::not_found(e.to_string()),
-                _ => Status::internal(e.to_string()),
-            })?;
+            .map_err(storage_err)?;
         Ok(Response::new(GetTagResponse {
             tag: Some(tag_to_proto(tag)),
         }))
@@ -464,7 +457,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .backend
             .list_note_tags(note_id)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(ListNoteTagsResponse {
             tags: tags.into_iter().map(tag_to_proto).collect(),
         }))
@@ -480,7 +473,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .backend
             .list_resources()
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(ListResourcesResponse {
             resources: resources.into_iter().map(resource_to_proto).collect(),
         }))
@@ -497,7 +490,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .backend
             .create_resource(resource, r.data)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(storage_err)?;
         Ok(Response::new(CreateResourceResponse {
             resource: Some(resource_to_proto(created)),
         }))
@@ -512,10 +505,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .backend
             .read_resource(id)
             .await
-            .map_err(|e| match &e {
-                keeplin_core::error::StorageError::NotFound(_) => Status::not_found(e.to_string()),
-                _ => Status::internal(e.to_string()),
-            })?;
+            .map_err(storage_err)?;
         Ok(Response::new(GetResourceResponse {
             resource: Some(resource_to_proto(meta)),
             data,

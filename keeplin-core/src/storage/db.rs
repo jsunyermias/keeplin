@@ -28,8 +28,6 @@ pub struct DbBackend {
     auth_token: String,
     ws: Arc<Mutex<Option<WsStream>>>,
     device_id: String,
-    #[allow(dead_code)]
-    http_client: reqwest::Client,
 }
 
 impl DbBackend {
@@ -71,7 +69,6 @@ impl DbBackend {
             auth_token,
             ws: Arc::new(Mutex::new(ws)),
             device_id,
-            http_client: reqwest::Client::new(),
         })
     }
 
@@ -205,7 +202,7 @@ impl DbBackend {
     }
 
     fn parse_uuid(s: String) -> Result<Uuid, StorageError> {
-        s.parse().map_err(|e: uuid::Error| StorageError::Database(e.to_string()))
+        s.parse().map_err(|e: uuid::Error| StorageError::InvalidState(e.to_string()))
     }
 
     fn parse_required_dt(s: String) -> Result<DateTime<Utc>, StorageError> {
@@ -776,19 +773,24 @@ impl StorageBackend for DbBackend {
     async fn send_changes(&self, changes: Vec<Change>) -> Result<(), StorageError> {
         let mut guard = self.ws.lock().await;
         Self::ensure_ws(&mut guard, &self.server_url, &self.auth_token).await;
-        match guard.as_mut() {
-            None => {
-                tracing::warn!("No WebSocket connection; changes not sent");
-            }
-            Some(ws) => {
-                let n = changes.len();
-                let payload = serde_json::json!({
-                    "type": "changes",
-                    "device_id": self.device_id,
-                    "changes": changes,
-                });
-                ws.send(Message::Text(payload.to_string())).await?;
-                tracing::info!(count = n, "Changes sent via WebSocket");
+        if guard.is_none() {
+            tracing::warn!("No WebSocket connection; changes not sent");
+            return Ok(());
+        }
+        let n = changes.len();
+        let payload = serde_json::json!({
+            "type": "changes",
+            "device_id": self.device_id,
+            "changes": changes,
+        });
+        let result = {
+            guard.as_mut().unwrap().send(Message::Text(payload.to_string())).await
+        };
+        match result {
+            Ok(()) => tracing::info!(count = n, "Changes sent via WebSocket"),
+            Err(e) => {
+                *guard = None;
+                return Err(StorageError::WebSocket(e.to_string()));
             }
         }
         Ok(())
@@ -797,36 +799,42 @@ impl StorageBackend for DbBackend {
     async fn receive_changes(&self) -> Result<Vec<Change>, StorageError> {
         let mut guard = self.ws.lock().await;
         Self::ensure_ws(&mut guard, &self.server_url, &self.auth_token).await;
-        match guard.as_mut() {
-            None => {
-                tracing::warn!("No WebSocket connection; no changes received");
-                Ok(vec![])
-            }
-            Some(ws) => {
-                // Drain all buffered messages; give up after 100 ms of silence.
-                let drain_timeout = Duration::from_millis(100);
-                let mut changes = Vec::new();
-                loop {
-                    match timeout(drain_timeout, ws.next()).await {
-                        Ok(Some(Ok(Message::Text(text)))) => {
-                            let v: serde_json::Value = serde_json::from_str(&text)?;
-                            if v["type"] == "changes" {
-                                if let Ok(batch) =
-                                    serde_json::from_value::<Vec<Change>>(v["changes"].clone())
-                                {
-                                    tracing::info!(count = batch.len(), "Changes received via WebSocket");
-                                    changes.extend(batch);
-                                }
+        if guard.is_none() {
+            tracing::warn!("No WebSocket connection; no changes received");
+            return Ok(vec![]);
+        }
+        // Drain all buffered messages; give up after 100 ms of silence.
+        let drain_timeout = Duration::from_millis(100);
+        let mut changes = Vec::new();
+        let mut connection_closed = false;
+        {
+            let ws = guard.as_mut().unwrap();
+            loop {
+                match timeout(drain_timeout, ws.next()).await {
+                    Ok(Some(Ok(Message::Text(text)))) => {
+                        let v: serde_json::Value = serde_json::from_str(&text)?;
+                        if v["type"] == "changes" {
+                            if let Ok(batch) =
+                                serde_json::from_value::<Vec<Change>>(v["changes"].clone())
+                            {
+                                tracing::info!(count = batch.len(), "Changes received via WebSocket");
+                                changes.extend(batch);
                             }
                         }
-                        Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) | Ok(None) => break,
-                        Err(_elapsed) => break,
-                        Ok(Some(Ok(_))) => {}
                     }
+                    Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) | Ok(None) => {
+                        connection_closed = true;
+                        break;
+                    }
+                    Err(_elapsed) => break,
+                    Ok(Some(Ok(_))) => {}
                 }
-                Ok(changes)
             }
         }
+        if connection_closed {
+            *guard = None;
+        }
+        Ok(changes)
     }
 
     async fn get_device_id(&self) -> Result<String, StorageError> {
