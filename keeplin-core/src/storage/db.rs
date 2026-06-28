@@ -24,7 +24,7 @@ use crate::{
     models::{new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag},
 };
 
-use super::StorageBackend;
+use super::{NoteRepository, NotebookRepository, ResourceRepository, SyncBackend, TagRepository};
 
 /// A WebSocket stream over either a plain TCP connection or a TLS-wrapped TCP connection.
 ///
@@ -221,6 +221,8 @@ impl DbBackend {
             );
 
             CREATE INDEX IF NOT EXISTS idx_notes_updated_at        ON notes(updated_at);
+            CREATE INDEX IF NOT EXISTS idx_notes_notebook_id       ON notes(notebook_id);
+            CREATE INDEX IF NOT EXISTS idx_notes_is_todo           ON notes(is_todo) WHERE is_todo = 1;
             CREATE INDEX IF NOT EXISTS idx_note_tags_note_id       ON note_tags(note_id);
             CREATE INDEX IF NOT EXISTS idx_note_tags_tag_id        ON note_tags(tag_id);
             CREATE INDEX IF NOT EXISTS idx_entity_changes_changed_at ON entity_changes(changed_at);
@@ -470,6 +472,35 @@ impl DbBackend {
         }
     }
 
+    // ── Transaction helpers ───────────────────────────────────────────────────
+
+    /// Start a `BEGIN IMMEDIATE` transaction.
+    ///
+    /// `IMMEDIATE` acquires a write lock at the start so that all subsequent writes
+    /// succeed or fail atomically. Use `commit` to persist changes or `rollback` to
+    /// discard them. Prefer wrapping multiple operations in a transaction so that a
+    /// crash between the primary-table write and the `entity_changes` journal write
+    /// cannot leave the two tables in an inconsistent state.
+    async fn begin(&self) -> Result<(), StorageError> {
+        self.conn.execute("BEGIN IMMEDIATE", ()).await?;
+        Ok(())
+    }
+
+    /// Commit the current transaction and make all changes durable.
+    async fn commit(&self) -> Result<(), StorageError> {
+        self.conn.execute("COMMIT", ()).await?;
+        Ok(())
+    }
+
+    /// Roll back the current transaction, discarding all changes since `begin`.
+    ///
+    /// Errors from `ROLLBACK` are intentionally swallowed (`.ok()`) because a rollback
+    /// failure means no transaction was active — the database is already in a clean
+    /// state and there is nothing to recover from.
+    async fn rollback(&self) {
+        self.conn.execute("ROLLBACK", ()).await.ok();
+    }
+
     /// Reconnect the WebSocket if the current connection slot is empty and a server
     /// URL is configured.
     ///
@@ -493,37 +524,83 @@ impl DbBackend {
     }
 }
 
-// ── StorageBackend impl ───────────────────────────────────────────────────────
+// ── Pagination helpers ────────────────────────────────────────────────────────
+
+/// Parse a cursor token of the form `"<created_at_rfc3339>|<uuid>"` into its
+/// two components. Returns `("", "")` when the token is absent or empty, which
+/// causes the keyset SQL condition `?1 = ''` to match all rows (no offset).
+fn parse_cursor(token: Option<&str>) -> (String, String) {
+    match token.filter(|t| !t.is_empty()) {
+        Some(cursor) => match cursor.split_once('|') {
+            Some((ts, id)) => (ts.to_owned(), id.to_owned()),
+            None => (String::new(), String::new()),
+        },
+        None => (String::new(), String::new()),
+    }
+}
+
+/// Given a `rows` vec that was fetched with `LIMIT limit + 1`, return `(page, next_token)`.
+///
+/// If `rows.len() > limit`, there is a next page: `next_token` is built from
+/// the last item of the actual page (index `limit - 1`) using `token_fn`.
+/// The extra row is discarded so the returned page never exceeds `limit` items.
+fn build_page<T, F>(mut rows: Vec<T>, limit: usize, token_fn: F) -> (Vec<T>, Option<String>)
+where
+    F: Fn(&T) -> String,
+{
+    let has_more = rows.len() > limit;
+    if has_more {
+        rows.truncate(limit);
+    }
+    let next_token = if has_more {
+        rows.last().map(token_fn)
+    } else {
+        None
+    };
+    (rows, next_token)
+}
+
+// ── NoteRepository impl ───────────────────────────────────────────────────────
 
 #[async_trait]
-impl StorageBackend for DbBackend {
-    // ── Notes ─────────────────────────────────────────────────────────────────
-
+impl NoteRepository for DbBackend {
     async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
-        self.conn
-            .execute(
-                "INSERT INTO notes
-                 (id, title, body, notebook_id, is_todo, todo_due, todo_completed, created_at, updated_at, deleted_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-                libsql::params![
-                    note.id.to_string(),
-                    note.title.clone(),
-                    note.body.clone(),
-                    note.notebook_id.map(|u| u.to_string()),
-                    note.is_todo as i64,
-                    note.todo_due.map(|d| d.to_rfc3339()),
-                    note.todo_completed.map(|d| d.to_rfc3339()),
-                    note.created_at.to_rfc3339(),
-                    note.updated_at.to_rfc3339(),
-                    note.deleted_at.map(|d| d.to_rfc3339()),
-                ],
-            )
-            .await?;
-        let data = serde_json::to_value(&note).ok().map(|v| v.to_string());
-        self.record_change("note", &note.id.to_string(), "create", data)
-            .await?;
-        tracing::info!(id = %note.id, "Note created");
-        Ok(note)
+        self.begin().await?;
+        let r: Result<(), StorageError> = async {
+            self.conn
+                .execute(
+                    "INSERT INTO notes
+                     (id, title, body, notebook_id, is_todo, todo_due, todo_completed, created_at, updated_at, deleted_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                    libsql::params![
+                        note.id.to_string(),
+                        note.title.clone(),
+                        note.body.clone(),
+                        note.notebook_id.map(|u| u.to_string()),
+                        note.is_todo as i64,
+                        note.todo_due.map(|d| d.to_rfc3339()),
+                        note.todo_completed.map(|d| d.to_rfc3339()),
+                        note.created_at.to_rfc3339(),
+                        note.updated_at.to_rfc3339(),
+                        note.deleted_at.map(|d| d.to_rfc3339()),
+                    ],
+                )
+                .await?;
+            let data = serde_json::to_value(&note).ok().map(|v| v.to_string());
+            self.record_change("note", &note.id.to_string(), "create", data).await
+        }
+        .await;
+        match r {
+            Ok(()) => {
+                self.commit().await?;
+                tracing::info!(id = %note.id, "Note created");
+                Ok(note)
+            }
+            Err(e) => {
+                self.rollback().await;
+                Err(e)
+            }
+        }
     }
 
     async fn read_note(&self, id: Uuid) -> Result<Note, StorageError> {
@@ -543,92 +620,149 @@ impl StorageBackend for DbBackend {
     }
 
     async fn update_note(&self, note: Note) -> Result<Note, StorageError> {
-        let affected = self
-            .conn
-            .execute(
-                "UPDATE notes SET
-                 title=?2, body=?3, notebook_id=?4, is_todo=?5, todo_due=?6,
-                 todo_completed=?7, updated_at=?8, deleted_at=?9
-                 WHERE id = ?1",
-                libsql::params![
-                    note.id.to_string(),
-                    note.title.clone(),
-                    note.body.clone(),
-                    note.notebook_id.map(|u| u.to_string()),
-                    note.is_todo as i64,
-                    note.todo_due.map(|d| d.to_rfc3339()),
-                    note.todo_completed.map(|d| d.to_rfc3339()),
-                    note.updated_at.to_rfc3339(),
-                    note.deleted_at.map(|d| d.to_rfc3339()),
-                ],
-            )
-            .await?;
-        if affected == 0 {
-            return Err(StorageError::NotFound(note.id.to_string()));
+        self.begin().await?;
+        let r: Result<(), StorageError> = async {
+            let affected = self
+                .conn
+                .execute(
+                    "UPDATE notes SET
+                     title=?2, body=?3, notebook_id=?4, is_todo=?5, todo_due=?6,
+                     todo_completed=?7, updated_at=?8, deleted_at=?9
+                     WHERE id = ?1",
+                    libsql::params![
+                        note.id.to_string(),
+                        note.title.clone(),
+                        note.body.clone(),
+                        note.notebook_id.map(|u| u.to_string()),
+                        note.is_todo as i64,
+                        note.todo_due.map(|d| d.to_rfc3339()),
+                        note.todo_completed.map(|d| d.to_rfc3339()),
+                        note.updated_at.to_rfc3339(),
+                        note.deleted_at.map(|d| d.to_rfc3339()),
+                    ],
+                )
+                .await?;
+            if affected == 0 {
+                return Err(StorageError::NotFound(note.id.to_string()));
+            }
+            let data = serde_json::to_value(&note).ok().map(|v| v.to_string());
+            self.record_change("note", &note.id.to_string(), "update", data)
+                .await
         }
-        let data = serde_json::to_value(&note).ok().map(|v| v.to_string());
-        self.record_change("note", &note.id.to_string(), "update", data)
-            .await?;
-        tracing::info!(id = %note.id, "Note updated");
-        Ok(note)
+        .await;
+        match r {
+            Ok(()) => {
+                self.commit().await?;
+                tracing::info!(id = %note.id, "Note updated");
+                Ok(note)
+            }
+            Err(e) => {
+                self.rollback().await;
+                Err(e)
+            }
+        }
     }
 
     async fn delete_note(&self, id: Uuid) -> Result<(), StorageError> {
-        let ts = now().to_rfc3339();
-        let affected = self
-            .conn
-            .execute(
-                "UPDATE notes SET deleted_at = ?2 WHERE id = ?1",
-                [id.to_string(), ts],
-            )
-            .await?;
-        if affected == 0 {
-            return Err(StorageError::NotFound(id.to_string()));
+        self.begin().await?;
+        let r: Result<(), StorageError> = async {
+            let ts = now().to_rfc3339();
+            let affected = self
+                .conn
+                .execute(
+                    "UPDATE notes SET deleted_at = ?2 WHERE id = ?1",
+                    [id.to_string(), ts],
+                )
+                .await?;
+            if affected == 0 {
+                return Err(StorageError::NotFound(id.to_string()));
+            }
+            self.record_change("note", &id.to_string(), "delete", None)
+                .await
         }
-        self.record_change("note", &id.to_string(), "delete", None)
-            .await?;
-        tracing::info!(%id, "Note deleted");
-        Ok(())
+        .await;
+        match r {
+            Ok(()) => {
+                self.commit().await?;
+                tracing::info!(%id, "Note deleted");
+                Ok(())
+            }
+            Err(e) => {
+                self.rollback().await;
+                Err(e)
+            }
+        }
     }
 
-    async fn list_notes(&self) -> Result<Vec<Note>, StorageError> {
+    async fn list_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        let limit = if page_size == 0 { 100u32 } else { page_size };
+        let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
             .conn
             .query(
                 "SELECT id,title,body,notebook_id,is_todo,todo_due,todo_completed,
                         created_at,updated_at,deleted_at
-                 FROM notes WHERE deleted_at IS NULL",
-                (),
+                 FROM notes
+                 WHERE deleted_at IS NULL
+                   AND (
+                     ?1 = '' OR created_at > ?2
+                     OR (created_at = ?2 AND id > ?3)
+                   )
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT ?4",
+                libsql::params![cursor_ts.clone(), cursor_ts, cursor_id, limit + 1],
             )
             .await?;
         let mut notes = Vec::new();
         while let Some(row) = rows.next().await? {
             notes.push(Self::row_to_note(&row)?);
         }
-        Ok(notes)
+        Ok(build_page(notes, limit as usize, |n| {
+            format!("{}|{}", n.created_at.to_rfc3339(), n.id)
+        }))
     }
+}
 
-    // ── Notebooks ─────────────────────────────────────────────────────────────
+// ── NotebookRepository impl ───────────────────────────────────────────────────
 
+#[async_trait]
+impl NotebookRepository for DbBackend {
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
-        self.conn
-            .execute(
-                "INSERT INTO notebooks (id,title,created_at,updated_at,deleted_at)
-                 VALUES (?1,?2,?3,?4,?5)",
-                libsql::params![
-                    notebook.id.to_string(),
-                    notebook.title.clone(),
-                    notebook.created_at.to_rfc3339(),
-                    notebook.updated_at.to_rfc3339(),
-                    notebook.deleted_at.map(|d| d.to_rfc3339()),
-                ],
-            )
-            .await?;
-        let data = serde_json::to_value(&notebook).ok().map(|v| v.to_string());
-        self.record_change("notebook", &notebook.id.to_string(), "create", data)
-            .await?;
-        tracing::info!(id = %notebook.id, "Notebook created");
-        Ok(notebook)
+        self.begin().await?;
+        let r: Result<(), StorageError> = async {
+            self.conn
+                .execute(
+                    "INSERT INTO notebooks (id,title,created_at,updated_at,deleted_at)
+                     VALUES (?1,?2,?3,?4,?5)",
+                    libsql::params![
+                        notebook.id.to_string(),
+                        notebook.title.clone(),
+                        notebook.created_at.to_rfc3339(),
+                        notebook.updated_at.to_rfc3339(),
+                        notebook.deleted_at.map(|d| d.to_rfc3339()),
+                    ],
+                )
+                .await?;
+            let data = serde_json::to_value(&notebook).ok().map(|v| v.to_string());
+            self.record_change("notebook", &notebook.id.to_string(), "create", data)
+                .await
+        }
+        .await;
+        match r {
+            Ok(()) => {
+                self.commit().await?;
+                tracing::info!(id = %notebook.id, "Notebook created");
+                Ok(notebook)
+            }
+            Err(e) => {
+                self.rollback().await;
+                Err(e)
+            }
+        }
     }
 
     async fn read_notebook(&self, id: Uuid) -> Result<Notebook, StorageError> {
@@ -647,82 +781,139 @@ impl StorageBackend for DbBackend {
     }
 
     async fn update_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
-        let affected = self
-            .conn
-            .execute(
-                "UPDATE notebooks SET title=?2,updated_at=?3,deleted_at=?4 WHERE id=?1",
-                libsql::params![
-                    notebook.id.to_string(),
-                    notebook.title.clone(),
-                    notebook.updated_at.to_rfc3339(),
-                    notebook.deleted_at.map(|d| d.to_rfc3339()),
-                ],
-            )
-            .await?;
-        if affected == 0 {
-            return Err(StorageError::NotFound(notebook.id.to_string()));
+        self.begin().await?;
+        let r: Result<(), StorageError> = async {
+            let affected = self
+                .conn
+                .execute(
+                    "UPDATE notebooks SET title=?2,updated_at=?3,deleted_at=?4 WHERE id=?1",
+                    libsql::params![
+                        notebook.id.to_string(),
+                        notebook.title.clone(),
+                        notebook.updated_at.to_rfc3339(),
+                        notebook.deleted_at.map(|d| d.to_rfc3339()),
+                    ],
+                )
+                .await?;
+            if affected == 0 {
+                return Err(StorageError::NotFound(notebook.id.to_string()));
+            }
+            let data = serde_json::to_value(&notebook).ok().map(|v| v.to_string());
+            self.record_change("notebook", &notebook.id.to_string(), "update", data)
+                .await
         }
-        let data = serde_json::to_value(&notebook).ok().map(|v| v.to_string());
-        self.record_change("notebook", &notebook.id.to_string(), "update", data)
-            .await?;
-        tracing::info!(id = %notebook.id, "Notebook updated");
-        Ok(notebook)
+        .await;
+        match r {
+            Ok(()) => {
+                self.commit().await?;
+                tracing::info!(id = %notebook.id, "Notebook updated");
+                Ok(notebook)
+            }
+            Err(e) => {
+                self.rollback().await;
+                Err(e)
+            }
+        }
     }
 
     async fn delete_notebook(&self, id: Uuid) -> Result<(), StorageError> {
-        let affected = self
-            .conn
-            .execute(
-                "UPDATE notebooks SET deleted_at=?2 WHERE id=?1",
-                [id.to_string(), now().to_rfc3339()],
-            )
-            .await?;
-        if affected == 0 {
-            return Err(StorageError::NotFound(id.to_string()));
+        self.begin().await?;
+        let r: Result<(), StorageError> = async {
+            let affected = self
+                .conn
+                .execute(
+                    "UPDATE notebooks SET deleted_at=?2 WHERE id=?1",
+                    [id.to_string(), now().to_rfc3339()],
+                )
+                .await?;
+            if affected == 0 {
+                return Err(StorageError::NotFound(id.to_string()));
+            }
+            self.record_change("notebook", &id.to_string(), "delete", None)
+                .await
         }
-        self.record_change("notebook", &id.to_string(), "delete", None)
-            .await?;
-        tracing::info!(%id, "Notebook deleted");
-        Ok(())
+        .await;
+        match r {
+            Ok(()) => {
+                self.commit().await?;
+                tracing::info!(%id, "Notebook deleted");
+                Ok(())
+            }
+            Err(e) => {
+                self.rollback().await;
+                Err(e)
+            }
+        }
     }
 
-    async fn list_notebooks(&self) -> Result<Vec<Notebook>, StorageError> {
+    async fn list_notebooks(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Notebook>, Option<String>), StorageError> {
+        let limit = if page_size == 0 { 100u32 } else { page_size };
+        let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
             .conn
             .query(
                 "SELECT id,title,created_at,updated_at,deleted_at
-                 FROM notebooks WHERE deleted_at IS NULL",
-                (),
+                 FROM notebooks
+                 WHERE deleted_at IS NULL
+                   AND (
+                     ?1 = '' OR created_at > ?2
+                     OR (created_at = ?2 AND id > ?3)
+                   )
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT ?4",
+                libsql::params![cursor_ts.clone(), cursor_ts, cursor_id, limit + 1],
             )
             .await?;
         let mut notebooks = Vec::new();
         while let Some(row) = rows.next().await? {
             notebooks.push(Self::row_to_notebook(&row)?);
         }
-        Ok(notebooks)
+        Ok(build_page(notebooks, limit as usize, |nb| {
+            format!("{}|{}", nb.created_at.to_rfc3339(), nb.id)
+        }))
     }
+}
 
-    // ── Tags ──────────────────────────────────────────────────────────────────
+// ── TagRepository impl ────────────────────────────────────────────────────────
 
+#[async_trait]
+impl TagRepository for DbBackend {
     async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
-        self.conn
-            .execute(
-                "INSERT INTO tags (id,title,created_at,updated_at,deleted_at)
-                 VALUES (?1,?2,?3,?4,?5)",
-                libsql::params![
-                    tag.id.to_string(),
-                    tag.title.clone(),
-                    tag.created_at.to_rfc3339(),
-                    tag.updated_at.to_rfc3339(),
-                    tag.deleted_at.map(|d| d.to_rfc3339()),
-                ],
-            )
-            .await?;
-        let data = serde_json::to_value(&tag).ok().map(|v| v.to_string());
-        self.record_change("tag", &tag.id.to_string(), "create", data)
-            .await?;
-        tracing::info!(id = %tag.id, "Tag created");
-        Ok(tag)
+        self.begin().await?;
+        let r: Result<(), StorageError> = async {
+            self.conn
+                .execute(
+                    "INSERT INTO tags (id,title,created_at,updated_at,deleted_at)
+                     VALUES (?1,?2,?3,?4,?5)",
+                    libsql::params![
+                        tag.id.to_string(),
+                        tag.title.clone(),
+                        tag.created_at.to_rfc3339(),
+                        tag.updated_at.to_rfc3339(),
+                        tag.deleted_at.map(|d| d.to_rfc3339()),
+                    ],
+                )
+                .await?;
+            let data = serde_json::to_value(&tag).ok().map(|v| v.to_string());
+            self.record_change("tag", &tag.id.to_string(), "create", data)
+                .await
+        }
+        .await;
+        match r {
+            Ok(()) => {
+                self.commit().await?;
+                tracing::info!(id = %tag.id, "Tag created");
+                Ok(tag)
+            }
+            Err(e) => {
+                self.rollback().await;
+                Err(e)
+            }
+        }
     }
 
     async fn read_tag(&self, id: Uuid) -> Result<Tag, StorageError> {
@@ -741,143 +932,245 @@ impl StorageBackend for DbBackend {
     }
 
     async fn update_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
-        let affected = self
-            .conn
-            .execute(
-                "UPDATE tags SET title=?2,updated_at=?3,deleted_at=?4 WHERE id=?1",
-                libsql::params![
-                    tag.id.to_string(),
-                    tag.title.clone(),
-                    tag.updated_at.to_rfc3339(),
-                    tag.deleted_at.map(|d| d.to_rfc3339()),
-                ],
-            )
-            .await?;
-        if affected == 0 {
-            return Err(StorageError::NotFound(tag.id.to_string()));
+        self.begin().await?;
+        let r: Result<(), StorageError> = async {
+            let affected = self
+                .conn
+                .execute(
+                    "UPDATE tags SET title=?2,updated_at=?3,deleted_at=?4 WHERE id=?1",
+                    libsql::params![
+                        tag.id.to_string(),
+                        tag.title.clone(),
+                        tag.updated_at.to_rfc3339(),
+                        tag.deleted_at.map(|d| d.to_rfc3339()),
+                    ],
+                )
+                .await?;
+            if affected == 0 {
+                return Err(StorageError::NotFound(tag.id.to_string()));
+            }
+            let data = serde_json::to_value(&tag).ok().map(|v| v.to_string());
+            self.record_change("tag", &tag.id.to_string(), "update", data)
+                .await
         }
-        let data = serde_json::to_value(&tag).ok().map(|v| v.to_string());
-        self.record_change("tag", &tag.id.to_string(), "update", data)
-            .await?;
-        tracing::info!(id = %tag.id, "Tag updated");
-        Ok(tag)
+        .await;
+        match r {
+            Ok(()) => {
+                self.commit().await?;
+                tracing::info!(id = %tag.id, "Tag updated");
+                Ok(tag)
+            }
+            Err(e) => {
+                self.rollback().await;
+                Err(e)
+            }
+        }
     }
 
     async fn delete_tag(&self, id: Uuid) -> Result<(), StorageError> {
-        let affected = self
-            .conn
-            .execute(
-                "UPDATE tags SET deleted_at=?2 WHERE id=?1",
-                [id.to_string(), now().to_rfc3339()],
-            )
-            .await?;
-        if affected == 0 {
-            return Err(StorageError::NotFound(id.to_string()));
+        self.begin().await?;
+        let r: Result<(), StorageError> = async {
+            let affected = self
+                .conn
+                .execute(
+                    "UPDATE tags SET deleted_at=?2 WHERE id=?1",
+                    [id.to_string(), now().to_rfc3339()],
+                )
+                .await?;
+            if affected == 0 {
+                return Err(StorageError::NotFound(id.to_string()));
+            }
+            self.record_change("tag", &id.to_string(), "delete", None)
+                .await
         }
-        self.record_change("tag", &id.to_string(), "delete", None)
-            .await?;
-        tracing::info!(%id, "Tag deleted");
-        Ok(())
+        .await;
+        match r {
+            Ok(()) => {
+                self.commit().await?;
+                tracing::info!(%id, "Tag deleted");
+                Ok(())
+            }
+            Err(e) => {
+                self.rollback().await;
+                Err(e)
+            }
+        }
     }
 
-    async fn list_tags(&self) -> Result<Vec<Tag>, StorageError> {
+    async fn list_tags(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        let limit = if page_size == 0 { 100u32 } else { page_size };
+        let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
             .conn
             .query(
                 "SELECT id,title,created_at,updated_at,deleted_at
-                 FROM tags WHERE deleted_at IS NULL",
-                (),
+                 FROM tags
+                 WHERE deleted_at IS NULL
+                   AND (
+                     ?1 = '' OR created_at > ?2
+                     OR (created_at = ?2 AND id > ?3)
+                   )
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT ?4",
+                libsql::params![cursor_ts.clone(), cursor_ts, cursor_id, limit + 1],
             )
             .await?;
         let mut tags = Vec::new();
         while let Some(row) = rows.next().await? {
             tags.push(Self::row_to_tag(&row)?);
         }
-        Ok(tags)
+        Ok(build_page(tags, limit as usize, |t| {
+            format!("{}|{}", t.created_at.to_rfc3339(), t.id)
+        }))
     }
 
-    // ── Note–Tag relations ────────────────────────────────────────────────────
-
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
-        self.conn
-            .execute(
-                "INSERT OR IGNORE INTO note_tags (note_id,tag_id) VALUES (?1,?2)",
-                [note_tag.note_id.to_string(), note_tag.tag_id.to_string()],
-            )
-            .await?;
-        let data = serde_json::json!({ "tag_id": note_tag.tag_id }).to_string();
-        self.record_change("note_tag", &note_tag.note_id.to_string(), "add", Some(data))
-            .await?;
-        Ok(())
+        self.begin().await?;
+        let r: Result<(), StorageError> = async {
+            self.conn
+                .execute(
+                    "INSERT OR IGNORE INTO note_tags (note_id,tag_id) VALUES (?1,?2)",
+                    [note_tag.note_id.to_string(), note_tag.tag_id.to_string()],
+                )
+                .await?;
+            let data = serde_json::json!({ "tag_id": note_tag.tag_id }).to_string();
+            self.record_change("note_tag", &note_tag.note_id.to_string(), "add", Some(data))
+                .await
+        }
+        .await;
+        match r {
+            Ok(()) => {
+                self.commit().await?;
+                Ok(())
+            }
+            Err(e) => {
+                self.rollback().await;
+                Err(e)
+            }
+        }
     }
 
     async fn remove_note_tag(&self, note_id: Uuid, tag_id: Uuid) -> Result<(), StorageError> {
-        self.conn
-            .execute(
-                "DELETE FROM note_tags WHERE note_id=?1 AND tag_id=?2",
-                [note_id.to_string(), tag_id.to_string()],
-            )
-            .await?;
-        let data = serde_json::json!({ "tag_id": tag_id }).to_string();
-        self.record_change("note_tag", &note_id.to_string(), "remove", Some(data))
-            .await?;
-        Ok(())
+        self.begin().await?;
+        let r: Result<(), StorageError> = async {
+            self.conn
+                .execute(
+                    "DELETE FROM note_tags WHERE note_id=?1 AND tag_id=?2",
+                    [note_id.to_string(), tag_id.to_string()],
+                )
+                .await?;
+            let data = serde_json::json!({ "tag_id": tag_id }).to_string();
+            self.record_change("note_tag", &note_id.to_string(), "remove", Some(data))
+                .await
+        }
+        .await;
+        match r {
+            Ok(()) => {
+                self.commit().await?;
+                Ok(())
+            }
+            Err(e) => {
+                self.rollback().await;
+                Err(e)
+            }
+        }
     }
 
-    async fn list_note_tags(&self, note_id: Uuid) -> Result<Vec<Tag>, StorageError> {
+    async fn list_note_tags(
+        &self,
+        note_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        let limit = if page_size == 0 { 100u32 } else { page_size };
+        let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
             .conn
             .query(
                 "SELECT t.id,t.title,t.created_at,t.updated_at,t.deleted_at
                  FROM tags t
                  JOIN note_tags nt ON t.id = nt.tag_id
-                 WHERE nt.note_id = ?1 AND t.deleted_at IS NULL",
-                [note_id.to_string()],
+                 WHERE nt.note_id = ?1 AND t.deleted_at IS NULL
+                   AND (
+                     ?2 = '' OR t.created_at > ?3
+                     OR (t.created_at = ?3 AND t.id > ?4)
+                   )
+                 ORDER BY t.created_at ASC, t.id ASC
+                 LIMIT ?5",
+                libsql::params![
+                    note_id.to_string(),
+                    cursor_ts.clone(),
+                    cursor_ts,
+                    cursor_id,
+                    limit + 1
+                ],
             )
             .await?;
         let mut tags = Vec::new();
         while let Some(row) = rows.next().await? {
             tags.push(Self::row_to_tag(&row)?);
         }
-        Ok(tags)
+        Ok(build_page(tags, limit as usize, |t| {
+            format!("{}|{}", t.created_at.to_rfc3339(), t.id)
+        }))
     }
+}
 
-    // ── Resources ─────────────────────────────────────────────────────────────
+// ── ResourceRepository impl ───────────────────────────────────────────────────
 
+#[async_trait]
+impl ResourceRepository for DbBackend {
     async fn create_resource(
         &self,
         resource: Resource,
         data: Vec<u8>,
     ) -> Result<Resource, StorageError> {
-        // Encode the binary payload as Base64 before moving `data` into the SQL
-        // parameter list. The Base64 string is stored in the `entity_changes` journal
-        // under the key `_data_b64` so that peers that receive this change via
-        // `get_changes_since` can retrieve the full binary resource without needing
-        // to download it separately.
-        let data_b64 = STANDARD.encode(&data);
-        self.conn
-            .execute(
-                "INSERT INTO resources (id,title,mime_type,file_name,size,data,created_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                libsql::params![
-                    resource.id.to_string(),
-                    resource.title.clone(),
-                    resource.mime_type.clone(),
-                    resource.file_name.clone(),
-                    resource.size as i64,
-                    data,
-                    resource.created_at.to_rfc3339(),
-                ],
-            )
-            .await?;
-        let change_data = serde_json::to_value(&resource).ok().map(|mut v| {
-            v["_data_b64"] = serde_json::Value::String(data_b64);
-            v.to_string()
-        });
-        self.record_change("resource", &resource.id.to_string(), "create", change_data)
-            .await?;
-        tracing::info!(id = %resource.id, "Resource created");
-        Ok(resource)
+        self.begin().await?;
+        let r: Result<(), StorageError> = async {
+            // Encode the binary payload as Base64 before moving `data` into the SQL
+            // parameter list. The Base64 string is stored in the `entity_changes` journal
+            // under the key `_data_b64` so that peers that receive this change via
+            // `get_changes_since` can retrieve the full binary resource without needing
+            // to download it separately.
+            let data_b64 = STANDARD.encode(&data);
+            self.conn
+                .execute(
+                    "INSERT INTO resources (id,title,mime_type,file_name,size,data,created_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    libsql::params![
+                        resource.id.to_string(),
+                        resource.title.clone(),
+                        resource.mime_type.clone(),
+                        resource.file_name.clone(),
+                        resource.size as i64,
+                        data,
+                        resource.created_at.to_rfc3339(),
+                    ],
+                )
+                .await?;
+            let change_data = serde_json::to_value(&resource).ok().map(|mut v| {
+                v["_data_b64"] = serde_json::Value::String(data_b64);
+                v.to_string()
+            });
+            self.record_change("resource", &resource.id.to_string(), "create", change_data)
+                .await
+        }
+        .await;
+        match r {
+            Ok(()) => {
+                self.commit().await?;
+                tracing::info!(id = %resource.id, "Resource created");
+                Ok(resource)
+            }
+            Err(e) => {
+                self.rollback().await;
+                Err(e)
+            }
+        }
     }
 
     async fn read_resource(&self, id: Uuid) -> Result<(Resource, Vec<u8>), StorageError> {
@@ -907,25 +1200,49 @@ impl StorageBackend for DbBackend {
     }
 
     async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError> {
-        let affected = self
-            .conn
-            .execute("DELETE FROM resources WHERE id=?1", [id.to_string()])
-            .await?;
-        if affected == 0 {
-            return Err(StorageError::NotFound(id.to_string()));
+        self.begin().await?;
+        let r: Result<(), StorageError> = async {
+            let affected = self
+                .conn
+                .execute("DELETE FROM resources WHERE id=?1", [id.to_string()])
+                .await?;
+            if affected == 0 {
+                return Err(StorageError::NotFound(id.to_string()));
+            }
+            self.record_change("resource", &id.to_string(), "delete", None)
+                .await
         }
-        self.record_change("resource", &id.to_string(), "delete", None)
-            .await?;
-        tracing::info!(%id, "Resource deleted");
-        Ok(())
+        .await;
+        match r {
+            Ok(()) => {
+                self.commit().await?;
+                tracing::info!(%id, "Resource deleted");
+                Ok(())
+            }
+            Err(e) => {
+                self.rollback().await;
+                Err(e)
+            }
+        }
     }
 
-    async fn list_resources(&self) -> Result<Vec<Resource>, StorageError> {
+    async fn list_resources(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
+        let limit = if page_size == 0 { 100u32 } else { page_size };
+        let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,mime_type,file_name,size,created_at FROM resources",
-                (),
+                "SELECT id,title,mime_type,file_name,size,created_at
+                 FROM resources
+                 WHERE ?1 = '' OR created_at > ?2
+                    OR (created_at = ?2 AND id > ?3)
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT ?4",
+                libsql::params![cursor_ts.clone(), cursor_ts, cursor_id, limit + 1],
             )
             .await?;
         let mut resources = Vec::new();
@@ -939,11 +1256,16 @@ impl StorageBackend for DbBackend {
                 created_at: Self::parse_required_dt(row.get::<String>(5)?)?,
             });
         }
-        Ok(resources)
+        Ok(build_page(resources, limit as usize, |r| {
+            format!("{}|{}", r.created_at.to_rfc3339(), r.id)
+        }))
     }
+}
 
-    // ── Synchronisation ───────────────────────────────────────────────────────
+// ── SyncBackend impl ──────────────────────────────────────────────────────────
 
+#[async_trait]
+impl SyncBackend for DbBackend {
     async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError> {
         let since_str = since.to_rfc3339();
         let mut rows = self
@@ -1194,6 +1516,11 @@ impl StorageBackend for DbBackend {
             tracing::warn!("No WebSocket connection; no changes received");
             return Ok(vec![]);
         }
+        // Reject sync batches that exceed this message count. Enforcing an upper bound
+        // prevents a malicious or misbehaving server from exhausting the daemon's memory
+        // by sending an unbounded stream of messages in a single receive call. Any
+        // messages not consumed here will be delivered on the next sync cycle.
+        const MAX_WS_MESSAGES: usize = 1_000;
         // Drain all messages that have already been buffered in the WebSocket stream,
         // but stop waiting after 100 milliseconds of silence. This makes `receive_changes`
         // a bounded-time operation: it will not block indefinitely waiting for new
@@ -1202,11 +1529,20 @@ impl StorageBackend for DbBackend {
         let drain_timeout = Duration::from_millis(100);
         let mut changes = Vec::new();
         let mut connection_closed = false;
+        let mut msg_count = 0usize;
         {
             let ws = guard.as_mut().unwrap();
             loop {
+                if msg_count >= MAX_WS_MESSAGES {
+                    tracing::warn!(
+                        limit = MAX_WS_MESSAGES,
+                        "WebSocket message limit reached; remaining messages will be delivered on the next sync cycle"
+                    );
+                    break;
+                }
                 match timeout(drain_timeout, ws.next()).await {
                     Ok(Some(Ok(Message::Text(text)))) => {
+                        msg_count += 1;
                         let v: serde_json::Value = serde_json::from_str(&text)?;
                         if v["type"] == "changes" {
                             if let Ok(batch) =
@@ -1233,6 +1569,18 @@ impl StorageBackend for DbBackend {
             *guard = None;
         }
         Ok(changes)
+    }
+
+    async fn prune_change_journal(&self, older_than: DateTime<Utc>) -> Result<u64, StorageError> {
+        let affected = self
+            .conn
+            .execute(
+                "DELETE FROM entity_changes WHERE changed_at < ?1",
+                [older_than.to_rfc3339()],
+            )
+            .await?;
+        tracing::info!(rows = affected, "Pruned entity_changes journal");
+        Ok(affected)
     }
 
     async fn get_device_id(&self) -> Result<String, StorageError> {

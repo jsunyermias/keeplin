@@ -45,13 +45,13 @@ fn note_to_proto(n: CoreNote) -> Note {
         id: n.id.to_string(),
         title: n.title,
         body: n.body,
-        notebook_id: n.notebook_id.map(|u| u.to_string()).unwrap_or_default(),
+        notebook_id: n.notebook_id.map(|u| u.to_string()),
         is_todo: n.is_todo,
-        todo_due: n.todo_due.map(|d| d.to_rfc3339()).unwrap_or_default(),
-        todo_completed: n.todo_completed.map(|d| d.to_rfc3339()).unwrap_or_default(),
+        todo_due: n.todo_due.map(|d| d.to_rfc3339()),
+        todo_completed: n.todo_completed.map(|d| d.to_rfc3339()),
         created_at: n.created_at.to_rfc3339(),
         updated_at: n.updated_at.to_rfc3339(),
-        deleted_at: n.deleted_at.map(|d| d.to_rfc3339()).unwrap_or_default(),
+        deleted_at: n.deleted_at.map(|d| d.to_rfc3339()),
     }
 }
 
@@ -61,7 +61,7 @@ fn notebook_to_proto(nb: CoreNotebook) -> Notebook {
         title: nb.title,
         created_at: nb.created_at.to_rfc3339(),
         updated_at: nb.updated_at.to_rfc3339(),
-        deleted_at: nb.deleted_at.map(|d| d.to_rfc3339()).unwrap_or_default(),
+        deleted_at: nb.deleted_at.map(|d| d.to_rfc3339()),
     }
 }
 
@@ -82,7 +82,7 @@ fn tag_to_proto(t: CoreTag) -> Tag {
         title: t.title,
         created_at: t.created_at.to_rfc3339(),
         updated_at: t.updated_at.to_rfc3339(),
-        deleted_at: t.deleted_at.map(|d| d.to_rfc3339()).unwrap_or_default(),
+        deleted_at: t.deleted_at.map(|d| d.to_rfc3339()),
     }
 }
 
@@ -94,6 +94,10 @@ fn tag_to_proto(t: CoreTag) -> Tag {
 fn storage_err(e: StorageError) -> Status {
     match &e {
         StorageError::NotFound(_) => Status::not_found(e.to_string()),
+        // AES-GCM authentication tag failure caused by a wrong key or tampered ciphertext.
+        // gRPC DATA_LOSS is the closest code: the data exists but cannot be recovered
+        // in a trustworthy form.
+        StorageError::CorruptedData(_) => Status::data_loss(e.to_string()),
         _ => Status::internal(e.to_string()),
     }
 }
@@ -108,19 +112,21 @@ fn parse_uuid(s: &str, field: &str) -> Result<Uuid, Status> {
         .map_err(|_| Status::invalid_argument(format!("{field} is not a valid UUID")))
 }
 
-/// Parses an optional RFC-3339 timestamp received in a protobuf string field.
+/// Parses an optional RFC-3339 timestamp from a proto3 `optional string` field.
 ///
-/// Returns `None` when the string is empty (proto3 convention for absent optional
-/// timestamps). Returns `Status::invalid_argument` if the string is non-empty but
-/// is not a valid RFC-3339 timestamp.
+/// Returns `None` when the option is absent. Returns `Status::invalid_argument`
+/// if the string is present but not a valid RFC-3339 timestamp.
 #[allow(clippy::result_large_err)]
-fn parse_optional_dt(s: &str) -> Result<Option<chrono::DateTime<chrono::Utc>>, Status> {
-    if s.is_empty() {
-        return Ok(None);
+fn parse_optional_dt(s: Option<String>) -> Result<Option<chrono::DateTime<chrono::Utc>>, Status> {
+    match s {
+        None => Ok(None),
+        Some(v) => v
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .map(Some)
+            .map_err(|_| {
+                Status::invalid_argument(format!("{v} is not a valid RFC-3339 timestamp"))
+            }),
     }
-    s.parse::<chrono::DateTime<chrono::Utc>>()
-        .map(Some)
-        .map_err(|_| Status::invalid_argument(format!("{s} is not a valid RFC-3339 timestamp")))
 }
 
 #[allow(clippy::result_large_err)]
@@ -129,14 +135,13 @@ fn proto_to_note(n: Note) -> Result<CoreNote, Status> {
         id: parse_uuid(&n.id, "id")?,
         title: n.title,
         body: n.body,
-        notebook_id: if n.notebook_id.is_empty() {
-            None
-        } else {
-            Some(parse_uuid(&n.notebook_id, "notebook_id")?)
-        },
+        notebook_id: n
+            .notebook_id
+            .map(|s| parse_uuid(&s, "notebook_id"))
+            .transpose()?,
         is_todo: n.is_todo,
-        todo_due: parse_optional_dt(&n.todo_due)?,
-        todo_completed: parse_optional_dt(&n.todo_completed)?,
+        todo_due: parse_optional_dt(n.todo_due)?,
+        todo_completed: parse_optional_dt(n.todo_completed)?,
         created_at: n
             .created_at
             .parse::<chrono::DateTime<chrono::Utc>>()
@@ -145,7 +150,7 @@ fn proto_to_note(n: Note) -> Result<CoreNote, Status> {
             .updated_at
             .parse::<chrono::DateTime<chrono::Utc>>()
             .map_err(|_| Status::invalid_argument("updated_at is invalid"))?,
-        deleted_at: parse_optional_dt(&n.deleted_at)?,
+        deleted_at: parse_optional_dt(n.deleted_at)?,
     })
 }
 
@@ -184,11 +189,22 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
 
     async fn list_notes(
         &self,
-        _req: Request<ListNotesRequest>,
+        req: Request<ListNotesRequest>,
     ) -> Result<Response<ListNotesResponse>, Status> {
-        let notes = self.backend.list_notes().await.map_err(storage_err)?;
+        let r = req.into_inner();
+        let token = if r.page_token.is_empty() {
+            None
+        } else {
+            Some(r.page_token)
+        };
+        let (notes, next_page_token) = self
+            .backend
+            .list_notes(r.page_size, token)
+            .await
+            .map_err(storage_err)?;
         Ok(Response::new(ListNotesResponse {
             notes: notes.into_iter().map(note_to_proto).collect(),
+            next_page_token: next_page_token.unwrap_or_default(),
         }))
     }
 
@@ -199,7 +215,11 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         let r = req.into_inner();
         let mut note = CoreNote::new(r.title, r.body);
         note.is_todo = r.is_todo;
-        note.todo_due = parse_optional_dt(&r.todo_due)?;
+        note.todo_due = parse_optional_dt(if r.todo_due.is_empty() {
+            None
+        } else {
+            Some(r.todo_due)
+        })?;
         if !r.notebook_id.is_empty() {
             note.notebook_id = Some(parse_uuid(&r.notebook_id, "notebook_id")?);
         }
@@ -249,11 +269,22 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
 
     async fn list_notebooks(
         &self,
-        _req: Request<ListNotebooksRequest>,
+        req: Request<ListNotebooksRequest>,
     ) -> Result<Response<ListNotebooksResponse>, Status> {
-        let notebooks = self.backend.list_notebooks().await.map_err(storage_err)?;
+        let r = req.into_inner();
+        let token = if r.page_token.is_empty() {
+            None
+        } else {
+            Some(r.page_token)
+        };
+        let (notebooks, next_page_token) = self
+            .backend
+            .list_notebooks(r.page_size, token)
+            .await
+            .map_err(storage_err)?;
         Ok(Response::new(ListNotebooksResponse {
             notebooks: notebooks.into_iter().map(notebook_to_proto).collect(),
+            next_page_token: next_page_token.unwrap_or_default(),
         }))
     }
 
@@ -302,7 +333,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                 .updated_at
                 .parse()
                 .map_err(|_| Status::invalid_argument("updated_at is invalid"))?,
-            deleted_at: parse_optional_dt(&nb.deleted_at)?,
+            deleted_at: parse_optional_dt(nb.deleted_at)?,
         };
         let updated = self
             .backend
@@ -330,11 +361,22 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
 
     async fn list_tags(
         &self,
-        _req: Request<ListTagsRequest>,
+        req: Request<ListTagsRequest>,
     ) -> Result<Response<ListTagsResponse>, Status> {
-        let tags = self.backend.list_tags().await.map_err(storage_err)?;
+        let r = req.into_inner();
+        let token = if r.page_token.is_empty() {
+            None
+        } else {
+            Some(r.page_token)
+        };
+        let (tags, next_page_token) = self
+            .backend
+            .list_tags(r.page_size, token)
+            .await
+            .map_err(storage_err)?;
         Ok(Response::new(ListTagsResponse {
             tags: tags.into_iter().map(tag_to_proto).collect(),
+            next_page_token: next_page_token.unwrap_or_default(),
         }))
     }
 
@@ -409,7 +451,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                 .updated_at
                 .parse()
                 .map_err(|_| Status::invalid_argument("updated_at is invalid"))?,
-            deleted_at: parse_optional_dt(&t.deleted_at)?,
+            deleted_at: parse_optional_dt(t.deleted_at)?,
         };
         let updated = self.backend.update_tag(tag).await.map_err(storage_err)?;
         Ok(Response::new(UpdateTagResponse {
@@ -430,14 +472,21 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         &self,
         req: Request<ListNoteTagsRequest>,
     ) -> Result<Response<ListNoteTagsResponse>, Status> {
-        let note_id = parse_uuid(&req.into_inner().note_id, "note_id")?;
-        let tags = self
+        let r = req.into_inner();
+        let note_id = parse_uuid(&r.note_id, "note_id")?;
+        let token = if r.page_token.is_empty() {
+            None
+        } else {
+            Some(r.page_token)
+        };
+        let (tags, next_page_token) = self
             .backend
-            .list_note_tags(note_id)
+            .list_note_tags(note_id, r.page_size, token)
             .await
             .map_err(storage_err)?;
         Ok(Response::new(ListNoteTagsResponse {
             tags: tags.into_iter().map(tag_to_proto).collect(),
+            next_page_token: next_page_token.unwrap_or_default(),
         }))
     }
 
@@ -445,11 +494,22 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
 
     async fn list_resources(
         &self,
-        _req: Request<ListResourcesRequest>,
+        req: Request<ListResourcesRequest>,
     ) -> Result<Response<ListResourcesResponse>, Status> {
-        let resources = self.backend.list_resources().await.map_err(storage_err)?;
+        let r = req.into_inner();
+        let token = if r.page_token.is_empty() {
+            None
+        } else {
+            Some(r.page_token)
+        };
+        let (resources, next_page_token) = self
+            .backend
+            .list_resources(r.page_size, token)
+            .await
+            .map_err(storage_err)?;
         Ok(Response::new(ListResourcesResponse {
             resources: resources.into_iter().map(resource_to_proto).collect(),
+            next_page_token: next_page_token.unwrap_or_default(),
         }))
     }
 

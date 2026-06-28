@@ -79,8 +79,24 @@ This is intentional: binary payloads can be large and there is no business need 
 retain deleted attachment data. The `ResourceDelete` entry in the change journal
 ensures the deletion propagates correctly to other synced devices.
 
-## Reporting vulnerabilities
+## Known limitations
 
-Please open a confidential issue or contact the maintainers directly.
+- **WebSocket token in plaintext.** When using server mode (`DbBackend`), the
+  authentication token is sent in the first WebSocket message. If the WebSocket URL
+  uses `ws://` (unencrypted), the token is transmitted in plaintext on the network.
+  Always use a `wss://` URL or place a TLS-terminating reverse proxy in front of the
+  WebSocket endpoint in production deployments.
+
+- **Mixed-backend sync is not supported.** It is not possible to mix `FsBackend`
+  and `DbBackend` devices in the same sync topology. Each backend uses a different
+  change-propagation mechanism (file replication vs. WebSocket) and the two are
+  incompatible. Attempting to mix them may produce undefined behaviour (missing or
+  duplicated changes).
+
+- **Conflict resolution is last-write-wins.** When two devices modify the same entity
+  concurrently, the version with the later `updated_at` timestamp wins. No three-way
+  merge is attempted. The losing version is overwritten without warning.
+
+## Reporting vulnerabilities
 
 Please open a confidential issue or contact the maintainers directly.

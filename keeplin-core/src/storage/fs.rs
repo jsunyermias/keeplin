@@ -22,7 +22,7 @@ use crate::{
     models::{new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag},
 };
 
-use super::StorageBackend;
+use super::{NoteRepository, NotebookRepository, ResourceRepository, SyncBackend, TagRepository};
 
 // ── Log entry ─────────────────────────────────────────────────────────────────
 
@@ -628,12 +628,64 @@ impl FsBackend {
     }
 }
 
-// ── StorageBackend impl ───────────────────────────────────────────────────────
+// ── Pagination helper ─────────────────────────────────────────────────────────
+
+/// Apply cursor-based pagination to an already-sorted `items` slice.
+///
+/// The cursor format is `"<created_at_rfc3339>|<uuid>"`. An absent or empty
+/// cursor means "start from the first item". Items are compared by the
+/// `(created_at, id)` pair returned by `key_fn`; the cursor points to the last
+/// item of the previous page, so the next page starts immediately after it.
+///
+/// Returns `(page, next_token)` where `next_token` is `None` when the page
+/// exhausts all remaining items.
+fn paginate<T, F>(
+    items: Vec<T>,
+    limit: usize,
+    token: Option<&str>,
+    key_fn: F,
+) -> (Vec<T>, Option<String>)
+where
+    F: Fn(&T) -> (String, Uuid),
+{
+    let start = match token.filter(|t| !t.is_empty()) {
+        Some(cursor) => {
+            if let Some((ts, id_str)) = cursor.split_once('|') {
+                if let Ok(cursor_id) = Uuid::parse_str(id_str) {
+                    items.partition_point(|item| {
+                        let (item_ts, item_id) = key_fn(item);
+                        item_ts.as_str() < ts || (item_ts.as_str() == ts && item_id <= cursor_id)
+                    })
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        }
+        None => 0,
+    };
+
+    let remaining: Vec<T> = items.into_iter().skip(start).collect();
+    let has_more = remaining.len() > limit;
+    let page: Vec<T> = remaining.into_iter().take(limit).collect();
+
+    let next_token = if has_more {
+        page.last().map(|last| {
+            let (ts, id) = key_fn(last);
+            format!("{ts}|{id}")
+        })
+    } else {
+        None
+    };
+
+    (page, next_token)
+}
+
+// ── NoteRepository impl ───────────────────────────────────────────────────────
 
 #[async_trait]
-impl StorageBackend for FsBackend {
-    // ── Notes ─────────────────────────────────────────────────────────────────
-
+impl NoteRepository for FsBackend {
     async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
         self.write_note(&note).await?;
         self.append_log("note", note.id, "create", serde_json::to_value(&note)?)
@@ -667,7 +719,16 @@ impl StorageBackend for FsBackend {
         Ok(())
     }
 
-    async fn list_notes(&self) -> Result<Vec<Note>, StorageError> {
+    async fn list_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        let limit = if page_size == 0 {
+            100
+        } else {
+            page_size as usize
+        };
         let mut notes = Vec::new();
         let mut dir = tokio::fs::read_dir(self.root.join("notes")).await?;
         while let Some(entry) = dir.next_entry().await? {
@@ -680,11 +741,17 @@ impl StorageBackend for FsBackend {
                 }
             }
         }
-        Ok(notes)
+        notes.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        Ok(paginate(notes, limit, page_token.as_deref(), |n| {
+            (n.created_at.to_rfc3339(), n.id)
+        }))
     }
+}
 
-    // ── Notebooks ─────────────────────────────────────────────────────────────
+// ── NotebookRepository impl ───────────────────────────────────────────────────
 
+#[async_trait]
+impl NotebookRepository for FsBackend {
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
         self.write_json(&self.notebook_path(notebook.id), &notebook)
             .await?;
@@ -730,7 +797,16 @@ impl StorageBackend for FsBackend {
         Ok(())
     }
 
-    async fn list_notebooks(&self) -> Result<Vec<Notebook>, StorageError> {
+    async fn list_notebooks(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Notebook>, Option<String>), StorageError> {
+        let limit = if page_size == 0 {
+            100
+        } else {
+            page_size as usize
+        };
         let mut notebooks = Vec::new();
         let mut dir = tokio::fs::read_dir(self.root.join("notebooks")).await?;
         while let Some(entry) = dir.next_entry().await? {
@@ -745,11 +821,17 @@ impl StorageBackend for FsBackend {
                 }
             }
         }
-        Ok(notebooks)
+        notebooks.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        Ok(paginate(notebooks, limit, page_token.as_deref(), |nb| {
+            (nb.created_at.to_rfc3339(), nb.id)
+        }))
     }
+}
 
-    // ── Tags ──────────────────────────────────────────────────────────────────
+// ── TagRepository impl ────────────────────────────────────────────────────────
 
+#[async_trait]
+impl TagRepository for FsBackend {
     async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
         self.write_json(&self.tag_path(tag.id), &tag).await?;
         self.append_log("tag", tag.id, "create", serde_json::to_value(&tag)?)
@@ -783,7 +865,16 @@ impl StorageBackend for FsBackend {
         Ok(())
     }
 
-    async fn list_tags(&self) -> Result<Vec<Tag>, StorageError> {
+    async fn list_tags(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        let limit = if page_size == 0 {
+            100
+        } else {
+            page_size as usize
+        };
         let mut tags = Vec::new();
         let mut dir = tokio::fs::read_dir(self.root.join("tags")).await?;
         while let Some(entry) = dir.next_entry().await? {
@@ -798,10 +889,11 @@ impl StorageBackend for FsBackend {
                 }
             }
         }
-        Ok(tags)
+        tags.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        Ok(paginate(tags, limit, page_token.as_deref(), |t| {
+            (t.created_at.to_rfc3339(), t.id)
+        }))
     }
-
-    // ── Note–Tag relations ────────────────────────────────────────────────────
 
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
         tokio::fs::create_dir_all(self.note_tag_dir(note_tag.note_id)).await?;
@@ -831,10 +923,20 @@ impl StorageBackend for FsBackend {
         Ok(())
     }
 
-    async fn list_note_tags(&self, note_id: Uuid) -> Result<Vec<Tag>, StorageError> {
+    async fn list_note_tags(
+        &self,
+        note_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        let limit = if page_size == 0 {
+            100
+        } else {
+            page_size as usize
+        };
         let dir_path = self.note_tag_dir(note_id);
         if !dir_path.exists() {
-            return Ok(vec![]);
+            return Ok((vec![], None));
         }
         let mut tags = Vec::new();
         let mut dir = tokio::fs::read_dir(&dir_path).await?;
@@ -848,11 +950,17 @@ impl StorageBackend for FsBackend {
                 }
             }
         }
-        Ok(tags)
+        tags.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        Ok(paginate(tags, limit, page_token.as_deref(), |t| {
+            (t.created_at.to_rfc3339(), t.id)
+        }))
     }
+}
 
-    // ── Resources ─────────────────────────────────────────────────────────────
+// ── ResourceRepository impl ───────────────────────────────────────────────────
 
+#[async_trait]
+impl ResourceRepository for FsBackend {
     async fn create_resource(
         &self,
         resource: Resource,
@@ -896,7 +1004,16 @@ impl StorageBackend for FsBackend {
         Ok(())
     }
 
-    async fn list_resources(&self) -> Result<Vec<Resource>, StorageError> {
+    async fn list_resources(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
+        let limit = if page_size == 0 {
+            100
+        } else {
+            page_size as usize
+        };
         let mut resources = Vec::new();
         let mut dir = tokio::fs::read_dir(self.root.join("resources")).await?;
         while let Some(entry) = dir.next_entry().await? {
@@ -909,11 +1026,17 @@ impl StorageBackend for FsBackend {
                 }
             }
         }
-        Ok(resources)
+        resources.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        Ok(paginate(resources, limit, page_token.as_deref(), |r| {
+            (r.created_at.to_rfc3339(), r.id)
+        }))
     }
+}
 
-    // ── Synchronisation ───────────────────────────────────────────────────────
+// ── SyncBackend impl ──────────────────────────────────────────────────────────
 
+#[async_trait]
+impl SyncBackend for FsBackend {
     async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError> {
         let entries = self.read_other_logs_since(since).await?;
         let changes = entries
@@ -1057,5 +1180,14 @@ impl StorageBackend for FsBackend {
 
     async fn get_device_id(&self) -> Result<String, StorageError> {
         Ok(self.device_id.clone())
+    }
+
+    async fn prune_change_journal(&self, _older_than: DateTime<Utc>) -> Result<u64, StorageError> {
+        // The filesystem backend stores changes as append-only NDJSON log files that are
+        // replicated to other devices by Syncthing. Removing entries from these files
+        // would cause any device that has not yet processed the removed entries to miss
+        // those changes permanently, potentially corrupting the sync state. This method
+        // therefore intentionally does nothing and always returns zero.
+        Ok(0)
     }
 }

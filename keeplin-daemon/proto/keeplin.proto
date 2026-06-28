@@ -5,32 +5,38 @@ package keeplin;
 // ── Common message types ──────────────────────────────────────────────────────
 
 message Note {
-  string id             = 1;
-  string title          = 2;
-  string body           = 3;
-  string notebook_id    = 4;  // empty string = no notebook
-  bool   is_todo        = 5;
-  string todo_due       = 6;  // RFC-3339 or empty
-  string todo_completed = 7;  // RFC-3339 or empty
-  string created_at     = 8;  // RFC-3339
-  string updated_at     = 9;  // RFC-3339
-  string deleted_at     = 10; // RFC-3339 or empty
+  string id              = 1;
+  string title           = 2;
+  string body            = 3;
+  // absent means the note is not filed in any notebook
+  optional string notebook_id    = 4;
+  bool   is_todo         = 5;
+  // absent means no due date is set
+  optional string todo_due       = 6;  // RFC-3339
+  // absent means the to-do has not been completed
+  optional string todo_completed = 7;  // RFC-3339
+  string created_at      = 8;  // RFC-3339
+  string updated_at      = 9;  // RFC-3339
+  // absent means the note has not been deleted
+  optional string deleted_at     = 10; // RFC-3339
 }
 
 message Notebook {
   string id         = 1;
   string title      = 2;
-  string created_at = 3;
-  string updated_at = 4;
-  string deleted_at = 5;
+  string created_at = 3;  // RFC-3339
+  string updated_at = 4;  // RFC-3339
+  // absent means the notebook has not been deleted
+  optional string deleted_at = 5;  // RFC-3339
 }
 
 message Tag {
   string id         = 1;
   string title      = 2;
-  string created_at = 3;
-  string updated_at = 4;
-  string deleted_at = 5;
+  string created_at = 3;  // RFC-3339
+  string updated_at = 4;  // RFC-3339
+  // absent means the tag has not been deleted
+  optional string deleted_at = 5;  // RFC-3339
 }
 
 message Resource {
@@ -39,15 +45,22 @@ message Resource {
   string mime_type  = 3;
   string file_name  = 4;
   int64  size       = 5;
-  string created_at = 6;
+  string created_at = 6;  // RFC-3339
 }
 
 // ── Note requests / responses ─────────────────────────────────────────────────
 
-message ListNotesRequest {}
+// page_size = 0 uses the server default (100). page_token = "" means start from
+// the beginning. Both fields are omitted for a simple full-scan request.
+message ListNotesRequest {
+  uint32 page_size  = 1;
+  string page_token = 2;
+}
 
 message ListNotesResponse {
-  repeated Note notes = 1;
+  repeated Note notes          = 1;
+  // empty string means there are no further pages
+  string        next_page_token = 2;
 }
 
 message CreateNoteRequest {
@@ -86,10 +99,14 @@ message DeleteNoteResponse {}
 
 // ── Notebook requests / responses ─────────────────────────────────────────────
 
-message ListNotebooksRequest {}
+message ListNotebooksRequest {
+  uint32 page_size  = 1;
+  string page_token = 2;
+}
 
 message ListNotebooksResponse {
-  repeated Notebook notebooks = 1;
+  repeated Notebook notebooks    = 1;
+  string            next_page_token = 2;
 }
 
 message CreateNotebookRequest {
@@ -124,10 +141,14 @@ message DeleteNotebookResponse {}
 
 // ── Tag requests / responses ──────────────────────────────────────────────────
 
-message ListTagsRequest {}
+message ListTagsRequest {
+  uint32 page_size  = 1;
+  string page_token = 2;
+}
 
 message ListTagsResponse {
-  repeated Tag tags = 1;
+  repeated Tag tags          = 1;
+  string       next_page_token = 2;
 }
 
 message CreateTagRequest {
@@ -175,19 +196,26 @@ message RemoveNoteTagRequest {
 message RemoveNoteTagResponse {}
 
 message ListNoteTagsRequest {
-  string note_id = 1;
+  string note_id    = 1;
+  uint32 page_size  = 2;
+  string page_token = 3;
 }
 
 message ListNoteTagsResponse {
-  repeated Tag tags = 1;
+  repeated Tag tags          = 1;
+  string       next_page_token = 2;
 }
 
 // ── Resource requests / responses ─────────────────────────────────────────────
 
-message ListResourcesRequest {}
+message ListResourcesRequest {
+  uint32 page_size  = 1;
+  string page_token = 2;
+}
 
 message ListResourcesResponse {
-  repeated Resource resources = 1;
+  repeated Resource resources      = 1;
+  string            next_page_token = 2;
 }
 
 message GetResourceRequest {

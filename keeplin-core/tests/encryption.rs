@@ -10,7 +10,9 @@
 use keeplin_core::{
     encryption::EncryptedBackend,
     models::{Note, NoteTag, Notebook, Resource, Tag},
-    storage::{fs::FsBackend, StorageBackend},
+    storage::{
+        fs::FsBackend, NoteRepository, NotebookRepository, ResourceRepository, TagRepository,
+    },
 };
 use tempfile::tempdir;
 
@@ -122,7 +124,7 @@ async fn list_notes_decrypts_all() {
             .unwrap();
     }
 
-    let notes = backend.list_notes().await.unwrap();
+    let (notes, _) = backend.list_notes(0, None).await.unwrap();
     assert_eq!(notes.len(), 3);
     for note in &notes {
         assert!(
@@ -175,7 +177,7 @@ async fn note_tag_relation_preserved() {
         .await
         .unwrap();
 
-    let tags = backend.list_note_tags(note_id).await.unwrap();
+    let (tags, _) = backend.list_note_tags(note_id, 0, None).await.unwrap();
     assert_eq!(tags.len(), 1);
     assert_eq!(tags[0].title, "T");
 }

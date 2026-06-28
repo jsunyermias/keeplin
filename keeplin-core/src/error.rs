@@ -51,9 +51,16 @@ pub enum StorageError {
     Conflict(String),
 
     /// An operation failed because of an unexpected internal state.
-    /// This variant is used for encryption/decryption failures and key-derivation errors.
+    /// This variant is used for key-derivation errors and general unexpected conditions.
     #[error("Invalid state: {0}")]
     InvalidState(String),
+
+    /// Stored data could not be decrypted because it is corrupt or was encrypted with
+    /// a different key. This is raised when the AES-GCM authentication tag verification
+    /// fails, which happens when the wrong password is used or when the ciphertext has
+    /// been tampered with after it was written.
+    #[error("Corrupted data: {0}")]
+    CorruptedData(String),
 }
 
 impl From<libsql::Error> for StorageError {

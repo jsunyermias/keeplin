@@ -29,7 +29,10 @@ use uuid::Uuid;
 use crate::{
     error::StorageError,
     models::{Change, Note, NoteTag, Notebook, Resource, Tag},
-    storage::StorageBackend,
+    storage::{
+        NoteRepository, NotebookRepository, ResourceRepository, StorageBackend, SyncBackend,
+        TagRepository,
+    },
 };
 
 /// Length in bytes of the AES-GCM nonce. AES-GCM is specified with a 96-bit (12-byte)
@@ -108,7 +111,7 @@ impl<B: StorageBackend> EncryptedBackend<B> {
         let plain = self
             .cipher
             .decrypt(nonce, &combined[NONCE_LEN..])
-            .map_err(|e| StorageError::InvalidState(format!("decrypt: {e}")))?;
+            .map_err(|e| StorageError::CorruptedData(format!("decrypt: {e}")))?;
         String::from_utf8(plain).map_err(|e| StorageError::InvalidState(format!("utf8: {e}")))
     }
 
@@ -137,7 +140,7 @@ impl<B: StorageBackend> EncryptedBackend<B> {
         let nonce = Nonce::from_slice(&data[..NONCE_LEN]);
         self.cipher
             .decrypt(nonce, &data[NONCE_LEN..])
-            .map_err(|e| StorageError::InvalidState(format!("decrypt: {e}")))
+            .map_err(|e| StorageError::CorruptedData(format!("decrypt: {e}")))
     }
 
     fn enc_note(&self, mut n: Note) -> Result<Note, StorageError> {
@@ -211,7 +214,7 @@ fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32], StorageError> {
 }
 
 #[async_trait]
-impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
+impl<B: StorageBackend> NoteRepository for EncryptedBackend<B> {
     async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
         let stored = self.inner.create_note(self.enc_note(note)?).await?;
         self.dec_note(stored)
@@ -230,15 +233,20 @@ impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
         self.inner.delete_note(id).await
     }
 
-    async fn list_notes(&self) -> Result<Vec<Note>, StorageError> {
-        self.inner
-            .list_notes()
-            .await?
-            .into_iter()
-            .map(|n| self.dec_note(n))
-            .collect()
+    async fn list_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        let (notes, next) = self.inner.list_notes(page_size, page_token).await?;
+        let decrypted: Result<Vec<Note>, StorageError> =
+            notes.into_iter().map(|n| self.dec_note(n)).collect();
+        Ok((decrypted?, next))
     }
+}
 
+#[async_trait]
+impl<B: StorageBackend> NotebookRepository for EncryptedBackend<B> {
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
         let stored = self
             .inner
@@ -263,15 +271,22 @@ impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
         self.inner.delete_notebook(id).await
     }
 
-    async fn list_notebooks(&self) -> Result<Vec<Notebook>, StorageError> {
-        self.inner
-            .list_notebooks()
-            .await?
+    async fn list_notebooks(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Notebook>, Option<String>), StorageError> {
+        let (notebooks, next) = self.inner.list_notebooks(page_size, page_token).await?;
+        let decrypted: Result<Vec<Notebook>, StorageError> = notebooks
             .into_iter()
-            .map(|n| self.dec_notebook(n))
-            .collect()
+            .map(|nb| self.dec_notebook(nb))
+            .collect();
+        Ok((decrypted?, next))
     }
+}
 
+#[async_trait]
+impl<B: StorageBackend> TagRepository for EncryptedBackend<B> {
     async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
         let stored = self.inner.create_tag(self.enc_tag(tag)?).await?;
         self.dec_tag(stored)
@@ -290,13 +305,15 @@ impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
         self.inner.delete_tag(id).await
     }
 
-    async fn list_tags(&self) -> Result<Vec<Tag>, StorageError> {
-        self.inner
-            .list_tags()
-            .await?
-            .into_iter()
-            .map(|t| self.dec_tag(t))
-            .collect()
+    async fn list_tags(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        let (tags, next) = self.inner.list_tags(page_size, page_token).await?;
+        let decrypted: Result<Vec<Tag>, StorageError> =
+            tags.into_iter().map(|t| self.dec_tag(t)).collect();
+        Ok((decrypted?, next))
     }
 
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
@@ -307,15 +324,24 @@ impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
         self.inner.remove_note_tag(note_id, tag_id).await
     }
 
-    async fn list_note_tags(&self, note_id: Uuid) -> Result<Vec<Tag>, StorageError> {
-        self.inner
-            .list_note_tags(note_id)
-            .await?
-            .into_iter()
-            .map(|t| self.dec_tag(t))
-            .collect()
+    async fn list_note_tags(
+        &self,
+        note_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        let (tags, next) = self
+            .inner
+            .list_note_tags(note_id, page_size, page_token)
+            .await?;
+        let decrypted: Result<Vec<Tag>, StorageError> =
+            tags.into_iter().map(|t| self.dec_tag(t)).collect();
+        Ok((decrypted?, next))
     }
+}
 
+#[async_trait]
+impl<B: StorageBackend> ResourceRepository for EncryptedBackend<B> {
     async fn create_resource(
         &self,
         resource: Resource,
@@ -339,19 +365,25 @@ impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
         self.inner.delete_resource(id).await
     }
 
-    async fn list_resources(&self) -> Result<Vec<Resource>, StorageError> {
-        self.inner
-            .list_resources()
-            .await?
+    async fn list_resources(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
+        let (resources, next) = self.inner.list_resources(page_size, page_token).await?;
+        let decrypted: Result<Vec<Resource>, StorageError> = resources
             .into_iter()
             .map(|r| self.dec_resource(r))
-            .collect()
+            .collect();
+        Ok((decrypted?, next))
     }
+}
 
-    // Synchronisation methods pass through without any transformation.
-    // The data that travels over the sync channel is already in the encrypted form
-    // that the inner backend stored on disk, so no additional encryption or
-    // decryption step is needed here.
+// Synchronisation methods pass through without any transformation. The data that
+// travels over the sync channel is already in the encrypted form that the inner
+// backend stored on disk, so no additional encryption or decryption step is needed.
+#[async_trait]
+impl<B: StorageBackend> SyncBackend for EncryptedBackend<B> {
     async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError> {
         self.inner.get_changes_since(since).await
     }
@@ -378,5 +410,9 @@ impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
 
     async fn get_device_id(&self) -> Result<String, StorageError> {
         self.inner.get_device_id().await
+    }
+
+    async fn prune_change_journal(&self, older_than: DateTime<Utc>) -> Result<u64, StorageError> {
+        self.inner.prune_change_journal(older_than).await
     }
 }

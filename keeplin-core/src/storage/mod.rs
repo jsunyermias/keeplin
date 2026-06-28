@@ -13,4 +13,7 @@ mod backend;
 pub mod db;
 pub mod fs;
 
-pub use backend::StorageBackend;
+pub use backend::{
+    NoteRepository, NotebookRepository, ResourceRepository, StorageBackend, SyncBackend,
+    TagRepository,
+};

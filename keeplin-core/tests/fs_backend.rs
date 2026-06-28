@@ -9,7 +9,10 @@
 use keeplin_core::{
     error::StorageError,
     models::{Note, NoteTag, Notebook, Resource, Tag},
-    storage::{fs::FsBackend, StorageBackend},
+    storage::{
+        fs::FsBackend, NoteRepository, NotebookRepository, ResourceRepository, SyncBackend,
+        TagRepository,
+    },
 };
 use tempfile::tempdir;
 
@@ -56,7 +59,7 @@ async fn delete_note_soft_deletes() {
     backend.create_note(note).await.unwrap();
     backend.delete_note(id).await.unwrap();
 
-    let notes = backend.list_notes().await.unwrap();
+    let (notes, _) = backend.list_notes(0, None).await.unwrap();
     assert!(!notes.iter().any(|n| n.id == id));
 }
 
@@ -72,7 +75,7 @@ async fn list_notes_excludes_deleted() {
     backend.create_note(b).await.unwrap();
     backend.delete_note(a_id).await.unwrap();
 
-    let notes = backend.list_notes().await.unwrap();
+    let (notes, _) = backend.list_notes(0, None).await.unwrap();
     assert_eq!(notes.len(), 1);
     assert_eq!(notes[0].title, "B");
 }
@@ -231,7 +234,7 @@ async fn delete_notebook_soft_deletes() {
     backend.create_notebook(nb).await.unwrap();
     backend.delete_notebook(id).await.unwrap();
 
-    let notebooks = backend.list_notebooks().await.unwrap();
+    let (notebooks, _) = backend.list_notebooks(0, None).await.unwrap();
     assert!(!notebooks.iter().any(|n| n.id == id));
 
     let raw = backend.read_notebook(id).await.unwrap();
@@ -269,7 +272,7 @@ async fn add_and_list_note_tags() {
         .await
         .unwrap();
 
-    let tags = backend.list_note_tags(note_id).await.unwrap();
+    let (tags, _) = backend.list_note_tags(note_id, 0, None).await.unwrap();
     assert_eq!(tags.len(), 1);
     assert_eq!(tags[0].id, tag_id);
 }
@@ -291,7 +294,7 @@ async fn remove_note_tag() {
         .unwrap();
 
     backend.remove_note_tag(note_id, tag_id).await.unwrap();
-    let tags = backend.list_note_tags(note_id).await.unwrap();
+    let (tags, _) = backend.list_note_tags(note_id, 0, None).await.unwrap();
     assert!(tags.is_empty());
 }
 
@@ -328,7 +331,7 @@ async fn list_resources_excludes_data() {
         backend.create_resource(res, data).await.unwrap();
     }
 
-    let list = backend.list_resources().await.unwrap();
+    let (list, _) = backend.list_resources(0, None).await.unwrap();
     assert_eq!(list.len(), 3);
 }
 
