@@ -155,22 +155,43 @@ impl<B: StorageBackend> EncryptedBackend<B> {
     fn enc_note(&self, mut n: Note) -> Result<Note, StorageError> {
         n.title = self.encrypt_str(&n.title)?;
         n.body = self.encrypt_str(&n.body)?;
+        // Alias, bookmarks and links are derived from / describe the (sensitive) body, so
+        // they are encrypted too. UUIDs (`target_note_id`, `notebook_id`) stay plaintext,
+        // consistent with the existing field-level policy.
+        n.alias = n.alias.map(|a| self.encrypt_str(&a)).transpose()?;
+        for b in &mut n.bookmarks {
+            b.text = self.encrypt_str(&b.text)?;
+            b.alias = self.encrypt_str(&b.alias)?;
+        }
+        for l in &mut n.links {
+            l.raw = self.encrypt_str(&l.raw)?;
+        }
         Ok(n)
     }
 
     fn dec_note(&self, mut n: Note) -> Result<Note, StorageError> {
         n.title = self.decrypt_str(&n.title)?;
         n.body = self.decrypt_str(&n.body)?;
+        n.alias = n.alias.map(|a| self.decrypt_str(&a)).transpose()?;
+        for b in &mut n.bookmarks {
+            b.text = self.decrypt_str(&b.text)?;
+            b.alias = self.decrypt_str(&b.alias)?;
+        }
+        for l in &mut n.links {
+            l.raw = self.decrypt_str(&l.raw)?;
+        }
         Ok(n)
     }
 
     fn enc_notebook(&self, mut nb: Notebook) -> Result<Notebook, StorageError> {
         nb.title = self.encrypt_str(&nb.title)?;
+        nb.alias = nb.alias.map(|a| self.encrypt_str(&a)).transpose()?;
         Ok(nb)
     }
 
     fn dec_notebook(&self, mut nb: Notebook) -> Result<Notebook, StorageError> {
         nb.title = self.decrypt_str(&nb.title)?;
+        nb.alias = nb.alias.map(|a| self.decrypt_str(&a)).transpose()?;
         Ok(nb)
     }
 

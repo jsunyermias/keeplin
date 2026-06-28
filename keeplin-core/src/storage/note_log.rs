@@ -49,7 +49,13 @@ pub fn join(a: &VersionVector, b: &VersionVector) -> VersionVector {
 
 /// The operation a log entry records: an upsert carrying the full note content, or a
 /// tombstone carrying the deletion time.
+///
+/// `Upsert` intentionally carries the complete [`Note`] inline — it *is* the op-log
+/// payload that is serialised to disk and merged on read — so the size disparity with the
+/// tiny `Tombstone` variant is by design. Boxing would add a heap allocation per entry for
+/// no benefit, so `large_enum_variant` is allowed here.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum NoteOp {
     /// Create-or-update with the complete note (body included).
     Upsert(Note),

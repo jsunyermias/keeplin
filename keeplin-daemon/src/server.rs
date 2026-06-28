@@ -152,6 +152,11 @@ fn proto_to_note(n: Note) -> Result<CoreNote, Status> {
             .parse::<chrono::DateTime<chrono::Utc>>()
             .map_err(|_| Status::invalid_argument("updated_at is invalid"))?,
         deleted_at: parse_optional_dt(n.deleted_at)?,
+        // alias/bookmarks/links are surfaced over gRPC by the proto-extension step; until
+        // then the daemon fills them with defaults and lets the LinkingBackend derive them.
+        alias: None,
+        bookmarks: Vec::new(),
+        links: Vec::new(),
     })
 }
 
@@ -341,6 +346,8 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                 .parse()
                 .map_err(|_| Status::invalid_argument("updated_at is invalid"))?,
             deleted_at: parse_optional_dt(nb.deleted_at)?,
+            // alias is surfaced over gRPC by the proto-extension step; default for now.
+            alias: None,
         };
         let updated = self
             .backend

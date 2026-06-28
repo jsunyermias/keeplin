@@ -909,6 +909,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "libsql",
+ "regex",
  "rmp-serde",
  "serde",
  "serde_json",

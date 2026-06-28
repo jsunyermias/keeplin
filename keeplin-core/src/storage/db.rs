@@ -382,6 +382,11 @@ impl DbBackend {
             created_at,
             updated_at,
             deleted_at,
+            // alias/bookmarks/links are persisted in dedicated columns added by the DB
+            // persistence step; until then they default empty so existing rows parse.
+            alias: None,
+            bookmarks: Vec::new(),
+            links: Vec::new(),
         })
     }
 
@@ -412,6 +417,9 @@ impl DbBackend {
             created_at: Self::parse_required_dt(row.get::<String>(2)?)?,
             updated_at: Self::parse_required_dt(row.get::<String>(3)?)?,
             deleted_at: Self::parse_optional_dt(row.get::<Option<String>>(4)?)?,
+            // alias is persisted in a dedicated column added by the DB persistence step;
+            // until then it defaults to None so existing rows parse.
+            alias: None,
         })
     }
 
