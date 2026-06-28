@@ -54,6 +54,8 @@ pub struct Config {
     /// When both auth_username and auth_password are set, every gRPC call must
     /// include an `authorization: Basic <base64(user:pass)>` metadata header.
     /// This applies equally in offline and server mode.
+    /// Prefer the KEEPLIN_AUTH_USERNAME environment variable over storing the
+    /// username here.
     #[serde(default)]
     pub auth_username: Option<String>,
 

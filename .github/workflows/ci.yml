@@ -24,13 +24,16 @@ jobs:
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - name: Cache Cargo & build artifacts
         uses: Swatinem/rust-cache@v2
 
       - name: Install protoc
         run: sudo apt-get update -q && sudo apt-get install -y protobuf-compiler
+
+      - name: cargo fmt (workspace)
+        run: cargo fmt --check --all
 
       - name: cargo check (workspace)
         run: cargo check --workspace
