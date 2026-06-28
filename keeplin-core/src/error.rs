@@ -57,10 +57,7 @@ pub enum SyncError {
     Storage(#[from] StorageError),
 
     #[error("Conflict: local={local_id}, remote={remote_id}")]
-    Conflict {
-        local_id: String,
-        remote_id: String,
-    },
+    Conflict { local_id: String, remote_id: String },
 
     #[error("Sync failed: {0}")]
     Failed(String),

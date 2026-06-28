@@ -148,7 +148,10 @@ async fn note_tag_relation_preserved() {
     let tag_id = tag.id;
     backend.create_note(note).await.unwrap();
     backend.create_tag(tag).await.unwrap();
-    backend.add_note_tag(NoteTag { note_id, tag_id }).await.unwrap();
+    backend
+        .add_note_tag(NoteTag { note_id, tag_id })
+        .await
+        .unwrap();
 
     let tags = backend.list_note_tags(note_id).await.unwrap();
     assert_eq!(tags.len(), 1);
@@ -161,7 +164,12 @@ async fn resource_round_trips() {
     let backend = enc_backend(dir.path()).await;
 
     let data = b"secret binary content".to_vec();
-    let res = Resource::new("attachment", "application/octet-stream", "file.bin", data.len() as u64);
+    let res = Resource::new(
+        "attachment",
+        "application/octet-stream",
+        "file.bin",
+        data.len() as u64,
+    );
     let id = res.id;
     backend.create_resource(res, data.clone()).await.unwrap();
 
@@ -181,7 +189,14 @@ async fn resource_data_stored_encrypted() {
     backend.create_resource(res, data).await.unwrap();
 
     // Raw bytes on disk should not match plaintext
-    let data_path = dir.path().join("resources").join(id.to_string()).join("data");
+    let data_path = dir
+        .path()
+        .join("resources")
+        .join(id.to_string())
+        .join("data");
     let raw = std::fs::read(&data_path).unwrap();
-    assert_ne!(raw, b"supersecret", "resource data must not be stored in plaintext");
+    assert_ne!(
+        raw, b"supersecret",
+        "resource data must not be stored in plaintext"
+    );
 }

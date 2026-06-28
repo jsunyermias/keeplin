@@ -46,12 +46,41 @@ It does **not** protect against:
 - Set `KEEPLIN_ENCRYPTION_PASSWORD` instead of `encryption_password` in `keeplin.toml`
   to avoid committing the plaintext password to version control.
 - Set `KEEPLIN_AUTH_PASSWORD` instead of `auth_password` in `keeplin.toml` for the
-  same reason.
+  same reason. Set `KEEPLIN_AUTH_USERNAME` similarly for the username.
 - Enable TLS by setting `tls_cert_path` and `tls_key_path` in `keeplin.toml`. Without
   TLS, gRPC traffic (including auth credentials) is transmitted in plaintext.
 - When `grpc_addr` is not a loopback address, the daemon logs a warning if
   `auth_username`/`auth_password` are not configured.
 
+## Design decisions
+
+### Multi-device encryption constraint
+
+All devices that sync with each other **must share the same `encryption_password`**.
+Encryption happens before data is written to storage and before sync — so if two devices
+use different passwords, the data each device stores is ciphertext encrypted under
+different keys, and sync will propagate ciphertext that the peer cannot decrypt.
+Keeplin does not detect or prevent mixed-password sync configurations.
+
+### Sync delivery guarantee
+
+WebSocket sync (server mode) is **at-least-once**: `send_changes` retries up to 3 times
+with exponential backoff (2 s, 4 s, 8 s) and each batch carries a `batch_id` UUID so the
+server can deduplicate retried batches. There is no application-level ACK — permanent loss
+of a batch is only possible if the server is unreachable for all retry attempts and the
+client never comes back online. All `apply_change` operations are idempotent
+(`INSERT OR IGNORE`, `INSERT OR REPLACE`, marker-file creation/removal), so
+re-delivery is safe.
+
+### Resource deletion
+
+Resources use **hard delete** (data removed immediately from disk / database).
+This is intentional: binary payloads can be large and there is no business need to
+retain deleted attachment data. The `ResourceDelete` entry in the change journal
+ensures the deletion propagates correctly to other synced devices.
+
 ## Reporting vulnerabilities
+
+Please open a confidential issue or contact the maintainers directly.
 
 Please open a confidential issue or contact the maintainers directly.

@@ -1,6 +1,6 @@
 use crate::{
     error::SyncError,
-    models::{Change, now},
+    models::{now, Change},
     storage::StorageBackend,
 };
 

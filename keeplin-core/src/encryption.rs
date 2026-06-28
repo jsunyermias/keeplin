@@ -55,8 +55,7 @@ impl<B: StorageBackend> EncryptedBackend<B> {
             .cipher
             .decrypt(nonce, &combined[NONCE_LEN..])
             .map_err(|e| StorageError::InvalidState(format!("decrypt: {e}")))?;
-        String::from_utf8(plain)
-            .map_err(|e| StorageError::InvalidState(format!("utf8: {e}")))
+        String::from_utf8(plain).map_err(|e| StorageError::InvalidState(format!("utf8: {e}")))
     }
 
     fn encrypt_bytes(&self, data: &[u8]) -> Result<Vec<u8>, StorageError> {
@@ -170,7 +169,10 @@ impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
     }
 
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
-        let stored = self.inner.create_notebook(self.enc_notebook(notebook)?).await?;
+        let stored = self
+            .inner
+            .create_notebook(self.enc_notebook(notebook)?)
+            .await?;
         self.dec_notebook(stored)
     }
 
@@ -179,7 +181,10 @@ impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
     }
 
     async fn update_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
-        let stored = self.inner.update_notebook(self.enc_notebook(notebook)?).await?;
+        let stored = self
+            .inner
+            .update_notebook(self.enc_notebook(notebook)?)
+            .await?;
         self.dec_notebook(stored)
     }
 
@@ -246,7 +251,10 @@ impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
         data: Vec<u8>,
     ) -> Result<Resource, StorageError> {
         let enc_data = self.encrypt_bytes(&data)?;
-        let stored = self.inner.create_resource(self.enc_resource(resource)?, enc_data).await?;
+        let stored = self
+            .inner
+            .create_resource(self.enc_resource(resource)?, enc_data)
+            .await?;
         self.dec_resource(stored)
     }
 

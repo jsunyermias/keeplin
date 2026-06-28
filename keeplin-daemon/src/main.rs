@@ -8,6 +8,7 @@ use keeplin_core::{
     encryption::EncryptedBackend,
     storage::{db::DbBackend, fs::FsBackend},
 };
+use subtle::ConstantTimeEq;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing_subscriber::EnvFilter;
@@ -51,6 +52,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Ok(pw) = std::env::var("KEEPLIN_AUTH_PASSWORD") {
         cfg.auth_password = Some(pw);
+    }
+    if let Ok(user) = std::env::var("KEEPLIN_AUTH_USERNAME") {
+        cfg.auth_username = Some(user);
     }
 
     let addr: std::net::SocketAddr = cfg.grpc_addr.parse()?;
@@ -155,9 +159,9 @@ fn validate_basic_auth(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    let encoded = auth
-        .strip_prefix("Basic ")
-        .ok_or_else(|| tonic::Status::unauthenticated("authorization header missing or not Basic"))?;
+    let encoded = auth.strip_prefix("Basic ").ok_or_else(|| {
+        tonic::Status::unauthenticated("authorization header missing or not Basic")
+    })?;
 
     let decoded = STANDARD
         .decode(encoded)
@@ -172,21 +176,13 @@ fn validate_basic_auth(
 
     let (user, pass) = (&creds[..colon], &creds[colon + 1..]);
 
-    if !ct_eq(user.as_bytes(), expected_user.as_bytes())
-        || !ct_eq(pass.as_bytes(), expected_pass.as_bytes())
+    if user.as_bytes().ct_eq(expected_user.as_bytes()).unwrap_u8() == 0
+        || pass.as_bytes().ct_eq(expected_pass.as_bytes()).unwrap_u8() == 0
     {
         return Err(tonic::Status::unauthenticated("invalid credentials"));
     }
 
     Ok(req)
-}
-
-/// Constant-time byte-slice comparison to avoid timing side-channels.
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 #[cfg(test)]
@@ -204,18 +200,6 @@ mod tests {
 
     fn basic(user: &str, pass: &str) -> String {
         format!("Basic {}", STANDARD.encode(format!("{user}:{pass}")))
-    }
-
-    #[test]
-    fn ct_eq_equal() {
-        assert!(ct_eq(b"hello", b"hello"));
-        assert!(ct_eq(b"", b""));
-    }
-
-    #[test]
-    fn ct_eq_unequal() {
-        assert!(!ct_eq(b"hello", b"world"));
-        assert!(!ct_eq(b"abc", b"abcd"));
     }
 
     #[test]

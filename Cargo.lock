@@ -1342,6 +1342,7 @@ dependencies = [
  "prost 0.13.5",
  "serde",
  "serde_json",
+ "subtle",
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",

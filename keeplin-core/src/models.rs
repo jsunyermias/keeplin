@@ -125,20 +125,53 @@ impl Resource {
 pub enum Change {
     // Aliases keep compatibility with v1 log files where op was "create"/"update"/"delete".
     #[serde(alias = "create")]
-    NoteCreate { note: Note },
+    NoteCreate {
+        note: Note,
+    },
     #[serde(alias = "update")]
-    NoteUpdate { note: Note },
+    NoteUpdate {
+        note: Note,
+    },
     #[serde(alias = "delete")]
-    NoteDelete { id: Uuid },
-    NotebookCreate { notebook: Notebook },
-    NotebookUpdate { notebook: Notebook },
-    NotebookDelete { id: Uuid },
-    TagCreate { tag: Tag },
-    TagUpdate { tag: Tag },
-    TagDelete { id: Uuid },
-    NoteTagAdd { note_id: Uuid, tag_id: Uuid },
-    NoteTagRemove { note_id: Uuid, tag_id: Uuid },
-    /// Resource metadata only — binary data is fetched separately via GetResource.
-    ResourceCreate { resource: Resource },
-    ResourceDelete { id: Uuid },
+    NoteDelete {
+        id: Uuid,
+    },
+    NotebookCreate {
+        notebook: Notebook,
+    },
+    NotebookUpdate {
+        notebook: Notebook,
+    },
+    NotebookDelete {
+        id: Uuid,
+    },
+    TagCreate {
+        tag: Tag,
+    },
+    TagUpdate {
+        tag: Tag,
+    },
+    TagDelete {
+        id: Uuid,
+    },
+    NoteTagAdd {
+        note_id: Uuid,
+        tag_id: Uuid,
+    },
+    NoteTagRemove {
+        note_id: Uuid,
+        tag_id: Uuid,
+    },
+    /// Resource metadata + optional binary payload.
+    /// `data` is `None` in FsBackend logs (Syncthing replicates the file independently)
+    /// and `Some` in DbBackend journal (BLOB travels with the Change so the receiving
+    /// device can write it locally without a separate fetch).
+    ResourceCreate {
+        resource: Resource,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        data: Option<Vec<u8>>,
+    },
+    ResourceDelete {
+        id: Uuid,
+    },
 }

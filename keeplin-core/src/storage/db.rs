@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::Mutex;
@@ -10,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     error::StorageError,
-    models::{Change, Note, NoteTag, Notebook, Resource, Tag, new_id, now},
+    models::{new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag},
 };
 
 use super::StorageBackend;
@@ -39,9 +40,7 @@ impl DbBackend {
         let server_url = server_url.into();
         let auth_token = auth_token.into();
 
-        let db = libsql::Builder::new_local(db_path.as_ref())
-            .build()
-            .await?;
+        let db = libsql::Builder::new_local(db_path.as_ref()).build().await?;
         let conn = db.connect()?;
 
         Self::run_migrations(&conn).await?;
@@ -155,9 +154,7 @@ impl DbBackend {
     // ── Device ID ─────────────────────────────────────────────────────────────
 
     async fn get_or_create_device_id(conn: &libsql::Connection) -> Result<String, StorageError> {
-        let mut rows = conn
-            .query("SELECT id FROM device LIMIT 1", ())
-            .await?;
+        let mut rows = conn.query("SELECT id FROM device LIMIT 1", ()).await?;
 
         if let Some(row) = rows.next().await? {
             return Ok(row.get::<String>(0)?);
@@ -182,13 +179,7 @@ impl DbBackend {
             .execute(
                 "INSERT INTO entity_changes (entity_type, entity_id, operation, changed_at, data)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                libsql::params![
-                    entity_type,
-                    entity_id,
-                    operation,
-                    now().to_rfc3339(),
-                    data,
-                ],
+                libsql::params![entity_type, entity_id, operation, now().to_rfc3339(), data,],
             )
             .await?;
         Ok(())
@@ -239,7 +230,8 @@ impl DbBackend {
     }
 
     fn parse_uuid(s: String) -> Result<Uuid, StorageError> {
-        s.parse().map_err(|e: uuid::Error| StorageError::InvalidState(e.to_string()))
+        s.parse()
+            .map_err(|e: uuid::Error| StorageError::InvalidState(e.to_string()))
     }
 
     fn parse_required_dt(s: String) -> Result<DateTime<Utc>, StorageError> {
@@ -287,37 +279,51 @@ impl DbBackend {
     ) -> Option<Change> {
         let id: Uuid = entity_id_str.parse().ok()?;
         match (entity_type, operation) {
-            ("note", "create") => {
-                serde_json::from_value(data.clone()).ok().map(|note| Change::NoteCreate { note })
-            }
-            ("note", "update") => {
-                serde_json::from_value(data.clone()).ok().map(|note| Change::NoteUpdate { note })
-            }
+            ("note", "create") => serde_json::from_value(data.clone())
+                .ok()
+                .map(|note| Change::NoteCreate { note }),
+            ("note", "update") => serde_json::from_value(data.clone())
+                .ok()
+                .map(|note| Change::NoteUpdate { note }),
             ("note", "delete") => Some(Change::NoteDelete { id }),
-            ("notebook", "create") => {
-                serde_json::from_value(data.clone()).ok().map(|notebook| Change::NotebookCreate { notebook })
-            }
-            ("notebook", "update") => {
-                serde_json::from_value(data.clone()).ok().map(|notebook| Change::NotebookUpdate { notebook })
-            }
+            ("notebook", "create") => serde_json::from_value(data.clone())
+                .ok()
+                .map(|notebook| Change::NotebookCreate { notebook }),
+            ("notebook", "update") => serde_json::from_value(data.clone())
+                .ok()
+                .map(|notebook| Change::NotebookUpdate { notebook }),
             ("notebook", "delete") => Some(Change::NotebookDelete { id }),
-            ("tag", "create") => {
-                serde_json::from_value(data.clone()).ok().map(|tag| Change::TagCreate { tag })
-            }
-            ("tag", "update") => {
-                serde_json::from_value(data.clone()).ok().map(|tag| Change::TagUpdate { tag })
-            }
+            ("tag", "create") => serde_json::from_value(data.clone())
+                .ok()
+                .map(|tag| Change::TagCreate { tag }),
+            ("tag", "update") => serde_json::from_value(data.clone())
+                .ok()
+                .map(|tag| Change::TagUpdate { tag }),
             ("tag", "delete") => Some(Change::TagDelete { id }),
             ("note_tag", "add") => {
                 let tag_id: Uuid = data["tag_id"].as_str()?.parse().ok()?;
-                Some(Change::NoteTagAdd { note_id: id, tag_id })
+                Some(Change::NoteTagAdd {
+                    note_id: id,
+                    tag_id,
+                })
             }
             ("note_tag", "remove") => {
                 let tag_id: Uuid = data["tag_id"].as_str()?.parse().ok()?;
-                Some(Change::NoteTagRemove { note_id: id, tag_id })
+                Some(Change::NoteTagRemove {
+                    note_id: id,
+                    tag_id,
+                })
             }
             ("resource", "create") => {
-                serde_json::from_value(data.clone()).ok().map(|resource| Change::ResourceCreate { resource })
+                let binary = data["_data_b64"]
+                    .as_str()
+                    .and_then(|b| STANDARD.decode(b).ok());
+                serde_json::from_value(data.clone())
+                    .ok()
+                    .map(|resource| Change::ResourceCreate {
+                        resource,
+                        data: binary,
+                    })
             }
             ("resource", "delete") => Some(Change::ResourceDelete { id }),
             _ => None,
@@ -366,7 +372,8 @@ impl StorageBackend for DbBackend {
             )
             .await?;
         let data = serde_json::to_value(&note).ok().map(|v| v.to_string());
-        self.record_change("note", &note.id.to_string(), "create", data).await?;
+        self.record_change("note", &note.id.to_string(), "create", data)
+            .await?;
         tracing::info!(id = %note.id, "Note created");
         Ok(note)
     }
@@ -412,7 +419,8 @@ impl StorageBackend for DbBackend {
             return Err(StorageError::NotFound(note.id.to_string()));
         }
         let data = serde_json::to_value(&note).ok().map(|v| v.to_string());
-        self.record_change("note", &note.id.to_string(), "update", data).await?;
+        self.record_change("note", &note.id.to_string(), "update", data)
+            .await?;
         tracing::info!(id = %note.id, "Note updated");
         Ok(note)
     }
@@ -429,7 +437,8 @@ impl StorageBackend for DbBackend {
         if affected == 0 {
             return Err(StorageError::NotFound(id.to_string()));
         }
-        self.record_change("note", &id.to_string(), "delete", None).await?;
+        self.record_change("note", &id.to_string(), "delete", None)
+            .await?;
         tracing::info!(%id, "Note deleted");
         Ok(())
     }
@@ -468,7 +477,8 @@ impl StorageBackend for DbBackend {
             )
             .await?;
         let data = serde_json::to_value(&notebook).ok().map(|v| v.to_string());
-        self.record_change("notebook", &notebook.id.to_string(), "create", data).await?;
+        self.record_change("notebook", &notebook.id.to_string(), "create", data)
+            .await?;
         tracing::info!(id = %notebook.id, "Notebook created");
         Ok(notebook)
     }
@@ -505,7 +515,8 @@ impl StorageBackend for DbBackend {
             return Err(StorageError::NotFound(notebook.id.to_string()));
         }
         let data = serde_json::to_value(&notebook).ok().map(|v| v.to_string());
-        self.record_change("notebook", &notebook.id.to_string(), "update", data).await?;
+        self.record_change("notebook", &notebook.id.to_string(), "update", data)
+            .await?;
         tracing::info!(id = %notebook.id, "Notebook updated");
         Ok(notebook)
     }
@@ -521,7 +532,8 @@ impl StorageBackend for DbBackend {
         if affected == 0 {
             return Err(StorageError::NotFound(id.to_string()));
         }
-        self.record_change("notebook", &id.to_string(), "delete", None).await?;
+        self.record_change("notebook", &id.to_string(), "delete", None)
+            .await?;
         tracing::info!(%id, "Notebook deleted");
         Ok(())
     }
@@ -559,7 +571,8 @@ impl StorageBackend for DbBackend {
             )
             .await?;
         let data = serde_json::to_value(&tag).ok().map(|v| v.to_string());
-        self.record_change("tag", &tag.id.to_string(), "create", data).await?;
+        self.record_change("tag", &tag.id.to_string(), "create", data)
+            .await?;
         tracing::info!(id = %tag.id, "Tag created");
         Ok(tag)
     }
@@ -596,7 +609,8 @@ impl StorageBackend for DbBackend {
             return Err(StorageError::NotFound(tag.id.to_string()));
         }
         let data = serde_json::to_value(&tag).ok().map(|v| v.to_string());
-        self.record_change("tag", &tag.id.to_string(), "update", data).await?;
+        self.record_change("tag", &tag.id.to_string(), "update", data)
+            .await?;
         tracing::info!(id = %tag.id, "Tag updated");
         Ok(tag)
     }
@@ -612,7 +626,8 @@ impl StorageBackend for DbBackend {
         if affected == 0 {
             return Err(StorageError::NotFound(id.to_string()));
         }
-        self.record_change("tag", &id.to_string(), "delete", None).await?;
+        self.record_change("tag", &id.to_string(), "delete", None)
+            .await?;
         tracing::info!(%id, "Tag deleted");
         Ok(())
     }
@@ -643,7 +658,8 @@ impl StorageBackend for DbBackend {
             )
             .await?;
         let data = serde_json::json!({ "tag_id": note_tag.tag_id }).to_string();
-        self.record_change("note_tag", &note_tag.note_id.to_string(), "add", Some(data)).await?;
+        self.record_change("note_tag", &note_tag.note_id.to_string(), "add", Some(data))
+            .await?;
         Ok(())
     }
 
@@ -655,7 +671,8 @@ impl StorageBackend for DbBackend {
             )
             .await?;
         let data = serde_json::json!({ "tag_id": tag_id }).to_string();
-        self.record_change("note_tag", &note_id.to_string(), "remove", Some(data)).await?;
+        self.record_change("note_tag", &note_id.to_string(), "remove", Some(data))
+            .await?;
         Ok(())
     }
 
@@ -679,7 +696,13 @@ impl StorageBackend for DbBackend {
 
     // ── Resources ─────────────────────────────────────────────────────────────
 
-    async fn create_resource(&self, resource: Resource, data: Vec<u8>) -> Result<Resource, StorageError> {
+    async fn create_resource(
+        &self,
+        resource: Resource,
+        data: Vec<u8>,
+    ) -> Result<Resource, StorageError> {
+        // Encode before data is moved into the SQL params.
+        let data_b64 = STANDARD.encode(&data);
         self.conn
             .execute(
                 "INSERT INTO resources (id,title,mime_type,file_name,size,data,created_at)
@@ -695,8 +718,12 @@ impl StorageBackend for DbBackend {
                 ],
             )
             .await?;
-        let change_data = serde_json::to_value(&resource).ok().map(|v| v.to_string());
-        self.record_change("resource", &resource.id.to_string(), "create", change_data).await?;
+        let change_data = serde_json::to_value(&resource).ok().map(|mut v| {
+            v["_data_b64"] = serde_json::Value::String(data_b64);
+            v.to_string()
+        });
+        self.record_change("resource", &resource.id.to_string(), "create", change_data)
+            .await?;
         tracing::info!(id = %resource.id, "Resource created");
         Ok(resource)
     }
@@ -735,7 +762,8 @@ impl StorageBackend for DbBackend {
         if affected == 0 {
             return Err(StorageError::NotFound(id.to_string()));
         }
-        self.record_change("resource", &id.to_string(), "delete", None).await?;
+        self.record_change("resource", &id.to_string(), "delete", None)
+            .await?;
         tracing::info!(%id, "Resource deleted");
         Ok(())
     }
@@ -790,7 +818,11 @@ impl StorageBackend for DbBackend {
 
             match Self::row_to_change(&entity_type, &entity_id, &operation, &data) {
                 Some(change) => changes.push(change),
-                None => tracing::warn!(entity_type, operation, "Unknown entity_changes entry; skipped"),
+                None => tracing::warn!(
+                    entity_type,
+                    operation,
+                    "Unknown entity_changes entry; skipped"
+                ),
             }
         }
         Ok(changes)
@@ -893,18 +925,21 @@ impl StorageBackend for DbBackend {
                     )
                     .await?;
             }
-            // Resources (metadata only — binary data fetched via GetResource gRPC)
-            Change::ResourceCreate { resource } => {
+            // Resources — insert with data if available, metadata-only otherwise.
+            // INSERT OR IGNORE prevents overwriting an existing row that already has data.
+            Change::ResourceCreate { resource, data } => {
+                let blob = data.unwrap_or_default();
                 self.conn
                     .execute(
-                        "INSERT OR IGNORE INTO resources (id,title,mime_type,file_name,size,created_at)
-                         VALUES (?1,?2,?3,?4,?5,?6)",
+                        "INSERT OR IGNORE INTO resources (id,title,mime_type,file_name,size,data,created_at)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7)",
                         libsql::params![
                             resource.id.to_string(),
                             resource.title,
                             resource.mime_type,
                             resource.file_name,
                             resource.size as i64,
+                            blob,
                             resource.created_at.to_rfc3339(),
                         ],
                     )
@@ -922,10 +957,7 @@ impl StorageBackend for DbBackend {
     async fn get_last_sync_time(&self) -> Result<DateTime<Utc>, StorageError> {
         let mut rows = self
             .conn
-            .query(
-                "SELECT value FROM sync_state WHERE key = 'last_sync'",
-                (),
-            )
+            .query("SELECT value FROM sync_state WHERE key = 'last_sync'", ())
             .await?;
         match rows.next().await? {
             Some(row) => {
@@ -969,7 +1001,11 @@ impl StorageBackend for DbBackend {
                 tracing::warn!("No WebSocket connection; changes not sent");
                 return Ok(());
             }
-            let result = guard.as_mut().unwrap().send(Message::Text(payload.clone())).await;
+            let result = guard
+                .as_mut()
+                .unwrap()
+                .send(Message::Text(payload.clone()))
+                .await;
             match result {
                 Ok(()) => {
                     tracing::info!(count = n, %batch_id, "Changes sent via WebSocket");
@@ -1012,7 +1048,10 @@ impl StorageBackend for DbBackend {
                             if let Ok(batch) =
                                 serde_json::from_value::<Vec<Change>>(v["changes"].clone())
                             {
-                                tracing::info!(count = batch.len(), "Changes received via WebSocket");
+                                tracing::info!(
+                                    count = batch.len(),
+                                    "Changes received via WebSocket"
+                                );
                                 changes.extend(batch);
                             }
                         }

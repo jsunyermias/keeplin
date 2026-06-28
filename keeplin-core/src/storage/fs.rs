@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::{
     error::StorageError,
-    models::{Change, Note, NoteTag, Notebook, Resource, Tag, new_id, now},
+    models::{new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag},
 };
 
 use super::StorageBackend;
@@ -40,41 +40,52 @@ fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
     let id = entry.entity_id;
     match (entry.entity_type.as_str(), entry.operation.as_str()) {
         // Notes — "create"/"update"/"delete" accepted for v1 backward compat
-        ("note", "create") | ("note", "note_create") => {
-            serde_json::from_value(entry.data).ok().map(|note| Change::NoteCreate { note })
-        }
-        ("note", "update") | ("note", "note_update") => {
-            serde_json::from_value(entry.data).ok().map(|note| Change::NoteUpdate { note })
-        }
+        ("note", "create") | ("note", "note_create") => serde_json::from_value(entry.data)
+            .ok()
+            .map(|note| Change::NoteCreate { note }),
+        ("note", "update") | ("note", "note_update") => serde_json::from_value(entry.data)
+            .ok()
+            .map(|note| Change::NoteUpdate { note }),
         ("note", "delete") | ("note", "note_delete") => Some(Change::NoteDelete { id }),
         // Notebooks
-        ("notebook", "create") => {
-            serde_json::from_value(entry.data).ok().map(|notebook| Change::NotebookCreate { notebook })
-        }
-        ("notebook", "update") => {
-            serde_json::from_value(entry.data).ok().map(|notebook| Change::NotebookUpdate { notebook })
-        }
+        ("notebook", "create") => serde_json::from_value(entry.data)
+            .ok()
+            .map(|notebook| Change::NotebookCreate { notebook }),
+        ("notebook", "update") => serde_json::from_value(entry.data)
+            .ok()
+            .map(|notebook| Change::NotebookUpdate { notebook }),
         ("notebook", "delete") => Some(Change::NotebookDelete { id }),
         // Tags
-        ("tag", "create") => {
-            serde_json::from_value(entry.data).ok().map(|tag| Change::TagCreate { tag })
-        }
-        ("tag", "update") => {
-            serde_json::from_value(entry.data).ok().map(|tag| Change::TagUpdate { tag })
-        }
+        ("tag", "create") => serde_json::from_value(entry.data)
+            .ok()
+            .map(|tag| Change::TagCreate { tag }),
+        ("tag", "update") => serde_json::from_value(entry.data)
+            .ok()
+            .map(|tag| Change::TagUpdate { tag }),
         ("tag", "delete") => Some(Change::TagDelete { id }),
         // NoteTag associations (tag_id stored as {"tag_id": "..."} in data)
         ("note_tag", "add") => {
             let tag_id: Uuid = entry.data["tag_id"].as_str()?.parse().ok()?;
-            Some(Change::NoteTagAdd { note_id: id, tag_id })
+            Some(Change::NoteTagAdd {
+                note_id: id,
+                tag_id,
+            })
         }
         ("note_tag", "remove") => {
             let tag_id: Uuid = entry.data["tag_id"].as_str()?.parse().ok()?;
-            Some(Change::NoteTagRemove { note_id: id, tag_id })
+            Some(Change::NoteTagRemove {
+                note_id: id,
+                tag_id,
+            })
         }
-        // Resources
+        // Resources — logs carry metadata only; data is replicated by Syncthing
         ("resource", "create") => {
-            serde_json::from_value(entry.data).ok().map(|resource| Change::ResourceCreate { resource })
+            serde_json::from_value(entry.data)
+                .ok()
+                .map(|resource| Change::ResourceCreate {
+                    resource,
+                    data: None,
+                })
         }
         ("resource", "delete") => Some(Change::ResourceDelete { id }),
         _ => None,
@@ -103,7 +114,16 @@ impl FsBackend {
     pub async fn new(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root: PathBuf = root.into();
 
-        for dir in &["notes", "resources", ".keeplin", ".keeplin/offsets", "logs", "notebooks", "tags", "note_tags"] {
+        for dir in &[
+            "notes",
+            "resources",
+            ".keeplin",
+            ".keeplin/offsets",
+            "logs",
+            "notebooks",
+            "tags",
+            "note_tags",
+        ] {
             tokio::fs::create_dir_all(root.join(dir)).await?;
         }
 
@@ -138,7 +158,11 @@ impl FsBackend {
         if current < Self::FORMAT_VERSION {
             // v1 → v2: log entries are backward-compatible via serde aliases,
             // so no data migration is required — just stamp the new version.
-            tracing::info!(from = current, to = Self::FORMAT_VERSION, "Migrating FsBackend format");
+            tracing::info!(
+                from = current,
+                to = Self::FORMAT_VERSION,
+                "Migrating FsBackend format"
+            );
         }
 
         // Always write (or overwrite) the version stamp.
@@ -261,7 +285,10 @@ impl FsBackend {
 
     /// Read all entries from other devices' logs that are newer than `since`.
     /// Does NOT advance the stored byte offset — safe to call multiple times.
-    async fn read_other_logs_since(&self, since: DateTime<Utc>) -> Result<Vec<LogEntry>, StorageError> {
+    async fn read_other_logs_since(
+        &self,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<LogEntry>, StorageError> {
         let mut entries = Vec::new();
         let logs_dir = self.root.join("logs");
         let mut dir = match tokio::fs::read_dir(&logs_dir).await {
@@ -376,7 +403,11 @@ impl FsBackend {
 
     // ── Generic single-file JSON helpers ──────────────────────────────────────
 
-    async fn write_json<T: serde::Serialize>(&self, path: &Path, value: &T) -> Result<(), StorageError> {
+    async fn write_json<T: serde::Serialize>(
+        &self,
+        path: &Path,
+        value: &T,
+    ) -> Result<(), StorageError> {
         let raw = serde_json::to_string_pretty(value)?;
         let tmp = path.with_extension("tmp");
         tokio::fs::write(&tmp, raw).await?;
@@ -384,7 +415,11 @@ impl FsBackend {
         Ok(())
     }
 
-    async fn read_json<T: serde::de::DeserializeOwned>(&self, path: &Path, id: Uuid) -> Result<T, StorageError> {
+    async fn read_json<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &Path,
+        id: Uuid,
+    ) -> Result<T, StorageError> {
         if !path.exists() {
             return Err(StorageError::NotFound(id.to_string()));
         }
@@ -402,7 +437,8 @@ impl StorageBackend for FsBackend {
 
     async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
         self.write_note(&note).await?;
-        self.append_log("note", note.id, "create", serde_json::to_value(&note)?).await?;
+        self.append_log("note", note.id, "create", serde_json::to_value(&note)?)
+            .await?;
         tracing::info!(id = %note.id, "Note created");
         Ok(note)
     }
@@ -416,7 +452,8 @@ impl StorageBackend for FsBackend {
             return Err(StorageError::NotFound(note.id.to_string()));
         }
         self.write_note(&note).await?;
-        self.append_log("note", note.id, "update", serde_json::to_value(&note)?).await?;
+        self.append_log("note", note.id, "update", serde_json::to_value(&note)?)
+            .await?;
         tracing::info!(id = %note.id, "Note updated");
         Ok(note)
     }
@@ -425,7 +462,8 @@ impl StorageBackend for FsBackend {
         let mut note = self.load_note(id).await?;
         note.deleted_at = Some(now());
         self.write_note(&note).await?;
-        self.append_log("note", id, "delete", serde_json::json!({ "id": id })).await?;
+        self.append_log("note", id, "delete", serde_json::json!({ "id": id }))
+            .await?;
         tracing::info!(%id, "Note deleted");
         Ok(())
     }
@@ -449,8 +487,15 @@ impl StorageBackend for FsBackend {
     // ── Notebooks ─────────────────────────────────────────────────────────────
 
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
-        self.write_json(&self.notebook_path(notebook.id), &notebook).await?;
-        self.append_log("notebook", notebook.id, "create", serde_json::to_value(&notebook)?).await?;
+        self.write_json(&self.notebook_path(notebook.id), &notebook)
+            .await?;
+        self.append_log(
+            "notebook",
+            notebook.id,
+            "create",
+            serde_json::to_value(&notebook)?,
+        )
+        .await?;
         tracing::info!(id = %notebook.id, "Notebook created");
         Ok(notebook)
     }
@@ -463,8 +508,15 @@ impl StorageBackend for FsBackend {
         if !self.notebook_path(notebook.id).exists() {
             return Err(StorageError::NotFound(notebook.id.to_string()));
         }
-        self.write_json(&self.notebook_path(notebook.id), &notebook).await?;
-        self.append_log("notebook", notebook.id, "update", serde_json::to_value(&notebook)?).await?;
+        self.write_json(&self.notebook_path(notebook.id), &notebook)
+            .await?;
+        self.append_log(
+            "notebook",
+            notebook.id,
+            "update",
+            serde_json::to_value(&notebook)?,
+        )
+        .await?;
         tracing::info!(id = %notebook.id, "Notebook updated");
         Ok(notebook)
     }
@@ -473,7 +525,8 @@ impl StorageBackend for FsBackend {
         let mut nb: Notebook = self.read_json(&self.notebook_path(id), id).await?;
         nb.deleted_at = Some(now());
         self.write_json(&self.notebook_path(id), &nb).await?;
-        self.append_log("notebook", id, "delete", serde_json::json!({ "id": id })).await?;
+        self.append_log("notebook", id, "delete", serde_json::json!({ "id": id }))
+            .await?;
         tracing::info!(%id, "Notebook deleted");
         Ok(())
     }
@@ -500,7 +553,8 @@ impl StorageBackend for FsBackend {
 
     async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
         self.write_json(&self.tag_path(tag.id), &tag).await?;
-        self.append_log("tag", tag.id, "create", serde_json::to_value(&tag)?).await?;
+        self.append_log("tag", tag.id, "create", serde_json::to_value(&tag)?)
+            .await?;
         tracing::info!(id = %tag.id, "Tag created");
         Ok(tag)
     }
@@ -514,7 +568,8 @@ impl StorageBackend for FsBackend {
             return Err(StorageError::NotFound(tag.id.to_string()));
         }
         self.write_json(&self.tag_path(tag.id), &tag).await?;
-        self.append_log("tag", tag.id, "update", serde_json::to_value(&tag)?).await?;
+        self.append_log("tag", tag.id, "update", serde_json::to_value(&tag)?)
+            .await?;
         tracing::info!(id = %tag.id, "Tag updated");
         Ok(tag)
     }
@@ -523,7 +578,8 @@ impl StorageBackend for FsBackend {
         let mut tag: Tag = self.read_json(&self.tag_path(id), id).await?;
         tag.deleted_at = Some(now());
         self.write_json(&self.tag_path(id), &tag).await?;
-        self.append_log("tag", id, "delete", serde_json::json!({ "id": id })).await?;
+        self.append_log("tag", id, "delete", serde_json::json!({ "id": id }))
+            .await?;
         tracing::info!(%id, "Tag deleted");
         Ok(())
     }
@@ -556,7 +612,8 @@ impl StorageBackend for FsBackend {
             note_tag.note_id,
             "add",
             serde_json::json!({ "tag_id": note_tag.tag_id }),
-        ).await?;
+        )
+        .await?;
         Ok(())
     }
 
@@ -570,7 +627,8 @@ impl StorageBackend for FsBackend {
             note_id,
             "remove",
             serde_json::json!({ "tag_id": tag_id }),
-        ).await?;
+        )
+        .await?;
         Ok(())
     }
 
@@ -596,12 +654,23 @@ impl StorageBackend for FsBackend {
 
     // ── Resources ─────────────────────────────────────────────────────────────
 
-    async fn create_resource(&self, resource: Resource, data: Vec<u8>) -> Result<Resource, StorageError> {
+    async fn create_resource(
+        &self,
+        resource: Resource,
+        data: Vec<u8>,
+    ) -> Result<Resource, StorageError> {
         let dir = self.resource_dir(resource.id);
         tokio::fs::create_dir_all(&dir).await?;
-        self.write_json(&self.resource_meta_path(resource.id), &resource).await?;
+        self.write_json(&self.resource_meta_path(resource.id), &resource)
+            .await?;
         tokio::fs::write(self.resource_data_path(resource.id), &data).await?;
-        self.append_log("resource", resource.id, "create", serde_json::to_value(&resource)?).await?;
+        self.append_log(
+            "resource",
+            resource.id,
+            "create",
+            serde_json::to_value(&resource)?,
+        )
+        .await?;
         tracing::info!(id = %resource.id, "Resource created");
         Ok(resource)
     }
@@ -622,7 +691,8 @@ impl StorageBackend for FsBackend {
             return Err(StorageError::NotFound(id.to_string()));
         }
         tokio::fs::remove_dir_all(&dir).await?;
-        self.append_log("resource", id, "delete", serde_json::json!({ "id": id })).await?;
+        self.append_log("resource", id, "delete", serde_json::json!({ "id": id }))
+            .await?;
         tracing::info!(%id, "Resource deleted");
         Ok(())
     }
@@ -677,7 +747,8 @@ impl StorageBackend for FsBackend {
             }
             // Notebooks
             Change::NotebookCreate { notebook } | Change::NotebookUpdate { notebook } => {
-                self.write_json(&self.notebook_path(notebook.id), &notebook).await?;
+                self.write_json(&self.notebook_path(notebook.id), &notebook)
+                    .await?;
                 tracing::debug!(id = %notebook.id, "Applied remote notebook change");
             }
             Change::NotebookDelete { id } => {
@@ -716,12 +787,18 @@ impl StorageBackend for FsBackend {
                 }
                 tracing::debug!(%note_id, %tag_id, "Applied remote note_tag remove");
             }
-            // Resources (metadata only; binary data is fetched via GetResource gRPC)
-            Change::ResourceCreate { resource } => {
+            // Resources — write meta always; write data file only when the Change carries it
+            // (DbBackend-sourced Changes have data=Some; FsBackend/Syncthing replicates the
+            //  file independently so data=None here is expected and correct)
+            Change::ResourceCreate { resource, data } => {
                 let dir = self.resource_dir(resource.id);
                 tokio::fs::create_dir_all(&dir).await?;
-                self.write_json(&self.resource_meta_path(resource.id), &resource).await?;
-                tracing::debug!(id = %resource.id, "Applied remote resource create (metadata only)");
+                self.write_json(&self.resource_meta_path(resource.id), &resource)
+                    .await?;
+                if let Some(bytes) = data {
+                    tokio::fs::write(self.resource_data_path(resource.id), &bytes).await?;
+                }
+                tracing::debug!(id = %resource.id, "Applied remote resource create");
             }
             Change::ResourceDelete { id } => {
                 let dir = self.resource_dir(id);
