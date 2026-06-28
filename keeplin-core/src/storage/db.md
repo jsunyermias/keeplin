@@ -130,12 +130,16 @@ last-write-wins so a stale remote edit cannot clobber a newer local record.
 
 ## Design notes
 
-- Every mutating method (and `apply_change`, `update_sync_time`, `prune_change_journal`)
-  takes a `write_lock: Arc<Mutex<()>>` for the duration of its transaction. The backend
-  shares a single `libsql::Connection`, so without this lock a second `BEGIN IMMEDIATE`
-  issued before the first `COMMIT` would fail with "cannot start a transaction within a
-  transaction". SQLite allows only one writer at a time, so serialising writes is correct
-  and free.
+- The backend shares a single `libsql::Connection` across all gRPC tasks, guarded by a
+  `lock: Arc<RwLock<()>>`. Mutating methods (and `apply_change`, `update_sync_time`,
+  `prune_change_journal`) take the **write** side for the duration of their transaction;
+  read methods take the **read** side. This prevents three failure modes on the shared
+  connection: overlapping `BEGIN IMMEDIATE`s (which fail with "cannot start a transaction
+  within a transaction"), a bare write landing inside another task's open transaction,
+  and a query observing another task's uncommitted rows mid-transaction. SQLite allows
+  only one writer at a time, so the exclusive write side is free; readers still run
+  concurrently. `should_apply` runs under the caller's write guard and therefore does not
+  take its own.
 - The `ws` field is wrapped in `Arc<Mutex<Option<WsStream>>>` so the backend can be
   shared across gRPC handler tasks (via `Arc<B>`) while still allowing exclusive write
   access to the WebSocket.

@@ -592,7 +592,11 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                     // the `entity_changes` table cannot grow without bound. A failure here
                     // is non-fatal — the sync itself already succeeded.
                     if retention_days > 0 {
-                        let cutoff = now() - chrono::Duration::days(retention_days as i64);
+                        // Clamp to ~100 years so an absurd config value cannot overflow
+                        // chrono's `Duration` (which would panic) or wrap to a negative
+                        // window that prunes the entire journal.
+                        let days = retention_days.min(36_500) as i64;
+                        let cutoff = now() - chrono::Duration::days(days);
                         if let Err(e) = backend.prune_change_journal(cutoff).await {
                             tracing::warn!("change-journal prune failed: {e}");
                         }

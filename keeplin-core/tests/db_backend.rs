@@ -404,3 +404,42 @@ async fn concurrent_note_creates_all_succeed() {
     let (notes, _) = backend.list_notes(100, None).await.unwrap();
     assert_eq!(notes.len(), 50);
 }
+
+/// Concurrent readers and writers must all make progress and complete — the read/write
+/// guard around the shared connection must never deadlock (a reader must not block a
+/// reader, and the read and write sides must not be acquired re-entrantly by one task).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_reads_and_writes_make_progress() {
+    use std::sync::Arc;
+
+    let backend = Arc::new(in_memory_backend().await);
+
+    // Seed a note so reads have something to return.
+    let seed = Note::new("seed", "");
+    let seed_id = seed.id;
+    backend.create_note(seed).await.unwrap();
+
+    let mut handles = Vec::new();
+    for i in 0..20u32 {
+        let writer = Arc::clone(&backend);
+        handles.push(tokio::spawn(async move {
+            writer
+                .create_note(Note::new(format!("w{i}"), ""))
+                .await
+                .map(|_| ())
+        }));
+        let reader = Arc::clone(&backend);
+        handles.push(tokio::spawn(async move {
+            // Mix point reads and list reads to exercise both read paths.
+            let _ = reader.read_note(seed_id).await;
+            reader.list_notes(10, None).await.map(|_| ())
+        }));
+    }
+
+    for h in handles {
+        h.await.unwrap().expect("no read or write may fail or hang");
+    }
+
+    let (notes, _) = backend.list_notes(100, None).await.unwrap();
+    assert_eq!(notes.len(), 21, "seed + 20 writers");
+}
