@@ -139,6 +139,7 @@ variables shown.
 | `server_url` | `""` | WebSocket sync URL (server mode). Use `wss://` in production. |
 | `auth_token` | `""` | Bearer token sent on the first WebSocket frame (server mode). |
 | `grpc_addr` | `127.0.0.1:50051` | gRPC listen address. |
+| `http_addr` | `none` | Optional HTTP listen address for the REST/JSON API + WebSocket feed (e.g. `127.0.0.1:50052`). Plain HTTP — front with a TLS proxy. Same Basic‑Auth credentials apply. |
 | `tls_cert_path` / `tls_key_path` | `none` | PEM cert/key; set both to enable TLS. |
 | `max_message_size` | 32 MiB | Max gRPC message size (in/out). |
 | `journal_retention_days` | `30` | Days of change‑journal history to keep; pruned after each sync (`0` disables; no‑op for the filesystem backend). |
@@ -159,6 +160,61 @@ provides CRUD + paginated list RPCs for **notes, notebooks, tags, and resources*
 note↔tag association RPCs, and a server‑streaming **`Sync`** RPC that reports progress
 through one sync cycle. Authentication is HTTP Basic Auth via the `authorization` metadata
 header: `Basic base64(user:password)`.
+
+---
+
+## REST API
+
+When `http_addr` is set, the daemon also serves a REST/JSON API on that address, sharing the
+same storage backend and the same Basic‑Auth credentials as gRPC. Requests and responses are
+JSON over the domain models; authenticate with the standard `Authorization: Basic
+base64(user:password)` header (only required when `auth_username`/`auth_password` are set).
+
+| Method & path | Purpose |
+|---------------|---------|
+| `GET /api/health` | Liveness probe (`200 ok`). |
+| `GET /api/notes?page_size=&page_token=` | List notes (cursor pagination → `{ items, next_page_token }`). |
+| `POST /api/notes` | Create a note. |
+| `GET/PUT/DELETE /api/notes/:id` | Read / update / soft‑delete a note. |
+| `GET /api/notes/:id/tags` | List a note's tags. |
+| `PUT/DELETE /api/notes/:note_id/tags/:tag_id` | Add / remove a note↔tag association. |
+| `GET/POST /api/notebooks`, `GET/PUT/DELETE /api/notebooks/:id` | Notebook CRUD. |
+| `GET/POST /api/tags`, `GET/PUT/DELETE /api/tags/:id` | Tag CRUD. |
+| `GET/POST /api/resources`, `GET/PUT/DELETE /api/resources/:id` | Resource metadata CRUD. |
+| `GET /api/resources/:id/data` | Download the raw resource bytes. |
+| `POST /api/sync` | Run one sync cycle; returns `{ "applied": <n> }`. |
+| `GET /api/ws` | Upgrade to the WebSocket live‑change feed (see below). |
+
+Resource upload is a raw request body: `POST /api/resources?title=&file_name=` with the
+file bytes as the body and the `Content-Type` header as the MIME type. Reads of a
+soft‑deleted note, notebook, or tag return `404` (the gRPC `Get` RPCs still return the
+tombstone for sync). Errors map to `404` (not found), `422` (corrupted data), `400`
+(invalid UUID/body), and `500` otherwise.
+
+The HTTP listener is **plain HTTP** — terminate TLS at a reverse proxy in production, exactly
+as for the WebSocket sync token.
+
+### WebSocket live‑change feed
+
+`GET /api/ws` upgrades to a WebSocket that pushes a **live feed of changes**: after every
+successful mutation — from gRPC *or* REST — the daemon broadcasts the corresponding
+[`Change`](keeplin-core/src/models.rs) to all connected clients as a JSON text frame
+(`{"op":"note_create","note":{…}}`, `{"op":"note_delete","id":…}`, …). The upgrade request
+passes through the same Basic‑Auth check as the REST routes.
+
+The feed is **best‑effort**, not a durable log: a client that falls behind the server's
+buffer receives a single `{"type":"resync"}` hint and should reload state from the REST API;
+the authoritative history remains the per‑device change journal used by sync. Resource
+creates are streamed as metadata only — fetch the bytes via `GET /api/resources/:id/data`.
+Changes are broadcast in plaintext (the daemon is the trust boundary), so at‑rest encryption
+does not obscure them from connected clients.
+
+```bash
+# Watch the feed while creating a note from another terminal:
+websocat ws://127.0.0.1:50052/api/ws
+curl -X POST 127.0.0.1:50052/api/notes -H 'content-type: application/json' \
+  -d '{"title":"hi","body":"there"}'
+```
 
 ---
 

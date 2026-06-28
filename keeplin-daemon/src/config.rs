@@ -49,6 +49,13 @@ pub struct Config {
     #[serde(default = "default_grpc_addr")]
     pub grpc_addr: String,
 
+    /// Optional HTTP listen address for the REST/JSON API and the WebSocket change feed
+    /// (e.g. `127.0.0.1:50052`). When unset, only the gRPC server runs. The HTTP listener
+    /// is plain HTTP — terminate TLS at a reverse proxy in production. The same
+    /// `auth_username`/`auth_password` Basic-Auth credentials apply.
+    #[serde(default)]
+    pub http_addr: Option<String>,
+
     /// Path to the TLS certificate file (PEM format).
     /// Both tls_cert_path and tls_key_path must be set to enable TLS.
     #[serde(default)]
@@ -156,6 +163,7 @@ impl Default for Config {
             server_url: String::new(),
             auth_token: String::new(),
             grpc_addr: default_grpc_addr(),
+            http_addr: None,
             tls_cert_path: None,
             tls_key_path: None,
             max_message_size: default_max_message_size(),
