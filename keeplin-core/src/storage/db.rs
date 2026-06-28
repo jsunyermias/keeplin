@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, Utc};
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
@@ -66,16 +66,21 @@ pub struct DbBackend {
     /// It is stored in the `device` table and is sent in every change batch so the
     /// server can identify the originating device and deduplicate messages.
     device_id: String,
-    /// Serialises every write so that no two `BEGIN IMMEDIATE … COMMIT` transactions
-    /// (or bare writes) are ever in flight on the shared connection at the same time.
+    /// Guards access to the shared `libsql::Connection` so that reads and writes are
+    /// correctly isolated even though every operation runs on a **single** connection.
     ///
-    /// All mutating operations and `apply_change` share a **single** `libsql::Connection`.
-    /// Without this lock, a second `BEGIN IMMEDIATE` issued before the first `COMMIT`
-    /// fails with "cannot start a transaction within a transaction", and a bare write
-    /// could accidentally land inside another task's open transaction. SQLite permits
-    /// only one writer at a time anyway, so serialising writes here costs nothing in
-    /// throughput while making concurrent callers correct.
-    write_lock: Arc<Mutex<()>>,
+    /// Writers take the **write** (exclusive) side for the whole `BEGIN IMMEDIATE …
+    /// COMMIT` span (and for bare writes); readers take the **read** (shared) side.
+    /// This guarantees three things on the shared connection:
+    /// - two `BEGIN IMMEDIATE`s never overlap (which would fail with "cannot start a
+    ///   transaction within a transaction"),
+    /// - a bare write never lands inside another task's open transaction, and
+    /// - a query never observes another task's *uncommitted* rows mid-transaction (which
+    ///   would otherwise be possible because all tasks share one connection).
+    ///
+    /// SQLite permits only one writer at a time regardless, so the exclusive write side
+    /// costs no real throughput, while multiple readers still run concurrently.
+    lock: Arc<RwLock<()>>,
 }
 
 impl DbBackend {
@@ -135,7 +140,7 @@ impl DbBackend {
             auth_token,
             ws: Arc::new(Mutex::new(ws)),
             device_id,
-            write_lock: Arc::new(Mutex::new(())),
+            lock: Arc::new(RwLock::new(())),
         })
     }
 
@@ -609,7 +614,7 @@ where
 #[async_trait]
 impl NoteRepository for DbBackend {
     async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock.write().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             self.conn
@@ -649,6 +654,7 @@ impl NoteRepository for DbBackend {
     }
 
     async fn read_note(&self, id: Uuid) -> Result<Note, StorageError> {
+        let _read_guard = self.lock.read().await;
         let mut rows = self
             .conn
             .query(
@@ -665,7 +671,7 @@ impl NoteRepository for DbBackend {
     }
 
     async fn update_note(&self, note: Note) -> Result<Note, StorageError> {
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock.write().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             let affected = self
@@ -710,7 +716,7 @@ impl NoteRepository for DbBackend {
     }
 
     async fn delete_note(&self, id: Uuid) -> Result<(), StorageError> {
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock.write().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             let ts = now().to_rfc3339();
@@ -746,6 +752,7 @@ impl NoteRepository for DbBackend {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        let _read_guard = self.lock.read().await;
         let limit = if page_size == 0 { 100u32 } else { page_size };
         let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
@@ -779,7 +786,7 @@ impl NoteRepository for DbBackend {
 #[async_trait]
 impl NotebookRepository for DbBackend {
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock.write().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             self.conn
@@ -814,6 +821,7 @@ impl NotebookRepository for DbBackend {
     }
 
     async fn read_notebook(&self, id: Uuid) -> Result<Notebook, StorageError> {
+        let _read_guard = self.lock.read().await;
         let mut rows = self
             .conn
             .query(
@@ -829,7 +837,7 @@ impl NotebookRepository for DbBackend {
     }
 
     async fn update_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock.write().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             let affected = self
@@ -866,7 +874,7 @@ impl NotebookRepository for DbBackend {
     }
 
     async fn delete_notebook(&self, id: Uuid) -> Result<(), StorageError> {
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock.write().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             let affected = self
@@ -901,6 +909,7 @@ impl NotebookRepository for DbBackend {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Notebook>, Option<String>), StorageError> {
+        let _read_guard = self.lock.read().await;
         let limit = if page_size == 0 { 100u32 } else { page_size };
         let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
@@ -933,7 +942,7 @@ impl NotebookRepository for DbBackend {
 #[async_trait]
 impl TagRepository for DbBackend {
     async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock.write().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             self.conn
@@ -968,6 +977,7 @@ impl TagRepository for DbBackend {
     }
 
     async fn read_tag(&self, id: Uuid) -> Result<Tag, StorageError> {
+        let _read_guard = self.lock.read().await;
         let mut rows = self
             .conn
             .query(
@@ -983,7 +993,7 @@ impl TagRepository for DbBackend {
     }
 
     async fn update_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock.write().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             let affected = self
@@ -1020,7 +1030,7 @@ impl TagRepository for DbBackend {
     }
 
     async fn delete_tag(&self, id: Uuid) -> Result<(), StorageError> {
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock.write().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             let affected = self
@@ -1055,6 +1065,7 @@ impl TagRepository for DbBackend {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        let _read_guard = self.lock.read().await;
         let limit = if page_size == 0 { 100u32 } else { page_size };
         let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
@@ -1082,7 +1093,7 @@ impl TagRepository for DbBackend {
     }
 
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock.write().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             self.conn
@@ -1109,7 +1120,7 @@ impl TagRepository for DbBackend {
     }
 
     async fn remove_note_tag(&self, note_id: Uuid, tag_id: Uuid) -> Result<(), StorageError> {
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock.write().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             self.conn
@@ -1141,6 +1152,7 @@ impl TagRepository for DbBackend {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        let _read_guard = self.lock.read().await;
         let limit = if page_size == 0 { 100u32 } else { page_size };
         let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
@@ -1184,7 +1196,7 @@ impl ResourceRepository for DbBackend {
         resource: Resource,
         data: Vec<u8>,
     ) -> Result<Resource, StorageError> {
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock.write().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             // Encode the binary payload as Base64 before moving `data` into the SQL
@@ -1230,6 +1242,7 @@ impl ResourceRepository for DbBackend {
     }
 
     async fn read_resource(&self, id: Uuid) -> Result<(Resource, Vec<u8>), StorageError> {
+        let _read_guard = self.lock.read().await;
         let mut rows = self
             .conn
             .query(
@@ -1256,7 +1269,7 @@ impl ResourceRepository for DbBackend {
     }
 
     async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError> {
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock.write().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             let affected = self
@@ -1288,6 +1301,7 @@ impl ResourceRepository for DbBackend {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
+        let _read_guard = self.lock.read().await;
         let limit = if page_size == 0 { 100u32 } else { page_size };
         let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
@@ -1324,6 +1338,7 @@ impl ResourceRepository for DbBackend {
 #[async_trait]
 impl SyncBackend for DbBackend {
     async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError> {
+        let _read_guard = self.lock.read().await;
         let since_str = since.to_rfc3339();
         let mut rows = self
             .conn
@@ -1362,7 +1377,7 @@ impl SyncBackend for DbBackend {
     async fn apply_change(&self, change: Change) -> Result<(), StorageError> {
         // Hold the write lock for the whole apply so this write cannot interleave with
         // another task's open transaction on the shared connection.
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock.write().await;
         match change {
             // Notes
             Change::NoteCreate { note } | Change::NoteUpdate { note } => {
@@ -1512,6 +1527,7 @@ impl SyncBackend for DbBackend {
     }
 
     async fn get_last_sync_time(&self) -> Result<DateTime<Utc>, StorageError> {
+        let _read_guard = self.lock.read().await;
         let mut rows = self
             .conn
             .query("SELECT value FROM sync_state WHERE key = 'last_sync'", ())
@@ -1527,7 +1543,7 @@ impl SyncBackend for DbBackend {
     }
 
     async fn update_sync_time(&self, ts: DateTime<Utc>) -> Result<(), StorageError> {
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock.write().await;
         self.conn
             .execute(
                 "INSERT OR REPLACE INTO sync_state (key, value) VALUES ('last_sync', ?1)",
@@ -1651,7 +1667,7 @@ impl SyncBackend for DbBackend {
     }
 
     async fn prune_change_journal(&self, older_than: DateTime<Utc>) -> Result<u64, StorageError> {
-        let _write_guard = self.write_lock.lock().await;
+        let _write_guard = self.lock.write().await;
         let affected = self
             .conn
             .execute(
