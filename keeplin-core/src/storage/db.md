@@ -128,6 +128,12 @@ and tags are additionally guarded by `should_apply`, which reads the stored `upd
 and **skips** the write when the incoming change is not strictly newer — implementing
 last-write-wins so a stale remote edit cannot clobber a newer local record.
 
+This is last-write-wins for **every** entity, notes included. `DbBackend` does **not**
+implement the per-note version-vector merge that `FsBackend` uses (see
+`storage/note_log.md`): two devices editing the same note offline and then syncing keep
+only the later-`updated_at` edit, with no merge. The difference between the backends is
+documented in `SECURITY.md` ("Conflict resolution differs by backend").
+
 ## Design notes
 
 - The backend shares a single `libsql::Connection` across all gRPC tasks, guarded by a

@@ -48,6 +48,17 @@ type WsStream =
 /// a reconnect before the next operation; while disconnected, the local database
 /// continues to work normally and changes accumulate in `entity_changes` for the next
 /// successful push.
+///
+/// ## Conflict resolution
+///
+/// `DbBackend` resolves concurrent edits with **last-write-wins by `updated_at`** for
+/// every entity, notes included (see `apply_change`). It does **not** implement the
+/// per-note version-vector merge that [`super::fs::FsBackend`] uses (see
+/// [`super::note_log`]): if two devices edit the same note while offline and then sync,
+/// the edit with the later `updated_at` wins and the other is overwritten without a
+/// merge. Choose `FsBackend` (offline mode) when strong note-merge guarantees matter;
+/// `DbBackend` trades that for a central WebSocket relay. This difference is documented
+/// in `SECURITY.md`.
 pub struct DbBackend {
     /// The open LibSQL connection to the local database file.
     conn: libsql::Connection,
