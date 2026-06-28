@@ -107,6 +107,11 @@ ensures the deletion propagates correctly to other synced devices.
   than the local copy, so a stale remote edit can never clobber a newer local one. No
   three-way merge is attempted, and the losing version is discarded without warning.
   Equal timestamps keep the existing local record.
+- **Deletes are tombstones that participate in last-write-wins.** A delete bumps
+  `updated_at` to the deletion time and the `Change::*Delete` records carry that
+  timestamp, so a delete competes against edits by time: a stale edit cannot resurrect a
+  newer delete, and a stale delete cannot override a newer edit. (Resources are an
+  exception — they are hard-deleted, so there is nothing to resurrect.)
 
 ## Reporting vulnerabilities
 

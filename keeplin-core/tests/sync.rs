@@ -77,6 +77,94 @@ async fn stale_remote_update_does_not_clobber_newer_local() {
     );
 }
 
+/// A tombstone older than the local edit must not delete a newer note (DbBackend).
+#[tokio::test]
+async fn db_stale_delete_does_not_override_newer_edit() {
+    let local = device().await;
+    let mut note = Note::new("Title", "current body");
+    let id = note.id;
+    note.updated_at = Utc::now();
+    local.create_note(note).await.unwrap();
+
+    // A delete that happened a minute *before* the local edit.
+    local
+        .apply_change(Change::NoteDelete {
+            id,
+            deleted_at: Utc::now() - Duration::minutes(1),
+        })
+        .await
+        .unwrap();
+
+    let read = local.read_note(id).await.unwrap();
+    assert!(
+        read.deleted_at.is_none(),
+        "a stale delete must not tombstone a newer note"
+    );
+}
+
+/// A stale edit must not resurrect a newer tombstone (DbBackend).
+#[tokio::test]
+async fn db_stale_update_does_not_resurrect_tombstone() {
+    let local = device().await;
+    let mut note = Note::new("Title", "original body");
+    let id = note.id;
+    note.updated_at = Utc::now() - Duration::minutes(5);
+    local.create_note(note.clone()).await.unwrap();
+
+    // Delete locally now — the tombstone's updated_at becomes "now".
+    local.delete_note(id).await.unwrap();
+
+    // A stale update from before the delete arrives from a peer.
+    let mut stale = note.clone();
+    stale.body = "resurrected?".to_string();
+    local
+        .apply_change(Change::NoteUpdate { note: stale })
+        .await
+        .unwrap();
+
+    let read = local.read_note(id).await.unwrap();
+    assert!(
+        read.deleted_at.is_some(),
+        "a stale update must not resurrect a tombstoned note"
+    );
+}
+
+/// Tombstone semantics must hold on `FsBackend` too: a stale delete is ignored and a
+/// stale update cannot resurrect a newer delete.
+#[tokio::test]
+async fn fs_tombstones_resolve_by_timestamp() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    // (a) Stale delete must not tombstone a newer note.
+    let mut a = Note::new("A", "body");
+    let a_id = a.id;
+    a.updated_at = Utc::now();
+    backend.create_note(a).await.unwrap();
+    backend
+        .apply_change(Change::NoteDelete {
+            id: a_id,
+            deleted_at: Utc::now() - Duration::minutes(1),
+        })
+        .await
+        .unwrap();
+    assert!(backend.read_note(a_id).await.unwrap().deleted_at.is_none());
+
+    // (b) Stale update must not resurrect a newer local delete.
+    let mut b = Note::new("B", "body");
+    let b_id = b.id;
+    b.updated_at = Utc::now() - Duration::minutes(5);
+    backend.create_note(b.clone()).await.unwrap();
+    backend.delete_note(b_id).await.unwrap();
+    let mut stale = b.clone();
+    stale.body = "resurrected?".to_string();
+    backend
+        .apply_change(Change::NoteUpdate { note: stale })
+        .await
+        .unwrap();
+    assert!(backend.read_note(b_id).await.unwrap().deleted_at.is_some());
+}
+
 /// The same last-write-wins guarantee must hold for `FsBackend`: a newer remote edit
 /// applies, but an older one is ignored.
 #[tokio::test]
