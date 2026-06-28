@@ -1,3 +1,11 @@
+//! Integration tests for [`FsBackend`] — the filesystem-backed storage implementation.
+//!
+//! Every test in this module creates a fresh temporary directory with [`tempfile::tempdir`],
+//! constructs a new [`FsBackend`] rooted there, and exercises the full
+//! [`StorageBackend`] API against real files on disk. The tests verify both the
+//! happy path (create → read → update → delete) and error paths (operations on
+//! non-existent entities must return [`StorageError::NotFound`]).
+
 use keeplin_core::{
     error::StorageError,
     models::{Note, NoteTag, Notebook, Resource, Tag},
@@ -103,7 +111,9 @@ async fn sync_state_persists() {
     backend.update_sync_time(ts).await.unwrap();
 
     let read = backend.get_last_sync_time().await.unwrap();
-    // Compare with second-level precision (RFC-3339 round-trip)
+    // The sync timestamp is serialised as an RFC-3339 string and then deserialised
+    // back. Sub-second precision may be lost during that round-trip, so the
+    // comparison is done at second-level granularity using Unix timestamps.
     assert_eq!(
         read.timestamp(),
         ts.timestamp(),
@@ -118,7 +128,9 @@ async fn get_changes_since_scans_other_device_logs() {
     let dir = tempdir().unwrap();
     let our = FsBackend::new(dir.path()).await.unwrap();
 
-    // Simulate a log file written by a different device
+    // Simulate a log file that a different device has written and Syncthing has
+    // replicated into the `logs/` directory. The file name must differ from this
+    // device's own log file name so that `get_changes_since` does not skip it.
     let other_note = Note::new("Remote note", "Remote body");
     let entry = serde_json::json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),

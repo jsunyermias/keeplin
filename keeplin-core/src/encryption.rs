@@ -1,3 +1,21 @@
+//! Transparent at-rest encryption decorator for any [`StorageBackend`].
+//!
+//! [`EncryptedBackend<B>`] wraps any `B: StorageBackend` and automatically encrypts
+//! sensitive fields before they are written to the inner backend, then decrypts them
+//! on the way back out. Callers interact with the encrypted backend through the same
+//! `StorageBackend` trait as a plain backend — encryption is completely transparent.
+//!
+//! # Encryption scheme
+//!
+//! - Cipher: **AES-256-GCM** (authenticated encryption; any tampering is detected).
+//! - Key derivation: **Argon2id** (memory = 64 MiB, iterations = 3, parallelism = 1).
+//! - Salt: the device ID returned by the inner backend. Using the device ID as the salt
+//!   ensures that the same passphrase produces a different key on every installation,
+//!   preventing cross-device key reuse.
+//! - Nonce: 12 random bytes generated fresh for **every** encryption call.
+//! - Wire format (strings): `base64(nonce ‖ ciphertext)`.
+//! - Wire format (bytes): raw `nonce ‖ ciphertext` bytes (no Base64 for binary data).
+
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Key, Nonce,
@@ -14,17 +32,37 @@ use crate::{
     storage::StorageBackend,
 };
 
+/// Length in bytes of the AES-GCM nonce. AES-GCM is specified with a 96-bit (12-byte)
+/// nonce; this value must not be changed without also changing the cipher.
 const NONCE_LEN: usize = 12;
 
+/// Transparent AES-256-GCM encryption wrapper around any [`StorageBackend`].
+///
+/// Sensitive string fields (`Note.title`, `Note.body`, `Notebook.title`, `Tag.title`,
+/// `Resource.title`, `Resource.mime_type`, `Resource.file_name`) and binary resource
+/// payloads are encrypted before being passed to the inner backend. All other fields
+/// (UUIDs, timestamps, sizes, association tables) are stored in plaintext because they
+/// are needed for queries and contain no user-supplied content that requires protection.
 pub struct EncryptedBackend<B: StorageBackend> {
+    /// The underlying backend that stores (encrypted) data. All read/write operations
+    /// ultimately go through this field.
     inner: B,
+    /// The AES-256-GCM cipher instance, initialised once with the Argon2id-derived key.
     cipher: Aes256Gcm,
 }
 
 impl<B: StorageBackend> EncryptedBackend<B> {
-    /// Create an EncryptedBackend.  The backend's `get_device_id()` is used as
-    /// the Argon2id salt so that the derived key is stable per installation but
-    /// unique across installations even when the same password is used.
+    /// Constructs an `EncryptedBackend` wrapping `inner`.
+    ///
+    /// Calls `inner.get_device_id()` to obtain the Argon2id salt, then derives a
+    /// 256-bit AES key from `password` and that salt. The key is stable per
+    /// installation (the device ID is persisted on disk) but unique across installations
+    /// even when the same password is used.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::InvalidState` if Argon2id parameter construction fails or
+    /// the inner backend's `get_device_id()` returns an error.
     pub async fn new(inner: B, password: &str) -> Result<Self, StorageError> {
         let device_id = inner.get_device_id().await?;
         let key = derive_key(password, device_id.as_bytes())?;
@@ -32,17 +70,33 @@ impl<B: StorageBackend> EncryptedBackend<B> {
         Ok(Self { inner, cipher })
     }
 
+    /// Encrypts a plaintext string and returns `base64(nonce ‖ ciphertext)`.
+    ///
+    /// A fresh 12-byte random nonce is generated for every call so that the same
+    /// plaintext encrypted twice produces two different ciphertexts. This is required
+    /// for semantic security under AES-GCM.
     fn encrypt_str(&self, plaintext: &str) -> Result<String, StorageError> {
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let ct = self
             .cipher
             .encrypt(&nonce, plaintext.as_bytes())
             .map_err(|e| StorageError::InvalidState(format!("encrypt: {e}")))?;
+        // Prepend the nonce to the ciphertext so the decrypt function can extract it
+        // without storing it separately. Then Base64-encode the combined buffer so the
+        // result is a plain ASCII string that can be stored in a JSON field.
         let mut combined = nonce.to_vec();
         combined.extend_from_slice(&ct);
         Ok(STANDARD.encode(&combined))
     }
 
+    /// Decrypts a string previously produced by [`encrypt_str`].
+    ///
+    /// Decodes Base64, extracts the 12-byte nonce from the front of the buffer,
+    /// decrypts the remaining bytes with AES-GCM, and interprets the result as UTF-8.
+    ///
+    /// Returns `StorageError::InvalidState` if the Base64, the AES-GCM authentication
+    /// tag, or the UTF-8 conversion fails. A wrong decryption key causes the AES-GCM
+    /// authentication tag to fail, which surfaces here as `InvalidState`.
     fn decrypt_str(&self, encoded: &str) -> Result<String, StorageError> {
         let combined = STANDARD
             .decode(encoded)
@@ -58,6 +112,10 @@ impl<B: StorageBackend> EncryptedBackend<B> {
         String::from_utf8(plain).map_err(|e| StorageError::InvalidState(format!("utf8: {e}")))
     }
 
+    /// Encrypts raw bytes and returns `nonce ‖ ciphertext` as a byte vector.
+    ///
+    /// Unlike `encrypt_str`, the result is not Base64-encoded because the caller
+    /// stores the bytes directly in a binary column or file.
     fn encrypt_bytes(&self, data: &[u8]) -> Result<Vec<u8>, StorageError> {
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let ct = self
@@ -69,6 +127,9 @@ impl<B: StorageBackend> EncryptedBackend<B> {
         Ok(combined)
     }
 
+    /// Decrypts bytes previously produced by [`encrypt_bytes`].
+    ///
+    /// Extracts the 12-byte nonce from the front of the slice and decrypts the rest.
     fn decrypt_bytes(&self, data: &[u8]) -> Result<Vec<u8>, StorageError> {
         if data.len() < NONCE_LEN {
             return Err(StorageError::InvalidState("ciphertext too short".into()));
@@ -126,8 +187,18 @@ impl<B: StorageBackend> EncryptedBackend<B> {
     }
 }
 
-/// Derive a 32-byte AES key using Argon2id.
-/// `salt` should be a stable, per-installation value (e.g. the device ID).
+/// Derives a 32-byte (256-bit) AES key from a password and a salt using Argon2id.
+///
+/// Parameters chosen for a balance between security and performance on typical
+/// desktop hardware (approximately 300 ms on a modern laptop):
+/// - Memory: 64 MiB (`65536` KiB)
+/// - Iterations: 3
+/// - Parallelism: 1 (single-threaded)
+/// - Output length: 32 bytes
+///
+/// `salt` must be a stable, per-installation byte sequence (e.g. the device ID string)
+/// so that the derived key is different on every device even when the same password is
+/// used. The salt does not need to be secret, but it must be persisted across restarts.
 fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32], StorageError> {
     let params = Params::new(65536, 3, 1, Some(32))
         .map_err(|e| StorageError::InvalidState(format!("argon2 params: {e}")))?;
@@ -277,7 +348,10 @@ impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
             .collect()
     }
 
-    // Sync methods pass through: encrypted data travels and is stored encrypted.
+    // Synchronisation methods pass through without any transformation.
+    // The data that travels over the sync channel is already in the encrypted form
+    // that the inner backend stored on disk, so no additional encryption or
+    // decryption step is needed here.
     async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError> {
         self.inner.get_changes_since(since).await
     }

@@ -1,3 +1,10 @@
+//! gRPC service implementation for the Keeplin daemon.
+//!
+//! This module defines [`KeeplinServer<B>`], which implements the `KeeplinService`
+//! trait generated from `proto/keeplin.proto`. It bridges between the protobuf wire
+//! types (e.g. `proto::keeplin::Note`) and the domain types in `keeplin-core`
+//! (e.g. `models::Note`), delegating all persistence to a generic [`StorageBackend`].
+
 use std::{pin::Pin, sync::Arc};
 
 use keeplin_core::{
@@ -28,6 +35,10 @@ use crate::proto::keeplin::{
 };
 
 // ── Conversion helpers ────────────────────────────────────────────────────────
+// These functions are stateless and infallible (they only map known fields). They
+// are kept as free functions rather than `From` impls because the proto and domain
+// types live in separate crates and the orphan rule would prevent implementing
+// `From<CoreNote> for proto::Note` here.
 
 fn note_to_proto(n: CoreNote) -> Note {
     Note {
@@ -75,6 +86,11 @@ fn tag_to_proto(t: CoreTag) -> Tag {
     }
 }
 
+/// Maps a `StorageError` to the appropriate gRPC `Status` code.
+///
+/// `NotFound` errors map to `status::not_found` (HTTP 404 equivalent) so that clients
+/// can distinguish "entity does not exist" from general server failures. All other
+/// errors map to `status::internal` (HTTP 500 equivalent).
 fn storage_err(e: StorageError) -> Status {
     match &e {
         StorageError::NotFound(_) => Status::not_found(e.to_string()),
@@ -82,12 +98,21 @@ fn storage_err(e: StorageError) -> Status {
     }
 }
 
+/// Parses a UUID string received in a protobuf field.
+///
+/// Returns `Status::invalid_argument` if the string is not a valid UUID, including the
+/// field name in the error message so the client knows which field failed.
 #[allow(clippy::result_large_err)]
 fn parse_uuid(s: &str, field: &str) -> Result<Uuid, Status> {
     s.parse::<Uuid>()
         .map_err(|_| Status::invalid_argument(format!("{field} is not a valid UUID")))
 }
 
+/// Parses an optional RFC-3339 timestamp received in a protobuf string field.
+///
+/// Returns `None` when the string is empty (proto3 convention for absent optional
+/// timestamps). Returns `Status::invalid_argument` if the string is non-empty but
+/// is not a valid RFC-3339 timestamp.
 #[allow(clippy::result_large_err)]
 fn parse_optional_dt(s: &str) -> Result<Option<chrono::DateTime<chrono::Utc>>, Status> {
     if s.is_empty() {
@@ -126,11 +151,23 @@ fn proto_to_note(n: Note) -> Result<CoreNote, Status> {
 
 // ── Server ────────────────────────────────────────────────────────────────────
 
+/// The gRPC service handler.
+///
+/// `KeeplinServer<B>` is generic over the storage backend so the compiler can
+/// monomorphise a single copy for the backend type chosen at startup (e.g.
+/// `EncryptedBackend<FsBackend>` or `DbBackend`). The backend is wrapped in `Arc`
+/// so it can be shared across the concurrent async tasks that tonic spawns for each
+/// incoming RPC call.
 pub struct KeeplinServer<B: StorageBackend> {
+    /// Reference-counted handle to the backend shared across all handler tasks.
     backend: Arc<B>,
 }
 
 impl<B: StorageBackend> KeeplinServer<B> {
+    /// Wraps `backend` in an `Arc` and returns a new server.
+    ///
+    /// The resulting server should be passed to
+    /// `KeeplinServiceServer::new(server)` before being registered with tonic.
     pub fn new(backend: B) -> Self {
         Self {
             backend: Arc::new(backend),

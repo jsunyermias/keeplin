@@ -1,3 +1,12 @@
+//! Integration tests for [`EncryptedBackend`] — the AES-256-GCM encryption decorator.
+//!
+//! Every test in this module builds an [`EncryptedBackend<FsBackend>`] via the
+//! [`enc_backend`] helper and exercises the full [`StorageBackend`] API through the
+//! encryption layer. Key properties verified: round-trip correctness (encrypted data
+//! decrypts to the original plaintext), confidentiality (raw files on disk must not
+//! contain plaintext strings or bytes), and authentication (a wrong decryption password
+//! causes an error rather than returning corrupt data).
+
 use keeplin_core::{
     encryption::EncryptedBackend,
     models::{Note, NoteTag, Notebook, Resource, Tag},
@@ -5,6 +14,14 @@ use keeplin_core::{
 };
 use tempfile::tempdir;
 
+/// Create an `EncryptedBackend<FsBackend>` rooted at `dir` with the fixed passphrase
+/// `"test-password"`.
+///
+/// The passphrase is the same in every test so the AES-256-GCM key derived by Argon2id
+/// is deterministic for a given `dir` (because the Argon2id salt is the device ID stored
+/// in `.keeplin/device_id`, which is generated once per directory). Tests that need to
+/// verify that a **wrong** password fails to decrypt use separate `EncryptedBackend`
+/// instances with different passphrases rather than calling this helper.
 async fn enc_backend(dir: &std::path::Path) -> EncryptedBackend<FsBackend> {
     let fs = FsBackend::new(dir).await.unwrap();
     EncryptedBackend::new(fs, "test-password").await.unwrap()
@@ -33,7 +50,9 @@ async fn storage_contains_ciphertext_not_plaintext() {
     let id = note.id;
     backend.create_note(note).await.unwrap();
 
-    // Raw on-disk file must not expose the plaintext
+    // Read the raw bytes of the note's metadata file directly from the filesystem,
+    // bypassing the `EncryptedBackend` layer. The file must not contain the plaintext
+    // title or body strings anywhere in its content.
     let meta_path = dir
         .path()
         .join("notes")
@@ -54,14 +73,17 @@ async fn storage_contains_ciphertext_not_plaintext() {
 async fn wrong_password_fails_to_decrypt() {
     let dir = tempdir().unwrap();
 
-    // Write with correct password
+    // Encrypt and persist the note using the correct password so that the data
+    // file on disk contains ciphertext derived from that specific passphrase.
     let fs1 = FsBackend::new(dir.path()).await.unwrap();
     let enc1 = EncryptedBackend::new(fs1, "correct").await.unwrap();
     let note = Note::new("Hello", "World");
     let id = note.id;
     enc1.create_note(note).await.unwrap();
 
-    // Read with wrong password
+    // Attempt to decrypt using a different password. The AES-GCM authentication tag
+    // will fail because the derived key is different, surfacing as a
+    // `StorageError::InvalidState` rather than returning silently corrupt data.
     let fs2 = FsBackend::new(dir.path()).await.unwrap();
     let enc2 = EncryptedBackend::new(fs2, "wrong").await.unwrap();
     assert!(
@@ -188,7 +210,9 @@ async fn resource_data_stored_encrypted() {
     let id = res.id;
     backend.create_resource(res, data).await.unwrap();
 
-    // Raw bytes on disk should not match plaintext
+    // Read the raw binary resource data file directly from the filesystem, bypassing
+    // the `EncryptedBackend` layer. The file contains `nonce || ciphertext` (raw
+    // bytes, no Base64 wrapper) and must not equal the original plaintext bytes.
     let data_path = dir
         .path()
         .join("resources")
