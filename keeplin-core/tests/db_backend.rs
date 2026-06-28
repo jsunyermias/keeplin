@@ -1,3 +1,12 @@
+//! Integration tests for [`DbBackend`] — the LibSQL-backed storage implementation.
+//!
+//! Every test in this module uses [`in_memory_backend`], a helper that creates a
+//! [`DbBackend`] backed by a temporary file with an empty `server_url` so no
+//! WebSocket connection is attempted. The tests cover the complete
+//! [`StorageBackend`] API at the SQLite level, including soft-deletion semantics,
+//! the `entity_changes` change journal, and device-ID persistence. WebSocket
+//! synchronisation paths are not exercised here because they require a live server.
+
 use keeplin_core::{
     error::StorageError,
     models::{Note, NoteTag, Notebook, Resource, Tag},
@@ -5,10 +14,19 @@ use keeplin_core::{
 };
 use tempfile::tempdir;
 
+/// Create a `DbBackend` backed by a temporary file database with no server URL.
+///
+/// Passing an empty string for `server_url` and `auth_token` puts the backend in
+/// offline mode so no WebSocket connection is attempted. The `tempdir` is intentionally
+/// leaked with `std::mem::forget` to prevent the temporary directory from being deleted
+/// before the test completes — the directory must stay alive as long as the database
+/// file is open.
 async fn in_memory_backend() -> DbBackend {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("test.db");
-    // Leaking the dir so the path stays valid for the duration of the test.
+    // The temporary directory must outlive the database connection. Leaking it here
+    // prevents the destructor from deleting the directory while the database file
+    // is still open. The OS will clean up the temporary directory when the process exits.
     std::mem::forget(dir);
     DbBackend::new(db_path, "", "").await.unwrap()
 }
@@ -114,7 +132,9 @@ async fn get_changes_since_returns_updated_notes() {
 
     let changes = backend.get_changes_since(before).await.unwrap();
     assert!(!changes.is_empty());
-    // A note created after `since` must surface as Create, not Update.
+    // A note that was created (not merely updated) after `since` must appear
+    // in the change list as `Change::NoteCreate`, not `Change::NoteUpdate`,
+    // because the `entity_changes` journal records the original operation type.
     assert!(matches!(changes[0], Change::NoteCreate { .. }));
 }
 

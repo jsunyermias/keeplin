@@ -1,11 +1,30 @@
+//! Runtime configuration for the `keeplin-daemon` binary.
+//!
+//! This module defines the [`Config`] struct, which is deserialized from a TOML
+//! file on startup, and the [`Mode`] enum, which selects between local-only filesystem
+//! storage (`Offline`) and server-backed LibSQL storage (`Server`). Sensitive fields
+//! such as passwords can be overridden at runtime by environment variables so they
+//! never need to appear in the TOML file on disk.
+
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// The storage back-end mode that the daemon should use.
+///
+/// The serialised form (in TOML / JSON) uses lowercase strings (`"offline"` or
+/// `"server"`) because the `#[serde(rename_all = "lowercase")]` attribute is applied
+/// to this enum.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
+    /// Store data locally in the filesystem (`FsBackend`). An external
+    /// file-synchronisation tool such as Syncthing is responsible for replicating
+    /// data between devices. No network connection to a central server is required.
     #[default]
     Offline,
+    /// Store data in a local LibSQL database and synchronise with a central server
+    /// over a WebSocket connection (`DbBackend`). The server URL and authentication
+    /// token must be provided in the configuration file.
     Server,
 }
 
@@ -66,15 +85,34 @@ pub struct Config {
     pub auth_password: Option<String>,
 }
 
+/// Returns the default gRPC listen address: `127.0.0.1:50051`.
+///
+/// Binding to the loopback interface by default prevents accidental network exposure
+/// without authentication when the daemon is first started with no configuration file.
 fn default_grpc_addr() -> String {
     "127.0.0.1:50051".to_string()
 }
 
+/// Returns the default maximum gRPC message size in bytes (32 MiB = 33,554,432 bytes).
+///
+/// This limit applies to both incoming (decoding) and outgoing (encoding) messages.
+/// 32 MiB covers typical PDFs and images without requiring manual tuning for most
+/// use cases.
 fn default_max_message_size() -> usize {
     32 * 1024 * 1024
 }
 
 impl Config {
+    /// Load a [`Config`] from a TOML file at `path`.
+    ///
+    /// Reads the entire file into memory, parses it with the `toml` crate, and
+    /// returns the resulting `Config`. Missing optional fields fall back to their
+    /// `#[serde(default)]` values so a minimal TOML file with only `data_dir` is
+    /// sufficient to start the daemon in offline mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be read or if the TOML is malformed.
     pub fn from_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let raw = std::fs::read_to_string(path)?;
         let cfg: Config = toml::from_str(&raw)?;

@@ -1,3 +1,12 @@
+//! Entry point for `keeplin-daemon` — the gRPC server that exposes the Keeplin
+//! note-taking API over a network socket.
+//!
+//! This file wires together three sub-modules (`config`, `proto`, `server`),
+//! selects the correct storage back-end based on the loaded [`Config`], optionally
+//! wraps it with [`EncryptedBackend`] for at-rest encryption, attaches a Basic-Auth
+//! interceptor to every incoming gRPC call, and then starts the tonic server.
+//! Graceful shutdown is triggered by a CTRL-C (SIGINT) signal.
+
 mod config;
 mod proto;
 mod server;
@@ -22,7 +31,10 @@ use crate::{
 #[derive(Parser, Debug)]
 #[command(name = "keeplin-daemon", about = "Keeplin core daemon (gRPC)")]
 struct Args {
-    /// Path to the TOML configuration file.
+    /// Path to the TOML configuration file. The file is read once on startup;
+    /// changes to the file while the daemon is running have no effect. If the
+    /// file does not exist at startup, the daemon falls back to [`Config::default`]
+    /// and logs a warning.
     #[arg(short, long, default_value = "keeplin.toml")]
     config: std::path::PathBuf,
 }
@@ -45,8 +57,10 @@ async fn main() -> anyhow::Result<()> {
         Config::default()
     };
 
-    // Environment variables take precedence over the config file so passwords
-    // are never stored on disk in plaintext.
+    // Environment variable overrides are applied after the TOML file is parsed.
+    // This allows operators to keep sensitive credentials out of the configuration
+    // file entirely — the file can be committed to version control while secrets
+    // are injected at deploy time through environment variables.
     if let Ok(pw) = std::env::var("KEEPLIN_ENCRYPTION_PASSWORD") {
         cfg.encryption_password = Some(pw);
     }
@@ -59,7 +73,9 @@ async fn main() -> anyhow::Result<()> {
 
     let addr: std::net::SocketAddr = cfg.grpc_addr.parse()?;
 
-    // Warn loudly when the gRPC port is reachable from the network without auth.
+    // Emit a warning when the gRPC port is bound to a non-loopback address but
+    // no authentication credentials are configured. Without auth, any process on
+    // the network can read, modify, or delete notes. The warning is loud by design.
     let auth_configured = cfg.auth_username.is_some() && cfg.auth_password.is_some();
     if !addr.ip().is_loopback() && !auth_configured {
         tracing::warn!(
@@ -102,6 +118,21 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Configure and start the tonic gRPC server with the given `backend`.
+///
+/// This function is generic over `B: StorageBackend` so the compiler generates a
+/// separate, fully inlined version for each combination of storage mode and
+/// encryption — avoiding runtime dispatch overhead. Steps performed:
+///
+/// 1. Build a `KeeplinServiceServer` from `KeeplinServer<B>` and apply message-size limits.
+/// 2. Wrap the service with a `Basic-Auth` interceptor (a no-op when no credentials
+///    are configured).
+/// 3. Optionally load a TLS identity from PEM files and enable TLS on the server builder.
+/// 4. Serve the service at `addr` and block until a CTRL-C signal arrives.
+///
+/// The `#[allow(clippy::result_large_err)]` attribute suppresses a Clippy warning that
+/// arises because tonic's `tls_config` returns a large `Err` variant; the error is only
+/// returned once during startup so heap allocation is not a concern here.
 #[allow(clippy::result_large_err)]
 async fn run_server<B: keeplin_core::storage::StorageBackend>(
     cfg: &Config,
@@ -114,7 +145,9 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
         .max_decoding_message_size(cfg.max_message_size)
         .max_encoding_message_size(cfg.max_message_size);
 
-    // Wrap every RPC with the same Basic-Auth interceptor regardless of mode.
+    // Wrap every RPC with the same Basic-Auth interceptor so authentication applies
+    // uniformly to all methods regardless of the storage mode chosen. When neither
+    // auth_username nor auth_password is set, the interceptor is a transparent no-op.
     let svc = InterceptedService::new(svc_inner, move |req: tonic::Request<()>| {
         validate_basic_auth(req, auth_user.as_deref(), auth_pass.as_deref())
     });
@@ -141,8 +174,29 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
     Ok(())
 }
 
-/// Validate an `Authorization: Basic <base64(user:pass)>` header on every RPC.
-/// If credentials are not configured in the server, all calls are allowed through.
+/// Validate an HTTP Basic Authentication header on an incoming gRPC request.
+///
+/// The expected wire format of the header is:
+/// `Authorization: Basic <base64(username ":" password)>`
+///
+/// When `expected_user` and `expected_pass` are both `None` (authentication is not
+/// configured), the function returns `Ok(req)` immediately and allows all callers
+/// through without checking any header.
+///
+/// When both expected values are provided, the function:
+/// 1. Extracts the `authorization` metadata entry from the request.
+/// 2. Strips the `"Basic "` prefix to obtain the Base64-encoded credentials.
+/// 3. Decodes the Base64 payload and splits on the **first** colon to separate the
+///    username from the password. Passwords may themselves contain colons.
+/// 4. Compares username and password using [`subtle::ConstantTimeEq`] to prevent
+///    timing side-channels that could reveal the correct credential length.
+///
+/// Returns `Err(tonic::Status::unauthenticated(...))` for any malformed header or
+/// wrong credentials. The specific rejection reason is intentionally terse to avoid
+/// leaking information to an unauthenticated caller.
+///
+/// The `#[allow(clippy::result_large_err)]` attribute is required because
+/// `tonic::Status` exceeds Clippy's default size threshold for `Err` variants.
 #[allow(clippy::result_large_err)]
 fn validate_basic_auth(
     req: tonic::Request<()>,
@@ -189,6 +243,9 @@ fn validate_basic_auth(
 mod tests {
     use super::*;
 
+    /// Build a bare tonic `Request<()>` and optionally attach an `authorization`
+    /// metadata entry. The value string must already be in the correct wire format
+    /// (e.g. `"Basic <base64>"`).
     fn make_req(auth_header: Option<&str>) -> tonic::Request<()> {
         let mut req = tonic::Request::new(());
         if let Some(v) = auth_header {
@@ -198,6 +255,9 @@ mod tests {
         req
     }
 
+    /// Format a well-formed `Authorization: Basic` header value for the given
+    /// username and password pair. The colon separator between the two values is
+    /// included before Base64 encoding, matching RFC 7617.
     fn basic(user: &str, pass: &str) -> String {
         format!("Basic {}", STANDARD.encode(format!("{user}:{pass}")))
     }
@@ -258,7 +318,8 @@ mod tests {
 
     #[test]
     fn auth_password_containing_colon_works() {
-        // Only the FIRST colon splits user from password.
+        // RFC 7617 requires splitting on the first colon only, so passwords that
+        // themselves contain colons (a common practice) must be accepted without error.
         let pass = "p:a:s:s:word";
         let req = make_req(Some(&basic("alice", pass)));
         assert!(validate_basic_auth(req, Some("alice"), Some(pass)).is_ok());

@@ -1,3 +1,13 @@
+//! LibSQL-backed implementation of [`StorageBackend`] with WebSocket synchronisation.
+//!
+//! [`DbBackend`] stores all data in a local LibSQL (SQLite-compatible) database and
+//! replicates mutations to a central server over a WebSocket connection. Every write
+//! operation appends a row to the `entity_changes` journal table so that
+//! `get_changes_since` can return a complete, ordered list of mutations since any
+//! given point in time. Binary resource data is stored directly in the `resources`
+//! table as a BLOB and is also embedded in the change journal as a Base64-encoded
+//! `_data_b64` field so remote peers can reconstruct the full resource payload.
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -16,22 +26,69 @@ use crate::{
 
 use super::StorageBackend;
 
+/// A WebSocket stream over either a plain TCP connection or a TLS-wrapped TCP connection.
+///
+/// `tokio_tungstenite::MaybeTlsStream` transparently handles both cases, so the
+/// daemon can connect to `ws://` and `wss://` servers without changing this type.
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 // ── DbBackend ─────────────────────────────────────────────────────────────────
 
-/// Server-backed storage. Uses LibSQL for local persistence and a WebSocket
-/// connection to a central server for real-time synchronisation.
+/// LibSQL-backed implementation of [`StorageBackend`] with optional WebSocket synchronisation.
+///
+/// All entities are stored in a local SQLite-compatible database opened via the
+/// `libsql` crate. Every mutation is also recorded in the `entity_changes` append-only
+/// table so that `get_changes_since` can efficiently enumerate all changes after a
+/// given point in time.
+///
+/// When `server_url` is non-empty, a WebSocket connection is established on construction
+/// and used by `send_changes` / `receive_changes` to exchange change batches with a
+/// central server. If the WebSocket connection fails at any point, `ensure_ws` attempts
+/// a reconnect before the next operation; while disconnected, the local database
+/// continues to work normally and changes accumulate in `entity_changes` for the next
+/// successful push.
 pub struct DbBackend {
+    /// The open LibSQL connection to the local database file.
     conn: libsql::Connection,
+    /// The `ws://` or `wss://` URL of the synchronisation server. Empty string
+    /// means offline mode — no WebSocket connection is attempted.
     server_url: String,
+    /// The bearer token sent in the first WebSocket message for server authentication.
+    /// Stored here so `ensure_ws` can re-authenticate on reconnect without requiring
+    /// the caller to pass the token again.
     auth_token: String,
+    /// The live WebSocket stream wrapped in a mutex so it can be accessed from
+    /// multiple async tasks without data races. The `Option` represents the
+    /// connection being absent (either not configured or lost and not yet reconnected).
     ws: Arc<Mutex<Option<WsStream>>>,
+    /// A UUID string that permanently identifies this installation of the database.
+    /// It is stored in the `device` table and is sent in every change batch so the
+    /// server can identify the originating device and deduplicate messages.
     device_id: String,
 }
 
 impl DbBackend {
+    /// Open (or create) a LibSQL database at `db_path`, run all pending schema
+    /// migrations, and optionally connect to the synchronisation server.
+    ///
+    /// # Parameters
+    ///
+    /// - `db_path` — Path to the SQLite database file. The file is created if it does
+    ///   not exist. Passing an empty string opens an in-memory database (useful for
+    ///   tests), but LibSQL currently requires a real path, so tests use a path inside
+    ///   a temporary directory.
+    /// - `server_url` — WebSocket URL of the sync server (`"ws://…"` or `"wss://…"`).
+    ///   Pass an empty string to run in offline mode without any WebSocket connection.
+    /// - `auth_token` — Authentication token sent to the server as the first WebSocket
+    ///   message. Ignored when `server_url` is empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if the database file cannot be opened, if schema
+    /// migrations fail, or if the device-ID cannot be read from (or written to) the
+    /// `device` table. A WebSocket connection failure is treated as a non-fatal warning:
+    /// the backend is returned in offline mode rather than failing the constructor.
     pub async fn new(
         db_path: impl AsRef<std::path::Path>,
         server_url: impl Into<String>,
@@ -73,6 +130,23 @@ impl DbBackend {
 
     // ── Migrations ────────────────────────────────────────────────────────────
 
+    /// Create all required tables and indexes if they do not already exist.
+    ///
+    /// All statements use `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`
+    /// so this method is safe to call on every startup without checking the current
+    /// schema version. Adding columns to existing tables requires a separate migration
+    /// path (not yet needed) because SQLite does not support `ADD COLUMN IF NOT EXISTS`
+    /// in older versions.
+    ///
+    /// Tables created:
+    /// - `notes` — note records with soft-deletion via `deleted_at`.
+    /// - `notebooks` — notebook records with soft-deletion.
+    /// - `tags` — tag records with soft-deletion.
+    /// - `note_tags` — many-to-many association between notes and tags.
+    /// - `resources` — resource metadata and binary payload.
+    /// - `sync_state` — key/value store for the last-sync timestamp.
+    /// - `device` — stores the single device-identifier UUID.
+    /// - `entity_changes` — append-only change journal used by `get_changes_since`.
     async fn run_migrations(conn: &libsql::Connection) -> Result<(), StorageError> {
         conn.execute_batch(
             "
@@ -130,8 +204,13 @@ impl DbBackend {
                 id TEXT PRIMARY KEY
             );
 
-            -- Append-only change journal used by get_changes_since.
-            -- Covers all entity types (notes, notebooks, tags, note_tags, resources).
+            -- Append-only change journal that records every mutation in insertion order.
+            -- The `id` column is an auto-incrementing integer that serves as a
+            -- tie-breaker when two changes share the same `changed_at` timestamp.
+            -- The `data` column stores the full entity JSON for create/update operations
+            -- and is NULL for delete operations. For resource creates, the JSON also
+            -- contains a `_data_b64` key with the Base64-encoded binary payload so
+            -- remote peers can reconstruct the complete resource from the journal alone.
             CREATE TABLE IF NOT EXISTS entity_changes (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 entity_type TEXT     NOT NULL,
@@ -153,6 +232,16 @@ impl DbBackend {
 
     // ── Device ID ─────────────────────────────────────────────────────────────
 
+    /// Read the device identifier from the `device` table, or insert a new UUID v4
+    /// string if the table is empty.
+    ///
+    /// The `device` table holds at most one row. On the very first startup the table
+    /// is empty, so a new UUID is generated and inserted. On all subsequent startups
+    /// the existing row is returned unchanged.
+    ///
+    /// The device identifier is included in every change batch sent to the server
+    /// (as `"device_id"`) so the server can route changes to the correct recipient
+    /// and avoid echoing a device's own changes back to itself.
     async fn get_or_create_device_id(conn: &libsql::Connection) -> Result<String, StorageError> {
         let mut rows = conn.query("SELECT id FROM device LIMIT 1", ()).await?;
 
@@ -168,6 +257,25 @@ impl DbBackend {
 
     // ── Change journal ────────────────────────────────────────────────────────
 
+    /// Insert one row into the `entity_changes` append-only journal.
+    ///
+    /// This helper is called by every mutating `StorageBackend` method immediately
+    /// after the primary table operation succeeds. Because both writes happen on the
+    /// same LibSQL connection (no transaction isolation is used here), a crash between
+    /// the two writes could leave the primary table updated but the journal entry
+    /// missing. In practice this means `get_changes_since` might miss a change; the
+    /// next sync cycle will re-read the primary table state and catch up.
+    ///
+    /// # Parameters
+    ///
+    /// - `entity_type` — one of `"note"`, `"notebook"`, `"tag"`, `"note_tag"`,
+    ///   or `"resource"`.
+    /// - `entity_id` — the UUID string of the affected entity (the note_id for
+    ///   `note_tag` operations).
+    /// - `operation` — one of `"create"`, `"update"`, `"delete"`, `"add"`, or
+    ///   `"remove"`.
+    /// - `data` — the full entity serialised as a JSON string, or `None` for
+    ///   delete operations where no payload is needed.
     async fn record_change(
         &self,
         entity_type: &str,
@@ -187,9 +295,27 @@ impl DbBackend {
 
     // ── WebSocket ─────────────────────────────────────────────────────────────
 
+    /// Open a WebSocket connection to `url` and perform the application-level
+    /// handshake by sending an authentication token as the first message.
+    ///
+    /// The handshake message format is:
+    /// ```json
+    /// { "type": "auth", "token": "<auth_token>" }
+    /// ```
+    ///
+    /// The server is expected to validate the token and either accept subsequent
+    /// messages or close the connection. If the server closes the connection, the
+    /// next call to `send_changes` or `receive_changes` will detect the closure and
+    /// set the WebSocket field to `None`, triggering a reconnect on the next attempt.
+    ///
+    /// **Security note:** The token is sent in plaintext over the WebSocket. Always
+    /// use a `wss://` (TLS) URL in production to prevent the token from being
+    /// intercepted in transit.
     async fn connect_ws(url: &str, token: &str) -> Result<WsStream, StorageError> {
         let (mut stream, _) = connect_async(url).await?;
-        // Send auth token as first message
+        // Send the authentication token immediately after the WebSocket handshake
+        // so the server can verify the caller's identity before processing any
+        // further messages.
         stream
             .send(Message::Text(
                 serde_json::json!({ "type": "auth", "token": token }).to_string(),
@@ -269,8 +395,22 @@ impl DbBackend {
         })
     }
 
-    /// Map an entity_changes row (entity_type, entity_id, operation, data_json)
-    /// to a `Change`.  Returns `None` for unrecognised entries.
+    /// Convert a row from the `entity_changes` table into a typed [`Change`] variant.
+    ///
+    /// The four columns passed to this function correspond to the `entity_type`,
+    /// `entity_id`, `operation`, and `data` columns of the `entity_changes` table.
+    /// The `data` argument is a `serde_json::Value` already parsed from the stored
+    /// JSON string (or `Null` when the column value is `NULL`).
+    ///
+    /// Returns `None` for any `(entity_type, operation)` combination that is not
+    /// recognised. This can happen if a future version of the software added new
+    /// entity types or operations that this version does not know about. Callers
+    /// should log a warning and skip `None` entries without aborting the sync.
+    ///
+    /// For resource creates, the function checks for a `_data_b64` key in `data`.
+    /// If present, it decodes the Base64 payload and attaches it to the
+    /// `ResourceCreate.data` field so that peers without a copy of the binary file
+    /// can reconstruct the full resource from the change record alone.
     fn row_to_change(
         entity_type: &str,
         entity_id_str: &str,
@@ -330,6 +470,14 @@ impl DbBackend {
         }
     }
 
+    /// Reconnect the WebSocket if the current connection slot is empty and a server
+    /// URL is configured.
+    ///
+    /// This method is called at the start of `send_changes` and `receive_changes`.
+    /// When the connection was lost (the slot was set to `None` by a previous error),
+    /// a fresh connection is established and re-authenticated. If reconnection fails,
+    /// the slot remains `None` and the caller silently skips the network operation
+    /// (changes accumulate locally until the connection is restored).
     async fn ensure_ws(guard: &mut Option<WsStream>, url: &str, token: &str) {
         if guard.is_none() && !url.is_empty() {
             match Self::connect_ws(url, token).await {
@@ -701,7 +849,11 @@ impl StorageBackend for DbBackend {
         resource: Resource,
         data: Vec<u8>,
     ) -> Result<Resource, StorageError> {
-        // Encode before data is moved into the SQL params.
+        // Encode the binary payload as Base64 before moving `data` into the SQL
+        // parameter list. The Base64 string is stored in the `entity_changes` journal
+        // under the key `_data_b64` so that peers that receive this change via
+        // `get_changes_since` can retrieve the full binary resource without needing
+        // to download it separately.
         let data_b64 = STANDARD.encode(&data);
         self.conn
             .execute(
@@ -925,8 +1077,13 @@ impl StorageBackend for DbBackend {
                     )
                     .await?;
             }
-            // Resources — insert with data if available, metadata-only otherwise.
-            // INSERT OR IGNORE prevents overwriting an existing row that already has data.
+            // Apply a remote resource-create change. When `data` is `Some` (the change
+            // came from a peer that embedded the binary payload in the change record),
+            // the payload is inserted into the `resources.data` column. When `data` is
+            // `None` (the change came from an FsBackend peer that relies on file
+            // replication), an empty byte vector is stored as a placeholder.
+            // `INSERT OR IGNORE` is used to avoid overwriting a row that was already
+            // inserted with a real payload by a concurrent or earlier operation.
             Change::ResourceCreate { resource, data } => {
                 let blob = data.unwrap_or_default();
                 self.conn
@@ -993,7 +1150,10 @@ impl StorageBackend for DbBackend {
         })
         .to_string();
 
-        // Retry with exponential backoff: 2 s, 4 s, 8 s, then give up.
+        // Retry sending with exponential backoff to tolerate transient network
+        // disruptions. Delays are 2 s, 4 s, and 8 s. After four attempts the error
+        // is propagated to the caller so the `SyncEngine` can log it and leave the
+        // last-sync timestamp unchanged for a retry on the next cycle.
         for attempt in 0u32..=3 {
             let mut guard = self.ws.lock().await;
             Self::ensure_ws(&mut guard, &self.server_url, &self.auth_token).await;
@@ -1034,7 +1194,11 @@ impl StorageBackend for DbBackend {
             tracing::warn!("No WebSocket connection; no changes received");
             return Ok(vec![]);
         }
-        // Drain all buffered messages; give up after 100 ms of silence.
+        // Drain all messages that have already been buffered in the WebSocket stream,
+        // but stop waiting after 100 milliseconds of silence. This makes `receive_changes`
+        // a bounded-time operation: it will not block indefinitely waiting for new
+        // messages to arrive. Any messages that arrive after the timeout will be picked
+        // up on the next sync cycle.
         let drain_timeout = Duration::from_millis(100);
         let mut changes = Vec::new();
         let mut connection_closed = false;

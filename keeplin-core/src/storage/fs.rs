@@ -1,3 +1,13 @@
+//! Filesystem-backed implementation of [`StorageBackend`].
+//!
+//! [`FsBackend`] stores every entity as a JSON file under a user-chosen root
+//! directory and records every mutation as a newline-delimited JSON (NDJSON) entry
+//! in a per-device log file under `{root}/logs/`. An external file-synchronisation
+//! tool such as Syncthing can replicate the entire root directory to other devices;
+//! `receive_changes` then reads the newly arrived foreign log files to discover what
+//! changed on remote devices, advancing a byte-offset cursor so each entry is
+//! processed exactly once.
+
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 
@@ -16,9 +26,18 @@ use super::StorageBackend;
 
 // ── Log entry ─────────────────────────────────────────────────────────────────
 
-/// One line in a device's NDJSON change log.
-/// `entity_type` defaults to "note" so old v1 log files (which had no such field)
-/// are parsed correctly.  `entity_id` accepts the old "note_id" key as an alias.
+/// One line in a per-device NDJSON change log.
+///
+/// Each time a mutation is performed (create, update, delete) on any entity, one
+/// `LogEntry` is appended as a single JSON object followed by a newline character.
+/// Log files are plain text files that external tools (such as Syncthing) can
+/// replicate between devices.
+///
+/// Backward-compatibility notes:
+/// - `entity_type` defaults to `"note"` so log files written by version 1 of the
+///   storage format (which had no `entity_type` field) are still parsed correctly.
+/// - `entity_id` also accepts the old field name `"note_id"` via a serde alias, for
+///   the same v1 compatibility reason.
 #[derive(Debug, Serialize, Deserialize)]
 struct LogEntry {
     timestamp: DateTime<Utc>,
@@ -34,8 +53,22 @@ fn default_entity_type() -> String {
     "note".to_string()
 }
 
-/// Convert a `LogEntry` to a `Change`.  Returns `None` for unknown combinations
-/// (malformed or future log entries); callers should skip such entries.
+/// Convert a single [`LogEntry`] read from a log file into a typed [`Change`] variant.
+///
+/// Returns `None` for any `(entity_type, operation)` combination that is not
+/// recognised. This can happen for two reasons:
+/// 1. The log line is malformed (corrupted or partially written).
+/// 2. The log line was written by a newer version of the software that added new
+///    entity types or operations not known to this version.
+///
+/// Callers are expected to skip `None` entries and continue processing the rest of
+/// the log. Skipped entries are logged as warnings by the callers that use this
+/// function.
+///
+/// Version 1 backward compatibility: the old `"note"` entity type accepted the
+/// operations `"create"`, `"update"`, and `"delete"` without any prefix. Both
+/// old-style (`"create"`) and new-style (`"note_create"`) operation strings are
+/// accepted so that logs from devices still running v1 can be integrated correctly.
 fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
     let id = entry.entity_id;
     match (entry.entity_type.as_str(), entry.operation.as_str()) {
@@ -63,7 +96,8 @@ fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
             .ok()
             .map(|tag| Change::TagUpdate { tag }),
         ("tag", "delete") => Some(Change::TagDelete { id }),
-        // NoteTag associations (tag_id stored as {"tag_id": "..."} in data)
+        // NoteTag associations store only the secondary key in the `data` field
+        // because the primary key (note_id) is already captured by `entity_id`.
         ("note_tag", "add") => {
             let tag_id: Uuid = entry.data["tag_id"].as_str()?.parse().ok()?;
             Some(Change::NoteTagAdd {
@@ -78,7 +112,9 @@ fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
                 tag_id,
             })
         }
-        // Resources — logs carry metadata only; data is replicated by Syncthing
+        // Resource log entries carry metadata (title, MIME type, file name) but not
+        // the binary payload. Syncthing replicates the data file at
+        // `{root}/resources/{id}/data` independently, so `data: None` is correct here.
         ("resource", "create") => {
             serde_json::from_value(entry.data)
                 .ok()
@@ -94,23 +130,67 @@ fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
 
 // ── Sync state ────────────────────────────────────────────────────────────────
 
+/// The contents of `.keeplin/sync_state.json`.
+///
+/// This struct records when the last complete synchronisation cycle finished.
+/// It is written atomically (via a temporary file and an OS-level rename) so a
+/// crash during the write cannot leave a partially-written file behind.
 #[derive(Debug, Serialize, Deserialize)]
 struct SyncState {
+    /// The UTC timestamp of the most recent successful sync cycle.
+    ///
+    /// On the next sync cycle, `get_changes_since` uses this value to collect only
+    /// those log entries that arrived after the previous cycle completed.
     last_sync: DateTime<Utc>,
 }
 
 // ── FsBackend ─────────────────────────────────────────────────────────────────
 
-/// Filesystem-backed storage. Changes are logged to per-device log files
-/// under `{root}/logs/`. Syncthing (or any external tool) replicates those
-/// log files; `get_changes_since` reads the *other* devices' logs to discover
-/// what changed on remote devices.
+/// Filesystem-backed implementation of [`StorageBackend`].
+///
+/// Data is stored as JSON files under the following directory tree:
+/// ```text
+/// {root}/
+///   notes/{uuid}/meta.json      — note metadata and body
+///   notebooks/{uuid}.json       — notebook metadata
+///   tags/{uuid}.json            — tag metadata
+///   note_tags/{note_uuid}/{tag_uuid}  — empty sentinel file for each association
+///   resources/{uuid}/meta.json  — resource metadata (title, MIME type, file name, size)
+///   resources/{uuid}/data       — raw binary payload
+///   logs/{device_id}.log        — this device's NDJSON change log
+///   .keeplin/device_id          — persisted UUID that identifies this installation
+///   .keeplin/format_version     — integer version stamp written on every startup
+///   .keeplin/sync_state.json    — last-sync timestamp
+///   .keeplin/offsets/{device_id} — byte-offset cursor for each foreign log file
+/// ```
+///
+/// Syncthing (or any equivalent tool) replicates the entire `{root}` tree to other
+/// devices. When a foreign device's log file appears under `{root}/logs/`, the
+/// `receive_changes` method reads new entries starting from the stored byte-offset
+/// cursor and advances the cursor so each entry is processed exactly once.
 pub struct FsBackend {
+    /// The root directory of the storage tree.
     root: PathBuf,
+    /// The UUID string that uniquely identifies this device's log file. It is read from
+    /// `.keeplin/device_id` on startup, or generated and persisted if the file does not
+    /// yet exist.
     device_id: String,
 }
 
 impl FsBackend {
+    /// Create a new `FsBackend` rooted at `root`.
+    ///
+    /// On the first call for a given directory, this method creates all required
+    /// sub-directories, generates and persists a UUID device identifier, and stamps
+    /// the current format version. On subsequent calls the directory structure is
+    /// verified to exist and the format version file is updated if needed (the actual
+    /// data migration for v1 → v2 is a no-op because the serde aliases in
+    /// [`LogEntry`] handle the old field names transparently).
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::Io` if any directory cannot be created or if the
+    /// device-ID file cannot be read or written.
     pub async fn new(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root: PathBuf = root.into();
 
@@ -135,14 +215,25 @@ impl FsBackend {
 
     // ── Format version ────────────────────────────────────────────────────────
 
-    /// Current storage format version.  Bump when a breaking structural change
-    /// makes old data unreadable without migration.
+    /// The current on-disk storage format version.
+    ///
+    /// Increment this constant when a structural change to the directory layout or
+    /// JSON schemas is made that requires an explicit data-migration step. Minor
+    /// additions that are handled transparently by serde (such as new optional fields
+    /// or serde aliases) do not require a version bump.
     const FORMAT_VERSION: u32 = 2;
 
+    /// Returns the path of the format-version stamp file: `.keeplin/format_version`.
     fn format_version_path(&self) -> PathBuf {
         self.root.join(".keeplin").join("format_version")
     }
 
+    /// Read the existing format version, perform any necessary migration steps, and
+    /// overwrite the stamp file with the current [`FORMAT_VERSION`].
+    ///
+    /// If the stamp file does not exist, the directory is assumed to be a version-1
+    /// layout. The v1 → v2 migration is a no-op because the `serde(alias)` attributes
+    /// on [`LogEntry`] already make old log files parseable without renaming any fields.
     async fn ensure_format_version(&self) -> Result<(), StorageError> {
         let path = self.format_version_path();
         let current = if path.exists() {
@@ -156,8 +247,11 @@ impl FsBackend {
         };
 
         if current < Self::FORMAT_VERSION {
-            // v1 → v2: log entries are backward-compatible via serde aliases,
-            // so no data migration is required — just stamp the new version.
+            // The v1 → v2 migration requires no data transformation because the
+            // `serde(alias = "note_id")` attribute on `LogEntry.entity_id` and the
+            // `serde(default = "default_entity_type")` attribute on `LogEntry.entity_type`
+            // together handle all v1 log files transparently at parse time. Only the
+            // version stamp itself needs to be updated.
             tracing::info!(
                 from = current,
                 to = Self::FORMAT_VERSION,
@@ -165,21 +259,28 @@ impl FsBackend {
             );
         }
 
-        // Always write (or overwrite) the version stamp.
+        // Always (re)write the version stamp so that directories originally created
+        // without a stamp file are stamped on the very first startup that uses this
+        // version of the code.
         tokio::fs::write(&path, Self::FORMAT_VERSION.to_string()).await?;
         Ok(())
     }
 
     // ── Path helpers — Notes ──────────────────────────────────────────────────
 
+    /// Returns `{root}/notes/{id}` — the directory that holds a single note's files.
     fn note_dir(&self, id: Uuid) -> PathBuf {
         self.root.join("notes").join(id.to_string())
     }
 
+    /// Returns `{root}/notes/{id}/meta.json` — the JSON file that stores a note's
+    /// metadata and body text.
     fn meta_path(&self, id: Uuid) -> PathBuf {
         self.note_dir(id).join("meta.json")
     }
 
+    /// Returns the path of the NDJSON log file owned by this device:
+    /// `{root}/logs/{device_id}.log`.
     fn device_log_path(&self) -> PathBuf {
         self.root
             .join("logs")
@@ -188,42 +289,62 @@ impl FsBackend {
 
     // ── Path helpers — Notebooks ──────────────────────────────────────────────
 
+    /// Returns `{root}/notebooks/{id}.json` — the JSON file that stores a notebook.
     fn notebook_path(&self, id: Uuid) -> PathBuf {
         self.root.join("notebooks").join(format!("{id}.json"))
     }
 
     // ── Path helpers — Tags ───────────────────────────────────────────────────
 
+    /// Returns `{root}/tags/{id}.json` — the JSON file that stores a tag.
     fn tag_path(&self, id: Uuid) -> PathBuf {
         self.root.join("tags").join(format!("{id}.json"))
     }
 
     // ── Path helpers — NoteTag ────────────────────────────────────────────────
 
+    /// Returns `{root}/note_tags/{note_id}` — the directory that holds one empty
+    /// sentinel file per tag attached to the note.
     fn note_tag_dir(&self, note_id: Uuid) -> PathBuf {
         self.root.join("note_tags").join(note_id.to_string())
     }
 
+    /// Returns `{root}/note_tags/{note_id}/{tag_id}` — the empty sentinel file that
+    /// records the association between a note and a tag. The file has no content;
+    /// its mere existence encodes the relationship.
     fn note_tag_path(&self, note_id: Uuid, tag_id: Uuid) -> PathBuf {
         self.note_tag_dir(note_id).join(tag_id.to_string())
     }
 
     // ── Path helpers — Resources ──────────────────────────────────────────────
 
+    /// Returns `{root}/resources/{id}` — the directory that holds a resource's
+    /// metadata and binary payload.
     fn resource_dir(&self, id: Uuid) -> PathBuf {
         self.root.join("resources").join(id.to_string())
     }
 
+    /// Returns `{root}/resources/{id}/meta.json` — the JSON file that stores a
+    /// resource's metadata (title, MIME type, file name, size, creation timestamp).
     fn resource_meta_path(&self, id: Uuid) -> PathBuf {
         self.resource_dir(id).join("meta.json")
     }
 
+    /// Returns `{root}/resources/{id}/data` — the file that stores the raw binary
+    /// payload of a resource. When `EncryptedBackend` is active, the payload is
+    /// stored as `nonce || ciphertext` (raw bytes, no Base64 wrapper).
     fn resource_data_path(&self, id: Uuid) -> PathBuf {
         self.resource_dir(id).join("data")
     }
 
     // ── Device ID ─────────────────────────────────────────────────────────────
 
+    /// Read the device identifier from `.keeplin/device_id`, or generate and persist
+    /// a new UUID v4 string if the file does not yet exist.
+    ///
+    /// The device identifier is used as the name of this device's log file
+    /// (`{root}/logs/{device_id}.log`) and as the Argon2id salt for
+    /// `EncryptedBackend`. It must remain stable across restarts.
     async fn read_or_create_device_id(root: &Path) -> Result<String, StorageError> {
         let path = root.join(".keeplin").join("device_id");
         if path.exists() {
@@ -238,6 +359,23 @@ impl FsBackend {
 
     // ── Log helpers ───────────────────────────────────────────────────────────
 
+    /// Append a single [`LogEntry`] to this device's NDJSON log file.
+    ///
+    /// The entry is serialised to a single JSON line and written with the file opened
+    /// in append mode, which means multiple concurrent writers on the same operating
+    /// system will not corrupt each other's entries as long as each `write_all` call
+    /// is atomic at the kernel level (guaranteed for writes smaller than `PIPE_BUF`
+    /// on POSIX systems, typically 4 KiB).
+    ///
+    /// # Parameters
+    ///
+    /// - `entity_type` — one of `"note"`, `"notebook"`, `"tag"`, `"note_tag"`, or
+    ///   `"resource"`.
+    /// - `entity_id` — the UUID of the affected entity.
+    /// - `operation` — one of `"create"`, `"update"`, `"delete"`, `"add"`, or
+    ///   `"remove"`.
+    /// - `data` — the full serialised entity (for create/update) or a minimal object
+    ///   such as `{"id": "<uuid>"}` (for delete).
     async fn append_log(
         &self,
         entity_type: &str,
@@ -262,10 +400,19 @@ impl FsBackend {
         Ok(())
     }
 
+    /// Returns the path of the byte-offset cursor file for a foreign device:
+    /// `.keeplin/offsets/{device_id}`.
+    ///
+    /// The file stores a decimal integer representing the number of bytes already
+    /// consumed from the foreign device's log file. On the next call to
+    /// `receive_changes`, reading starts from this offset so each log entry is
+    /// delivered exactly once.
     fn log_offset_path(&self, device_id: &str) -> PathBuf {
         self.root.join(".keeplin").join("offsets").join(device_id)
     }
 
+    /// Read the stored byte offset for a foreign device log, or return `0` if no
+    /// offset has been recorded yet (i.e., the log has never been processed before).
     async fn read_log_offset(&self, device_id: &str) -> u64 {
         tokio::fs::read_to_string(self.log_offset_path(device_id))
             .await
@@ -274,7 +421,11 @@ impl FsBackend {
             .unwrap_or(0)
     }
 
-    /// Atomically write the byte offset to avoid a torn read after a crash.
+    /// Persist the byte offset for a foreign device log using an atomic
+    /// write-then-rename so that a crash during the write cannot leave the cursor
+    /// file in a partially-written state. A torn cursor file would be interpreted
+    /// as offset `0` by `read_log_offset`, causing duplicate delivery of already-
+    /// processed log entries, which is safe but wasteful.
     async fn write_log_offset(&self, device_id: &str, offset: u64) -> Result<(), StorageError> {
         let path = self.log_offset_path(device_id);
         let tmp = path.with_extension("tmp");
@@ -283,8 +434,21 @@ impl FsBackend {
         Ok(())
     }
 
-    /// Read all entries from other devices' logs that are newer than `since`.
-    /// Does NOT advance the stored byte offset — safe to call multiple times.
+    /// Scan all foreign device log files under `{root}/logs/` and return every
+    /// [`LogEntry`] whose timestamp is strictly later than `since`.
+    ///
+    /// This method reads **every** line of each foreign log file from the beginning
+    /// on each call and does not advance the stored byte-offset cursor. It is used
+    /// by `get_changes_since`, which only needs a filtered view of remote entries
+    /// since a specific point in time (typically the last-sync timestamp).
+    ///
+    /// This device's own log file is skipped because the local device's changes
+    /// are already reflected in the local state and do not need to be reapplied.
+    /// Files that do not end with `.log` are also skipped to avoid confusion with
+    /// offset-cursor files or other incidental files in the logs directory.
+    ///
+    /// Malformed JSON lines produce a `tracing::warn` and are silently skipped so
+    /// that a single corrupt entry does not halt the entire sync.
     async fn read_other_logs_since(
         &self,
         since: DateTime<Utc>,
@@ -329,8 +493,20 @@ impl FsBackend {
         Ok(entries)
     }
 
-    /// Stream new lines from each remote device log starting from the stored
-    /// byte offset, then advance the offset so we never re-read old entries.
+    /// Read all new entries from each foreign device log since the last call and
+    /// advance the byte-offset cursor so that each entry is delivered exactly once.
+    ///
+    /// For each `.log` file in `{root}/logs/` that does not belong to this device,
+    /// this method seeks to the previously recorded byte offset, reads every
+    /// subsequent line, and updates the offset file to point past the last byte read.
+    /// This means that on the next call only lines written after the current call
+    /// will be returned.
+    ///
+    /// If writing the offset file fails (for example due to a disk-full condition),
+    /// the error is logged as a warning but does not propagate. The consequence is
+    /// that the same entries will be returned again on the next call — but since
+    /// `apply_change` is idempotent (it uses `INSERT OR REPLACE` or checks existence
+    /// before writing), duplicate delivery is safe.
     async fn read_new_entries(&self) -> Result<Vec<LogEntry>, StorageError> {
         let mut entries = Vec::new();
         let mut dir = tokio::fs::read_dir(self.root.join("logs")).await?;
@@ -381,6 +557,12 @@ impl FsBackend {
 
     // ── Note persistence ──────────────────────────────────────────────────────
 
+    /// Persist a note to `{root}/notes/{id}/meta.json` using an atomic write.
+    ///
+    /// The JSON is first written to `meta.tmp` and then renamed over `meta.json`.
+    /// On all major operating systems the rename is atomic with respect to readers:
+    /// a concurrent reader will see either the old file or the new file, never a
+    /// partially-written intermediate state.
     async fn write_note(&self, note: &Note) -> Result<(), StorageError> {
         let dir = self.note_dir(note.id);
         tokio::fs::create_dir_all(&dir).await?;
@@ -391,6 +573,12 @@ impl FsBackend {
         Ok(())
     }
 
+    /// Load the note with the given `id` from `{root}/notes/{id}/meta.json`.
+    ///
+    /// Returns `StorageError::NotFound` if the file does not exist. Returns
+    /// `StorageError::Json` if the file is present but contains invalid JSON.
+    /// Deleted notes (those with a non-`None` `deleted_at` field) are returned
+    /// as-is; callers decide whether to expose or hide them.
     async fn load_note(&self, id: Uuid) -> Result<Note, StorageError> {
         let meta_path = self.meta_path(id);
         if !meta_path.exists() {
@@ -403,6 +591,12 @@ impl FsBackend {
 
     // ── Generic single-file JSON helpers ──────────────────────────────────────
 
+    /// Write `value` as pretty-printed JSON to `path` using an atomic write.
+    ///
+    /// The JSON is written to a temporary file named `path` with the extension
+    /// replaced by `.tmp`, then that file is renamed over `path`. The rename is
+    /// atomic on all major operating systems, so a concurrent reader will never
+    /// see a partially-written file.
     async fn write_json<T: serde::Serialize>(
         &self,
         path: &Path,
@@ -415,6 +609,11 @@ impl FsBackend {
         Ok(())
     }
 
+    /// Read the file at `path` and deserialise it as JSON into `T`.
+    ///
+    /// Returns `StorageError::NotFound(id.to_string())` when the file does not exist,
+    /// which surfaces to callers as the standard "entity not found" error. Returns
+    /// `StorageError::Json` if the file contains invalid JSON.
     async fn read_json<T: serde::de::DeserializeOwned>(
         &self,
         path: &Path,
@@ -787,9 +986,13 @@ impl StorageBackend for FsBackend {
                 }
                 tracing::debug!(%note_id, %tag_id, "Applied remote note_tag remove");
             }
-            // Resources — write meta always; write data file only when the Change carries it
-            // (DbBackend-sourced Changes have data=Some; FsBackend/Syncthing replicates the
-            //  file independently so data=None here is expected and correct)
+            // Resource changes from a DbBackend peer include the binary payload
+            // (data=Some) because the database stores bytes directly and can embed
+            // them in the change record. Resource changes originating from another
+            // FsBackend peer set data=None because Syncthing has already replicated
+            // the `resources/{id}/data` file through the filesystem. In the latter
+            // case, writing the metadata file is sufficient; the data file is already
+            // in place or will arrive shortly via replication.
             Change::ResourceCreate { resource, data } => {
                 let dir = self.resource_dir(resource.id);
                 tokio::fs::create_dir_all(&dir).await?;
@@ -828,6 +1031,11 @@ impl StorageBackend for FsBackend {
     }
 
     async fn send_changes(&self, _changes: Vec<Change>) -> Result<(), StorageError> {
+        // In filesystem mode, changes are not pushed to a remote server. Instead,
+        // Syncthing (or a similar tool) replicates the `logs/` directory from this
+        // device to all other devices. This method is therefore a no-op; the
+        // `SyncEngine` still calls it as part of the standard six-step cycle, so
+        // the method must exist and succeed.
         tracing::debug!("Offline mode: changes are replicated passively via the filesystem");
         Ok(())
     }
