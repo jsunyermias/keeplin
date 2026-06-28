@@ -239,6 +239,12 @@ pub trait SyncBackend: Send + Sync + 'static {
     /// Must be idempotent: applying the same change twice produces the same result as
     /// applying it once. This allows the sync engine to safely retry after a partial
     /// failure without risking data corruption.
+    ///
+    /// The **conflict-resolution strategy is backend-specific**. `DbBackend` uses
+    /// last-write-wins by `updated_at` for every entity. `FsBackend` resolves notes with
+    /// per-note version vectors (true concurrent merge with deterministic convergence,
+    /// see [`crate::storage::note_log`]) and uses last-write-wins for the other entities.
+    /// See `SECURITY.md` ("Conflict resolution differs by backend") for the implications.
     async fn apply_change(&self, change: Change) -> Result<(), StorageError>;
 
     /// Transmits the given list of local changes to the remote peer.

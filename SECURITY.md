@@ -56,6 +56,28 @@ It does **not** protect against:
 
 ## Design decisions
 
+### Conflict resolution differs by backend
+
+The two storage backends resolve concurrent edits with **different strength**, and this
+is a deliberate, load-bearing distinction:
+
+| | `FsBackend` (offline / Syncthing) | `DbBackend` (server mode) |
+|---|---|---|
+| Notes | **Per-note version vectors** — genuine concurrent edits are detected and resolved deterministically, and every device **converges** on the same winner | **Last-write-wins by `updated_at`** — no version vectors, no merge |
+| Notebooks / tags | Last-write-wins by `updated_at` | Last-write-wins by `updated_at` |
+| Resources | Last-write-wins (hard delete) | Last-write-wins (hard delete) |
+
+Practical consequence: if two devices edit the **same note while both are offline** and
+then sync, `FsBackend` reconciles them (the causal edit wins, or a true conflict is broken
+deterministically so nothing silently diverges), whereas `DbBackend` keeps only the edit
+whose `updated_at` is later — the other edit is overwritten **without warning**.
+
+Guidance: choose **offline mode** (`FsBackend` + Syncthing) when strong note-merge
+guarantees matter. **Server mode** (`DbBackend`) trades that merge fidelity for a central
+WebSocket relay and is best when edits rarely overlap or a single device is authoritative.
+Porting version vectors to `DbBackend` is a possible future change but is not implemented
+today.
+
 ### Multi-device encryption constraint
 
 All devices that sync with each other **must share the same `encryption_password`
