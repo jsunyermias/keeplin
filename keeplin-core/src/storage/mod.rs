@@ -12,6 +12,7 @@
 mod backend;
 pub mod db;
 pub mod fs;
+pub mod note_log;
 
 pub use backend::{
     NoteRepository, NotebookRepository, ResourceRepository, StorageBackend, SyncBackend,

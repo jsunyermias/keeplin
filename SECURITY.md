@@ -101,8 +101,16 @@ ensures the deletion propagates correctly to other synced devices.
   incompatible. Attempting to mix them may produce undefined behaviour (missing or
   duplicated changes).
 
-- **Conflict resolution is last-write-wins by `updated_at`.** When two devices modify
-  the same entity concurrently, the version with the later `updated_at` timestamp wins:
+- **Filesystem notes resolve conflicts with per-note version vectors.** In `FsBackend`,
+  each note keeps one append-only log per device (`notes/{id}/log.{device}.msgpack`,
+  single-writer so Syncthing never conflicts on it). The note's state is the merge of all
+  its logs: a causal edit applies cleanly, a genuine concurrent edit is resolved
+  deterministically by last-write-wins (timestamp, then device id) so every device
+  converges on the same winner. Note bodies live in `note.md` and metadata in
+  `meta.msgpack` (MessagePack); both are local projections regenerated from the logs.
+- **All other conflict resolution is last-write-wins by `updated_at`.** When two devices
+  modify the same non-note entity (or sync notes through `DbBackend`) concurrently, the
+  version with the later `updated_at` timestamp wins:
   `apply_change` compares timestamps and **ignores** an incoming change that is older
   than the local copy, so a stale remote edit can never clobber a newer local one. No
   three-way merge is attempted, and the losing version is discarded without warning.

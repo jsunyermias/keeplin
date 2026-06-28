@@ -1,23 +1,40 @@
 //! Filesystem-backed implementation of [`StorageBackend`].
 //!
-//! [`FsBackend`] stores every entity as a JSON file under a user-chosen root
-//! directory and records every mutation as a newline-delimited JSON (NDJSON) entry
-//! in a per-device log file under `{root}/logs/`. An external file-synchronisation
-//! tool such as Syncthing can replicate the entire root directory to other devices;
-//! `receive_changes` then reads the newly arrived foreign log files to discover what
-//! changed on remote devices, advancing a byte-offset cursor so each entry is
-//! processed exactly once.
+//! [`FsBackend`] stores data as files under a user-chosen root directory that an external
+//! file-synchronisation tool such as Syncthing replicates between devices. There are two
+//! storage models:
+//!
+//! ## Notes — per-device logs with version-vector merge
+//!
+//! Each note is a directory `notes/{id}/` holding three kinds of file:
+//! - `note.md` — the materialized markdown body (ciphertext when encryption is on);
+//! - `meta.msgpack` — the materialized metadata projection plus the merged version vector;
+//! - `log.{device_id}.msgpack` — an append-only operation log written **only** by that
+//!   device.
+//!
+//! Because each log has a single writer it never conflicts under Syncthing. A note's true
+//! state is the merge of all its logs, computed by comparing **version vectors** (see
+//! [`crate::storage::note_log`]): a causal edit applies cleanly, while a genuine
+//! concurrent edit is resolved deterministically by last-write-wins so every device
+//! converges. `note.md` / `meta.msgpack` are local projections regenerated from the logs
+//! on every write and sync; reads materialize live from the logs.
+//!
+//! ## Notebooks, tags, resources — sidecar files + global change log
+//!
+//! These remain a single MessagePack sidecar per entity, with every mutation appended as
+//! a newline-delimited JSON (NDJSON) entry to a per-device log under `{root}/logs/`;
+//! `receive_changes` reads new foreign entries via a byte-offset cursor.
 //!
 //! ## Operational note: log growth
 //!
-//! The per-device NDJSON logs under `logs/` are append-only and are **never pruned** by
-//! the backend (`prune_change_journal` is a deliberate no-op here, because removing
-//! entries a peer has not yet consumed would corrupt that peer's sync state). The logs
-//! therefore grow over the lifetime of the store. This is acceptable for typical
-//! note-taking volumes, but operators running very large or long-lived stores should
-//! compact the logs out-of-band once every device is known to have synced past a given
-//! point. There is intentionally no automatic mechanism, since safe compaction requires
-//! knowing every peer's consumed offset, which lives outside this backend.
+//! Both the per-note logs and the global `logs/` NDJSON files are append-only and are
+//! **never pruned** by the backend (`prune_change_journal` is a deliberate no-op here,
+//! because removing entries a peer has not yet consumed would corrupt that peer's sync
+//! state). They therefore grow over the lifetime of the store — acceptable for typical
+//! note volumes, but operators running very large or long-lived stores should compact
+//! out-of-band once every device is known to have synced past a given point. There is
+//! intentionally no automatic mechanism, since safe compaction requires knowing every
+//! peer's consumed position, which lives outside this backend.
 
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
@@ -33,7 +50,20 @@ use crate::{
     models::{new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag},
 };
 
+use super::note_log::{self, NoteLogEntry, NoteOp, VersionVector};
 use super::{NoteRepository, NotebookRepository, ResourceRepository, SyncBackend, TagRepository};
+
+/// The materialized projection written to `notes/{id}/meta.msgpack`.
+///
+/// It mirrors the merged note (its body lives in `note.md`, so the copy here is blanked
+/// to avoid duplicating content) plus the merged version vector. It is a local cache
+/// regenerated from the per-device logs on every write and sync; it is never the source
+/// of truth for conflict resolution.
+#[derive(Debug, Serialize, Deserialize)]
+struct NoteMeta {
+    note: Note,
+    vv: VersionVector,
+}
 
 // ── Log entry ─────────────────────────────────────────────────────────────────
 
@@ -237,7 +267,7 @@ impl FsBackend {
     /// JSON schemas is made that requires an explicit data-migration step. Minor
     /// additions that are handled transparently by serde (such as new optional fields
     /// or serde aliases) do not require a version bump.
-    const FORMAT_VERSION: u32 = 2;
+    const FORMAT_VERSION: u32 = 3;
 
     /// Returns the path of the format-version stamp file: `.keeplin/format_version`.
     fn format_version_path(&self) -> PathBuf {
@@ -289,14 +319,29 @@ impl FsBackend {
         self.root.join("notes").join(id.to_string())
     }
 
-    /// Returns `{root}/notes/{id}/meta.json` — the JSON file that stores a note's
-    /// metadata and body text.
-    fn meta_path(&self, id: Uuid) -> PathBuf {
-        self.note_dir(id).join("meta.json")
+    /// Returns `{root}/notes/{id}/note.md` — the materialized markdown body. Human- and
+    /// tool-readable when encryption is off; ciphertext when an `EncryptedBackend` wraps
+    /// this backend.
+    fn note_md_path(&self, id: Uuid) -> PathBuf {
+        self.note_dir(id).join("note.md")
+    }
+
+    /// Returns `{root}/notes/{id}/meta.msgpack` — the materialized metadata projection
+    /// (note fields plus merged version vector). A local cache, not the source of truth.
+    fn note_meta_path(&self, id: Uuid) -> PathBuf {
+        self.note_dir(id).join("meta.msgpack")
+    }
+
+    /// Returns `{root}/notes/{id}/log.{device_id}.msgpack` — the append-only operation
+    /// log written **only** by `device_id`. Single-writer, so it never conflicts under
+    /// Syncthing; the union of all of a note's logs is its authoritative history.
+    fn note_log_path(&self, id: Uuid, device_id: &str) -> PathBuf {
+        self.note_dir(id).join(format!("log.{device_id}.msgpack"))
     }
 
     /// Returns the path of the NDJSON log file owned by this device:
-    /// `{root}/logs/{device_id}.log`.
+    /// `{root}/logs/{device_id}.log`. Still used for notebooks, tags, and resources;
+    /// notes use per-note logs instead.
     fn device_log_path(&self) -> PathBuf {
         self.root
             .join("logs")
@@ -305,16 +350,16 @@ impl FsBackend {
 
     // ── Path helpers — Notebooks ──────────────────────────────────────────────
 
-    /// Returns `{root}/notebooks/{id}.json` — the JSON file that stores a notebook.
+    /// Returns `{root}/notebooks/{id}.msgpack` — the MessagePack file that stores a notebook.
     fn notebook_path(&self, id: Uuid) -> PathBuf {
-        self.root.join("notebooks").join(format!("{id}.json"))
+        self.root.join("notebooks").join(format!("{id}.msgpack"))
     }
 
     // ── Path helpers — Tags ───────────────────────────────────────────────────
 
-    /// Returns `{root}/tags/{id}.json` — the JSON file that stores a tag.
+    /// Returns `{root}/tags/{id}.msgpack` — the MessagePack file that stores a tag.
     fn tag_path(&self, id: Uuid) -> PathBuf {
-        self.root.join("tags").join(format!("{id}.json"))
+        self.root.join("tags").join(format!("{id}.msgpack"))
     }
 
     // ── Path helpers — NoteTag ────────────────────────────────────────────────
@@ -340,10 +385,10 @@ impl FsBackend {
         self.root.join("resources").join(id.to_string())
     }
 
-    /// Returns `{root}/resources/{id}/meta.json` — the JSON file that stores a
+    /// Returns `{root}/resources/{id}/meta.msgpack` — the MessagePack file that stores a
     /// resource's metadata (title, MIME type, file name, size, creation timestamp).
     fn resource_meta_path(&self, id: Uuid) -> PathBuf {
-        self.resource_dir(id).join("meta.json")
+        self.resource_dir(id).join("meta.msgpack")
     }
 
     /// Returns `{root}/resources/{id}/data` — the file that stores the raw binary
@@ -571,66 +616,28 @@ impl FsBackend {
         Ok(entries)
     }
 
-    // ── Note persistence ──────────────────────────────────────────────────────
+    // ── Generic single-file MessagePack sidecar helpers ───────────────────────
 
-    /// Persist a note to `{root}/notes/{id}/meta.json` using an atomic write.
-    ///
-    /// The JSON is first written to `meta.tmp` and then renamed over `meta.json`.
-    /// On all major operating systems the rename is atomic with respect to readers:
-    /// a concurrent reader will see either the old file or the new file, never a
-    /// partially-written intermediate state.
-    async fn write_note(&self, note: &Note) -> Result<(), StorageError> {
-        let dir = self.note_dir(note.id);
-        tokio::fs::create_dir_all(&dir).await?;
-        let target = self.meta_path(note.id);
-        let tmp = target.with_extension("tmp");
-        tokio::fs::write(&tmp, serde_json::to_string_pretty(note)?).await?;
-        tokio::fs::rename(&tmp, &target).await?;
-        Ok(())
-    }
-
-    /// Load the note with the given `id` from `{root}/notes/{id}/meta.json`.
-    ///
-    /// Returns `StorageError::NotFound` if the file does not exist. Returns
-    /// `StorageError::Json` if the file is present but contains invalid JSON.
-    /// Deleted notes (those with a non-`None` `deleted_at` field) are returned
-    /// as-is; callers decide whether to expose or hide them.
-    async fn load_note(&self, id: Uuid) -> Result<Note, StorageError> {
-        let meta_path = self.meta_path(id);
-        if !meta_path.exists() {
-            return Err(StorageError::NotFound(id.to_string()));
-        }
-        let raw = tokio::fs::read_to_string(meta_path).await?;
-        let note: Note = serde_json::from_str(&raw)?;
-        Ok(note)
-    }
-
-    // ── Generic single-file JSON helpers ──────────────────────────────────────
-
-    /// Write `value` as pretty-printed JSON to `path` using an atomic write.
-    ///
-    /// The JSON is written to a temporary file named `path` with the extension
-    /// replaced by `.tmp`, then that file is renamed over `path`. The rename is
-    /// atomic on all major operating systems, so a concurrent reader will never
-    /// see a partially-written file.
-    async fn write_json<T: serde::Serialize>(
+    /// Serialise `value` to MessagePack and write it to `path` using an atomic
+    /// temp-file-then-rename, so a concurrent reader never sees a half-written file.
+    async fn write_sidecar<T: serde::Serialize>(
         &self,
         path: &Path,
         value: &T,
     ) -> Result<(), StorageError> {
-        let raw = serde_json::to_string_pretty(value)?;
+        let bytes = rmp_serde::to_vec_named(value)
+            .map_err(|e| StorageError::InvalidState(format!("msgpack encode: {e}")))?;
         let tmp = path.with_extension("tmp");
-        tokio::fs::write(&tmp, raw).await?;
+        tokio::fs::write(&tmp, bytes).await?;
         tokio::fs::rename(&tmp, path).await?;
         Ok(())
     }
 
-    /// Read the file at `path` and deserialise it as JSON into `T`.
+    /// Read `path` and deserialise its MessagePack contents into `T`.
     ///
-    /// Returns `StorageError::NotFound(id.to_string())` when the file does not exist,
-    /// which surfaces to callers as the standard "entity not found" error. Returns
-    /// `StorageError::Json` if the file contains invalid JSON.
-    async fn read_json<T: serde::de::DeserializeOwned>(
+    /// Returns `StorageError::NotFound(id)` when the file does not exist and
+    /// `StorageError::CorruptedData` when the bytes are not valid MessagePack for `T`.
+    async fn read_sidecar<T: serde::de::DeserializeOwned>(
         &self,
         path: &Path,
         id: Uuid,
@@ -638,9 +645,152 @@ impl FsBackend {
         if !path.exists() {
             return Err(StorageError::NotFound(id.to_string()));
         }
-        let raw = tokio::fs::read_to_string(path).await?;
-        let value: T = serde_json::from_str(&raw)?;
-        Ok(value)
+        let bytes = tokio::fs::read(path).await?;
+        rmp_serde::from_slice(&bytes)
+            .map_err(|e| StorageError::CorruptedData(format!("msgpack decode: {e}")))
+    }
+
+    // ── Versioned note storage (per-device logs + version-vector merge) ────────
+
+    /// Return a note's current merged version vector from its meta projection, or an
+    /// empty vector when the note has no meta yet.
+    async fn note_vv(&self, id: Uuid) -> Result<VersionVector, StorageError> {
+        match self
+            .read_sidecar::<NoteMeta>(&self.note_meta_path(id), id)
+            .await
+        {
+            Ok(meta) => Ok(meta.vv),
+            Err(StorageError::NotFound(_)) => Ok(VersionVector::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Read every per-device log (`log.*.msgpack`) for a note. Missing note directory or
+    /// unreadable individual logs yield an empty / skipped result rather than an error,
+    /// so one corrupt log never blocks the merge of the others.
+    async fn read_note_logs(&self, id: Uuid) -> Result<Vec<Vec<NoteLogEntry>>, StorageError> {
+        let dir = self.note_dir(id);
+        let mut logs = Vec::new();
+        let mut rd = match tokio::fs::read_dir(&dir).await {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(logs),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(entry) = rd.next_entry().await? {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("log.") && name.ends_with(".msgpack") {
+                let bytes = tokio::fs::read(entry.path()).await?;
+                match rmp_serde::from_slice::<Vec<NoteLogEntry>>(&bytes) {
+                    Ok(v) => logs.push(v),
+                    Err(e) => tracing::warn!("Skipping unreadable note log {name}: {e}"),
+                }
+            }
+        }
+        Ok(logs)
+    }
+
+    /// Merge all of a note's per-device logs into its current state and refresh the
+    /// `note.md` + `meta.msgpack` projection. Returns the merged note, or `None` when the
+    /// note has no log entries at all.
+    async fn materialize(&self, id: Uuid) -> Result<Option<Note>, StorageError> {
+        let logs = self.read_note_logs(id).await?;
+        let merged = note_log::merge(&logs);
+        match merged.note {
+            None => Ok(None),
+            Some(note) => {
+                if merged.conflict {
+                    tracing::warn!(%id, "Concurrent note edit resolved by last-write-wins");
+                }
+                self.persist_note_projection(&note, &merged.vv).await?;
+                Ok(Some(note))
+            }
+        }
+    }
+
+    /// Write the projection: the body to `note.md` and the metadata (body blanked, since
+    /// it lives in `note.md`) plus the version vector to `meta.msgpack`. Both writes are
+    /// atomic temp-then-rename.
+    async fn persist_note_projection(
+        &self,
+        note: &Note,
+        vv: &VersionVector,
+    ) -> Result<(), StorageError> {
+        tokio::fs::create_dir_all(self.note_dir(note.id)).await?;
+        let md = self.note_md_path(note.id);
+        let md_tmp = md.with_extension("tmp");
+        tokio::fs::write(&md_tmp, note.body.as_bytes()).await?;
+        tokio::fs::rename(&md_tmp, &md).await?;
+        let mut meta_note = note.clone();
+        meta_note.body = String::new();
+        self.write_sidecar(
+            &self.note_meta_path(note.id),
+            &NoteMeta {
+                note: meta_note,
+                vv: vv.clone(),
+            },
+        )
+        .await
+    }
+
+    /// Append an operation to this device's note log, then re-materialize the note and
+    /// return the merged result. This is the single entry point for every local note
+    /// mutation (create, update, delete).
+    async fn append_note_op(&self, id: Uuid, op: NoteOp) -> Result<Note, StorageError> {
+        tokio::fs::create_dir_all(self.note_dir(id)).await?;
+        let mut vv = self.note_vv(id).await?;
+        note_log::increment(&mut vv, &self.device_id);
+        let log_path = self.note_log_path(id, &self.device_id);
+        let mut log: Vec<NoteLogEntry> = match self.read_sidecar(&log_path, id).await {
+            Ok(v) => v,
+            Err(StorageError::NotFound(_)) => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        log.push(NoteLogEntry {
+            vv,
+            timestamp: now(),
+            device_id: self.device_id.clone(),
+            op,
+        });
+        self.write_sidecar(&log_path, &log).await?;
+        self.materialize(id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound(id.to_string()))
+    }
+
+    /// Scan every note directory and re-materialize those whose per-device logs have
+    /// advanced beyond the locally stored projection (for example because Syncthing just
+    /// replicated a peer's log). Returns one [`Change`] per advanced note — a
+    /// `NoteUpdate` for a live note or a `NoteDelete` for a tombstoned one — so the sync
+    /// engine can report them. Comparison is by version vector, not file mtime, so it is
+    /// immune to clock skew between devices.
+    async fn collect_advanced_notes(&self) -> Result<Vec<Change>, StorageError> {
+        let mut changes = Vec::new();
+        let notes_dir = self.root.join("notes");
+        let mut rd = match tokio::fs::read_dir(&notes_dir).await {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(changes),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(entry) = rd.next_entry().await? {
+            let id = match Uuid::parse_str(&entry.file_name().to_string_lossy()) {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+            let old_vv = self.note_vv(id).await?;
+            let logs = self.read_note_logs(id).await?;
+            let merged = note_log::merge(&logs);
+            // The merged frontier differs from what we last materialized → new content.
+            if merged.vv != old_vv {
+                if let Some(note) = merged.note {
+                    self.persist_note_projection(&note, &merged.vv).await?;
+                    match note.deleted_at {
+                        Some(deleted_at) => changes.push(Change::NoteDelete { id, deleted_at }),
+                        None => changes.push(Change::NoteUpdate { note }),
+                    }
+                }
+            }
+        }
+        Ok(changes)
     }
 }
 
@@ -703,37 +853,33 @@ where
 #[async_trait]
 impl NoteRepository for FsBackend {
     async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
-        self.write_note(&note).await?;
-        self.append_log("note", note.id, "create", serde_json::to_value(&note)?)
-            .await?;
-        tracing::info!(id = %note.id, "Note created");
-        Ok(note)
+        let merged = self.append_note_op(note.id, NoteOp::Upsert(note)).await?;
+        tracing::info!(id = %merged.id, "Note created");
+        Ok(merged)
     }
 
     async fn read_note(&self, id: Uuid) -> Result<Note, StorageError> {
-        self.load_note(id).await
+        // Reads materialize live from the per-device logs, so they always reflect the
+        // latest merge — even immediately after Syncthing brings in a peer's log.
+        self.materialize(id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound(id.to_string()))
     }
 
     async fn update_note(&self, note: Note) -> Result<Note, StorageError> {
-        if !self.meta_path(note.id).exists() {
+        if self.read_note_logs(note.id).await?.is_empty() {
             return Err(StorageError::NotFound(note.id.to_string()));
         }
-        self.write_note(&note).await?;
-        self.append_log("note", note.id, "update", serde_json::to_value(&note)?)
-            .await?;
-        tracing::info!(id = %note.id, "Note updated");
-        Ok(note)
+        let merged = self.append_note_op(note.id, NoteOp::Upsert(note)).await?;
+        tracing::info!(id = %merged.id, "Note updated");
+        Ok(merged)
     }
 
     async fn delete_note(&self, id: Uuid) -> Result<(), StorageError> {
-        let mut note = self.load_note(id).await?;
-        // Bump `updated_at` to the delete time so the tombstone has a comparable version:
-        // a later stale edit (older `updated_at`) can no longer resurrect this note.
-        let ts = now();
-        note.deleted_at = Some(ts);
-        note.updated_at = ts;
-        self.write_note(&note).await?;
-        self.append_log("note", id, "delete", serde_json::json!({ "id": id }))
+        if self.read_note_logs(id).await?.is_empty() {
+            return Err(StorageError::NotFound(id.to_string()));
+        }
+        self.append_note_op(id, NoteOp::Tombstone { deleted_at: now() })
             .await?;
         tracing::info!(%id, "Note deleted");
         Ok(())
@@ -750,14 +896,20 @@ impl NoteRepository for FsBackend {
             page_size as usize
         };
         let mut notes = Vec::new();
-        let mut dir = tokio::fs::read_dir(self.root.join("notes")).await?;
+        let mut dir = match tokio::fs::read_dir(self.root.join("notes")).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((vec![], None));
+            }
+            Err(e) => return Err(e.into()),
+        };
         while let Some(entry) = dir.next_entry().await? {
             let id_str = entry.file_name().to_string_lossy().to_string();
             if let Ok(id) = Uuid::parse_str(&id_str) {
-                match self.load_note(id).await {
-                    Ok(n) if n.deleted_at.is_none() => notes.push(n),
+                match self.materialize(id).await {
+                    Ok(Some(n)) if n.deleted_at.is_none() => notes.push(n),
                     Ok(_) => {}
-                    Err(e) => tracing::warn!("Could not load note {id}: {e}"),
+                    Err(e) => tracing::warn!("Could not materialize note {id}: {e}"),
                 }
             }
         }
@@ -773,7 +925,7 @@ impl NoteRepository for FsBackend {
 #[async_trait]
 impl NotebookRepository for FsBackend {
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
-        self.write_json(&self.notebook_path(notebook.id), &notebook)
+        self.write_sidecar(&self.notebook_path(notebook.id), &notebook)
             .await?;
         self.append_log(
             "notebook",
@@ -787,14 +939,14 @@ impl NotebookRepository for FsBackend {
     }
 
     async fn read_notebook(&self, id: Uuid) -> Result<Notebook, StorageError> {
-        self.read_json(&self.notebook_path(id), id).await
+        self.read_sidecar(&self.notebook_path(id), id).await
     }
 
     async fn update_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
         if !self.notebook_path(notebook.id).exists() {
             return Err(StorageError::NotFound(notebook.id.to_string()));
         }
-        self.write_json(&self.notebook_path(notebook.id), &notebook)
+        self.write_sidecar(&self.notebook_path(notebook.id), &notebook)
             .await?;
         self.append_log(
             "notebook",
@@ -808,11 +960,11 @@ impl NotebookRepository for FsBackend {
     }
 
     async fn delete_notebook(&self, id: Uuid) -> Result<(), StorageError> {
-        let mut nb: Notebook = self.read_json(&self.notebook_path(id), id).await?;
+        let mut nb: Notebook = self.read_sidecar(&self.notebook_path(id), id).await?;
         let ts = now();
         nb.deleted_at = Some(ts);
         nb.updated_at = ts;
-        self.write_json(&self.notebook_path(id), &nb).await?;
+        self.write_sidecar(&self.notebook_path(id), &nb).await?;
         self.append_log("notebook", id, "delete", serde_json::json!({ "id": id }))
             .await?;
         tracing::info!(%id, "Notebook deleted");
@@ -835,7 +987,7 @@ impl NotebookRepository for FsBackend {
             let fname = entry.file_name().to_string_lossy().to_string();
             if let Some(stem) = fname.strip_suffix(".json") {
                 if let Ok(id) = Uuid::parse_str(stem) {
-                    match self.read_json::<Notebook>(&entry.path(), id).await {
+                    match self.read_sidecar::<Notebook>(&entry.path(), id).await {
                         Ok(nb) if nb.deleted_at.is_none() => notebooks.push(nb),
                         Ok(_) => {}
                         Err(e) => tracing::warn!("Could not load notebook {id}: {e}"),
@@ -855,7 +1007,7 @@ impl NotebookRepository for FsBackend {
 #[async_trait]
 impl TagRepository for FsBackend {
     async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
-        self.write_json(&self.tag_path(tag.id), &tag).await?;
+        self.write_sidecar(&self.tag_path(tag.id), &tag).await?;
         self.append_log("tag", tag.id, "create", serde_json::to_value(&tag)?)
             .await?;
         tracing::info!(id = %tag.id, "Tag created");
@@ -863,14 +1015,14 @@ impl TagRepository for FsBackend {
     }
 
     async fn read_tag(&self, id: Uuid) -> Result<Tag, StorageError> {
-        self.read_json(&self.tag_path(id), id).await
+        self.read_sidecar(&self.tag_path(id), id).await
     }
 
     async fn update_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
         if !self.tag_path(tag.id).exists() {
             return Err(StorageError::NotFound(tag.id.to_string()));
         }
-        self.write_json(&self.tag_path(tag.id), &tag).await?;
+        self.write_sidecar(&self.tag_path(tag.id), &tag).await?;
         self.append_log("tag", tag.id, "update", serde_json::to_value(&tag)?)
             .await?;
         tracing::info!(id = %tag.id, "Tag updated");
@@ -878,11 +1030,11 @@ impl TagRepository for FsBackend {
     }
 
     async fn delete_tag(&self, id: Uuid) -> Result<(), StorageError> {
-        let mut tag: Tag = self.read_json(&self.tag_path(id), id).await?;
+        let mut tag: Tag = self.read_sidecar(&self.tag_path(id), id).await?;
         let ts = now();
         tag.deleted_at = Some(ts);
         tag.updated_at = ts;
-        self.write_json(&self.tag_path(id), &tag).await?;
+        self.write_sidecar(&self.tag_path(id), &tag).await?;
         self.append_log("tag", id, "delete", serde_json::json!({ "id": id }))
             .await?;
         tracing::info!(%id, "Tag deleted");
@@ -905,7 +1057,7 @@ impl TagRepository for FsBackend {
             let fname = entry.file_name().to_string_lossy().to_string();
             if let Some(stem) = fname.strip_suffix(".json") {
                 if let Ok(id) = Uuid::parse_str(stem) {
-                    match self.read_json::<Tag>(&entry.path(), id).await {
+                    match self.read_sidecar::<Tag>(&entry.path(), id).await {
                         Ok(t) if t.deleted_at.is_none() => tags.push(t),
                         Ok(_) => {}
                         Err(e) => tracing::warn!("Could not load tag {id}: {e}"),
@@ -998,7 +1150,7 @@ impl ResourceRepository for FsBackend {
         // data file (harmless, overwritten on retry) rather than a metadata record that
         // points at a missing payload.
         tokio::fs::write(self.resource_data_path(resource.id), &data).await?;
-        self.write_json(&self.resource_meta_path(resource.id), &resource)
+        self.write_sidecar(&self.resource_meta_path(resource.id), &resource)
             .await?;
         self.append_log(
             "resource",
@@ -1016,7 +1168,7 @@ impl ResourceRepository for FsBackend {
         if !meta_path.exists() {
             return Err(StorageError::NotFound(id.to_string()));
         }
-        let resource: Resource = self.read_json(&meta_path, id).await?;
+        let resource: Resource = self.read_sidecar(&meta_path, id).await?;
         let data = tokio::fs::read(self.resource_data_path(id)).await?;
         Ok((resource, data))
     }
@@ -1049,7 +1201,7 @@ impl ResourceRepository for FsBackend {
             let id_str = entry.file_name().to_string_lossy().to_string();
             if let Ok(id) = Uuid::parse_str(&id_str) {
                 let meta_path = self.resource_meta_path(id);
-                match self.read_json::<Resource>(&meta_path, id).await {
+                match self.read_sidecar::<Resource>(&meta_path, id).await {
                     Ok(r) => resources.push(r),
                     Err(e) => tracing::warn!("Could not load resource {id}: {e}"),
                 }
@@ -1083,48 +1235,29 @@ impl SyncBackend for FsBackend {
 
     async fn apply_change(&self, change: Change) -> Result<(), StorageError> {
         match change {
-            // Notes — last-write-wins by `updated_at`: a stale remote edit must not
-            // overwrite a newer local copy. A missing local copy means this is a genuine
-            // create, so it always applies.
+            // Notes — conflict resolution lives entirely in the per-device logs, which
+            // Syncthing has already replicated to disk. Applying a remote note change is
+            // therefore just a re-materialization: read every log, merge by version
+            // vector, and refresh the projection. It never appends to this device's log,
+            // so it cannot create a spurious local edit, and it is idempotent.
             Change::NoteCreate { note } | Change::NoteUpdate { note } => {
-                let apply = match self.load_note(note.id).await {
-                    Ok(existing) => note.updated_at > existing.updated_at,
-                    Err(StorageError::NotFound(_)) => true,
-                    Err(e) => return Err(e),
-                };
-                if apply {
-                    self.write_note(&note).await?;
-                    tracing::debug!(id = %note.id, "Applied remote note change");
-                } else {
-                    tracing::debug!(id = %note.id, "Skipped stale remote note change");
-                }
+                self.materialize(note.id).await?;
+                tracing::debug!(id = %note.id, "Materialized remote note change");
             }
-            Change::NoteDelete { id, deleted_at } => {
-                // Tombstone: apply only when newer than the local copy, and stamp both
-                // `deleted_at` and `updated_at` so a later edit must beat the delete time
-                // to resurrect the note.
-                if self.meta_path(id).exists() {
-                    let mut note = self.load_note(id).await?;
-                    if deleted_at > note.updated_at {
-                        note.deleted_at = Some(deleted_at);
-                        note.updated_at = deleted_at;
-                        self.write_note(&note).await?;
-                        tracing::debug!(%id, "Applied remote note delete");
-                    } else {
-                        tracing::debug!(%id, "Skipped stale remote note delete");
-                    }
-                }
+            Change::NoteDelete { id, .. } => {
+                self.materialize(id).await?;
+                tracing::debug!(%id, "Materialized remote note delete");
             }
             // Notebooks — last-write-wins by `updated_at` (see the note arm above).
             Change::NotebookCreate { notebook } | Change::NotebookUpdate { notebook } => {
                 let path = self.notebook_path(notebook.id);
-                let apply = match self.read_json::<Notebook>(&path, notebook.id).await {
+                let apply = match self.read_sidecar::<Notebook>(&path, notebook.id).await {
                     Ok(existing) => notebook.updated_at > existing.updated_at,
                     Err(StorageError::NotFound(_)) => true,
                     Err(e) => return Err(e),
                 };
                 if apply {
-                    self.write_json(&path, &notebook).await?;
+                    self.write_sidecar(&path, &notebook).await?;
                     tracing::debug!(id = %notebook.id, "Applied remote notebook change");
                 } else {
                     tracing::debug!(id = %notebook.id, "Skipped stale remote notebook change");
@@ -1133,11 +1266,11 @@ impl SyncBackend for FsBackend {
             Change::NotebookDelete { id, deleted_at } => {
                 let path = self.notebook_path(id);
                 if path.exists() {
-                    let mut nb: Notebook = self.read_json(&path, id).await?;
+                    let mut nb: Notebook = self.read_sidecar(&path, id).await?;
                     if deleted_at > nb.updated_at {
                         nb.deleted_at = Some(deleted_at);
                         nb.updated_at = deleted_at;
-                        self.write_json(&path, &nb).await?;
+                        self.write_sidecar(&path, &nb).await?;
                         tracing::debug!(%id, "Applied remote notebook delete");
                     } else {
                         tracing::debug!(%id, "Skipped stale remote notebook delete");
@@ -1147,13 +1280,13 @@ impl SyncBackend for FsBackend {
             // Tags — last-write-wins by `updated_at` (see the note arm above).
             Change::TagCreate { tag } | Change::TagUpdate { tag } => {
                 let path = self.tag_path(tag.id);
-                let apply = match self.read_json::<Tag>(&path, tag.id).await {
+                let apply = match self.read_sidecar::<Tag>(&path, tag.id).await {
                     Ok(existing) => tag.updated_at > existing.updated_at,
                     Err(StorageError::NotFound(_)) => true,
                     Err(e) => return Err(e),
                 };
                 if apply {
-                    self.write_json(&path, &tag).await?;
+                    self.write_sidecar(&path, &tag).await?;
                     tracing::debug!(id = %tag.id, "Applied remote tag change");
                 } else {
                     tracing::debug!(id = %tag.id, "Skipped stale remote tag change");
@@ -1162,11 +1295,11 @@ impl SyncBackend for FsBackend {
             Change::TagDelete { id, deleted_at } => {
                 let path = self.tag_path(id);
                 if path.exists() {
-                    let mut t: Tag = self.read_json(&path, id).await?;
+                    let mut t: Tag = self.read_sidecar(&path, id).await?;
                     if deleted_at > t.updated_at {
                         t.deleted_at = Some(deleted_at);
                         t.updated_at = deleted_at;
-                        self.write_json(&path, &t).await?;
+                        self.write_sidecar(&path, &t).await?;
                         tracing::debug!(%id, "Applied remote tag delete");
                     } else {
                         tracing::debug!(%id, "Skipped stale remote tag delete");
@@ -1196,7 +1329,7 @@ impl SyncBackend for FsBackend {
             Change::ResourceCreate { resource, data } => {
                 let dir = self.resource_dir(resource.id);
                 tokio::fs::create_dir_all(&dir).await?;
-                self.write_json(&self.resource_meta_path(resource.id), &resource)
+                self.write_sidecar(&self.resource_meta_path(resource.id), &resource)
                     .await?;
                 if let Some(bytes) = data {
                     tokio::fs::write(self.resource_data_path(resource.id), &bytes).await?;
@@ -1215,19 +1348,20 @@ impl SyncBackend for FsBackend {
     }
 
     async fn get_last_sync_time(&self) -> Result<DateTime<Utc>, StorageError> {
-        let path = self.root.join(".keeplin").join("sync_state.json");
-        if !path.exists() {
-            return Ok(DateTime::<Utc>::from_timestamp(0, 0).unwrap_or_default());
+        let path = self.root.join(".keeplin").join("sync_state.msgpack");
+        match self.read_sidecar::<SyncState>(&path, Uuid::nil()).await {
+            Ok(state) => Ok(state.last_sync),
+            Err(StorageError::NotFound(_)) => {
+                Ok(DateTime::<Utc>::from_timestamp(0, 0).unwrap_or_default())
+            }
+            Err(e) => Err(e),
         }
-        let raw = tokio::fs::read_to_string(path).await?;
-        let state: SyncState = serde_json::from_str(&raw)?;
-        Ok(state.last_sync)
     }
 
     async fn update_sync_time(&self, ts: DateTime<Utc>) -> Result<(), StorageError> {
         let state = SyncState { last_sync: ts };
-        let path = self.root.join(".keeplin").join("sync_state.json");
-        self.write_json(&path, &state).await
+        let path = self.root.join(".keeplin").join("sync_state.msgpack");
+        self.write_sidecar(&path, &state).await
     }
 
     async fn send_changes(&self, _changes: Vec<Change>) -> Result<(), StorageError> {
@@ -1241,8 +1375,11 @@ impl SyncBackend for FsBackend {
     }
 
     async fn receive_changes(&self) -> Result<Vec<Change>, StorageError> {
-        let entries = self.read_new_entries().await?;
-        let changes = entries
+        // Notebooks, tags, and resources still flow through the global per-device NDJSON
+        // logs and are discovered by advancing each foreign log's byte-offset cursor.
+        let mut changes: Vec<Change> = self
+            .read_new_entries()
+            .await?
             .into_iter()
             .filter_map(|e| {
                 let result = log_entry_to_change(e);
@@ -1252,6 +1389,9 @@ impl SyncBackend for FsBackend {
                 result
             })
             .collect();
+        // Notes flow through per-note version-vector logs: detect and materialize any
+        // whose logs advanced (e.g. a peer's log just arrived via Syncthing).
+        changes.extend(self.collect_advanced_notes().await?);
         Ok(changes)
     }
 
