@@ -8,14 +8,15 @@
 use std::{pin::Pin, sync::Arc};
 
 use keeplin_core::{
-    error::StorageError,
+    error::{StorageError, SyncError},
     models::{
         now, Note as CoreNote, NoteTag, Notebook as CoreNotebook, Resource as CoreResource,
         Tag as CoreTag,
     },
     storage::StorageBackend,
+    sync::{run_sync, SyncStage},
 };
-use tokio_stream::{wrappers::ReceiverStream, Stream};
+use tokio_stream::{wrappers::UnboundedReceiverStream, Stream};
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
@@ -166,16 +167,22 @@ fn proto_to_note(n: Note) -> Result<CoreNote, Status> {
 pub struct KeeplinServer<B: StorageBackend> {
     /// Reference-counted handle to the backend shared across all handler tasks.
     backend: Arc<B>,
+    /// How many days of change-journal history to retain. After each successful sync,
+    /// journal rows older than this are pruned. `0` disables pruning.
+    journal_retention_days: u64,
 }
 
 impl<B: StorageBackend> KeeplinServer<B> {
-    /// Wraps `backend` in an `Arc` and returns a new server.
+    /// Wraps `backend` in an `Arc` and returns a new server that prunes change-journal
+    /// entries older than `journal_retention_days` after each successful sync (`0`
+    /// disables pruning).
     ///
     /// The resulting server should be passed to
     /// `KeeplinServiceServer::new(server)` before being registered with tonic.
-    pub fn new(backend: B) -> Self {
+    pub fn new(backend: B, journal_retention_days: u64) -> Self {
         Self {
             backend: Arc::new(backend),
+            journal_retention_days,
         }
     }
 }
@@ -560,66 +567,61 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
 
     async fn sync(&self, _req: Request<SyncRequest>) -> Result<Response<Self::SyncStream>, Status> {
         let backend = Arc::clone(&self.backend);
-        let (tx, rx) = tokio::sync::mpsc::channel::<SyncStreamItem>(16);
+        let retention_days = self.journal_retention_days;
+        // An unbounded channel lets the synchronous progress callback in `run_sync` emit
+        // updates without awaiting; a sync cycle produces only a handful of messages.
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SyncStreamItem>();
 
         tokio::spawn(async move {
-            macro_rules! progress {
-                ($stage:expr, $count:expr, $msg:expr) => {
-                    let _ = tx
-                        .send(Ok(SyncProgress {
-                            stage: $stage as i32,
-                            changes_count: $count,
-                            message: $msg.to_string(),
-                        }))
-                        .await;
-                };
-            }
-            macro_rules! bail {
-                ($e:expr) => {{
-                    let _ = tx.send(Err(Status::internal($e.to_string()))).await;
-                    return;
-                }};
-            }
-
-            progress!(Stage::Collecting, 0, "Collecting local changes");
-            let last_sync = match backend.get_last_sync_time().await {
-                Ok(t) => t,
-                Err(e) => bail!(e),
+            // Forward each core `SyncStage` to the client as a `SyncProgress` message.
+            let progress_tx = tx.clone();
+            let report = move |stage: SyncStage, count: usize| {
+                let (proto_stage, message) = stage_to_proto(stage);
+                let _ = progress_tx.send(Ok(SyncProgress {
+                    stage: proto_stage as i32,
+                    changes_count: count as i32,
+                    message: message.to_string(),
+                }));
             };
 
-            let local = match backend.get_changes_since(last_sync).await {
-                Ok(c) => c,
-                Err(e) => bail!(e),
-            };
-
-            progress!(Stage::Sending, local.len() as i32, "Sending local changes");
-            if let Err(e) = backend.send_changes(local).await {
-                bail!(e);
-            }
-
-            progress!(Stage::Receiving, 0, "Receiving remote changes");
-            let remote = match backend.receive_changes().await {
-                Ok(c) => c,
-                Err(e) => bail!(e),
-            };
-
-            progress!(
-                Stage::Applying,
-                remote.len() as i32,
-                "Applying remote changes"
-            );
-            for change in &remote {
-                if let Err(e) = backend.apply_change(change.clone()).await {
-                    bail!(e);
+            // The whole cycle (including the watermark fix) lives in `run_sync`; the
+            // daemon only adapts progress and error reporting to the gRPC stream.
+            match run_sync(&*backend, report).await {
+                Ok(_) => {
+                    // Trim journal history that every peer has had ample time to pull, so
+                    // the `entity_changes` table cannot grow without bound. A failure here
+                    // is non-fatal — the sync itself already succeeded.
+                    if retention_days > 0 {
+                        let cutoff = now() - chrono::Duration::days(retention_days as i64);
+                        if let Err(e) = backend.prune_change_journal(cutoff).await {
+                            tracing::warn!("change-journal prune failed: {e}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    let status = match e {
+                        SyncError::Storage(se) => storage_err(se),
+                        other => Status::internal(other.to_string()),
+                    };
+                    let _ = tx.send(Err(status));
                 }
             }
-
-            let _ = backend.update_sync_time(now()).await;
-            progress!(Stage::Done, remote.len() as i32, "Sync complete");
         });
 
         Ok(Response::new(
-            Box::pin(ReceiverStream::new(rx)) as SyncStreamPin
+            Box::pin(UnboundedReceiverStream::new(rx)) as SyncStreamPin
         ))
+    }
+}
+
+/// Maps a core [`SyncStage`] to its protobuf [`Stage`] code and a human-readable
+/// progress message for the streaming `Sync` RPC.
+fn stage_to_proto(stage: SyncStage) -> (Stage, &'static str) {
+    match stage {
+        SyncStage::Collecting => (Stage::Collecting, "Collecting local changes"),
+        SyncStage::Sending => (Stage::Sending, "Sending local changes"),
+        SyncStage::Receiving => (Stage::Receiving, "Receiving remote changes"),
+        SyncStage::Applying => (Stage::Applying, "Applying remote changes"),
+        SyncStage::Done => (Stage::Done, "Sync complete"),
     }
 }

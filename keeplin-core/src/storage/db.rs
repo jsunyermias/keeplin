@@ -66,6 +66,16 @@ pub struct DbBackend {
     /// It is stored in the `device` table and is sent in every change batch so the
     /// server can identify the originating device and deduplicate messages.
     device_id: String,
+    /// Serialises every write so that no two `BEGIN IMMEDIATE … COMMIT` transactions
+    /// (or bare writes) are ever in flight on the shared connection at the same time.
+    ///
+    /// All mutating operations and `apply_change` share a **single** `libsql::Connection`.
+    /// Without this lock, a second `BEGIN IMMEDIATE` issued before the first `COMMIT`
+    /// fails with "cannot start a transaction within a transaction", and a bare write
+    /// could accidentally land inside another task's open transaction. SQLite permits
+    /// only one writer at a time anyway, so serialising writes here costs nothing in
+    /// throughput while making concurrent callers correct.
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl DbBackend {
@@ -125,6 +135,7 @@ impl DbBackend {
             auth_token,
             ws: Arc::new(Mutex::new(ws)),
             device_id,
+            write_lock: Arc::new(Mutex::new(())),
         })
     }
 
@@ -225,6 +236,7 @@ impl DbBackend {
             CREATE INDEX IF NOT EXISTS idx_notes_is_todo           ON notes(is_todo) WHERE is_todo = 1;
             CREATE INDEX IF NOT EXISTS idx_note_tags_note_id       ON note_tags(note_id);
             CREATE INDEX IF NOT EXISTS idx_note_tags_tag_id        ON note_tags(tag_id);
+            CREATE INDEX IF NOT EXISTS idx_resources_created_at    ON resources(created_at);
             CREATE INDEX IF NOT EXISTS idx_entity_changes_changed_at ON entity_changes(changed_at);
             ",
         )
@@ -522,6 +534,38 @@ impl DbBackend {
             }
         }
     }
+
+    /// Decides whether an incoming remote create/update should be applied, implementing
+    /// last-write-wins by `updated_at`.
+    ///
+    /// Returns `true` when there is no existing row (the change is a genuine create) or
+    /// when `incoming_updated` is strictly newer than the stored `updated_at`. Returns
+    /// `false` when the local copy is equal or newer, so a stale remote edit can never
+    /// clobber a more recent local one. Ties (equal timestamps) keep the existing row.
+    ///
+    /// `table` is always one of the hard-coded literals `"notes"`, `"notebooks"`, or
+    /// `"tags"` — never caller-supplied — so interpolating it into the query is safe.
+    async fn should_apply(
+        &self,
+        table: &str,
+        id: &str,
+        incoming_updated: DateTime<Utc>,
+    ) -> Result<bool, StorageError> {
+        let mut rows = self
+            .conn
+            .query(
+                &format!("SELECT updated_at FROM {table} WHERE id = ?1"),
+                [id.to_owned()],
+            )
+            .await?;
+        match rows.next().await? {
+            Some(row) => {
+                let existing = Self::parse_required_dt(row.get::<String>(0)?)?;
+                Ok(incoming_updated > existing)
+            }
+            None => Ok(true),
+        }
+    }
 }
 
 // ── Pagination helpers ────────────────────────────────────────────────────────
@@ -565,6 +609,7 @@ where
 #[async_trait]
 impl NoteRepository for DbBackend {
     async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
+        let _write_guard = self.write_lock.lock().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             self.conn
@@ -620,6 +665,7 @@ impl NoteRepository for DbBackend {
     }
 
     async fn update_note(&self, note: Note) -> Result<Note, StorageError> {
+        let _write_guard = self.write_lock.lock().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             let affected = self
@@ -664,6 +710,7 @@ impl NoteRepository for DbBackend {
     }
 
     async fn delete_note(&self, id: Uuid) -> Result<(), StorageError> {
+        let _write_guard = self.write_lock.lock().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             let ts = now().to_rfc3339();
@@ -732,6 +779,7 @@ impl NoteRepository for DbBackend {
 #[async_trait]
 impl NotebookRepository for DbBackend {
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
+        let _write_guard = self.write_lock.lock().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             self.conn
@@ -781,6 +829,7 @@ impl NotebookRepository for DbBackend {
     }
 
     async fn update_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
+        let _write_guard = self.write_lock.lock().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             let affected = self
@@ -817,6 +866,7 @@ impl NotebookRepository for DbBackend {
     }
 
     async fn delete_notebook(&self, id: Uuid) -> Result<(), StorageError> {
+        let _write_guard = self.write_lock.lock().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             let affected = self
@@ -883,6 +933,7 @@ impl NotebookRepository for DbBackend {
 #[async_trait]
 impl TagRepository for DbBackend {
     async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
+        let _write_guard = self.write_lock.lock().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             self.conn
@@ -932,6 +983,7 @@ impl TagRepository for DbBackend {
     }
 
     async fn update_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
+        let _write_guard = self.write_lock.lock().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             let affected = self
@@ -968,6 +1020,7 @@ impl TagRepository for DbBackend {
     }
 
     async fn delete_tag(&self, id: Uuid) -> Result<(), StorageError> {
+        let _write_guard = self.write_lock.lock().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             let affected = self
@@ -1029,6 +1082,7 @@ impl TagRepository for DbBackend {
     }
 
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
+        let _write_guard = self.write_lock.lock().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             self.conn
@@ -1055,6 +1109,7 @@ impl TagRepository for DbBackend {
     }
 
     async fn remove_note_tag(&self, note_id: Uuid, tag_id: Uuid) -> Result<(), StorageError> {
+        let _write_guard = self.write_lock.lock().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             self.conn
@@ -1129,6 +1184,7 @@ impl ResourceRepository for DbBackend {
         resource: Resource,
         data: Vec<u8>,
     ) -> Result<Resource, StorageError> {
+        let _write_guard = self.write_lock.lock().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             // Encode the binary payload as Base64 before moving `data` into the SQL
@@ -1200,6 +1256,7 @@ impl ResourceRepository for DbBackend {
     }
 
     async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError> {
+        let _write_guard = self.write_lock.lock().await;
         self.begin().await?;
         let r: Result<(), StorageError> = async {
             let affected = self
@@ -1303,9 +1360,18 @@ impl SyncBackend for DbBackend {
     }
 
     async fn apply_change(&self, change: Change) -> Result<(), StorageError> {
+        // Hold the write lock for the whole apply so this write cannot interleave with
+        // another task's open transaction on the shared connection.
+        let _write_guard = self.write_lock.lock().await;
         match change {
             // Notes
             Change::NoteCreate { note } | Change::NoteUpdate { note } => {
+                if !self
+                    .should_apply("notes", &note.id.to_string(), note.updated_at)
+                    .await?
+                {
+                    return Ok(());
+                }
                 self.conn
                     .execute(
                         "INSERT OR REPLACE INTO notes
@@ -1336,6 +1402,12 @@ impl SyncBackend for DbBackend {
             }
             // Notebooks
             Change::NotebookCreate { notebook } | Change::NotebookUpdate { notebook } => {
+                if !self
+                    .should_apply("notebooks", &notebook.id.to_string(), notebook.updated_at)
+                    .await?
+                {
+                    return Ok(());
+                }
                 self.conn
                     .execute(
                         "INSERT OR REPLACE INTO notebooks (id,title,created_at,updated_at,deleted_at)
@@ -1360,6 +1432,12 @@ impl SyncBackend for DbBackend {
             }
             // Tags
             Change::TagCreate { tag } | Change::TagUpdate { tag } => {
+                if !self
+                    .should_apply("tags", &tag.id.to_string(), tag.updated_at)
+                    .await?
+                {
+                    return Ok(());
+                }
                 self.conn
                     .execute(
                         "INSERT OR REPLACE INTO tags (id,title,created_at,updated_at,deleted_at)
@@ -1449,6 +1527,7 @@ impl SyncBackend for DbBackend {
     }
 
     async fn update_sync_time(&self, ts: DateTime<Utc>) -> Result<(), StorageError> {
+        let _write_guard = self.write_lock.lock().await;
         self.conn
             .execute(
                 "INSERT OR REPLACE INTO sync_state (key, value) VALUES ('last_sync', ?1)",
@@ -1572,6 +1651,7 @@ impl SyncBackend for DbBackend {
     }
 
     async fn prune_change_journal(&self, older_than: DateTime<Utc>) -> Result<u64, StorageError> {
+        let _write_guard = self.write_lock.lock().await;
         let affected = self
             .conn
             .execute(

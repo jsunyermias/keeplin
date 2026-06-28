@@ -4,8 +4,10 @@
 
 When `encryption_password` is set (or `KEEPLIN_ENCRYPTION_PASSWORD` env var), Keeplin
 derives a 32-byte AES-256-GCM key using Argon2id (65536 KiB, 3 iterations, 1 thread).
-The device ID acts as the Argon2id salt, so the derived key is stable per installation
-but unique across installations sharing the same password.
+The Argon2id salt comes from the `key_salt` config field (or `KEEPLIN_KEY_SALT` env var)
+when set; otherwise it falls back to this device's ID. The salt is not secret, but it
+must be **stable** and **identical on every device that needs to read the same data**
+(see the multi-device note below).
 
 ### Encrypted at rest
 
@@ -56,11 +58,17 @@ It does **not** protect against:
 
 ### Multi-device encryption constraint
 
-All devices that sync with each other **must share the same `encryption_password`**.
-Encryption happens before data is written to storage and before sync — so if two devices
-use different passwords, the data each device stores is ciphertext encrypted under
-different keys, and sync will propagate ciphertext that the peer cannot decrypt.
-Keeplin does not detect or prevent mixed-password sync configurations.
+All devices that sync with each other **must share the same `encryption_password`
+and the same `key_salt`**. The key is derived as `Argon2id(password, key_salt)`, so
+both inputs must match for two devices to derive the same key. Because encryption
+happens before data is written or synced, a mismatch in either value means a peer
+receives ciphertext it cannot decrypt.
+
+If `key_salt` is left unset, the salt defaults to the device ID — which is unique per
+installation — so encrypted data is **not** portable to other devices. The daemon logs
+a loud warning at startup when `encryption_password` is set without `key_salt`. For
+encrypted multi-device sync, set the same `key_salt` (at least 8 bytes) on every device.
+Keeplin does not otherwise detect or prevent mismatched-key sync configurations.
 
 ### Sync delivery guarantee
 
@@ -93,9 +101,12 @@ ensures the deletion propagates correctly to other synced devices.
   incompatible. Attempting to mix them may produce undefined behaviour (missing or
   duplicated changes).
 
-- **Conflict resolution is last-write-wins.** When two devices modify the same entity
-  concurrently, the version with the later `updated_at` timestamp wins. No three-way
-  merge is attempted. The losing version is overwritten without warning.
+- **Conflict resolution is last-write-wins by `updated_at`.** When two devices modify
+  the same entity concurrently, the version with the later `updated_at` timestamp wins:
+  `apply_change` compares timestamps and **ignores** an incoming change that is older
+  than the local copy, so a stale remote edit can never clobber a newer local one. No
+  three-way merge is attempted, and the losing version is discarded without warning.
+  Equal timestamps keep the existing local record.
 
 ## Reporting vulnerabilities
 

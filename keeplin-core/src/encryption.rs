@@ -9,9 +9,12 @@
 //!
 //! - Cipher: **AES-256-GCM** (authenticated encryption; any tampering is detected).
 //! - Key derivation: **Argon2id** (memory = 64 MiB, iterations = 3, parallelism = 1).
-//! - Salt: the device ID returned by the inner backend. Using the device ID as the salt
-//!   ensures that the same passphrase produces a different key on every installation,
-//!   preventing cross-device key reuse.
+//! - Salt: supplied by the caller (see [`EncryptedBackend::new`]). The salt is not
+//!   secret but must be **stable** and **identical on every device that needs to read
+//!   the same data**. Passing a per-device value (such as the device ID) keeps data
+//!   local to one installation; passing a shared, configured value makes the derived key
+//!   — and therefore the encrypted data — portable across devices that sync with one
+//!   another.
 //! - Nonce: 12 random bytes generated fresh for **every** encryption call.
 //! - Wire format (strings): `base64(nonce ‖ ciphertext)`.
 //! - Wire format (bytes): raw `nonce ‖ ciphertext` bytes (no Base64 for binary data).
@@ -55,20 +58,21 @@ pub struct EncryptedBackend<B: StorageBackend> {
 }
 
 impl<B: StorageBackend> EncryptedBackend<B> {
-    /// Constructs an `EncryptedBackend` wrapping `inner`.
+    /// Constructs an `EncryptedBackend` wrapping `inner`, deriving the AES-256 key from
+    /// `password` and `salt` via Argon2id.
     ///
-    /// Calls `inner.get_device_id()` to obtain the Argon2id salt, then derives a
-    /// 256-bit AES key from `password` and that salt. The key is stable per
-    /// installation (the device ID is persisted on disk) but unique across installations
-    /// even when the same password is used.
+    /// `salt` must be **stable** across restarts and **identical on every device that
+    /// needs to decrypt the same data**. Pass a per-device value (e.g. the device ID)
+    /// to keep data readable only on the device that wrote it, or a shared configured
+    /// value to make encrypted data portable across synced devices. Argon2id requires
+    /// the salt to be at least 8 bytes long.
     ///
     /// # Errors
     ///
-    /// Returns `StorageError::InvalidState` if Argon2id parameter construction fails or
-    /// the inner backend's `get_device_id()` returns an error.
-    pub async fn new(inner: B, password: &str) -> Result<Self, StorageError> {
-        let device_id = inner.get_device_id().await?;
-        let key = derive_key(password, device_id.as_bytes())?;
+    /// Returns `StorageError::InvalidState` if Argon2id parameter construction or key
+    /// derivation fails (for example, if `salt` is shorter than 8 bytes).
+    pub async fn new(inner: B, password: &str, salt: &[u8]) -> Result<Self, StorageError> {
+        let key = derive_key(password, salt)?;
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
         Ok(Self { inner, cipher })
     }
@@ -97,22 +101,27 @@ impl<B: StorageBackend> EncryptedBackend<B> {
     /// Decodes Base64, extracts the 12-byte nonce from the front of the buffer,
     /// decrypts the remaining bytes with AES-GCM, and interprets the result as UTF-8.
     ///
-    /// Returns `StorageError::InvalidState` if the Base64, the AES-GCM authentication
+    /// Returns `StorageError::CorruptedData` if the Base64, the AES-GCM authentication
     /// tag, or the UTF-8 conversion fails. A wrong decryption key causes the AES-GCM
-    /// authentication tag to fail, which surfaces here as `InvalidState`.
+    /// authentication tag to fail, which surfaces here as `CorruptedData`.
     fn decrypt_str(&self, encoded: &str) -> Result<String, StorageError> {
+        // Every failure here means the stored ciphertext cannot be recovered — whether
+        // because the Base64 wrapper is malformed, the buffer is too short to contain a
+        // nonce, the AES-GCM authentication tag does not verify (wrong key or tampering),
+        // or the decrypted bytes are not valid UTF-8. They all map to `CorruptedData` so
+        // callers (and the daemon's gRPC layer) handle them uniformly.
         let combined = STANDARD
             .decode(encoded)
-            .map_err(|e| StorageError::InvalidState(format!("base64: {e}")))?;
+            .map_err(|e| StorageError::CorruptedData(format!("base64: {e}")))?;
         if combined.len() < NONCE_LEN {
-            return Err(StorageError::InvalidState("ciphertext too short".into()));
+            return Err(StorageError::CorruptedData("ciphertext too short".into()));
         }
         let nonce = Nonce::from_slice(&combined[..NONCE_LEN]);
         let plain = self
             .cipher
             .decrypt(nonce, &combined[NONCE_LEN..])
             .map_err(|e| StorageError::CorruptedData(format!("decrypt: {e}")))?;
-        String::from_utf8(plain).map_err(|e| StorageError::InvalidState(format!("utf8: {e}")))
+        String::from_utf8(plain).map_err(|e| StorageError::CorruptedData(format!("utf8: {e}")))
     }
 
     /// Encrypts raw bytes and returns `nonce ‖ ciphertext` as a byte vector.
@@ -135,7 +144,7 @@ impl<B: StorageBackend> EncryptedBackend<B> {
     /// Extracts the 12-byte nonce from the front of the slice and decrypts the rest.
     fn decrypt_bytes(&self, data: &[u8]) -> Result<Vec<u8>, StorageError> {
         if data.len() < NONCE_LEN {
-            return Err(StorageError::InvalidState("ciphertext too short".into()));
+            return Err(StorageError::CorruptedData("ciphertext too short".into()));
         }
         let nonce = Nonce::from_slice(&data[..NONCE_LEN]);
         self.cipher

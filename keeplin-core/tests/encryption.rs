@@ -16,17 +16,22 @@ use keeplin_core::{
 };
 use tempfile::tempdir;
 
+/// Fixed Argon2id salt shared by the helper-built backends. A constant salt makes the
+/// derived key depend only on the passphrase, which is what these round-trip tests need.
+const TEST_SALT: &[u8] = b"keeplin-test-salt";
+
 /// Create an `EncryptedBackend<FsBackend>` rooted at `dir` with the fixed passphrase
-/// `"test-password"`.
+/// `"test-password"` and the fixed [`TEST_SALT`].
 ///
-/// The passphrase is the same in every test so the AES-256-GCM key derived by Argon2id
-/// is deterministic for a given `dir` (because the Argon2id salt is the device ID stored
-/// in `.keeplin/device_id`, which is generated once per directory). Tests that need to
-/// verify that a **wrong** password fails to decrypt use separate `EncryptedBackend`
-/// instances with different passphrases rather than calling this helper.
+/// Both the passphrase and the salt are constant so the AES-256-GCM key derived by
+/// Argon2id is deterministic across tests. Tests that need to verify that a **wrong**
+/// password fails to decrypt use separate `EncryptedBackend` instances with different
+/// passphrases (but the same salt) rather than calling this helper.
 async fn enc_backend(dir: &std::path::Path) -> EncryptedBackend<FsBackend> {
     let fs = FsBackend::new(dir).await.unwrap();
-    EncryptedBackend::new(fs, "test-password").await.unwrap()
+    EncryptedBackend::new(fs, "test-password", TEST_SALT)
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
@@ -78,16 +83,20 @@ async fn wrong_password_fails_to_decrypt() {
     // Encrypt and persist the note using the correct password so that the data
     // file on disk contains ciphertext derived from that specific passphrase.
     let fs1 = FsBackend::new(dir.path()).await.unwrap();
-    let enc1 = EncryptedBackend::new(fs1, "correct").await.unwrap();
+    let enc1 = EncryptedBackend::new(fs1, "correct", TEST_SALT)
+        .await
+        .unwrap();
     let note = Note::new("Hello", "World");
     let id = note.id;
     enc1.create_note(note).await.unwrap();
 
-    // Attempt to decrypt using a different password. The AES-GCM authentication tag
-    // will fail because the derived key is different, surfacing as a
-    // `StorageError::InvalidState` rather than returning silently corrupt data.
+    // Attempt to decrypt using a different password but the same salt. The AES-GCM
+    // authentication tag will fail because the derived key is different, surfacing as a
+    // `StorageError::CorruptedData` rather than returning silently corrupt data.
     let fs2 = FsBackend::new(dir.path()).await.unwrap();
-    let enc2 = EncryptedBackend::new(fs2, "wrong").await.unwrap();
+    let enc2 = EncryptedBackend::new(fs2, "wrong", TEST_SALT)
+        .await
+        .unwrap();
     assert!(
         enc2.read_note(id).await.is_err(),
         "wrong password must fail to decrypt"
@@ -225,4 +234,43 @@ async fn resource_data_stored_encrypted() {
         raw, b"supersecret",
         "resource data must not be stored in plaintext"
     );
+}
+
+#[tokio::test]
+async fn list_notes_paginates_and_decrypts_each_page() {
+    let dir = tempdir().unwrap();
+    let backend = enc_backend(dir.path()).await;
+
+    let total = 20usize;
+    for i in 0..total {
+        backend
+            .create_note(Note::new(format!("Secret {i:02}"), "body"))
+            .await
+            .unwrap();
+    }
+
+    let page_size = 6u32;
+    let mut seen = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let (page, next) = backend.list_notes(page_size, token).await.unwrap();
+        assert!(page.len() <= page_size as usize);
+        for note in &page {
+            // Every page must come back decrypted, never raw ciphertext.
+            assert!(
+                note.title.starts_with("Secret "),
+                "title must be decrypted, got: {}",
+                note.title
+            );
+        }
+        seen.extend(page.iter().map(|n| n.id));
+        match next {
+            Some(t) => token = Some(t),
+            None => break,
+        }
+    }
+
+    assert_eq!(seen.len(), total);
+    let unique: std::collections::HashSet<_> = seen.iter().copied().collect();
+    assert_eq!(unique.len(), total, "no note may appear on two pages");
 }

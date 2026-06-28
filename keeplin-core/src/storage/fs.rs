@@ -7,6 +7,17 @@
 //! `receive_changes` then reads the newly arrived foreign log files to discover what
 //! changed on remote devices, advancing a byte-offset cursor so each entry is
 //! processed exactly once.
+//!
+//! ## Operational note: log growth
+//!
+//! The per-device NDJSON logs under `logs/` are append-only and are **never pruned** by
+//! the backend (`prune_change_journal` is a deliberate no-op here, because removing
+//! entries a peer has not yet consumed would corrupt that peer's sync state). The logs
+//! therefore grow over the lifetime of the store. This is acceptable for typical
+//! note-taking volumes, but operators running very large or long-lived stores should
+//! compact the logs out-of-band once every device is known to have synced past a given
+//! point. There is intentionally no automatic mechanism, since safe compaction requires
+//! knowing every peer's consumed offset, which lives outside this backend.
 
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
@@ -968,9 +979,14 @@ impl ResourceRepository for FsBackend {
     ) -> Result<Resource, StorageError> {
         let dir = self.resource_dir(resource.id);
         tokio::fs::create_dir_all(&dir).await?;
+        // Write the binary payload first, then the metadata file. `read_resource` treats
+        // the presence of `meta.json` as proof the resource exists, so writing it last
+        // makes it the commit marker: a crash between the two writes leaves an orphan
+        // data file (harmless, overwritten on retry) rather than a metadata record that
+        // points at a missing payload.
+        tokio::fs::write(self.resource_data_path(resource.id), &data).await?;
         self.write_json(&self.resource_meta_path(resource.id), &resource)
             .await?;
-        tokio::fs::write(self.resource_data_path(resource.id), &data).await?;
         self.append_log(
             "resource",
             resource.id,
@@ -1054,10 +1070,21 @@ impl SyncBackend for FsBackend {
 
     async fn apply_change(&self, change: Change) -> Result<(), StorageError> {
         match change {
-            // Notes
+            // Notes — last-write-wins by `updated_at`: a stale remote edit must not
+            // overwrite a newer local copy. A missing local copy means this is a genuine
+            // create, so it always applies.
             Change::NoteCreate { note } | Change::NoteUpdate { note } => {
-                self.write_note(&note).await?;
-                tracing::debug!(id = %note.id, "Applied remote note change");
+                let apply = match self.load_note(note.id).await {
+                    Ok(existing) => note.updated_at > existing.updated_at,
+                    Err(StorageError::NotFound(_)) => true,
+                    Err(e) => return Err(e),
+                };
+                if apply {
+                    self.write_note(&note).await?;
+                    tracing::debug!(id = %note.id, "Applied remote note change");
+                } else {
+                    tracing::debug!(id = %note.id, "Skipped stale remote note change");
+                }
             }
             Change::NoteDelete { id } => {
                 if self.meta_path(id).exists() {
@@ -1067,11 +1094,20 @@ impl SyncBackend for FsBackend {
                 }
                 tracing::debug!(%id, "Applied remote note delete");
             }
-            // Notebooks
+            // Notebooks — last-write-wins by `updated_at` (see the note arm above).
             Change::NotebookCreate { notebook } | Change::NotebookUpdate { notebook } => {
-                self.write_json(&self.notebook_path(notebook.id), &notebook)
-                    .await?;
-                tracing::debug!(id = %notebook.id, "Applied remote notebook change");
+                let path = self.notebook_path(notebook.id);
+                let apply = match self.read_json::<Notebook>(&path, notebook.id).await {
+                    Ok(existing) => notebook.updated_at > existing.updated_at,
+                    Err(StorageError::NotFound(_)) => true,
+                    Err(e) => return Err(e),
+                };
+                if apply {
+                    self.write_json(&path, &notebook).await?;
+                    tracing::debug!(id = %notebook.id, "Applied remote notebook change");
+                } else {
+                    tracing::debug!(id = %notebook.id, "Skipped stale remote notebook change");
+                }
             }
             Change::NotebookDelete { id } => {
                 let path = self.notebook_path(id);
@@ -1082,10 +1118,20 @@ impl SyncBackend for FsBackend {
                 }
                 tracing::debug!(%id, "Applied remote notebook delete");
             }
-            // Tags
+            // Tags — last-write-wins by `updated_at` (see the note arm above).
             Change::TagCreate { tag } | Change::TagUpdate { tag } => {
-                self.write_json(&self.tag_path(tag.id), &tag).await?;
-                tracing::debug!(id = %tag.id, "Applied remote tag change");
+                let path = self.tag_path(tag.id);
+                let apply = match self.read_json::<Tag>(&path, tag.id).await {
+                    Ok(existing) => tag.updated_at > existing.updated_at,
+                    Err(StorageError::NotFound(_)) => true,
+                    Err(e) => return Err(e),
+                };
+                if apply {
+                    self.write_json(&path, &tag).await?;
+                    tracing::debug!(id = %tag.id, "Applied remote tag change");
+                } else {
+                    tracing::debug!(id = %tag.id, "Skipped stale remote tag change");
+                }
             }
             Change::TagDelete { id } => {
                 let path = self.tag_path(id);

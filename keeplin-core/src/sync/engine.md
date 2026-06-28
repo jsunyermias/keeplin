@@ -29,10 +29,16 @@ the backend detects a write conflict.
 
 ## Data flow
 
-The sync cycle executes six steps in sequence:
+The cycle lives in the free function `run_sync(backend, report)`; `SyncEngine::sync`
+is a thin wrapper that calls it with a no-op `report` callback, and the daemon's
+streaming `Sync` RPC calls it with a callback that emits a `SyncStage` progress update
+before each step. This keeps the watermark/ordering logic in exactly one place.
+
+The cycle executes six steps in sequence:
 
 1. **Retrieve last-sync timestamp** — `get_last_sync_time()` returns the UTC timestamp
-   of the most recent successful sync, or the Unix epoch if this is the first sync.
+   of the most recent successful sync, or the Unix epoch if this is the first sync. The
+   new watermark `sync_ts = now()` is captured **here, before** any changes are read.
 2. **Collect local changes** — `get_changes_since(last_sync)` returns all `Change`
    events recorded on this device since the previous sync.
 3. **Push local changes** — `send_changes(local_changes)` transmits the changes to the
@@ -43,9 +49,10 @@ The sync cycle executes six steps in sequence:
 5. **Apply remote changes locally** — each `Change` from the remote is applied in
    order via `apply_change(change)`. All `apply_change` implementations are idempotent,
    so re-running a cycle after a partial failure is safe.
-6. **Record new sync timestamp** — `update_sync_time(now())` persists the current UTC
-   time as the new last-sync point, so the next cycle only collects changes made after
-   this moment.
+6. **Record new sync timestamp** — `update_sync_time(sync_ts)` persists the watermark
+   captured in step 1 (not a fresh `now()`). Using the start-of-cycle time guarantees
+   that any change recorded *while* the cycle ran is still collected on the next cycle,
+   rather than being silently skipped.
 
 ## Design notes
 

@@ -15,7 +15,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use clap::Parser;
 use keeplin_core::{
     encryption::EncryptedBackend,
-    storage::{db::DbBackend, fs::FsBackend},
+    storage::{db::DbBackend, fs::FsBackend, StorageBackend},
 };
 use subtle::ConstantTimeEq;
 use tonic::service::interceptor::InterceptedService;
@@ -64,6 +64,9 @@ async fn main() -> anyhow::Result<()> {
     if let Ok(pw) = std::env::var("KEEPLIN_ENCRYPTION_PASSWORD") {
         cfg.encryption_password = Some(pw);
     }
+    if let Ok(salt) = std::env::var("KEEPLIN_KEY_SALT") {
+        cfg.key_salt = Some(salt);
+    }
     if let Ok(pw) = std::env::var("KEEPLIN_AUTH_PASSWORD") {
         cfg.auth_password = Some(pw);
     }
@@ -86,6 +89,19 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let encrypted = cfg.encryption_password.is_some();
+
+    // When encryption is enabled without an explicit key_salt, the key is derived from
+    // this device's ID. That is safe for a single device but means another device cannot
+    // decrypt this device's data — encrypted multi-device sync would silently produce
+    // unreadable records. Warn so operators who sync set a shared key_salt on every device.
+    if encrypted && cfg.key_salt.is_none() {
+        tracing::warn!(
+            "encryption is enabled but key_salt is not set: encrypted data is bound to \
+             this device and cannot be decrypted on other devices. Set the same key_salt \
+             on all devices to enable encrypted multi-device sync."
+        );
+    }
+
     tracing::info!(mode = ?cfg.mode, %addr, encrypted, auth = auth_configured, "Starting keeplin-daemon");
 
     match (cfg.mode.clone(), cfg.encryption_password.clone()) {
@@ -96,7 +112,8 @@ async fn main() -> anyhow::Result<()> {
         }
         (Mode::Offline, Some(pw)) => {
             let backend = FsBackend::new(&cfg.data_dir).await?;
-            let enc = EncryptedBackend::new(backend, &pw).await?;
+            let salt = resolve_key_salt(&cfg, &backend).await?;
+            let enc = EncryptedBackend::new(backend, &pw, &salt).await?;
             tracing::info!(data_dir = %cfg.data_dir.display(), "Offline mode (encrypted)");
             run_server(&cfg, addr, enc).await?;
         }
@@ -109,13 +126,26 @@ async fn main() -> anyhow::Result<()> {
         (Mode::Server, Some(pw)) => {
             let db_path = cfg.data_dir.join("keeplin.db");
             let backend = DbBackend::new(&db_path, &cfg.server_url, &cfg.auth_token).await?;
-            let enc = EncryptedBackend::new(backend, &pw).await?;
+            let salt = resolve_key_salt(&cfg, &backend).await?;
+            let enc = EncryptedBackend::new(backend, &pw, &salt).await?;
             tracing::info!(db = %db_path.display(), server = %cfg.server_url, "Server mode (encrypted)");
             run_server(&cfg, addr, enc).await?;
         }
     }
 
     Ok(())
+}
+
+/// Resolves the Argon2id salt used to derive the at-rest encryption key.
+///
+/// Returns the configured `key_salt` bytes when set (the value that must be shared
+/// across devices for portable encryption), otherwise falls back to this device's ID so
+/// that single-device encrypted stores keep working without any configuration.
+async fn resolve_key_salt<B: StorageBackend>(cfg: &Config, backend: &B) -> anyhow::Result<Vec<u8>> {
+    match &cfg.key_salt {
+        Some(salt) => Ok(salt.as_bytes().to_vec()),
+        None => Ok(backend.get_device_id().await?.into_bytes()),
+    }
 }
 
 /// Configure and start the tonic gRPC server with the given `backend`.
@@ -141,9 +171,10 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
 ) -> anyhow::Result<()> {
     let (auth_user, auth_pass) = (cfg.auth_username.clone(), cfg.auth_password.clone());
 
-    let svc_inner = KeeplinServiceServer::new(KeeplinServer::new(backend))
-        .max_decoding_message_size(cfg.max_message_size)
-        .max_encoding_message_size(cfg.max_message_size);
+    let svc_inner =
+        KeeplinServiceServer::new(KeeplinServer::new(backend, cfg.journal_retention_days))
+            .max_decoding_message_size(cfg.max_message_size)
+            .max_encoding_message_size(cfg.max_message_size);
 
     // Wrap every RPC with the same Basic-Auth interceptor so authentication applies
     // uniformly to all methods regardless of the storage mode chosen. When neither
@@ -230,9 +261,13 @@ fn validate_basic_auth(
 
     let (user, pass) = (&creds[..colon], &creds[colon + 1..]);
 
-    if user.as_bytes().ct_eq(expected_user.as_bytes()).unwrap_u8() == 0
-        || pass.as_bytes().ct_eq(expected_pass.as_bytes()).unwrap_u8() == 0
-    {
+    // Evaluate both comparisons unconditionally and combine them with a bitwise AND on
+    // the `subtle::Choice` results. Using `&&`/`||` here would short-circuit and leak —
+    // via response timing — whether the username alone was correct. `ct_eq` itself is
+    // constant-time with respect to content for equal-length inputs.
+    let user_ok = user.as_bytes().ct_eq(expected_user.as_bytes());
+    let pass_ok = pass.as_bytes().ct_eq(expected_pass.as_bytes());
+    if (user_ok & pass_ok).unwrap_u8() == 0 {
         return Err(tonic::Status::unauthenticated("invalid credentials"));
     }
 

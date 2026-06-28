@@ -109,7 +109,7 @@ as a `Vec<Change>` and appended to the result. Binary messages and errors are ig
 
 | Variant | SQL |
 |---------|-----|
-| `NoteCreate` | `INSERT OR IGNORE INTO notes …` |
+| `NoteCreate` | `INSERT OR REPLACE INTO notes …` (shares the arm with `NoteUpdate`) |
 | `NoteUpdate` | `INSERT OR REPLACE INTO notes …` |
 | `NoteDelete` | `UPDATE notes SET deleted_at = ? WHERE id = ?` |
 | `NotebookCreate` | `INSERT OR REPLACE INTO notebooks …` |
@@ -121,12 +121,21 @@ as a `Vec<Change>` and appended to the result. Binary messages and errors are ig
 | `NoteTagAdd` | `INSERT OR IGNORE INTO note_tags …` |
 | `NoteTagRemove` | `DELETE FROM note_tags WHERE note_id=? AND tag_id=?` |
 | `ResourceCreate` | `INSERT OR IGNORE INTO resources (…, data) VALUES (…, ?)` with `data = payload.unwrap_or_default()` |
-| `ResourceDelete` | `UPDATE resources SET deleted_at = ? WHERE id = ?` |
+| `ResourceDelete` | `DELETE FROM resources WHERE id = ?` (resources use hard delete) |
 
-All operations are idempotent by design.
+All operations are idempotent by design. The create/update arms for notes, notebooks,
+and tags are additionally guarded by `should_apply`, which reads the stored `updated_at`
+and **skips** the write when the incoming change is not strictly newer — implementing
+last-write-wins so a stale remote edit cannot clobber a newer local record.
 
 ## Design notes
 
+- Every mutating method (and `apply_change`, `update_sync_time`, `prune_change_journal`)
+  takes a `write_lock: Arc<Mutex<()>>` for the duration of its transaction. The backend
+  shares a single `libsql::Connection`, so without this lock a second `BEGIN IMMEDIATE`
+  issued before the first `COMMIT` would fail with "cannot start a transaction within a
+  transaction". SQLite allows only one writer at a time, so serialising writes is correct
+  and free.
 - The `ws` field is wrapped in `Arc<Mutex<Option<WsStream>>>` so the backend can be
   shared across gRPC handler tasks (via `Arc<B>`) while still allowing exclusive write
   access to the WebSocket.

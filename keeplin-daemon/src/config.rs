@@ -63,11 +63,31 @@ pub struct Config {
     #[serde(default = "default_max_message_size")]
     pub max_message_size: usize,
 
+    /// How many days of change-journal history to retain (default: 30).
+    ///
+    /// After each successful sync the daemon prunes `entity_changes` rows older than
+    /// this many days (no-op for the filesystem backend, whose logs are replicated by
+    /// Syncthing). Keep this comfortably larger than the longest a peer device is
+    /// expected to stay offline. Set to `0` to disable pruning entirely.
+    #[serde(default = "default_journal_retention_days")]
+    pub journal_retention_days: u64,
+
     /// Optional password for at-rest AES-256-GCM encryption (Argon2id key derivation).
     /// Prefer the KEEPLIN_ENCRYPTION_PASSWORD environment variable over storing the
     /// password in this file to avoid accidentally committing it to version control.
     #[serde(default)]
     pub encryption_password: Option<String>,
+
+    /// Optional Argon2id salt for the encryption key (at least 8 bytes).
+    ///
+    /// The salt is not secret, but it must be identical on every device that needs to
+    /// decrypt the same data. **Set the same value on all synced devices** to make
+    /// encrypted notes portable between them. When left unset, the daemon falls back to
+    /// this device's ID, which keeps encrypted data readable only on the device that
+    /// wrote it — safe for single-device use but not for sync. May also be supplied via
+    /// the KEEPLIN_KEY_SALT environment variable.
+    #[serde(default)]
+    pub key_salt: Option<String>,
 
     /// Username for gRPC client authentication (HTTP Basic Auth).
     /// When both auth_username and auth_password are set, every gRPC call must
@@ -102,6 +122,14 @@ fn default_max_message_size() -> usize {
     32 * 1024 * 1024
 }
 
+/// Returns the default change-journal retention window in days (30).
+///
+/// Thirty days comfortably exceeds the time a peer device is normally offline, so
+/// pruning entries older than this does not strand a device that has not yet synced.
+fn default_journal_retention_days() -> u64 {
+    30
+}
+
 impl Config {
     /// Load a [`Config`] from a TOML file at `path`.
     ///
@@ -131,7 +159,9 @@ impl Default for Config {
             tls_cert_path: None,
             tls_key_path: None,
             max_message_size: default_max_message_size(),
+            journal_retention_days: default_journal_retention_days(),
             encryption_password: None,
+            key_salt: None,
             auth_username: None,
             auth_password: None,
         }

@@ -16,8 +16,11 @@ anyhow.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 
-libsql = { version = "0.6", features = ["core"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+# Only the local-SQLite engine is used (DbBackend opens databases with
+# `Builder::new_local`). Disabling default features drops libsql's remote
+# replication stack (hyper-rustls / rustls 0.22 / rustls-webpki 0.102), which is
+# both unused here and the sole source of the previously-ignored RUSTSEC advisories.
+libsql = { version = "0.6", default-features = false, features = ["core"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 

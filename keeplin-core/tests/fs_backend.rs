@@ -348,3 +348,45 @@ async fn delete_resource() {
     let err = backend.read_resource(id).await.unwrap_err();
     assert!(matches!(err, StorageError::NotFound(_)));
 }
+
+// ── Pagination test ───────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn list_notes_paginates_without_duplicates_or_gaps() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    // Insert more notes than a single page holds so the cursor must be walked.
+    let total = 23usize;
+    for i in 0..total {
+        backend
+            .create_note(Note::new(format!("Note {i:02}"), ""))
+            .await
+            .unwrap();
+    }
+
+    let page_size = 7u32;
+    let mut seen = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let (page, next) = backend.list_notes(page_size, token).await.unwrap();
+        assert!(page.len() <= page_size as usize);
+        seen.extend(page.iter().map(|n| n.id));
+        match next {
+            Some(t) => token = Some(t),
+            None => break,
+        }
+    }
+
+    assert_eq!(
+        seen.len(),
+        total,
+        "every note must be returned exactly once"
+    );
+    let unique: std::collections::HashSet<_> = seen.iter().copied().collect();
+    assert_eq!(unique.len(), total, "no note may appear on two pages");
+
+    let (all, _) = backend.list_notes(total as u32 + 5, None).await.unwrap();
+    let all_ids: Vec<_> = all.iter().map(|n| n.id).collect();
+    assert_eq!(seen, all_ids, "paged order must match single-shot order");
+}

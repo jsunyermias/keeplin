@@ -320,3 +320,87 @@ async fn delete_resource() {
     let err = backend.read_resource(id).await.unwrap_err();
     assert!(matches!(err, StorageError::NotFound(_)));
 }
+
+// ── Pagination tests ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn list_notes_paginates_without_duplicates_or_gaps() {
+    let backend = in_memory_backend().await;
+
+    // Insert more notes than a single page holds so the cursor must be walked.
+    let total = 25usize;
+    for i in 0..total {
+        backend
+            .create_note(Note::new(format!("Note {i:02}"), ""))
+            .await
+            .unwrap();
+    }
+
+    // Walk every page with a small page size and collect the ids in order.
+    let page_size = 10u32;
+    let mut seen = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let (page, next) = backend.list_notes(page_size, token).await.unwrap();
+        assert!(
+            page.len() <= page_size as usize,
+            "page must never exceed page_size"
+        );
+        seen.extend(page.iter().map(|n| n.id));
+        match next {
+            Some(t) => token = Some(t),
+            None => break,
+        }
+    }
+
+    // Every note must appear exactly once across all pages.
+    assert_eq!(
+        seen.len(),
+        total,
+        "every note must be returned exactly once"
+    );
+    let unique: std::collections::HashSet<_> = seen.iter().copied().collect();
+    assert_eq!(unique.len(), total, "no note may appear on two pages");
+
+    // The keyset order (created_at ASC, id ASC) must be stable across the walk.
+    let (all, _) = backend.list_notes(total as u32 + 5, None).await.unwrap();
+    let all_ids: Vec<_> = all.iter().map(|n| n.id).collect();
+    assert_eq!(seen, all_ids, "paged order must match single-shot order");
+}
+
+// ── Concurrency test ──────────────────────────────────────────────────────────
+
+/// Many writers hitting the same `DbBackend` concurrently must all succeed.
+///
+/// `DbBackend` wraps every mutation in a `BEGIN IMMEDIATE … COMMIT` transaction on a
+/// single shared connection, so without serialisation a second `BEGIN` arriving before
+/// the first `COMMIT` fails with "cannot start a transaction within a transaction".
+/// This test runs on a multi-threaded runtime to maximise the chance of interleaving.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_note_creates_all_succeed() {
+    use std::sync::Arc;
+
+    let backend = Arc::new(in_memory_backend().await);
+
+    let mut handles = Vec::new();
+    for i in 0..50u32 {
+        let b = Arc::clone(&backend);
+        handles.push(tokio::spawn(async move {
+            b.create_note(Note::new(format!("concurrent {i}"), ""))
+                .await
+        }));
+    }
+
+    let mut ok = 0usize;
+    for h in handles {
+        h.await
+            .unwrap()
+            .expect("concurrent create_note must succeed");
+        ok += 1;
+    }
+    assert_eq!(ok, 50, "all concurrent creates must commit");
+
+    // All 50 notes must be queryable afterwards (none lost to a failed transaction).
+    let (notes, _) = backend.list_notes(100, None).await.unwrap();
+    assert_eq!(notes.len(), 50);
+}

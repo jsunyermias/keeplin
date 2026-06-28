@@ -19,7 +19,7 @@ same `StorageBackend` trait as any plain backend — encryption is completely tr
 |-----------|---------|
 | Cipher | AES-256-GCM (authenticated encryption with associated data) |
 | Key derivation | Argon2id, parameters: memory = 64 MiB, iterations = 3, parallelism = 1, output = 32 bytes |
-| Salt | The `device_id` string obtained from the inner backend at construction time |
+| Salt | Caller-supplied (`new`'s `salt` argument); the daemon passes `key_salt` from config, or the device ID when `key_salt` is unset |
 | Nonce | 12-byte random nonce generated fresh for every encryption operation |
 | Wire format (strings) | `base64(nonce ‖ ciphertext)` — nonce prepended to ciphertext, then Base64-encoded |
 | Wire format (bytes) | `nonce ‖ ciphertext` — raw bytes; no Base64 encoding for binary data |
@@ -42,15 +42,18 @@ contain no user-supplied content that needs protecting.
 
 ## Public API
 
-### `EncryptedBackend::new(inner: B, password: &str) -> Result<Self, StorageError>`
-**What it does:** Derives a 256-bit AES key from `password` and the device ID (Argon2id),
+### `EncryptedBackend::new(inner: B, password: &str, salt: &[u8]) -> Result<Self, StorageError>`
+**What it does:** Derives a 256-bit AES key from `password` and `salt` (Argon2id),
 constructs an `Aes256Gcm` cipher, and wraps the inner backend.  
 **Parameters:**
 - `inner` — the backend to wrap; must implement `StorageBackend`
-- `password` — the user-supplied passphrase; never stored, only used during key derivation  
+- `password` — the user-supplied passphrase; never stored, only used during key derivation
+- `salt` — stable Argon2id salt (≥ 8 bytes); must be identical on every device that needs
+  to read the same data. Pass a shared value for portable encryption, or a per-device
+  value (e.g. the device ID) to keep data local to one installation  
 **Returns:** A ready-to-use encrypted backend.  
-**Errors:** `StorageError::InvalidState` if Argon2id parameter construction fails or the
-inner backend's `get_device_id()` returns an error.
+**Errors:** `StorageError::InvalidState` if Argon2id parameter construction or key
+derivation fails (e.g. `salt` is shorter than 8 bytes).
 
 ### Private helpers
 
@@ -69,8 +72,9 @@ inner backend's `get_device_id()` returns an error.
 **What it does:** Runs Argon2id key derivation to produce a 32-byte key.  
 **Parameters:**
 - `password` — user passphrase as UTF-8 bytes
-- `salt` — the device ID bytes; unique per installation so the same password produces
-  different keys on different devices  
+- `salt` — caller-supplied stable salt bytes (≥ 8 bytes); the same `(password, salt)` pair
+  always derives the same key, which is what makes encrypted data portable across devices
+  that share both values  
 **Returns:** 32-byte raw key material suitable for `Aes256Gcm`.
 
 ## Data flow
@@ -85,10 +89,11 @@ The same round-trip applies to all create/read/update/list methods.
 
 ## Design notes
 
-- The `device_id` is used as the Argon2id salt, not as a password salt in the traditional
-  sense. This makes the derived key stable across daemon restarts (the device ID is
-  persisted to disk) while ensuring different installations derive different keys even
-  when using the same password.
+- The salt is supplied by the caller rather than fixed to the device ID. A shared,
+  configured salt (the daemon's `key_salt`) makes the derived key — and therefore the
+  encrypted data — portable across devices that sync with one another; falling back to
+  the device ID keeps data readable only on the device that wrote it. The salt is not
+  secret but must be stable across restarts.
 - Sync methods (`get_changes_since`, `apply_change`, `send_changes`, `receive_changes`)
   pass through to the inner backend without any transformation. The data that travels over
   the sync channel is already in the same encrypted form that the inner backend stores on

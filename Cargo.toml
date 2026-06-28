@@ -11,6 +11,16 @@ edition = "2021"
 authors = ["Keeplin Contributors"]
 license = "MIT"
 
+# Release profile. Cargo only reads `[profile.*]` from a manifest (Cargo.toml),
+# never from `.cargo/config.toml`, so these optimisations must live here to take
+# effect: full link-time optimisation, a single codegen unit for maximum inlining,
+# and symbol stripping to shrink the shipped daemon binary.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

@@ -3,21 +3,17 @@
 ## Purpose
 
 This file applies workspace-wide Cargo settings that override Cargo's built-in defaults
-for every crate in the workspace. Settings here affect build profiles and can optionally
-configure linkers for cross-compilation targets.
+for every crate in the workspace. It can optionally configure linkers for
+cross-compilation targets.
 
 ## Sections
 
-### `[profile.release]`
+### Build profiles do **not** belong here
 
-Controls how the workspace's release build (`cargo build --release`) is compiled.
-
-| Key | Value | Effect |
-|-----|-------|--------|
-| `opt-level` | `3` | Maximum speed optimisation (same as the Cargo default for release; explicit here for clarity) |
-| `lto` | `true` | Enables Link-Time Optimisation across the entire binary; reduces binary size and can improve runtime performance by allowing the linker to inline across crate boundaries |
-| `codegen-units` | `1` | Compiles all code in a single code-generation unit; required for full LTO effectiveness and produces smaller, faster binaries at the cost of longer compile times |
-| `strip` | `true` | Strips debug symbols from the final binary; reduces binary size significantly (useful for distributing binaries without debug information) |
+Cargo reads `[profile.*]` only from a manifest (`Cargo.toml`), never from
+`.cargo/config.toml` — a profile placed here is silently ignored. The release profile
+(`opt-level = 3`, `lto = true`, `codegen-units = 1`, `strip = true`) therefore lives in
+the workspace root `Cargo.toml`. This file keeps only a comment pointing there.
 
 ### `[target.<triple>]` — cross-compilation (commented out)
 

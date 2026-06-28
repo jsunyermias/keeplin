@@ -4,15 +4,15 @@
 //! in [`SyncError`] when it needs to add sync-specific failure cases (e.g. conflicts
 //! detected between local and remote changes).
 //!
-//! Conversions from third-party error types (`libsql::Error`, `reqwest::Error`,
-//! `tungstenite::Error`) are provided via `From` implementations so that callers can use
-//! the `?` operator without manual mapping.
+//! Conversions from third-party error types (`libsql::Error`, `tungstenite::Error`)
+//! are provided via `From` implementations so that callers can use the `?` operator
+//! without manual mapping.
 
 use thiserror::Error;
 
 /// Every error that can arise from a storage operation.
 ///
-/// Variants that wrap third-party errors (`Io`, `Serialization`, `WebSocket`, `Http`)
+/// Variants that wrap third-party errors (`Io`, `Serialization`, `WebSocket`)
 /// use `#[from]` so they are automatically constructed by the `?` operator.
 /// Variants that carry a `String` (`Database`, `NotFound`, `Conflict`, `InvalidState`)
 /// are constructed manually because their source types have no single `From` target.
@@ -36,17 +36,18 @@ pub enum StorageError {
     #[error("WebSocket error: {0}")]
     WebSocket(String),
 
-    /// An HTTP request error occurred (e.g. a sync server call failed).
-    #[error("HTTP error: {0}")]
-    Http(String),
-
     /// The requested entity does not exist in the store (or was soft-deleted).
     /// The `String` payload contains a human-readable description of which entity was
     /// not found (e.g. `"note 3f4a…"`).
     #[error("Not found: {0}")]
     NotFound(String),
 
-    /// A write conflict was detected between two concurrent mutations.
+    /// A write conflict between two concurrent mutations.
+    ///
+    /// Reserved: the built-in backends do not currently return this variant because
+    /// `apply_change` reconciles concurrent edits with last-write-wins by `updated_at`
+    /// rather than surfacing an error. It is retained for backends or future modes that
+    /// implement strict (error-on-conflict) reconciliation.
     #[error("Conflict: {0}")]
     Conflict(String),
 
@@ -88,13 +89,6 @@ impl From<tokio_tungstenite::tungstenite::Error> for StorageError {
     }
 }
 
-impl From<reqwest::Error> for StorageError {
-    /// Converts a `reqwest::Error` (HTTP client error) into `StorageError::Http`.
-    fn from(e: reqwest::Error) -> Self {
-        StorageError::Http(e.to_string())
-    }
-}
-
 /// Errors specific to the synchronisation layer.
 ///
 /// The sync layer builds on top of storage operations, so `SyncError` wraps
@@ -109,11 +103,16 @@ pub enum SyncError {
     /// A remote change conflicts with a local change for the same entity.
     /// `local_id` and `remote_id` identify the conflicting records for diagnostic
     /// purposes (they may be the same entity UUID with different content).
+    ///
+    /// Reserved: the default sync cycle resolves conflicts automatically via
+    /// last-write-wins and does not return this variant. It exists for callers that
+    /// layer strict conflict detection on top of [`crate::sync::run_sync`].
     #[error("Conflict: local={local_id}, remote={remote_id}")]
     Conflict { local_id: String, remote_id: String },
 
     /// The sync cycle failed for a reason not covered by the other variants
-    /// (e.g. the remote peer returned an unexpected response format).
+    /// (e.g. the remote peer returned an unexpected response format). Reserved for
+    /// callers that need to signal a non-storage sync failure.
     #[error("Sync failed: {0}")]
     Failed(String),
 }
