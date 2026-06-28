@@ -46,7 +46,12 @@ pub enum StorageError {
     #[error("Not found: {0}")]
     NotFound(String),
 
-    /// A write conflict was detected between two concurrent mutations.
+    /// A write conflict between two concurrent mutations.
+    ///
+    /// Reserved: the built-in backends do not currently return this variant because
+    /// `apply_change` reconciles concurrent edits with last-write-wins by `updated_at`
+    /// rather than surfacing an error. It is retained for backends or future modes that
+    /// implement strict (error-on-conflict) reconciliation.
     #[error("Conflict: {0}")]
     Conflict(String),
 
@@ -109,11 +114,16 @@ pub enum SyncError {
     /// A remote change conflicts with a local change for the same entity.
     /// `local_id` and `remote_id` identify the conflicting records for diagnostic
     /// purposes (they may be the same entity UUID with different content).
+    ///
+    /// Reserved: the default sync cycle resolves conflicts automatically via
+    /// last-write-wins and does not return this variant. It exists for callers that
+    /// layer strict conflict detection on top of [`crate::sync::run_sync`].
     #[error("Conflict: local={local_id}, remote={remote_id}")]
     Conflict { local_id: String, remote_id: String },
 
     /// The sync cycle failed for a reason not covered by the other variants
-    /// (e.g. the remote peer returned an unexpected response format).
+    /// (e.g. the remote peer returned an unexpected response format). Reserved for
+    /// callers that need to signal a non-storage sync failure.
     #[error("Sync failed: {0}")]
     Failed(String),
 }

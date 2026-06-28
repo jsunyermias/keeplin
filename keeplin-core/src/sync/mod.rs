@@ -7,4 +7,4 @@
 
 mod engine;
 
-pub use engine::SyncEngine;
+pub use engine::{run_sync, SyncEngine, SyncStage};

@@ -226,3 +226,42 @@ async fn resource_data_stored_encrypted() {
         "resource data must not be stored in plaintext"
     );
 }
+
+#[tokio::test]
+async fn list_notes_paginates_and_decrypts_each_page() {
+    let dir = tempdir().unwrap();
+    let backend = enc_backend(dir.path()).await;
+
+    let total = 20usize;
+    for i in 0..total {
+        backend
+            .create_note(Note::new(format!("Secret {i:02}"), "body"))
+            .await
+            .unwrap();
+    }
+
+    let page_size = 6u32;
+    let mut seen = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let (page, next) = backend.list_notes(page_size, token).await.unwrap();
+        assert!(page.len() <= page_size as usize);
+        for note in &page {
+            // Every page must come back decrypted, never raw ciphertext.
+            assert!(
+                note.title.starts_with("Secret "),
+                "title must be decrypted, got: {}",
+                note.title
+            );
+        }
+        seen.extend(page.iter().map(|n| n.id));
+        match next {
+            Some(t) => token = Some(t),
+            None => break,
+        }
+    }
+
+    assert_eq!(seen.len(), total);
+    let unique: std::collections::HashSet<_> = seen.iter().copied().collect();
+    assert_eq!(unique.len(), total, "no note may appear on two pages");
+}
