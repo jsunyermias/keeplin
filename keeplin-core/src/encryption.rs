@@ -233,13 +233,15 @@ impl<B: StorageBackend> NoteRepository for EncryptedBackend<B> {
         self.inner.delete_note(id).await
     }
 
-    async fn list_notes(&self) -> Result<Vec<Note>, StorageError> {
-        self.inner
-            .list_notes()
-            .await?
-            .into_iter()
-            .map(|n| self.dec_note(n))
-            .collect()
+    async fn list_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        let (notes, next) = self.inner.list_notes(page_size, page_token).await?;
+        let decrypted: Result<Vec<Note>, StorageError> =
+            notes.into_iter().map(|n| self.dec_note(n)).collect();
+        Ok((decrypted?, next))
     }
 }
 
@@ -269,13 +271,17 @@ impl<B: StorageBackend> NotebookRepository for EncryptedBackend<B> {
         self.inner.delete_notebook(id).await
     }
 
-    async fn list_notebooks(&self) -> Result<Vec<Notebook>, StorageError> {
-        self.inner
-            .list_notebooks()
-            .await?
+    async fn list_notebooks(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Notebook>, Option<String>), StorageError> {
+        let (notebooks, next) = self.inner.list_notebooks(page_size, page_token).await?;
+        let decrypted: Result<Vec<Notebook>, StorageError> = notebooks
             .into_iter()
-            .map(|n| self.dec_notebook(n))
-            .collect()
+            .map(|nb| self.dec_notebook(nb))
+            .collect();
+        Ok((decrypted?, next))
     }
 }
 
@@ -299,13 +305,15 @@ impl<B: StorageBackend> TagRepository for EncryptedBackend<B> {
         self.inner.delete_tag(id).await
     }
 
-    async fn list_tags(&self) -> Result<Vec<Tag>, StorageError> {
-        self.inner
-            .list_tags()
-            .await?
-            .into_iter()
-            .map(|t| self.dec_tag(t))
-            .collect()
+    async fn list_tags(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        let (tags, next) = self.inner.list_tags(page_size, page_token).await?;
+        let decrypted: Result<Vec<Tag>, StorageError> =
+            tags.into_iter().map(|t| self.dec_tag(t)).collect();
+        Ok((decrypted?, next))
     }
 
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
@@ -316,13 +324,19 @@ impl<B: StorageBackend> TagRepository for EncryptedBackend<B> {
         self.inner.remove_note_tag(note_id, tag_id).await
     }
 
-    async fn list_note_tags(&self, note_id: Uuid) -> Result<Vec<Tag>, StorageError> {
-        self.inner
-            .list_note_tags(note_id)
-            .await?
-            .into_iter()
-            .map(|t| self.dec_tag(t))
-            .collect()
+    async fn list_note_tags(
+        &self,
+        note_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        let (tags, next) = self
+            .inner
+            .list_note_tags(note_id, page_size, page_token)
+            .await?;
+        let decrypted: Result<Vec<Tag>, StorageError> =
+            tags.into_iter().map(|t| self.dec_tag(t)).collect();
+        Ok((decrypted?, next))
     }
 }
 
@@ -351,13 +365,17 @@ impl<B: StorageBackend> ResourceRepository for EncryptedBackend<B> {
         self.inner.delete_resource(id).await
     }
 
-    async fn list_resources(&self) -> Result<Vec<Resource>, StorageError> {
-        self.inner
-            .list_resources()
-            .await?
+    async fn list_resources(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
+        let (resources, next) = self.inner.list_resources(page_size, page_token).await?;
+        let decrypted: Result<Vec<Resource>, StorageError> = resources
             .into_iter()
             .map(|r| self.dec_resource(r))
-            .collect()
+            .collect();
+        Ok((decrypted?, next))
     }
 }
 

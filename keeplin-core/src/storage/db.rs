@@ -524,6 +524,42 @@ impl DbBackend {
     }
 }
 
+// ── Pagination helpers ────────────────────────────────────────────────────────
+
+/// Parse a cursor token of the form `"<created_at_rfc3339>|<uuid>"` into its
+/// two components. Returns `("", "")` when the token is absent or empty, which
+/// causes the keyset SQL condition `?1 = ''` to match all rows (no offset).
+fn parse_cursor(token: Option<&str>) -> (String, String) {
+    match token.filter(|t| !t.is_empty()) {
+        Some(cursor) => match cursor.split_once('|') {
+            Some((ts, id)) => (ts.to_owned(), id.to_owned()),
+            None => (String::new(), String::new()),
+        },
+        None => (String::new(), String::new()),
+    }
+}
+
+/// Given a `rows` vec that was fetched with `LIMIT limit + 1`, return `(page, next_token)`.
+///
+/// If `rows.len() > limit`, there is a next page: `next_token` is built from
+/// the last item of the actual page (index `limit - 1`) using `token_fn`.
+/// The extra row is discarded so the returned page never exceeds `limit` items.
+fn build_page<T, F>(mut rows: Vec<T>, limit: usize, token_fn: F) -> (Vec<T>, Option<String>)
+where
+    F: Fn(&T) -> String,
+{
+    let has_more = rows.len() > limit;
+    if has_more {
+        rows.truncate(limit);
+    }
+    let next_token = if has_more {
+        rows.last().map(token_fn)
+    } else {
+        None
+    };
+    (rows, next_token)
+}
+
 // ── NoteRepository impl ───────────────────────────────────────────────────────
 
 #[async_trait]
@@ -658,21 +694,36 @@ impl NoteRepository for DbBackend {
         }
     }
 
-    async fn list_notes(&self) -> Result<Vec<Note>, StorageError> {
+    async fn list_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        let limit = if page_size == 0 { 100u32 } else { page_size };
+        let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
             .conn
             .query(
                 "SELECT id,title,body,notebook_id,is_todo,todo_due,todo_completed,
                         created_at,updated_at,deleted_at
-                 FROM notes WHERE deleted_at IS NULL",
-                (),
+                 FROM notes
+                 WHERE deleted_at IS NULL
+                   AND (
+                     ?1 = '' OR created_at > ?2
+                     OR (created_at = ?2 AND id > ?3)
+                   )
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT ?4",
+                libsql::params![cursor_ts.clone(), cursor_ts, cursor_id, limit + 1],
             )
             .await?;
         let mut notes = Vec::new();
         while let Some(row) = rows.next().await? {
             notes.push(Self::row_to_note(&row)?);
         }
-        Ok(notes)
+        Ok(build_page(notes, limit as usize, |n| {
+            format!("{}|{}", n.created_at.to_rfc3339(), n.id)
+        }))
     }
 }
 
@@ -795,20 +846,35 @@ impl NotebookRepository for DbBackend {
         }
     }
 
-    async fn list_notebooks(&self) -> Result<Vec<Notebook>, StorageError> {
+    async fn list_notebooks(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Notebook>, Option<String>), StorageError> {
+        let limit = if page_size == 0 { 100u32 } else { page_size };
+        let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
             .conn
             .query(
                 "SELECT id,title,created_at,updated_at,deleted_at
-                 FROM notebooks WHERE deleted_at IS NULL",
-                (),
+                 FROM notebooks
+                 WHERE deleted_at IS NULL
+                   AND (
+                     ?1 = '' OR created_at > ?2
+                     OR (created_at = ?2 AND id > ?3)
+                   )
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT ?4",
+                libsql::params![cursor_ts.clone(), cursor_ts, cursor_id, limit + 1],
             )
             .await?;
         let mut notebooks = Vec::new();
         while let Some(row) = rows.next().await? {
             notebooks.push(Self::row_to_notebook(&row)?);
         }
-        Ok(notebooks)
+        Ok(build_page(notebooks, limit as usize, |nb| {
+            format!("{}|{}", nb.created_at.to_rfc3339(), nb.id)
+        }))
     }
 }
 
@@ -931,20 +997,35 @@ impl TagRepository for DbBackend {
         }
     }
 
-    async fn list_tags(&self) -> Result<Vec<Tag>, StorageError> {
+    async fn list_tags(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        let limit = if page_size == 0 { 100u32 } else { page_size };
+        let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
             .conn
             .query(
                 "SELECT id,title,created_at,updated_at,deleted_at
-                 FROM tags WHERE deleted_at IS NULL",
-                (),
+                 FROM tags
+                 WHERE deleted_at IS NULL
+                   AND (
+                     ?1 = '' OR created_at > ?2
+                     OR (created_at = ?2 AND id > ?3)
+                   )
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT ?4",
+                libsql::params![cursor_ts.clone(), cursor_ts, cursor_id, limit + 1],
             )
             .await?;
         let mut tags = Vec::new();
         while let Some(row) = rows.next().await? {
             tags.push(Self::row_to_tag(&row)?);
         }
-        Ok(tags)
+        Ok(build_page(tags, limit as usize, |t| {
+            format!("{}|{}", t.created_at.to_rfc3339(), t.id)
+        }))
     }
 
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
@@ -999,22 +1080,43 @@ impl TagRepository for DbBackend {
         }
     }
 
-    async fn list_note_tags(&self, note_id: Uuid) -> Result<Vec<Tag>, StorageError> {
+    async fn list_note_tags(
+        &self,
+        note_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        let limit = if page_size == 0 { 100u32 } else { page_size };
+        let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
             .conn
             .query(
                 "SELECT t.id,t.title,t.created_at,t.updated_at,t.deleted_at
                  FROM tags t
                  JOIN note_tags nt ON t.id = nt.tag_id
-                 WHERE nt.note_id = ?1 AND t.deleted_at IS NULL",
-                [note_id.to_string()],
+                 WHERE nt.note_id = ?1 AND t.deleted_at IS NULL
+                   AND (
+                     ?2 = '' OR t.created_at > ?3
+                     OR (t.created_at = ?3 AND t.id > ?4)
+                   )
+                 ORDER BY t.created_at ASC, t.id ASC
+                 LIMIT ?5",
+                libsql::params![
+                    note_id.to_string(),
+                    cursor_ts.clone(),
+                    cursor_ts,
+                    cursor_id,
+                    limit + 1
+                ],
             )
             .await?;
         let mut tags = Vec::new();
         while let Some(row) = rows.next().await? {
             tags.push(Self::row_to_tag(&row)?);
         }
-        Ok(tags)
+        Ok(build_page(tags, limit as usize, |t| {
+            format!("{}|{}", t.created_at.to_rfc3339(), t.id)
+        }))
     }
 }
 
@@ -1124,12 +1226,23 @@ impl ResourceRepository for DbBackend {
         }
     }
 
-    async fn list_resources(&self) -> Result<Vec<Resource>, StorageError> {
+    async fn list_resources(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
+        let limit = if page_size == 0 { 100u32 } else { page_size };
+        let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,mime_type,file_name,size,created_at FROM resources",
-                (),
+                "SELECT id,title,mime_type,file_name,size,created_at
+                 FROM resources
+                 WHERE ?1 = '' OR created_at > ?2
+                    OR (created_at = ?2 AND id > ?3)
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT ?4",
+                libsql::params![cursor_ts.clone(), cursor_ts, cursor_id, limit + 1],
             )
             .await?;
         let mut resources = Vec::new();
@@ -1143,7 +1256,9 @@ impl ResourceRepository for DbBackend {
                 created_at: Self::parse_required_dt(row.get::<String>(5)?)?,
             });
         }
-        Ok(resources)
+        Ok(build_page(resources, limit as usize, |r| {
+            format!("{}|{}", r.created_at.to_rfc3339(), r.id)
+        }))
     }
 }
 

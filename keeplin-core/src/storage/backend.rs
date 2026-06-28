@@ -52,8 +52,17 @@ pub trait NoteRepository: Send + Sync + 'static {
     /// Returns [`StorageError::NotFound`] if no note with the given `id` exists.
     async fn delete_note(&self, id: Uuid) -> Result<(), StorageError>;
 
-    /// Returns all notes that have not been soft-deleted, in an unspecified order.
-    async fn list_notes(&self) -> Result<Vec<Note>, StorageError>;
+    /// Returns a page of notes that have not been soft-deleted, ordered by
+    /// `(created_at ASC, id ASC)`.
+    ///
+    /// `page_size = 0` uses the backend default of 100. `page_token = None` starts
+    /// from the beginning. The returned `Option<String>` is the opaque cursor for the
+    /// next page; `None` means there are no further pages.
+    async fn list_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError>;
 }
 
 // ── NotebookRepository ────────────────────────────────────────────────────────
@@ -77,8 +86,13 @@ pub trait NotebookRepository: Send + Sync + 'static {
     /// Soft-deletes a notebook. Returns [`StorageError::NotFound`] if absent.
     async fn delete_notebook(&self, id: Uuid) -> Result<(), StorageError>;
 
-    /// Returns all notebooks that have not been soft-deleted.
-    async fn list_notebooks(&self) -> Result<Vec<Notebook>, StorageError>;
+    /// Returns a page of notebooks that have not been soft-deleted, ordered by
+    /// `(created_at ASC, id ASC)`. Pagination semantics match [`NoteRepository::list_notes`].
+    async fn list_notebooks(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Notebook>, Option<String>), StorageError>;
 }
 
 // ── TagRepository ─────────────────────────────────────────────────────────────
@@ -106,8 +120,13 @@ pub trait TagRepository: Send + Sync + 'static {
     /// Soft-deletes a tag. Returns [`StorageError::NotFound`] if absent.
     async fn delete_tag(&self, id: Uuid) -> Result<(), StorageError>;
 
-    /// Returns all tags that have not been soft-deleted.
-    async fn list_tags(&self) -> Result<Vec<Tag>, StorageError>;
+    /// Returns a page of tags that have not been soft-deleted, ordered by
+    /// `(created_at ASC, id ASC)`. Pagination semantics match [`NoteRepository::list_notes`].
+    async fn list_tags(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError>;
 
     /// Attaches `note_tag.tag_id` to `note_tag.note_id`.
     ///
@@ -120,8 +139,15 @@ pub trait TagRepository: Send + Sync + 'static {
     /// Returns successfully even if the association did not exist (idempotent).
     async fn remove_note_tag(&self, note_id: Uuid, tag_id: Uuid) -> Result<(), StorageError>;
 
-    /// Returns all tags currently attached to the note identified by `note_id`.
-    async fn list_note_tags(&self, note_id: Uuid) -> Result<Vec<Tag>, StorageError>;
+    /// Returns a page of tags currently attached to the note identified by `note_id`,
+    /// ordered by `(created_at ASC, id ASC)`. Pagination semantics match
+    /// [`NoteRepository::list_notes`].
+    async fn list_note_tags(
+        &self,
+        note_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError>;
 }
 
 // ── ResourceRepository ────────────────────────────────────────────────────────
@@ -152,11 +178,15 @@ pub trait ResourceRepository: Send + Sync + 'static {
     /// Returns [`StorageError::NotFound`] if no resource with the given `id` exists.
     async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError>;
 
-    /// Returns metadata for all resources, without their binary payloads.
-    ///
-    /// To read the binary payload, call `read_resource` with the individual resource's
-    /// UUID.
-    async fn list_resources(&self) -> Result<Vec<Resource>, StorageError>;
+    /// Returns a page of resource metadata records, without their binary payloads,
+    /// ordered by `(created_at ASC, id ASC)`. Pagination semantics match
+    /// [`NoteRepository::list_notes`]. To read the binary payload for a specific
+    /// resource, call `read_resource` with that resource's UUID.
+    async fn list_resources(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Resource>, Option<String>), StorageError>;
 }
 
 // ── SyncBackend ───────────────────────────────────────────────────────────────
