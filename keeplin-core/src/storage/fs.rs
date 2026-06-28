@@ -267,7 +267,7 @@ impl FsBackend {
     /// JSON schemas is made that requires an explicit data-migration step. Minor
     /// additions that are handled transparently by serde (such as new optional fields
     /// or serde aliases) do not require a version bump.
-    const FORMAT_VERSION: u32 = 3;
+    const FORMAT_VERSION: u32 = 4;
 
     /// Returns the path of the format-version stamp file: `.keeplin/format_version`.
     fn format_version_path(&self) -> PathBuf {
