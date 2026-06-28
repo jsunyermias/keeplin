@@ -1,8 +1,8 @@
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-strip = true
+# NOTE: build profiles do NOT belong here. Cargo reads `[profile.*]` only from a
+# manifest (the workspace root `Cargo.toml`), never from `.cargo/config.toml`, so a
+# profile placed here is silently ignored. The release profile now lives in
+# `../Cargo.toml`. This file is reserved for genuine Cargo configuration such as the
+# cross-compilation linker settings below.
 
 # ── Cross-compilation targets ─────────────────────────────────────────────────
 # Uncomment and configure linkers when targeting non-host platforms.

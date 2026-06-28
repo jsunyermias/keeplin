@@ -50,8 +50,4 @@ jobs:
       - name: Audit dependencies
         run: |
           cargo install cargo-audit --locked
-          cargo audit \
-            --ignore RUSTSEC-2026-0104 \
-            --ignore RUSTSEC-2026-0049 \
-            --ignore RUSTSEC-2026-0099 \
-            --ignore RUSTSEC-2026-0098
+          cargo audit

@@ -4,15 +4,15 @@
 //! in [`SyncError`] when it needs to add sync-specific failure cases (e.g. conflicts
 //! detected between local and remote changes).
 //!
-//! Conversions from third-party error types (`libsql::Error`, `reqwest::Error`,
-//! `tungstenite::Error`) are provided via `From` implementations so that callers can use
-//! the `?` operator without manual mapping.
+//! Conversions from third-party error types (`libsql::Error`, `tungstenite::Error`)
+//! are provided via `From` implementations so that callers can use the `?` operator
+//! without manual mapping.
 
 use thiserror::Error;
 
 /// Every error that can arise from a storage operation.
 ///
-/// Variants that wrap third-party errors (`Io`, `Serialization`, `WebSocket`, `Http`)
+/// Variants that wrap third-party errors (`Io`, `Serialization`, `WebSocket`)
 /// use `#[from]` so they are automatically constructed by the `?` operator.
 /// Variants that carry a `String` (`Database`, `NotFound`, `Conflict`, `InvalidState`)
 /// are constructed manually because their source types have no single `From` target.
@@ -35,10 +35,6 @@ pub enum StorageError {
     /// A WebSocket protocol or connection error occurred during sync.
     #[error("WebSocket error: {0}")]
     WebSocket(String),
-
-    /// An HTTP request error occurred (e.g. a sync server call failed).
-    #[error("HTTP error: {0}")]
-    Http(String),
 
     /// The requested entity does not exist in the store (or was soft-deleted).
     /// The `String` payload contains a human-readable description of which entity was
@@ -90,13 +86,6 @@ impl From<tokio_tungstenite::tungstenite::Error> for StorageError {
     /// `StorageError::WebSocket`.
     fn from(e: tokio_tungstenite::tungstenite::Error) -> Self {
         StorageError::WebSocket(e.to_string())
-    }
-}
-
-impl From<reqwest::Error> for StorageError {
-    /// Converts a `reqwest::Error` (HTTP client error) into `StorageError::Http`.
-    fn from(e: reqwest::Error) -> Self {
-        StorageError::Http(e.to_string())
     }
 }
 
