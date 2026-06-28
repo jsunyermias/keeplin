@@ -180,4 +180,15 @@ pub trait StorageBackend: Send + Sync + 'static {
     /// salt when deriving the AES encryption key, and as the file name for this device's
     /// change log (`logs/{device_id}.log`).
     async fn get_device_id(&self) -> Result<String, StorageError>;
+
+    /// Permanently removes change-journal entries older than `older_than`.
+    ///
+    /// Returns the number of rows removed. Call this periodically (for example once per
+    /// day after a successful sync cycle) to prevent the `entity_changes` table in
+    /// `DbBackend` from growing indefinitely.
+    ///
+    /// `FsBackend` always returns `Ok(0)` without modifying any files, because pruning
+    /// per-device NDJSON log files could cause remote devices that have not yet processed
+    /// the removed entries to miss changes permanently.
+    async fn prune_change_journal(&self, older_than: DateTime<Utc>) -> Result<u64, StorageError>;
 }

@@ -94,6 +94,10 @@ fn tag_to_proto(t: CoreTag) -> Tag {
 fn storage_err(e: StorageError) -> Status {
     match &e {
         StorageError::NotFound(_) => Status::not_found(e.to_string()),
+        // AES-GCM authentication tag failure caused by a wrong key or tampered ciphertext.
+        // gRPC DATA_LOSS is the closest code: the data exists but cannot be recovered
+        // in a trustworthy form.
+        StorageError::CorruptedData(_) => Status::data_loss(e.to_string()),
         _ => Status::internal(e.to_string()),
     }
 }

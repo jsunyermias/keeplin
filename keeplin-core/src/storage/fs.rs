@@ -1058,4 +1058,13 @@ impl StorageBackend for FsBackend {
     async fn get_device_id(&self) -> Result<String, StorageError> {
         Ok(self.device_id.clone())
     }
+
+    async fn prune_change_journal(&self, _older_than: DateTime<Utc>) -> Result<u64, StorageError> {
+        // The filesystem backend stores changes as append-only NDJSON log files that are
+        // replicated to other devices by Syncthing. Removing entries from these files
+        // would cause any device that has not yet processed the removed entries to miss
+        // those changes permanently, potentially corrupting the sync state. This method
+        // therefore intentionally does nothing and always returns zero.
+        Ok(0)
+    }
 }

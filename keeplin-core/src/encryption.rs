@@ -108,7 +108,7 @@ impl<B: StorageBackend> EncryptedBackend<B> {
         let plain = self
             .cipher
             .decrypt(nonce, &combined[NONCE_LEN..])
-            .map_err(|e| StorageError::InvalidState(format!("decrypt: {e}")))?;
+            .map_err(|e| StorageError::CorruptedData(format!("decrypt: {e}")))?;
         String::from_utf8(plain).map_err(|e| StorageError::InvalidState(format!("utf8: {e}")))
     }
 
@@ -137,7 +137,7 @@ impl<B: StorageBackend> EncryptedBackend<B> {
         let nonce = Nonce::from_slice(&data[..NONCE_LEN]);
         self.cipher
             .decrypt(nonce, &data[NONCE_LEN..])
-            .map_err(|e| StorageError::InvalidState(format!("decrypt: {e}")))
+            .map_err(|e| StorageError::CorruptedData(format!("decrypt: {e}")))
     }
 
     fn enc_note(&self, mut n: Note) -> Result<Note, StorageError> {
@@ -378,5 +378,9 @@ impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
 
     async fn get_device_id(&self) -> Result<String, StorageError> {
         self.inner.get_device_id().await
+    }
+
+    async fn prune_change_journal(&self, older_than: DateTime<Utc>) -> Result<u64, StorageError> {
+        self.inner.prune_change_journal(older_than).await
     }
 }
