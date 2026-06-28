@@ -416,10 +416,11 @@ impl DbBackend {
 
     /// Convert a row from the `entity_changes` table into a typed [`Change`] variant.
     ///
-    /// The four columns passed to this function correspond to the `entity_type`,
-    /// `entity_id`, `operation`, and `data` columns of the `entity_changes` table.
-    /// The `data` argument is a `serde_json::Value` already parsed from the stored
-    /// JSON string (or `Null` when the column value is `NULL`).
+    /// The arguments correspond to the `entity_type`, `entity_id`, `operation`,
+    /// `changed_at`, and `data` columns of the `entity_changes` table. The `data`
+    /// argument is a `serde_json::Value` already parsed from the stored JSON string (or
+    /// `Null` when the column value is `NULL`); `changed_at` is the time the mutation was
+    /// recorded and becomes the tombstone timestamp for delete variants.
     ///
     /// Returns `None` for any `(entity_type, operation)` combination that is not
     /// recognised. This can happen if a future version of the software added new
@@ -434,6 +435,7 @@ impl DbBackend {
         entity_type: &str,
         entity_id_str: &str,
         operation: &str,
+        changed_at: DateTime<Utc>,
         data: &serde_json::Value,
     ) -> Option<Change> {
         let id: Uuid = entity_id_str.parse().ok()?;
@@ -444,21 +446,30 @@ impl DbBackend {
             ("note", "update") => serde_json::from_value(data.clone())
                 .ok()
                 .map(|note| Change::NoteUpdate { note }),
-            ("note", "delete") => Some(Change::NoteDelete { id }),
+            ("note", "delete") => Some(Change::NoteDelete {
+                id,
+                deleted_at: changed_at,
+            }),
             ("notebook", "create") => serde_json::from_value(data.clone())
                 .ok()
                 .map(|notebook| Change::NotebookCreate { notebook }),
             ("notebook", "update") => serde_json::from_value(data.clone())
                 .ok()
                 .map(|notebook| Change::NotebookUpdate { notebook }),
-            ("notebook", "delete") => Some(Change::NotebookDelete { id }),
+            ("notebook", "delete") => Some(Change::NotebookDelete {
+                id,
+                deleted_at: changed_at,
+            }),
             ("tag", "create") => serde_json::from_value(data.clone())
                 .ok()
                 .map(|tag| Change::TagCreate { tag }),
             ("tag", "update") => serde_json::from_value(data.clone())
                 .ok()
                 .map(|tag| Change::TagUpdate { tag }),
-            ("tag", "delete") => Some(Change::TagDelete { id }),
+            ("tag", "delete") => Some(Change::TagDelete {
+                id,
+                deleted_at: changed_at,
+            }),
             ("note_tag", "add") => {
                 let tag_id: Uuid = data["tag_id"].as_str()?.parse().ok()?;
                 Some(Change::NoteTagAdd {
@@ -723,7 +734,7 @@ impl NoteRepository for DbBackend {
             let affected = self
                 .conn
                 .execute(
-                    "UPDATE notes SET deleted_at = ?2 WHERE id = ?1",
+                    "UPDATE notes SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
                     [id.to_string(), ts],
                 )
                 .await?;
@@ -880,7 +891,7 @@ impl NotebookRepository for DbBackend {
             let affected = self
                 .conn
                 .execute(
-                    "UPDATE notebooks SET deleted_at=?2 WHERE id=?1",
+                    "UPDATE notebooks SET deleted_at=?2, updated_at=?2 WHERE id=?1",
                     [id.to_string(), now().to_rfc3339()],
                 )
                 .await?;
@@ -1036,7 +1047,7 @@ impl TagRepository for DbBackend {
             let affected = self
                 .conn
                 .execute(
-                    "UPDATE tags SET deleted_at=?2 WHERE id=?1",
+                    "UPDATE tags SET deleted_at=?2, updated_at=?2 WHERE id=?1",
                     [id.to_string(), now().to_rfc3339()],
                 )
                 .await?;
@@ -1343,7 +1354,7 @@ impl SyncBackend for DbBackend {
         let mut rows = self
             .conn
             .query(
-                "SELECT entity_type, entity_id, operation, data
+                "SELECT entity_type, entity_id, operation, changed_at, data
                  FROM entity_changes
                  WHERE changed_at > ?1
                  ORDER BY id ASC",
@@ -1356,13 +1367,14 @@ impl SyncBackend for DbBackend {
             let entity_type: String = row.get(0)?;
             let entity_id: String = row.get(1)?;
             let operation: String = row.get(2)?;
-            let data_str: Option<String> = row.get(3)?;
+            let changed_at = Self::parse_required_dt(row.get::<String>(3)?)?;
+            let data_str: Option<String> = row.get(4)?;
             let data: serde_json::Value = data_str
                 .as_deref()
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or(serde_json::Value::Null);
 
-            match Self::row_to_change(&entity_type, &entity_id, &operation, &data) {
+            match Self::row_to_change(&entity_type, &entity_id, &operation, changed_at, &data) {
                 Some(change) => changes.push(change),
                 None => tracing::warn!(
                     entity_type,
@@ -1407,11 +1419,20 @@ impl SyncBackend for DbBackend {
                     )
                     .await?;
             }
-            Change::NoteDelete { id } => {
+            Change::NoteDelete { id, deleted_at } => {
+                // Tombstone: apply only when it is newer than the local version, and set
+                // `updated_at = deleted_at` so a later edit must beat the delete's time to
+                // resurrect the note. `?2` binds both columns.
+                if !self
+                    .should_apply("notes", &id.to_string(), deleted_at)
+                    .await?
+                {
+                    return Ok(());
+                }
                 self.conn
                     .execute(
-                        "UPDATE notes SET deleted_at = ?2 WHERE id = ?1",
-                        [id.to_string(), now().to_rfc3339()],
+                        "UPDATE notes SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
+                        [id.to_string(), deleted_at.to_rfc3339()],
                     )
                     .await?;
             }
@@ -1437,11 +1458,17 @@ impl SyncBackend for DbBackend {
                     )
                     .await?;
             }
-            Change::NotebookDelete { id } => {
+            Change::NotebookDelete { id, deleted_at } => {
+                if !self
+                    .should_apply("notebooks", &id.to_string(), deleted_at)
+                    .await?
+                {
+                    return Ok(());
+                }
                 self.conn
                     .execute(
-                        "UPDATE notebooks SET deleted_at = ?2 WHERE id = ?1",
-                        [id.to_string(), now().to_rfc3339()],
+                        "UPDATE notebooks SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
+                        [id.to_string(), deleted_at.to_rfc3339()],
                     )
                     .await?;
             }
@@ -1467,11 +1494,17 @@ impl SyncBackend for DbBackend {
                     )
                     .await?;
             }
-            Change::TagDelete { id } => {
+            Change::TagDelete { id, deleted_at } => {
+                if !self
+                    .should_apply("tags", &id.to_string(), deleted_at)
+                    .await?
+                {
+                    return Ok(());
+                }
                 self.conn
                     .execute(
-                        "UPDATE tags SET deleted_at = ?2 WHERE id = ?1",
-                        [id.to_string(), now().to_rfc3339()],
+                        "UPDATE tags SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
+                        [id.to_string(), deleted_at.to_rfc3339()],
                     )
                     .await?;
             }

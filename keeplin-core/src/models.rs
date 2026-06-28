@@ -251,23 +251,41 @@ pub enum Change {
     #[serde(alias = "update")]
     NoteUpdate { note: Note },
     /// A note was soft-deleted on the originating device.
-    /// `id` is the UUID of the deleted note; the full note record is not included
-    /// because only the UUID is needed to apply the deletion locally.
-    /// The `#[serde(alias = "delete")]` preserves v1 log compatibility.
+    ///
+    /// `id` is the UUID of the deleted note and `deleted_at` is when the deletion
+    /// happened. The timestamp turns the deletion into a proper tombstone: when applied
+    /// remotely it competes in last-write-wins against the local `updated_at`, so a stale
+    /// edit can never resurrect a newer delete and a stale delete can never override a
+    /// newer edit. `#[serde(default = "now")]` keeps v1 records (which had no timestamp)
+    /// readable, and `#[serde(alias = "delete")]` preserves the v1 op tag.
     #[serde(alias = "delete")]
-    NoteDelete { id: Uuid },
+    NoteDelete {
+        id: Uuid,
+        #[serde(default = "now")]
+        deleted_at: DateTime<Utc>,
+    },
     /// A new notebook was created on the originating device.
     NotebookCreate { notebook: Notebook },
     /// An existing notebook's title was changed on the originating device.
     NotebookUpdate { notebook: Notebook },
-    /// A notebook was soft-deleted on the originating device.
-    NotebookDelete { id: Uuid },
+    /// A notebook was soft-deleted on the originating device. `deleted_at` is the
+    /// tombstone timestamp used for last-write-wins (see [`Change::NoteDelete`]).
+    NotebookDelete {
+        id: Uuid,
+        #[serde(default = "now")]
+        deleted_at: DateTime<Utc>,
+    },
     /// A new tag was created on the originating device.
     TagCreate { tag: Tag },
     /// An existing tag's title was changed on the originating device.
     TagUpdate { tag: Tag },
-    /// A tag was soft-deleted on the originating device.
-    TagDelete { id: Uuid },
+    /// A tag was soft-deleted on the originating device. `deleted_at` is the tombstone
+    /// timestamp used for last-write-wins (see [`Change::NoteDelete`]).
+    TagDelete {
+        id: Uuid,
+        #[serde(default = "now")]
+        deleted_at: DateTime<Utc>,
+    },
     /// A tag was attached to a note on the originating device.
     NoteTagAdd { note_id: Uuid, tag_id: Uuid },
     /// A tag was detached from a note on the originating device.

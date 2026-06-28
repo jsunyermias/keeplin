@@ -82,6 +82,9 @@ fn default_entity_type() -> String {
 /// accepted so that logs from devices still running v1 can be integrated correctly.
 fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
     let id = entry.entity_id;
+    // The log entry's own timestamp becomes the tombstone time for delete operations,
+    // so a replayed delete competes in last-write-wins on the receiving device.
+    let ts = entry.timestamp;
     match (entry.entity_type.as_str(), entry.operation.as_str()) {
         // Notes — "create"/"update"/"delete" accepted for v1 backward compat
         ("note", "create") | ("note", "note_create") => serde_json::from_value(entry.data)
@@ -90,7 +93,9 @@ fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
         ("note", "update") | ("note", "note_update") => serde_json::from_value(entry.data)
             .ok()
             .map(|note| Change::NoteUpdate { note }),
-        ("note", "delete") | ("note", "note_delete") => Some(Change::NoteDelete { id }),
+        ("note", "delete") | ("note", "note_delete") => {
+            Some(Change::NoteDelete { id, deleted_at: ts })
+        }
         // Notebooks
         ("notebook", "create") => serde_json::from_value(entry.data)
             .ok()
@@ -98,7 +103,7 @@ fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
         ("notebook", "update") => serde_json::from_value(entry.data)
             .ok()
             .map(|notebook| Change::NotebookUpdate { notebook }),
-        ("notebook", "delete") => Some(Change::NotebookDelete { id }),
+        ("notebook", "delete") => Some(Change::NotebookDelete { id, deleted_at: ts }),
         // Tags
         ("tag", "create") => serde_json::from_value(entry.data)
             .ok()
@@ -106,7 +111,7 @@ fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
         ("tag", "update") => serde_json::from_value(entry.data)
             .ok()
             .map(|tag| Change::TagUpdate { tag }),
-        ("tag", "delete") => Some(Change::TagDelete { id }),
+        ("tag", "delete") => Some(Change::TagDelete { id, deleted_at: ts }),
         // NoteTag associations store only the secondary key in the `data` field
         // because the primary key (note_id) is already captured by `entity_id`.
         ("note_tag", "add") => {
@@ -722,7 +727,11 @@ impl NoteRepository for FsBackend {
 
     async fn delete_note(&self, id: Uuid) -> Result<(), StorageError> {
         let mut note = self.load_note(id).await?;
-        note.deleted_at = Some(now());
+        // Bump `updated_at` to the delete time so the tombstone has a comparable version:
+        // a later stale edit (older `updated_at`) can no longer resurrect this note.
+        let ts = now();
+        note.deleted_at = Some(ts);
+        note.updated_at = ts;
         self.write_note(&note).await?;
         self.append_log("note", id, "delete", serde_json::json!({ "id": id }))
             .await?;
@@ -800,7 +809,9 @@ impl NotebookRepository for FsBackend {
 
     async fn delete_notebook(&self, id: Uuid) -> Result<(), StorageError> {
         let mut nb: Notebook = self.read_json(&self.notebook_path(id), id).await?;
-        nb.deleted_at = Some(now());
+        let ts = now();
+        nb.deleted_at = Some(ts);
+        nb.updated_at = ts;
         self.write_json(&self.notebook_path(id), &nb).await?;
         self.append_log("notebook", id, "delete", serde_json::json!({ "id": id }))
             .await?;
@@ -868,7 +879,9 @@ impl TagRepository for FsBackend {
 
     async fn delete_tag(&self, id: Uuid) -> Result<(), StorageError> {
         let mut tag: Tag = self.read_json(&self.tag_path(id), id).await?;
-        tag.deleted_at = Some(now());
+        let ts = now();
+        tag.deleted_at = Some(ts);
+        tag.updated_at = ts;
         self.write_json(&self.tag_path(id), &tag).await?;
         self.append_log("tag", id, "delete", serde_json::json!({ "id": id }))
             .await?;
@@ -1086,13 +1099,21 @@ impl SyncBackend for FsBackend {
                     tracing::debug!(id = %note.id, "Skipped stale remote note change");
                 }
             }
-            Change::NoteDelete { id } => {
+            Change::NoteDelete { id, deleted_at } => {
+                // Tombstone: apply only when newer than the local copy, and stamp both
+                // `deleted_at` and `updated_at` so a later edit must beat the delete time
+                // to resurrect the note.
                 if self.meta_path(id).exists() {
                     let mut note = self.load_note(id).await?;
-                    note.deleted_at = Some(now());
-                    self.write_note(&note).await?;
+                    if deleted_at > note.updated_at {
+                        note.deleted_at = Some(deleted_at);
+                        note.updated_at = deleted_at;
+                        self.write_note(&note).await?;
+                        tracing::debug!(%id, "Applied remote note delete");
+                    } else {
+                        tracing::debug!(%id, "Skipped stale remote note delete");
+                    }
                 }
-                tracing::debug!(%id, "Applied remote note delete");
             }
             // Notebooks — last-write-wins by `updated_at` (see the note arm above).
             Change::NotebookCreate { notebook } | Change::NotebookUpdate { notebook } => {
@@ -1109,14 +1130,19 @@ impl SyncBackend for FsBackend {
                     tracing::debug!(id = %notebook.id, "Skipped stale remote notebook change");
                 }
             }
-            Change::NotebookDelete { id } => {
+            Change::NotebookDelete { id, deleted_at } => {
                 let path = self.notebook_path(id);
                 if path.exists() {
                     let mut nb: Notebook = self.read_json(&path, id).await?;
-                    nb.deleted_at = Some(now());
-                    self.write_json(&path, &nb).await?;
+                    if deleted_at > nb.updated_at {
+                        nb.deleted_at = Some(deleted_at);
+                        nb.updated_at = deleted_at;
+                        self.write_json(&path, &nb).await?;
+                        tracing::debug!(%id, "Applied remote notebook delete");
+                    } else {
+                        tracing::debug!(%id, "Skipped stale remote notebook delete");
+                    }
                 }
-                tracing::debug!(%id, "Applied remote notebook delete");
             }
             // Tags — last-write-wins by `updated_at` (see the note arm above).
             Change::TagCreate { tag } | Change::TagUpdate { tag } => {
@@ -1133,14 +1159,19 @@ impl SyncBackend for FsBackend {
                     tracing::debug!(id = %tag.id, "Skipped stale remote tag change");
                 }
             }
-            Change::TagDelete { id } => {
+            Change::TagDelete { id, deleted_at } => {
                 let path = self.tag_path(id);
                 if path.exists() {
                     let mut t: Tag = self.read_json(&path, id).await?;
-                    t.deleted_at = Some(now());
-                    self.write_json(&path, &t).await?;
+                    if deleted_at > t.updated_at {
+                        t.deleted_at = Some(deleted_at);
+                        t.updated_at = deleted_at;
+                        self.write_json(&path, &t).await?;
+                        tracing::debug!(%id, "Applied remote tag delete");
+                    } else {
+                        tracing::debug!(%id, "Skipped stale remote tag delete");
+                    }
                 }
-                tracing::debug!(%id, "Applied remote tag delete");
             }
             // NoteTag associations
             Change::NoteTagAdd { note_id, tag_id } => {
