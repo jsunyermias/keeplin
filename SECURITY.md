@@ -51,7 +51,11 @@ It does **not** protect against:
   same reason. Set `KEEPLIN_AUTH_USERNAME` similarly for the username.
 - Enable TLS by setting `tls_cert_path` and `tls_key_path` in `keeplin.toml`. Without
   TLS, gRPC traffic (including auth credentials) is transmitted in plaintext.
-- When `grpc_addr` is not a loopback address, the daemon logs a warning if
+- The optional REST/WebSocket listener (`http_addr`) is **plain HTTP with no native TLS**.
+  Its Basic-Auth credentials (the same `auth_username`/`auth_password`) and payloads travel
+  unencrypted on the wire, so terminate TLS at a reverse proxy in production — exactly as for
+  the `ws://` sync token below.
+- When `grpc_addr` or `http_addr` is not a loopback address, the daemon logs a warning if
   `auth_username`/`auth_password` are not configured.
 
 ## Design decisions

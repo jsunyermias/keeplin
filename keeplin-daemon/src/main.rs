@@ -7,17 +7,19 @@
 //! interceptor to every incoming gRPC call, and then starts the tonic server.
 //! Graceful shutdown is triggered by a CTRL-C (SIGINT) signal.
 
+mod auth;
 mod config;
 mod proto;
+mod rest;
 mod server;
 
-use base64::{engine::general_purpose::STANDARD, Engine};
+use std::sync::Arc;
+
 use clap::Parser;
 use keeplin_core::{
     encryption::EncryptedBackend,
     storage::{db::DbBackend, fs::FsBackend, StorageBackend},
 };
-use subtle::ConstantTimeEq;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tracing_subscriber::EnvFilter;
@@ -86,6 +88,17 @@ async fn main() -> anyhow::Result<()> {
             "gRPC is exposed to the network WITHOUT authentication. \
              Set auth_username + auth_password in keeplin.toml or KEEPLIN_AUTH_PASSWORD env var."
         );
+    }
+    // Same warning for the optional HTTP (REST/WebSocket) listener.
+    if let Some(http) = &cfg.http_addr {
+        if let Ok(http_addr) = http.parse::<std::net::SocketAddr>() {
+            if !http_addr.ip().is_loopback() && !auth_configured {
+                tracing::warn!(
+                    %http_addr,
+                    "HTTP (REST/WebSocket) is exposed to the network WITHOUT authentication."
+                );
+            }
+        }
     }
 
     let encrypted = cfg.encryption_password.is_some();
@@ -169,12 +182,17 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
     addr: std::net::SocketAddr,
     backend: B,
 ) -> anyhow::Result<()> {
+    // One shared backend instance behind every surface: the gRPC service and (optionally)
+    // the REST/HTTP server both hold a clone of this `Arc`.
+    let backend = Arc::new(backend);
     let (auth_user, auth_pass) = (cfg.auth_username.clone(), cfg.auth_password.clone());
 
-    let svc_inner =
-        KeeplinServiceServer::new(KeeplinServer::new(backend, cfg.journal_retention_days))
-            .max_decoding_message_size(cfg.max_message_size)
-            .max_encoding_message_size(cfg.max_message_size);
+    let svc_inner = KeeplinServiceServer::new(KeeplinServer::from_shared(
+        backend.clone(),
+        cfg.journal_retention_days,
+    ))
+    .max_decoding_message_size(cfg.max_message_size)
+    .max_encoding_message_size(cfg.max_message_size);
 
     // Wrap every RPC with the same Basic-Auth interceptor so authentication applies
     // uniformly to all methods regardless of the storage mode chosen. When neither
@@ -184,25 +202,50 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
     });
 
     let mut builder = Server::builder();
-
     if let (Some(cert_path), Some(key_path)) = (&cfg.tls_cert_path, &cfg.tls_key_path) {
         let cert = tokio::fs::read(cert_path).await?;
         let key = tokio::fs::read(key_path).await?;
         let identity = Identity::from_pem(cert, key);
         builder = builder.tls_config(ServerTlsConfig::new().identity(identity))?;
-        tracing::info!("TLS enabled");
+        tracing::info!("TLS enabled (gRPC)");
     }
 
     tracing::info!(%addr, "gRPC server listening");
-    builder
+    let grpc = builder
         .add_service(svc)
-        .serve_with_shutdown(addr, async {
-            let _ = tokio::signal::ctrl_c().await;
-            tracing::info!("Shutdown signal received, draining connections");
-        })
-        .await?;
+        .serve_with_shutdown(addr, shutdown_signal());
+
+    // Optionally also serve the REST/JSON API (and, later, the WebSocket feed) on a
+    // separate HTTP port, sharing the same backend and Basic-Auth credentials.
+    if let Some(http_addr) = &cfg.http_addr {
+        let http_addr: std::net::SocketAddr = http_addr.parse()?;
+        let state = Arc::new(rest::AppState {
+            backend: backend.clone(),
+            auth_username: cfg.auth_username.clone(),
+            auth_password: cfg.auth_password.clone(),
+        });
+        let app = rest::router(state);
+        let listener = tokio::net::TcpListener::bind(http_addr).await?;
+        tracing::info!(%http_addr, "HTTP (REST) server listening");
+        let http = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
+
+        // Run both servers; Ctrl-C drains both. If either exits with an error, abort.
+        tokio::try_join!(
+            async move { grpc.await.map_err(anyhow::Error::from) },
+            async move { http.await.map_err(anyhow::Error::from) },
+        )?;
+    } else {
+        grpc.await?;
+    }
 
     Ok(())
+}
+
+/// Resolves when the process receives a Ctrl-C (SIGINT). Each server awaits its own copy;
+/// on Unix every `ctrl_c()` future fires on the same signal, so both drain together.
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+    tracing::info!("Shutdown signal received, draining connections");
 }
 
 /// Validate an HTTP Basic Authentication header on an incoming gRPC request.
@@ -238,45 +281,22 @@ fn validate_basic_auth(
         return Ok(req);
     };
 
-    let auth = req
+    let header = req
         .metadata()
         .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+        .and_then(|v| v.to_str().ok());
 
-    let encoded = auth.strip_prefix("Basic ").ok_or_else(|| {
-        tonic::Status::unauthenticated("authorization header missing or not Basic")
-    })?;
-
-    let decoded = STANDARD
-        .decode(encoded)
-        .map_err(|_| tonic::Status::unauthenticated("malformed authorization"))?;
-
-    let creds = std::str::from_utf8(&decoded)
-        .map_err(|_| tonic::Status::unauthenticated("malformed authorization"))?;
-
-    let colon = creds
-        .find(':')
-        .ok_or_else(|| tonic::Status::unauthenticated("malformed authorization"))?;
-
-    let (user, pass) = (&creds[..colon], &creds[colon + 1..]);
-
-    // Evaluate both comparisons unconditionally and combine them with a bitwise AND on
-    // the `subtle::Choice` results. Using `&&`/`||` here would short-circuit and leak —
-    // via response timing — whether the username alone was correct. `ct_eq` itself is
-    // constant-time with respect to content for equal-length inputs.
-    let user_ok = user.as_bytes().ct_eq(expected_user.as_bytes());
-    let pass_ok = pass.as_bytes().ct_eq(expected_pass.as_bytes());
-    if (user_ok & pass_ok).unwrap_u8() == 0 {
-        return Err(tonic::Status::unauthenticated("invalid credentials"));
+    if auth::verify_basic(header, expected_user, expected_pass) {
+        Ok(req)
+    } else {
+        Err(tonic::Status::unauthenticated("invalid credentials"))
     }
-
-    Ok(req)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{engine::general_purpose::STANDARD, Engine};
 
     /// Build a bare tonic `Request<()>` and optionally attach an `authorization`
     /// metadata entry. The value string must already be in the correct wire format

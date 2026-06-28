@@ -173,15 +173,15 @@ pub struct KeeplinServer<B: StorageBackend> {
 }
 
 impl<B: StorageBackend> KeeplinServer<B> {
-    /// Wraps `backend` in an `Arc` and returns a new server that prunes change-journal
-    /// entries older than `journal_retention_days` after each successful sync (`0`
-    /// disables pruning).
+    /// Builds a server over a shared `Arc<B>` that prunes change-journal entries older
+    /// than `journal_retention_days` after each successful sync (`0` disables pruning).
+    /// Sharing the `Arc` lets the gRPC server and the REST server drive one backend.
     ///
     /// The resulting server should be passed to
     /// `KeeplinServiceServer::new(server)` before being registered with tonic.
-    pub fn new(backend: B, journal_retention_days: u64) -> Self {
+    pub fn from_shared(backend: Arc<B>, journal_retention_days: u64) -> Self {
         Self {
-            backend: Arc::new(backend),
+            backend,
             journal_retention_days,
         }
     }

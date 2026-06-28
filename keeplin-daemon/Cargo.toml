@@ -26,5 +26,15 @@ tokio-stream = "0.1"
 base64 = "0.22"
 subtle = "2"
 
+# REST + WebSocket surfaces. axum 0.7 runs on hyper 1.x, the same major as tonic 0.12,
+# so the gRPC and HTTP servers share one dependency tree.
+axum = { version = "0.7", features = ["ws"] }
+
 [build-dependencies]
 tonic-build = "0.12"
+
+[dev-dependencies]
+tempfile.workspace = true
+tower = { version = "0.5", features = ["util"] }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
