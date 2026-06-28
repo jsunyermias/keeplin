@@ -57,22 +57,20 @@ async fn storage_contains_ciphertext_not_plaintext() {
     let id = note.id;
     backend.create_note(note).await.unwrap();
 
-    // Read the raw bytes of the note's metadata file directly from the filesystem,
-    // bypassing the `EncryptedBackend` layer. The file must not contain the plaintext
-    // title or body strings anywhere in its content.
-    let meta_path = dir
-        .path()
-        .join("notes")
-        .join(id.to_string())
-        .join("meta.json");
-    let raw = std::fs::read_to_string(&meta_path).unwrap();
+    // Read the note's on-disk files directly, bypassing the `EncryptedBackend` layer.
+    // The body lives in `note.md` and the title in `meta.msgpack`; neither may contain
+    // the plaintext anywhere in its content.
+    let ndir = dir.path().join("notes").join(id.to_string());
+    let md = std::fs::read_to_string(ndir.join("note.md")).unwrap();
     assert!(
-        !raw.contains("plaintext-title"),
-        "meta.json should not contain plaintext title"
+        !md.contains("plaintext-body"),
+        "note.md should not contain plaintext body"
     );
+    let meta = std::fs::read(ndir.join("meta.msgpack")).unwrap();
+    let title_needle = b"plaintext-title";
     assert!(
-        !raw.contains("plaintext-body"),
-        "meta.json should not contain plaintext body"
+        !meta.windows(title_needle.len()).any(|w| w == title_needle),
+        "meta.msgpack should not contain plaintext title"
     );
 }
 

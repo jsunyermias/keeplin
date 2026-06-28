@@ -27,6 +27,7 @@ futures-util = "0.3"
 aes-gcm = { version = "0.10", features = ["zeroize"] }
 argon2 = "0.5"
 base64 = "0.22"
+rmp-serde = "1"
 
 [dev-dependencies]
 tempfile.workspace = true

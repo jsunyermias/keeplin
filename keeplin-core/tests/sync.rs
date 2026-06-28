@@ -165,41 +165,7 @@ async fn fs_tombstones_resolve_by_timestamp() {
     assert!(backend.read_note(b_id).await.unwrap().deleted_at.is_some());
 }
 
-/// The same last-write-wins guarantee must hold for `FsBackend`: a newer remote edit
-/// applies, but an older one is ignored.
-#[tokio::test]
-async fn fs_apply_change_respects_last_write_wins() {
-    let dir = tempdir().unwrap();
-    let backend = FsBackend::new(dir.path()).await.unwrap();
-
-    let mut note = Note::new("Title", "current local body");
-    let id = note.id;
-    note.updated_at = Utc::now();
-    backend.create_note(note.clone()).await.unwrap();
-
-    // Older remote edit → ignored.
-    let mut stale = note.clone();
-    stale.body = "stale remote body".to_string();
-    stale.updated_at = Utc::now() - Duration::minutes(1);
-    backend
-        .apply_change(Change::NoteUpdate { note: stale })
-        .await
-        .unwrap();
-    assert_eq!(
-        backend.read_note(id).await.unwrap().body,
-        "current local body"
-    );
-
-    // Newer remote edit → applied.
-    let mut fresh = note.clone();
-    fresh.body = "newer remote body".to_string();
-    fresh.updated_at = Utc::now() + Duration::minutes(1);
-    backend
-        .apply_change(Change::NoteUpdate { note: fresh })
-        .await
-        .unwrap();
-    assert_eq!(
-        backend.read_note(id).await.unwrap().body,
-        "newer remote body"
-    );
-}
+// Note: `FsBackend` resolves note conflicts through the per-note version-vector logs,
+// not by applying wire `Change::NoteUpdate` records, so the FsBackend equivalent of the
+// last-write-wins guarantee is covered by `fs_two_device_concurrent_edits_converge` in
+// `tests/fs_backend.rs` rather than by an `apply_change`-driven test here.

@@ -390,3 +390,109 @@ async fn list_notes_paginates_without_duplicates_or_gaps() {
     let all_ids: Vec<_> = all.iter().map(|n| n.id).collect();
     assert_eq!(seen, all_ids, "paged order must match single-shot order");
 }
+
+// ── Version-vector note model ─────────────────────────────────────────────────
+
+/// Simulate Syncthing replicating a note from one root to another by copying only its
+/// per-device log files (the single-writer source of truth), not the local projections.
+async fn replicate_note(from_root: &std::path::Path, to_root: &std::path::Path, id: uuid::Uuid) {
+    let from = from_root.join("notes").join(id.to_string());
+    let to = to_root.join("notes").join(id.to_string());
+    tokio::fs::create_dir_all(&to).await.unwrap();
+    let mut rd = tokio::fs::read_dir(&from).await.unwrap();
+    while let Some(e) = rd.next_entry().await.unwrap() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with("log.") && name.ends_with(".msgpack") {
+            tokio::fs::copy(e.path(), to.join(&name)).await.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn fs_note_uses_three_file_layout() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+    let note = Note::new("Title", "# Markdown body");
+    let id = note.id;
+    backend.create_note(note).await.unwrap();
+
+    let ndir = dir.path().join("notes").join(id.to_string());
+    assert!(ndir.join("note.md").exists(), "note.md must exist");
+    assert!(
+        ndir.join("meta.msgpack").exists(),
+        "meta.msgpack must exist"
+    );
+
+    let mut found_log = false;
+    for e in std::fs::read_dir(&ndir).unwrap() {
+        let n = e.unwrap().file_name().to_string_lossy().into_owned();
+        if n.starts_with("log.") && n.ends_with(".msgpack") {
+            found_log = true;
+        }
+    }
+    assert!(found_log, "a per-device log file must exist");
+
+    // The markdown body is stored verbatim (unencrypted backend).
+    let body = std::fs::read_to_string(ndir.join("note.md")).unwrap();
+    assert_eq!(body, "# Markdown body");
+}
+
+#[tokio::test]
+async fn fs_two_device_causal_sync() {
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    let a = FsBackend::new(dir_a.path()).await.unwrap();
+    let b = FsBackend::new(dir_b.path()).await.unwrap();
+
+    let note = Note::new("Title", "from A");
+    let id = note.id;
+    a.create_note(note).await.unwrap();
+
+    // A → B: B sees A's note after the log replicates.
+    replicate_note(dir_a.path(), dir_b.path(), id).await;
+    assert_eq!(b.read_note(id).await.unwrap().body, "from A");
+
+    // B edits causally (it has seen A's version).
+    let mut edited = b.read_note(id).await.unwrap();
+    edited.body = "edited by B".to_string();
+    b.update_note(edited).await.unwrap();
+
+    // B → A: the causal edit wins with no conflict.
+    replicate_note(dir_b.path(), dir_a.path(), id).await;
+    assert_eq!(a.read_note(id).await.unwrap().body, "edited by B");
+}
+
+#[tokio::test]
+async fn fs_two_device_concurrent_edits_converge() {
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    let a = FsBackend::new(dir_a.path()).await.unwrap();
+    let b = FsBackend::new(dir_b.path()).await.unwrap();
+
+    let note = Note::new("T", "base");
+    let id = note.id;
+    a.create_note(note).await.unwrap();
+    replicate_note(dir_a.path(), dir_b.path(), id).await;
+    b.read_note(id).await.unwrap();
+
+    // Concurrent edits with no exchange between them.
+    let mut ea = a.read_note(id).await.unwrap();
+    ea.body = "A wins?".to_string();
+    a.update_note(ea).await.unwrap();
+
+    let mut eb = b.read_note(id).await.unwrap();
+    eb.body = "B wins?".to_string();
+    b.update_note(eb).await.unwrap();
+
+    // Cross-replicate both logs; both devices must converge to the SAME winner
+    // (deterministic last-write-wins by timestamp, then device id).
+    replicate_note(dir_b.path(), dir_a.path(), id).await;
+    replicate_note(dir_a.path(), dir_b.path(), id).await;
+    let winner_a = a.read_note(id).await.unwrap().body;
+    let winner_b = b.read_note(id).await.unwrap().body;
+    assert!(winner_a == "A wins?" || winner_a == "B wins?");
+    assert_eq!(
+        winner_a, winner_b,
+        "both devices must converge to one winner"
+    );
+}
