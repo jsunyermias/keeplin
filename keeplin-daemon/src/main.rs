@@ -141,10 +141,7 @@ async fn main() -> anyhow::Result<()> {
 /// Returns the configured `key_salt` bytes when set (the value that must be shared
 /// across devices for portable encryption), otherwise falls back to this device's ID so
 /// that single-device encrypted stores keep working without any configuration.
-async fn resolve_key_salt<B: StorageBackend>(
-    cfg: &Config,
-    backend: &B,
-) -> anyhow::Result<Vec<u8>> {
+async fn resolve_key_salt<B: StorageBackend>(cfg: &Config, backend: &B) -> anyhow::Result<Vec<u8>> {
     match &cfg.key_salt {
         Some(salt) => Ok(salt.as_bytes().to_vec()),
         None => Ok(backend.get_device_id().await?.into_bytes()),

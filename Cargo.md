@@ -52,8 +52,14 @@ required by dev-dependencies in production builds. This is particularly importan
 `tokio`, which is declared with `features = ["full"]` as a dev-dependency but only needs
 a subset of features in library code.
 
+## Release profile
+
+`[profile.release]` is declared in this manifest (not in `.cargo/config.toml`, where
+Cargo would ignore it): `opt-level = 3`, `lto = true`, `codegen-units = 1`, and
+`strip = true` for a small, fully-optimised daemon binary.
+
 ## Related files
 
 - `keeplin-core/Cargo.toml` — library-specific dependencies
 - `keeplin-daemon/Cargo.toml` — binary-specific dependencies
-- `.cargo/config.toml` — workspace-wide build profile and cross-compilation settings
+- `.cargo/config.toml` — cross-compilation linker settings (profiles live here in `Cargo.toml`)

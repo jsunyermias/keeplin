@@ -236,6 +236,7 @@ impl DbBackend {
             CREATE INDEX IF NOT EXISTS idx_notes_is_todo           ON notes(is_todo) WHERE is_todo = 1;
             CREATE INDEX IF NOT EXISTS idx_note_tags_note_id       ON note_tags(note_id);
             CREATE INDEX IF NOT EXISTS idx_note_tags_tag_id        ON note_tags(tag_id);
+            CREATE INDEX IF NOT EXISTS idx_resources_created_at    ON resources(created_at);
             CREATE INDEX IF NOT EXISTS idx_entity_changes_changed_at ON entity_changes(changed_at);
             ",
         )

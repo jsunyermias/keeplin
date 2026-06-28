@@ -7,6 +7,17 @@
 //! `receive_changes` then reads the newly arrived foreign log files to discover what
 //! changed on remote devices, advancing a byte-offset cursor so each entry is
 //! processed exactly once.
+//!
+//! ## Operational note: log growth
+//!
+//! The per-device NDJSON logs under `logs/` are append-only and are **never pruned** by
+//! the backend (`prune_change_journal` is a deliberate no-op here, because removing
+//! entries a peer has not yet consumed would corrupt that peer's sync state). The logs
+//! therefore grow over the lifetime of the store. This is acceptable for typical
+//! note-taking volumes, but operators running very large or long-lived stores should
+//! compact the logs out-of-band once every device is known to have synced past a given
+//! point. There is intentionally no automatic mechanism, since safe compaction requires
+//! knowing every peer's consumed offset, which lives outside this backend.
 
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
@@ -968,9 +979,14 @@ impl ResourceRepository for FsBackend {
     ) -> Result<Resource, StorageError> {
         let dir = self.resource_dir(resource.id);
         tokio::fs::create_dir_all(&dir).await?;
+        // Write the binary payload first, then the metadata file. `read_resource` treats
+        // the presence of `meta.json` as proof the resource exists, so writing it last
+        // makes it the commit marker: a crash between the two writes leaves an orphan
+        // data file (harmless, overwritten on retry) rather than a metadata record that
+        // points at a missing payload.
+        tokio::fs::write(self.resource_data_path(resource.id), &data).await?;
         self.write_json(&self.resource_meta_path(resource.id), &resource)
             .await?;
-        tokio::fs::write(self.resource_data_path(resource.id), &data).await?;
         self.append_log(
             "resource",
             resource.id,

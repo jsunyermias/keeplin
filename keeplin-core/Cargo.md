@@ -20,8 +20,7 @@ local path dependency.
 | `anyhow` | workspace | General error propagation in a few utility functions |
 | `async-trait` | workspace | `#[async_trait]` macro to allow `async fn` in `StorageBackend` |
 | `tracing` | workspace | Structured log emission inside sync and storage code |
-| `libsql` | 0.6 (`core`) | Embedded LibSQL/SQLite database for `DbBackend`; `core` feature uses the bundled C library (no system libsql required) |
-| `reqwest` | 0.12 (`json`, `rustls-tls`) | HTTP client used for any HTTP-based sync calls (currently via WebSocket upgrade); `rustls-tls` removes the OpenSSL dependency |
+| `libsql` | 0.6 (`default-features = false`, `core`) | Embedded LibSQL/SQLite database for `DbBackend`. Default features are disabled so only the local engine is built — the remote replication stack (hyper-rustls / rustls 0.22 / rustls-webpki 0.102) is excluded, since `DbBackend` opens databases with `Builder::new_local` and never replicates through libsql. This also removes the source of four RUSTSEC advisories. |
 | `tokio-tungstenite` | 0.24 (`rustls-tls-native-roots`) | Async WebSocket client for `DbBackend`'s real-time sync channel |
 | `futures-util` | 0.3 | `SinkExt` and `StreamExt` for WebSocket message sending and receiving |
 | `aes-gcm` | 0.10 | AES-256-GCM authenticated encryption used by `EncryptedBackend` |
@@ -37,8 +36,9 @@ local path dependency.
 
 ## Feature flags
 
-No feature flags are declared in this crate. The `libsql` dependency uses the `core`
-feature, which is always active.
+No feature flags are declared in this crate. The `libsql` dependency disables default
+features and enables only `core`, which builds the local SQLite engine without the
+remote replication stack.
 
 ## Build-time notes
 

@@ -26,7 +26,9 @@ file (default: `keeplin.toml`) and may be partially overridden by environment va
 | `tls_cert_path` | `Option<String>` | `None` | Filesystem path to the PEM-encoded TLS certificate |
 | `tls_key_path` | `Option<String>` | `None` | Filesystem path to the PEM-encoded TLS private key |
 | `max_message_size` | `usize` | 33,554,432 (32 MiB) | Maximum size of a single gRPC message (both inbound and outbound) |
-| `encryption_password` | `Option<String>` | `None` | Passphrase for AES-256-GCM at-rest encryption; prefer env var |
+| `journal_retention_days` | `u64` | `30` | Days of `entity_changes` history to keep; pruned after each successful sync (`0` disables; no-op for the filesystem backend) |
+| `encryption_password` | `Option<String>` | `None` | Passphrase for AES-256-GCM at-rest encryption; prefer env var (`KEEPLIN_ENCRYPTION_PASSWORD`) |
+| `key_salt` | `Option<String>` | `None` | Argon2id salt (≥ 8 bytes) for the encryption key; falls back to the device ID when unset. Set the **same** value on all synced devices for portable encryption; prefer env var (`KEEPLIN_KEY_SALT`) |
 | `auth_username` | `Option<String>` | `None` | Username for HTTP Basic Auth on every gRPC call; prefer env var |
 | `auth_password` | `Option<String>` | `None` | Password for HTTP Basic Auth on every gRPC call; prefer env var |
 
