@@ -29,7 +29,10 @@ use uuid::Uuid;
 use crate::{
     error::StorageError,
     models::{Change, Note, NoteTag, Notebook, Resource, Tag},
-    storage::StorageBackend,
+    storage::{
+        NoteRepository, NotebookRepository, ResourceRepository, StorageBackend, SyncBackend,
+        TagRepository,
+    },
 };
 
 /// Length in bytes of the AES-GCM nonce. AES-GCM is specified with a 96-bit (12-byte)
@@ -211,7 +214,7 @@ fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32], StorageError> {
 }
 
 #[async_trait]
-impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
+impl<B: StorageBackend> NoteRepository for EncryptedBackend<B> {
     async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
         let stored = self.inner.create_note(self.enc_note(note)?).await?;
         self.dec_note(stored)
@@ -238,7 +241,10 @@ impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
             .map(|n| self.dec_note(n))
             .collect()
     }
+}
 
+#[async_trait]
+impl<B: StorageBackend> NotebookRepository for EncryptedBackend<B> {
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
         let stored = self
             .inner
@@ -271,7 +277,10 @@ impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
             .map(|n| self.dec_notebook(n))
             .collect()
     }
+}
 
+#[async_trait]
+impl<B: StorageBackend> TagRepository for EncryptedBackend<B> {
     async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
         let stored = self.inner.create_tag(self.enc_tag(tag)?).await?;
         self.dec_tag(stored)
@@ -315,7 +324,10 @@ impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
             .map(|t| self.dec_tag(t))
             .collect()
     }
+}
 
+#[async_trait]
+impl<B: StorageBackend> ResourceRepository for EncryptedBackend<B> {
     async fn create_resource(
         &self,
         resource: Resource,
@@ -347,11 +359,13 @@ impl<B: StorageBackend> StorageBackend for EncryptedBackend<B> {
             .map(|r| self.dec_resource(r))
             .collect()
     }
+}
 
-    // Synchronisation methods pass through without any transformation.
-    // The data that travels over the sync channel is already in the encrypted form
-    // that the inner backend stored on disk, so no additional encryption or
-    // decryption step is needed here.
+// Synchronisation methods pass through without any transformation. The data that
+// travels over the sync channel is already in the encrypted form that the inner
+// backend stored on disk, so no additional encryption or decryption step is needed.
+#[async_trait]
+impl<B: StorageBackend> SyncBackend for EncryptedBackend<B> {
     async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError> {
         self.inner.get_changes_since(since).await
     }

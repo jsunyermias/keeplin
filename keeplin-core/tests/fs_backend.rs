@@ -9,7 +9,10 @@
 use keeplin_core::{
     error::StorageError,
     models::{Note, NoteTag, Notebook, Resource, Tag},
-    storage::{fs::FsBackend, StorageBackend},
+    storage::{
+        fs::FsBackend, NoteRepository, NotebookRepository, ResourceRepository, StorageBackend,
+        SyncBackend, TagRepository,
+    },
 };
 use tempfile::tempdir;
 

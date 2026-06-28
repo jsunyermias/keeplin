@@ -1,0 +1,28 @@
+# cargo-audit configuration for the Keeplin workspace.
+#
+# The advisories below are in rustls-webpki 0.102.x, which is a transitive
+# dependency of libsql 0.6 (via rustls 0.22 / hyper-rustls 0.25). There is
+# no stable release of libsql >= 0.7 yet, so we cannot upgrade the dependency
+# chain. Each advisory is acknowledged here with a comment explaining why.
+
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0104: Reachable panic in CRL parsing (rustls-webpki 0.102.x)
+    # Affects server-side CRL processing. Keeplin uses rustls-webpki only as a
+    # TLS client inside libsql's WebSocket sync path; it never parses CRLs on
+    # behalf of untrusted input. Low practical risk, no fix available in libsql 0.6.
+    "RUSTSEC-2026-0104",
+
+    # RUSTSEC-2026-0049: CRL Distribution Point matching logic error (rustls-webpki 0.102.x)
+    # Same transitive path. Keeplin does not enable CRL checking in its TLS config.
+    "RUSTSEC-2026-0049",
+
+    # RUSTSEC-2026-0099: Name constraints accepted for wildcard names (rustls-webpki 0.102.x)
+    # Same transitive path. Keeplin connects only to its own configured server URL;
+    # it does not accept arbitrary server certificates from untrusted third parties.
+    "RUSTSEC-2026-0099",
+
+    # RUSTSEC-2026-0098: Name constraints for URI names incorrectly accepted (rustls-webpki 0.102.x)
+    # Same transitive path and same reasoning as RUSTSEC-2026-0099.
+    "RUSTSEC-2026-0098",
+]

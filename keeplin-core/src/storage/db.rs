@@ -24,7 +24,7 @@ use crate::{
     models::{new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag},
 };
 
-use super::StorageBackend;
+use super::{NoteRepository, NotebookRepository, ResourceRepository, SyncBackend, TagRepository};
 
 /// A WebSocket stream over either a plain TCP connection or a TLS-wrapped TCP connection.
 ///
@@ -524,12 +524,10 @@ impl DbBackend {
     }
 }
 
-// ── StorageBackend impl ───────────────────────────────────────────────────────
+// ── NoteRepository impl ───────────────────────────────────────────────────────
 
 #[async_trait]
-impl StorageBackend for DbBackend {
-    // ── Notes ─────────────────────────────────────────────────────────────────
-
+impl NoteRepository for DbBackend {
     async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
         self.begin().await?;
         let r: Result<(), StorageError> = async {
@@ -676,9 +674,12 @@ impl StorageBackend for DbBackend {
         }
         Ok(notes)
     }
+}
 
-    // ── Notebooks ─────────────────────────────────────────────────────────────
+// ── NotebookRepository impl ───────────────────────────────────────────────────
 
+#[async_trait]
+impl NotebookRepository for DbBackend {
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
         self.begin().await?;
         let r: Result<(), StorageError> = async {
@@ -809,9 +810,12 @@ impl StorageBackend for DbBackend {
         }
         Ok(notebooks)
     }
+}
 
-    // ── Tags ──────────────────────────────────────────────────────────────────
+// ── TagRepository impl ────────────────────────────────────────────────────────
 
+#[async_trait]
+impl TagRepository for DbBackend {
     async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
         self.begin().await?;
         let r: Result<(), StorageError> = async {
@@ -943,8 +947,6 @@ impl StorageBackend for DbBackend {
         Ok(tags)
     }
 
-    // ── Note–Tag relations ────────────────────────────────────────────────────
-
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
         self.begin().await?;
         let r: Result<(), StorageError> = async {
@@ -1014,9 +1016,12 @@ impl StorageBackend for DbBackend {
         }
         Ok(tags)
     }
+}
 
-    // ── Resources ─────────────────────────────────────────────────────────────
+// ── ResourceRepository impl ───────────────────────────────────────────────────
 
+#[async_trait]
+impl ResourceRepository for DbBackend {
     async fn create_resource(
         &self,
         resource: Resource,
@@ -1140,9 +1145,12 @@ impl StorageBackend for DbBackend {
         }
         Ok(resources)
     }
+}
 
-    // ── Synchronisation ───────────────────────────────────────────────────────
+// ── SyncBackend impl ──────────────────────────────────────────────────────────
 
+#[async_trait]
+impl SyncBackend for DbBackend {
     async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError> {
         let since_str = since.to_rfc3339();
         let mut rows = self

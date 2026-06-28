@@ -1,9 +1,15 @@
-//! The `StorageBackend` trait — the single contract that every storage implementation
-//! must satisfy.
+//! The `StorageBackend` supertrait and its five focused sub-traits.
 //!
-//! Programming against this trait rather than a concrete type means the daemon, the
-//! sync engine, and the encryption layer all remain independent of which storage
-//! mechanism is in use at runtime.
+//! Rather than exposing a single 30-method trait, the storage layer is split into
+//! five cohesive interfaces — [`NoteRepository`], [`NotebookRepository`],
+//! [`TagRepository`], [`ResourceRepository`], and [`SyncBackend`] — each covering
+//! one domain of responsibility. [`StorageBackend`] is then a supertrait that requires
+//! all five, giving call-sites a single bound while keeping each domain independently
+//! testable and mockable.
+//!
+//! A blanket impl automatically satisfies [`StorageBackend`] for any type that
+//! implements all five sub-traits, so adding a new backend only requires writing the
+//! five focused `impl` blocks — no additional glue code is needed.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -14,22 +20,15 @@ use crate::{
     models::{Change, Note, NoteTag, Notebook, Resource, Tag},
 };
 
-/// Async interface for all CRUD and synchronisation operations.
-///
-/// Every method is `async` (via [`async_trait`]) and returns
-/// `Result<T, `[`StorageError`]`>`. The `Send + Sync + 'static` bounds ensure the
-/// trait can be held behind an `Arc`, passed into `tokio::spawn`, and stored in a
-/// `tonic` server struct.
-///
-/// ## Idempotency requirement
-///
-/// `apply_change` **must** be idempotent: applying the same `Change` twice must produce
-/// the same result as applying it once. All built-in implementations satisfy this by
-/// using `INSERT OR IGNORE` / `INSERT OR REPLACE` for creates and no-op deletes.
-#[async_trait]
-pub trait StorageBackend: Send + Sync + 'static {
-    // ── Notes ────────────────────────────────────────────────────────────────
+// ── NoteRepository ────────────────────────────────────────────────────────────
 
+/// CRUD operations for [`Note`] entities.
+///
+/// Implementations must treat `delete_note` as a **soft delete**: the note's
+/// `deleted_at` field is set to the current time and the record is retained in
+/// storage. `list_notes` must exclude soft-deleted notes from its results.
+#[async_trait]
+pub trait NoteRepository: Send + Sync + 'static {
     /// Persists a new note and returns the stored copy.
     ///
     /// The returned `Note` may differ from the input if the backend sets extra fields
@@ -55,9 +54,17 @@ pub trait StorageBackend: Send + Sync + 'static {
 
     /// Returns all notes that have not been soft-deleted, in an unspecified order.
     async fn list_notes(&self) -> Result<Vec<Note>, StorageError>;
+}
 
-    // ── Notebooks ─────────────────────────────────────────────────────────────
+// ── NotebookRepository ────────────────────────────────────────────────────────
 
+/// CRUD operations for [`Notebook`] entities.
+///
+/// The same soft-delete semantics as [`NoteRepository`] apply: `delete_notebook`
+/// sets `deleted_at` rather than removing the record, and `list_notebooks` omits
+/// soft-deleted notebooks.
+#[async_trait]
+pub trait NotebookRepository: Send + Sync + 'static {
     /// Persists a new notebook and returns the stored copy.
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError>;
 
@@ -72,9 +79,21 @@ pub trait StorageBackend: Send + Sync + 'static {
 
     /// Returns all notebooks that have not been soft-deleted.
     async fn list_notebooks(&self) -> Result<Vec<Notebook>, StorageError>;
+}
 
-    // ── Tags ──────────────────────────────────────────────────────────────────
+// ── TagRepository ─────────────────────────────────────────────────────────────
 
+/// CRUD operations for [`Tag`] entities and the note–tag association table.
+///
+/// Note–tag links (`add_note_tag`, `remove_note_tag`) are included here rather
+/// than in a separate trait because they are always used together with tag reads
+/// and the association has no independent lifecycle beyond the tags themselves.
+///
+/// Both `add_note_tag` and `remove_note_tag` must be **idempotent**: adding a tag
+/// that is already attached, or removing one that is not attached, must succeed
+/// without returning an error.
+#[async_trait]
+pub trait TagRepository: Send + Sync + 'static {
     /// Persists a new tag and returns the stored copy.
     async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError>;
 
@@ -90,12 +109,10 @@ pub trait StorageBackend: Send + Sync + 'static {
     /// Returns all tags that have not been soft-deleted.
     async fn list_tags(&self) -> Result<Vec<Tag>, StorageError>;
 
-    // ── Note–Tag relations ────────────────────────────────────────────────────
-
     /// Attaches `note_tag.tag_id` to `note_tag.note_id`.
     ///
-    /// Implementations must be idempotent: attaching a tag that is already attached
-    /// must not return an error.
+    /// Must be idempotent: attaching a tag that is already attached must not
+    /// return an error.
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError>;
 
     /// Detaches the tag identified by `tag_id` from the note identified by `note_id`.
@@ -105,9 +122,17 @@ pub trait StorageBackend: Send + Sync + 'static {
 
     /// Returns all tags currently attached to the note identified by `note_id`.
     async fn list_note_tags(&self, note_id: Uuid) -> Result<Vec<Tag>, StorageError>;
+}
 
-    // ── Resources ─────────────────────────────────────────────────────────────
+// ── ResourceRepository ────────────────────────────────────────────────────────
 
+/// CRUD operations for binary [`Resource`] attachments.
+///
+/// Resources use **hard delete** (data removed immediately) rather than soft
+/// delete. Binary payloads can be large and there is no business requirement to
+/// retain deleted attachment data.
+#[async_trait]
+pub trait ResourceRepository: Send + Sync + 'static {
     /// Stores resource metadata alongside its binary payload and returns the metadata.
     ///
     /// `data` is the raw binary content of the file (e.g. PNG bytes, PDF bytes).
@@ -132,8 +157,45 @@ pub trait StorageBackend: Send + Sync + 'static {
     /// To read the binary payload, call `read_resource` with the individual resource's
     /// UUID.
     async fn list_resources(&self) -> Result<Vec<Resource>, StorageError>;
+}
 
-    // ── Synchronisation ───────────────────────────────────────────────────────
+// ── SyncBackend ───────────────────────────────────────────────────────────────
+
+/// Device identification and change-journal synchronisation operations.
+///
+/// All methods in this trait are used by [`crate::sync::SyncEngine`] to coordinate
+/// state between devices. The six-step sync cycle is:
+/// 1. [`get_changes_since`](Self::get_changes_since) — collect local changes since last sync.
+/// 2. [`send_changes`](Self::send_changes) — push them to the remote peer.
+/// 3. [`receive_changes`](Self::receive_changes) — pull changes from the remote peer.
+/// 4. [`apply_change`](Self::apply_change) (repeated) — apply each incoming change locally.
+/// 5. [`update_sync_time`](Self::update_sync_time) — record the completion timestamp.
+/// 6. [`prune_change_journal`](Self::prune_change_journal) (optional) — trim old journal rows.
+///
+/// ## Idempotency requirement
+///
+/// `apply_change` **must** be idempotent: applying the same `Change` twice must produce
+/// the same result as applying it once. All built-in implementations satisfy this by
+/// using `INSERT OR IGNORE` / `INSERT OR REPLACE` for creates and no-op deletes.
+#[async_trait]
+pub trait SyncBackend: Send + Sync + 'static {
+    /// Returns the stable string identifier for this device installation.
+    ///
+    /// The device ID is generated once and persisted to disk. It is used as the Argon2id
+    /// salt when deriving the AES encryption key, and as the file name for this device's
+    /// change log (`logs/{device_id}.log`).
+    async fn get_device_id(&self) -> Result<String, StorageError>;
+
+    /// Returns the UTC timestamp of the most recent successful sync cycle.
+    ///
+    /// Returns the Unix epoch (1970-01-01T00:00:00Z) if no sync has ever completed
+    /// on this device.
+    async fn get_last_sync_time(&self) -> Result<DateTime<Utc>, StorageError>;
+
+    /// Overwrites the stored last-sync timestamp with `ts`.
+    ///
+    /// Called at the end of a successful sync cycle by [`crate::sync::SyncEngine`].
+    async fn update_sync_time(&self, ts: DateTime<Utc>) -> Result<(), StorageError>;
 
     /// Returns all [`Change`] events recorded on this device after `since`.
     ///
@@ -149,17 +211,6 @@ pub trait StorageBackend: Send + Sync + 'static {
     /// failure without risking data corruption.
     async fn apply_change(&self, change: Change) -> Result<(), StorageError>;
 
-    /// Returns the UTC timestamp of the most recent successful sync cycle.
-    ///
-    /// Returns the Unix epoch (1970-01-01T00:00:00Z) if no sync has ever completed
-    /// on this device.
-    async fn get_last_sync_time(&self) -> Result<DateTime<Utc>, StorageError>;
-
-    /// Overwrites the stored last-sync timestamp with `ts`.
-    ///
-    /// Called at the end of a successful sync cycle by [`crate::sync::SyncEngine`].
-    async fn update_sync_time(&self, ts: DateTime<Utc>) -> Result<(), StorageError>;
-
     /// Transmits the given list of local changes to the remote peer.
     ///
     /// In `DbBackend`, this sends the changes over the WebSocket connection with
@@ -174,13 +225,6 @@ pub trait StorageBackend: Send + Sync + 'static {
     /// by scanning other devices' log files in `get_changes_since`).
     async fn receive_changes(&self) -> Result<Vec<Change>, StorageError>;
 
-    /// Returns the stable string identifier for this device installation.
-    ///
-    /// The device ID is generated once and persisted to disk. It is used as the Argon2id
-    /// salt when deriving the AES encryption key, and as the file name for this device's
-    /// change log (`logs/{device_id}.log`).
-    async fn get_device_id(&self) -> Result<String, StorageError>;
-
     /// Permanently removes change-journal entries older than `older_than`.
     ///
     /// Returns the number of rows removed. Call this periodically (for example once per
@@ -191,4 +235,36 @@ pub trait StorageBackend: Send + Sync + 'static {
     /// per-device NDJSON log files could cause remote devices that have not yet processed
     /// the removed entries to miss changes permanently.
     async fn prune_change_journal(&self, older_than: DateTime<Utc>) -> Result<u64, StorageError>;
+}
+
+// ── StorageBackend supertrait ─────────────────────────────────────────────────
+
+/// Unified async storage interface.
+///
+/// This supertrait requires all five domain-specific sub-traits:
+/// [`NoteRepository`], [`NotebookRepository`], [`TagRepository`],
+/// [`ResourceRepository`], and [`SyncBackend`]. Any type that implements all five
+/// automatically satisfies `StorageBackend` via the blanket impl below — no
+/// additional code is required.
+///
+/// Code that works with any backend uses `T: StorageBackend` as a single bound.
+/// Methods from all five sub-traits are available on `T` because supertrait
+/// bounds are transitive.
+///
+/// ## Implemented by
+///
+/// - [`crate::storage::fs::FsBackend`] — JSON files + Syncthing replication.
+/// - [`crate::storage::db::DbBackend`] — LibSQL database + WebSocket sync.
+/// - [`crate::encryption::EncryptedBackend<B>`] — transparent AES-256-GCM decorator.
+pub trait StorageBackend:
+    NoteRepository + NotebookRepository + TagRepository + ResourceRepository + SyncBackend
+{
+}
+
+/// Blanket implementation: any type satisfying all five sub-traits automatically
+/// satisfies `StorageBackend`. This means adding a new backend only requires
+/// writing the five focused `impl` blocks — no additional glue code is needed.
+impl<T> StorageBackend for T where
+    T: NoteRepository + NotebookRepository + TagRepository + ResourceRepository + SyncBackend
+{
 }

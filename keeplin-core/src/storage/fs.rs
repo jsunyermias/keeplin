@@ -22,7 +22,7 @@ use crate::{
     models::{new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag},
 };
 
-use super::StorageBackend;
+use super::{NoteRepository, NotebookRepository, ResourceRepository, SyncBackend, TagRepository};
 
 // ── Log entry ─────────────────────────────────────────────────────────────────
 
@@ -628,12 +628,10 @@ impl FsBackend {
     }
 }
 
-// ── StorageBackend impl ───────────────────────────────────────────────────────
+// ── NoteRepository impl ───────────────────────────────────────────────────────
 
 #[async_trait]
-impl StorageBackend for FsBackend {
-    // ── Notes ─────────────────────────────────────────────────────────────────
-
+impl NoteRepository for FsBackend {
     async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
         self.write_note(&note).await?;
         self.append_log("note", note.id, "create", serde_json::to_value(&note)?)
@@ -682,9 +680,12 @@ impl StorageBackend for FsBackend {
         }
         Ok(notes)
     }
+}
 
-    // ── Notebooks ─────────────────────────────────────────────────────────────
+// ── NotebookRepository impl ───────────────────────────────────────────────────
 
+#[async_trait]
+impl NotebookRepository for FsBackend {
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
         self.write_json(&self.notebook_path(notebook.id), &notebook)
             .await?;
@@ -747,9 +748,12 @@ impl StorageBackend for FsBackend {
         }
         Ok(notebooks)
     }
+}
 
-    // ── Tags ──────────────────────────────────────────────────────────────────
+// ── TagRepository impl ────────────────────────────────────────────────────────
 
+#[async_trait]
+impl TagRepository for FsBackend {
     async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
         self.write_json(&self.tag_path(tag.id), &tag).await?;
         self.append_log("tag", tag.id, "create", serde_json::to_value(&tag)?)
@@ -801,8 +805,6 @@ impl StorageBackend for FsBackend {
         Ok(tags)
     }
 
-    // ── Note–Tag relations ────────────────────────────────────────────────────
-
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
         tokio::fs::create_dir_all(self.note_tag_dir(note_tag.note_id)).await?;
         tokio::fs::write(self.note_tag_path(note_tag.note_id, note_tag.tag_id), b"").await?;
@@ -850,9 +852,12 @@ impl StorageBackend for FsBackend {
         }
         Ok(tags)
     }
+}
 
-    // ── Resources ─────────────────────────────────────────────────────────────
+// ── ResourceRepository impl ───────────────────────────────────────────────────
 
+#[async_trait]
+impl ResourceRepository for FsBackend {
     async fn create_resource(
         &self,
         resource: Resource,
@@ -911,9 +916,12 @@ impl StorageBackend for FsBackend {
         }
         Ok(resources)
     }
+}
 
-    // ── Synchronisation ───────────────────────────────────────────────────────
+// ── SyncBackend impl ──────────────────────────────────────────────────────────
 
+#[async_trait]
+impl SyncBackend for FsBackend {
     async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError> {
         let entries = self.read_other_logs_since(since).await?;
         let changes = entries
