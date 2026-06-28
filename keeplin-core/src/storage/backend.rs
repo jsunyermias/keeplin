@@ -300,7 +300,12 @@ pub trait StorageBackend:
 /// Blanket implementation: any type satisfying all five sub-traits automatically
 /// satisfies `StorageBackend`. This means adding a new backend only requires
 /// writing the five focused `impl` blocks — no additional glue code is needed.
-impl<T> StorageBackend for T where
+///
+/// The `T: ?Sized` bound also lets the trait object `dyn StorageBackend` itself satisfy
+/// `StorageBackend` (it auto-implements all five object-safe sub-traits), so an
+/// `Arc<dyn StorageBackend>` can be passed where a `B: StorageBackend` bound is expected —
+/// for example to [`crate::sync::run_sync`] from the daemon's type-erased REST layer.
+impl<T: ?Sized> StorageBackend for T where
     T: NoteRepository + NotebookRepository + TagRepository + ResourceRepository + SyncBackend
 {
 }

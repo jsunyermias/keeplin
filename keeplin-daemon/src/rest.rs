@@ -5,7 +5,8 @@
 //! state holds the backend as a trait object (`Arc<dyn StorageBackend>`) so handlers are
 //! not generic over the concrete backend type; the gRPC server shares the same backend
 //! instance. Authentication reuses the shared constant-time Basic-Auth check in
-//! [`crate::auth`]. The live-change WebSocket feed is added in a follow-up.
+//! [`crate::auth`]. `GET /api/ws` upgrades to a WebSocket that streams every [`Change`]
+//! published by the daemon's `EventBackend`, and `POST /api/sync` runs one sync cycle.
 //!
 //! The HTTP listener is plain HTTP — terminate TLS at a reverse proxy in production, as
 //! noted in `SECURITY.md`.
@@ -14,30 +15,38 @@ use std::sync::Arc;
 
 use axum::{
     body::Bytes,
-    extract::{Path, Query, Request, State},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Path, Query, Request, State,
+    },
     http::{
         header::{AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE},
         HeaderMap, StatusCode,
     },
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, put},
+    routing::{get, post, put},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
 use keeplin_core::{
-    error::StorageError,
-    models::{now, Note, NoteTag, Notebook, Resource, Tag},
+    error::{StorageError, SyncError},
+    models::{now, Change, Note, NoteTag, Notebook, Resource, Tag},
     storage::StorageBackend,
+    sync::run_sync,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 /// Shared state for every HTTP handler.
 pub struct AppState {
     /// The storage backend, shared (as a trait object) with the gRPC server.
     pub backend: Arc<dyn StorageBackend>,
+    /// Sender for the live change feed. Each WebSocket connection subscribes to a fresh
+    /// receiver; mutations published here by the daemon's `EventBackend` are streamed out.
+    pub events: broadcast::Sender<Change>,
     /// Basic-Auth credentials; when both are `Some`, every request must authenticate.
     pub auth_username: Option<String>,
     pub auth_password: Option<String>,
@@ -72,6 +81,8 @@ pub fn router(state: Shared) -> Router {
         .route("/resources", get(list_resources).post(create_resource))
         .route("/resources/:id", get(get_resource).delete(delete_resource))
         .route("/resources/:id/data", get(get_resource_data))
+        .route("/sync", post(sync))
+        .route("/ws", get(ws_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_mw))
         .with_state(state);
     Router::new().nest("/api", api)
@@ -107,6 +118,18 @@ struct ApiError(StorageError);
 impl From<StorageError> for ApiError {
     fn from(e: StorageError) -> Self {
         ApiError(e)
+    }
+}
+
+impl From<SyncError> for ApiError {
+    fn from(e: SyncError) -> Self {
+        match e {
+            // A storage failure during sync keeps its precise mapping (e.g. NotFound → 404).
+            SyncError::Storage(s) => ApiError(s),
+            // Conflict/Failed are transport- or protocol-level sync failures; surface them
+            // as a 500 with the underlying message rather than inventing a finer status.
+            other => ApiError(StorageError::InvalidState(other.to_string())),
+        }
     }
 }
 
@@ -397,7 +420,71 @@ async fn delete_resource(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// `POST /api/sync` is added with the WebSocket feed work, where `run_sync` is wired in.
+// ── Sync ────────────────────────────────────────────────────────────────────────
+
+/// JSON summary returned by `POST /api/sync`: how many remote changes were applied.
+#[derive(Debug, Serialize)]
+struct SyncSummary {
+    applied: usize,
+}
+
+/// Run one synchronisation cycle on the shared backend and report how many remote
+/// changes were applied. Mirrors the gRPC `Sync` RPC, minus the streaming progress.
+///
+/// The backend is passed as `&dyn StorageBackend`; `run_sync` accepts it because
+/// `dyn StorageBackend` itself satisfies `StorageBackend` (see the `?Sized` blanket impl
+/// in `keeplin-core`).
+async fn sync(State(s): State<Shared>) -> Result<Json<SyncSummary>, ApiError> {
+    let applied = run_sync(s.backend.as_ref(), |_stage, _count| {}).await?;
+    Ok(Json(SyncSummary {
+        applied: applied.len(),
+    }))
+}
+
+// ── WebSocket live-change feed ────────────────────────────────────────────────────
+
+/// `GET /api/ws` — upgrade to a WebSocket and stream every [`Change`] as a JSON text
+/// frame. The upgrade request passes through the same Basic-Auth middleware as the REST
+/// routes. Each connection gets its own broadcast receiver created at upgrade time, so it
+/// sees changes from the moment it connects onward.
+async fn ws_handler(State(s): State<Shared>, ws: WebSocketUpgrade) -> Response {
+    let rx = s.events.subscribe();
+    ws.on_upgrade(move |socket| stream_changes(socket, rx))
+}
+
+/// Forward broadcast changes to one connected client until it disconnects or the channel
+/// closes. Serialises each [`Change`] to JSON; on `Lagged` (the client fell behind the
+/// channel capacity) it sends a `{"type":"resync"}` hint so the client can reload state
+/// rather than silently miss events.
+async fn stream_changes(mut socket: WebSocket, mut rx: broadcast::Receiver<Change>) {
+    loop {
+        tokio::select! {
+            received = rx.recv() => match received {
+                Ok(change) => {
+                    let text = serde_json::to_string(&change)
+                        .unwrap_or_else(|_| r#"{"type":"error"}"#.to_string());
+                    if socket.send(Message::Text(text)).await.is_err() {
+                        break; // client went away
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    let hint = Message::Text(r#"{"type":"resync"}"#.to_string());
+                    if socket.send(hint).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+            // Drive the receive side so client pings get pongs and a close frame ends the
+            // loop promptly instead of waiting for the next failed send.
+            incoming = socket.recv() => match incoming {
+                Some(Ok(Message::Close(_))) | None => break,
+                Some(Err(_)) => break,
+                Some(Ok(_)) => {} // ignore data/ping/pong frames from the client
+            },
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -415,8 +502,10 @@ mod tests {
         let path = dir.path().to_path_buf();
         std::mem::forget(dir);
         let fs = FsBackend::new(&path).await.unwrap();
+        let (events, _rx) = broadcast::channel(16);
         Arc::new(AppState {
             backend: Arc::new(fs),
+            events,
             auth_username: auth.map(|a| a.0.to_string()),
             auth_password: auth.map(|a| a.1.to_string()),
         })
@@ -538,5 +627,79 @@ mod tests {
         .await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(data, b"not really json but raw bytes");
+    }
+
+    // ── WebSocket feed (real socket, end to end) ─────────────────────────────────
+
+    use crate::event_backend::EventBackend;
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    /// Build an `AppState` whose backend is an `EventBackend` over a fresh `FsBackend`, so
+    /// mutations made through the router publish to the same `events` channel the WebSocket
+    /// route subscribes to. Returns the state and a clone of the sender.
+    async fn state_with_events() -> Shared {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let fs = FsBackend::new(&path).await.unwrap();
+        let (events, _rx) = broadcast::channel(16);
+        let backend = Arc::new(EventBackend::new(fs, events.clone()));
+        Arc::new(AppState {
+            backend,
+            events,
+            auth_username: None,
+            auth_password: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn websocket_streams_note_create() {
+        let st = state_with_events().await;
+
+        // Serve the real router on an ephemeral port.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = router(st.clone());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        // Connect a WebSocket client. The handler subscribes synchronously before the
+        // upgrade response is sent, so no event created after this point can be missed.
+        let (mut ws, _resp) = tokio_tungstenite::connect_async(format!("ws://{addr}/api/ws"))
+            .await
+            .expect("ws connect");
+
+        // Create a note through the same shared backend (in-process is fine; it still flows
+        // through the EventBackend and publishes to the broadcast channel).
+        let (code, _) = call(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(r#"{"title":"hello","body":"world"}"#),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+
+        // The client should receive a NoteCreate frame whose note matches.
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            .await
+            .expect("timed out waiting for change frame")
+            .expect("stream ended")
+            .expect("ws error");
+        let text = match frame {
+            WsMessage::Text(t) => t,
+            other => panic!("expected text frame, got {other:?}"),
+        };
+        let change: Change = serde_json::from_str(&text).unwrap();
+        match change {
+            Change::NoteCreate { note } => {
+                assert_eq!(note.title, "hello");
+                assert_eq!(note.body, "world");
+            }
+            other => panic!("expected NoteCreate, got {other:?}"),
+        }
     }
 }

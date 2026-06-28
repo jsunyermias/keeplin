@@ -61,7 +61,7 @@ pub enum SyncStage {
 /// unchanged so the next cycle re-collects and re-applies any missed changes.
 pub async fn run_sync<B, F>(backend: &B, mut report: F) -> Result<Vec<Change>, SyncError>
 where
-    B: StorageBackend,
+    B: StorageBackend + ?Sized,
     F: FnMut(SyncStage, usize),
 {
     // Step 1: Read the timestamp of the most recent successful sync so we know which

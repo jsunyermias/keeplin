@@ -9,6 +9,7 @@
 
 mod auth;
 mod config;
+mod event_backend;
 mod proto;
 mod rest;
 mod server;
@@ -182,9 +183,15 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
     addr: std::net::SocketAddr,
     backend: B,
 ) -> anyhow::Result<()> {
+    // Wrap the backend so that every successful mutation — from gRPC or REST — is published
+    // to the live-change broadcast channel that WebSocket clients subscribe to. The
+    // `EventBackend` sits outside any `EncryptedBackend`, so the changes it broadcasts carry
+    // already-decrypted (plaintext) values for connected API clients.
+    let (events, _rx) = tokio::sync::broadcast::channel::<keeplin_core::models::Change>(1024);
+    let backend = Arc::new(event_backend::EventBackend::new(backend, events.clone()));
+
     // One shared backend instance behind every surface: the gRPC service and (optionally)
     // the REST/HTTP server both hold a clone of this `Arc`.
-    let backend = Arc::new(backend);
     let (auth_user, auth_pass) = (cfg.auth_username.clone(), cfg.auth_password.clone());
 
     let svc_inner = KeeplinServiceServer::new(KeeplinServer::from_shared(
@@ -221,6 +228,7 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
         let http_addr: std::net::SocketAddr = http_addr.parse()?;
         let state = Arc::new(rest::AppState {
             backend: backend.clone(),
+            events: events.clone(),
             auth_username: cfg.auth_username.clone(),
             auth_password: cfg.auth_password.clone(),
         });

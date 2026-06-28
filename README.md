@@ -182,6 +182,8 @@ base64(user:password)` header (only required when `auth_username`/`auth_password
 | `GET/POST /api/tags`, `GET/PUT/DELETE /api/tags/:id` | Tag CRUD. |
 | `GET/POST /api/resources`, `GET/PUT/DELETE /api/resources/:id` | Resource metadata CRUD. |
 | `GET /api/resources/:id/data` | Download the raw resource bytes. |
+| `POST /api/sync` | Run one sync cycle; returns `{ "applied": <n> }`. |
+| `GET /api/ws` | Upgrade to the WebSocket live‑change feed (see below). |
 
 Resource upload is a raw request body: `POST /api/resources?title=&file_name=` with the
 file bytes as the body and the `Content-Type` header as the MIME type. Reads of a
@@ -191,6 +193,28 @@ tombstone for sync). Errors map to `404` (not found), `422` (corrupted data), `4
 
 The HTTP listener is **plain HTTP** — terminate TLS at a reverse proxy in production, exactly
 as for the WebSocket sync token.
+
+### WebSocket live‑change feed
+
+`GET /api/ws` upgrades to a WebSocket that pushes a **live feed of changes**: after every
+successful mutation — from gRPC *or* REST — the daemon broadcasts the corresponding
+[`Change`](keeplin-core/src/models.rs) to all connected clients as a JSON text frame
+(`{"op":"note_create","note":{…}}`, `{"op":"note_delete","id":…}`, …). The upgrade request
+passes through the same Basic‑Auth check as the REST routes.
+
+The feed is **best‑effort**, not a durable log: a client that falls behind the server's
+buffer receives a single `{"type":"resync"}` hint and should reload state from the REST API;
+the authoritative history remains the per‑device change journal used by sync. Resource
+creates are streamed as metadata only — fetch the bytes via `GET /api/resources/:id/data`.
+Changes are broadcast in plaintext (the daemon is the trust boundary), so at‑rest encryption
+does not obscure them from connected clients.
+
+```bash
+# Watch the feed while creating a note from another terminal:
+websocat ws://127.0.0.1:50052/api/ws
+curl -X POST 127.0.0.1:50052/api/notes -H 'content-type: application/json' \
+  -d '{"title":"hi","body":"there"}'
+```
 
 ---
 
