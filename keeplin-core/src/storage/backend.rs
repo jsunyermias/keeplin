@@ -41,7 +41,11 @@ pub trait StorageBackend: Send + Sync + 'static {
 
     // ── Resources ─────────────────────────────────────────────────────────────
 
-    async fn create_resource(&self, resource: Resource, data: Vec<u8>) -> Result<Resource, StorageError>;
+    async fn create_resource(
+        &self,
+        resource: Resource,
+        data: Vec<u8>,
+    ) -> Result<Resource, StorageError>;
     async fn read_resource(&self, id: Uuid) -> Result<(Resource, Vec<u8>), StorageError>;
     async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError>;
     async fn list_resources(&self) -> Result<Vec<Resource>, StorageError>;

@@ -1,6 +1,6 @@
 use keeplin_core::{
     error::StorageError,
-    models::{Note, Notebook, NoteTag, Resource, Tag},
+    models::{Note, NoteTag, Notebook, Resource, Tag},
     storage::{fs::FsBackend, StorageBackend},
 };
 use tempfile::tempdir;
@@ -307,7 +307,12 @@ async fn list_resources_excludes_data() {
 
     for i in 0..3u8 {
         let data = vec![i];
-        let res = Resource::new(format!("file{i}"), "application/octet-stream", format!("f{i}.bin"), 1);
+        let res = Resource::new(
+            format!("file{i}"),
+            "application/octet-stream",
+            format!("f{i}.bin"),
+            1,
+        );
         backend.create_resource(res, data).await.unwrap();
     }
 

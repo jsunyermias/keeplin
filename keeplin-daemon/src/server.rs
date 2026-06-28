@@ -2,7 +2,10 @@ use std::{pin::Pin, sync::Arc};
 
 use keeplin_core::{
     error::StorageError,
-    models::{now, Note as CoreNote, NoteTag, Notebook as CoreNotebook, Resource as CoreResource, Tag as CoreTag},
+    models::{
+        now, Note as CoreNote, NoteTag, Notebook as CoreNotebook, Resource as CoreResource,
+        Tag as CoreTag,
+    },
     storage::StorageBackend,
 };
 use tokio_stream::{wrappers::ReceiverStream, Stream};
@@ -10,31 +13,18 @@ use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::proto::keeplin::{
-    keeplin_service_server::KeeplinService,
-    sync_progress::Stage,
-    AddNoteTagRequest, AddNoteTagResponse,
-    CreateNoteRequest, CreateNoteResponse,
-    CreateNotebookRequest, CreateNotebookResponse,
-    CreateResourceRequest, CreateResourceResponse,
-    CreateTagRequest, CreateTagResponse,
-    DeleteNoteRequest, DeleteNoteResponse,
-    DeleteNotebookRequest, DeleteNotebookResponse,
-    DeleteResourceRequest, DeleteResourceResponse,
-    DeleteTagRequest, DeleteTagResponse,
-    GetNoteRequest, GetNoteResponse,
-    GetNotebookRequest, GetNotebookResponse,
-    GetResourceRequest, GetResourceResponse,
-    GetTagRequest, GetTagResponse,
-    ListNotebooksRequest, ListNotebooksResponse,
-    ListNoteTagsRequest, ListNoteTagsResponse,
-    ListNotesRequest, ListNotesResponse,
-    ListResourcesRequest, ListResourcesResponse,
-    ListTagsRequest, ListTagsResponse,
-    Note, Notebook, RemoveNoteTagRequest, RemoveNoteTagResponse,
-    Resource, SyncProgress, SyncRequest, Tag,
-    UpdateNoteRequest, UpdateNoteResponse,
-    UpdateNotebookRequest, UpdateNotebookResponse,
-    UpdateTagRequest, UpdateTagResponse,
+    keeplin_service_server::KeeplinService, sync_progress::Stage, AddNoteTagRequest,
+    AddNoteTagResponse, CreateNoteRequest, CreateNoteResponse, CreateNotebookRequest,
+    CreateNotebookResponse, CreateResourceRequest, CreateResourceResponse, CreateTagRequest,
+    CreateTagResponse, DeleteNoteRequest, DeleteNoteResponse, DeleteNotebookRequest,
+    DeleteNotebookResponse, DeleteResourceRequest, DeleteResourceResponse, DeleteTagRequest,
+    DeleteTagResponse, GetNoteRequest, GetNoteResponse, GetNotebookRequest, GetNotebookResponse,
+    GetResourceRequest, GetResourceResponse, GetTagRequest, GetTagResponse, ListNoteTagsRequest,
+    ListNoteTagsResponse, ListNotebooksRequest, ListNotebooksResponse, ListNotesRequest,
+    ListNotesResponse, ListResourcesRequest, ListResourcesResponse, ListTagsRequest,
+    ListTagsResponse, Note, Notebook, RemoveNoteTagRequest, RemoveNoteTagResponse, Resource,
+    SyncProgress, SyncRequest, Tag, UpdateNoteRequest, UpdateNoteResponse, UpdateNotebookRequest,
+    UpdateNotebookResponse, UpdateTagRequest, UpdateTagResponse,
 };
 
 // ── Conversion helpers ────────────────────────────────────────────────────────
@@ -47,10 +37,7 @@ fn note_to_proto(n: CoreNote) -> Note {
         notebook_id: n.notebook_id.map(|u| u.to_string()).unwrap_or_default(),
         is_todo: n.is_todo,
         todo_due: n.todo_due.map(|d| d.to_rfc3339()).unwrap_or_default(),
-        todo_completed: n
-            .todo_completed
-            .map(|d| d.to_rfc3339())
-            .unwrap_or_default(),
+        todo_completed: n.todo_completed.map(|d| d.to_rfc3339()).unwrap_or_default(),
         created_at: n.created_at.to_rfc3339(),
         updated_at: n.updated_at.to_rfc3339(),
         deleted_at: n.deleted_at.map(|d| d.to_rfc3339()).unwrap_or_default(),
@@ -162,11 +149,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         &self,
         _req: Request<ListNotesRequest>,
     ) -> Result<Response<ListNotesResponse>, Status> {
-        let notes = self
-            .backend
-            .list_notes()
-            .await
-            .map_err(storage_err)?;
+        let notes = self.backend.list_notes().await.map_err(storage_err)?;
         Ok(Response::new(ListNotesResponse {
             notes: notes.into_iter().map(note_to_proto).collect(),
         }))
@@ -183,11 +166,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         if !r.notebook_id.is_empty() {
             note.notebook_id = Some(parse_uuid(&r.notebook_id, "notebook_id")?);
         }
-        let created = self
-            .backend
-            .create_note(note)
-            .await
-            .map_err(storage_err)?;
+        let created = self.backend.create_note(note).await.map_err(storage_err)?;
         Ok(Response::new(CreateNoteResponse {
             note: Some(note_to_proto(created)),
         }))
@@ -198,11 +177,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         req: Request<GetNoteRequest>,
     ) -> Result<Response<GetNoteResponse>, Status> {
         let id = parse_uuid(&req.into_inner().id, "id")?;
-        let note = self
-            .backend
-            .read_note(id)
-            .await
-            .map_err(storage_err)?;
+        let note = self.backend.read_note(id).await.map_err(storage_err)?;
         Ok(Response::new(GetNoteResponse {
             note: Some(note_to_proto(note)),
         }))
@@ -218,11 +193,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .ok_or_else(|| Status::invalid_argument("note is required"))?;
         let mut note = proto_to_note(note_proto)?;
         note.updated_at = now();
-        let updated = self
-            .backend
-            .update_note(note)
-            .await
-            .map_err(storage_err)?;
+        let updated = self.backend.update_note(note).await.map_err(storage_err)?;
         Ok(Response::new(UpdateNoteResponse {
             note: Some(note_to_proto(updated)),
         }))
@@ -233,10 +204,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         req: Request<DeleteNoteRequest>,
     ) -> Result<Response<DeleteNoteResponse>, Status> {
         let id = parse_uuid(&req.into_inner().id, "id")?;
-        self.backend
-            .delete_note(id)
-            .await
-            .map_err(storage_err)?;
+        self.backend.delete_note(id).await.map_err(storage_err)?;
         Ok(Response::new(DeleteNoteResponse {}))
     }
 
@@ -246,11 +214,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         &self,
         _req: Request<ListNotebooksRequest>,
     ) -> Result<Response<ListNotebooksResponse>, Status> {
-        let notebooks = self
-            .backend
-            .list_notebooks()
-            .await
-            .map_err(storage_err)?;
+        let notebooks = self.backend.list_notebooks().await.map_err(storage_err)?;
         Ok(Response::new(ListNotebooksResponse {
             notebooks: notebooks.into_iter().map(notebook_to_proto).collect(),
         }))
@@ -276,11 +240,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         req: Request<GetNotebookRequest>,
     ) -> Result<Response<GetNotebookResponse>, Status> {
         let id = parse_uuid(&req.into_inner().id, "id")?;
-        let notebook = self
-            .backend
-            .read_notebook(id)
-            .await
-            .map_err(storage_err)?;
+        let notebook = self.backend.read_notebook(id).await.map_err(storage_err)?;
         Ok(Response::new(GetNotebookResponse {
             notebook: Some(notebook_to_proto(notebook)),
         }))
@@ -335,11 +295,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         &self,
         _req: Request<ListTagsRequest>,
     ) -> Result<Response<ListTagsResponse>, Status> {
-        let tags = self
-            .backend
-            .list_tags()
-            .await
-            .map_err(storage_err)?;
+        let tags = self.backend.list_tags().await.map_err(storage_err)?;
         Ok(Response::new(ListTagsResponse {
             tags: tags.into_iter().map(tag_to_proto).collect(),
         }))
@@ -350,11 +306,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         req: Request<CreateTagRequest>,
     ) -> Result<Response<CreateTagResponse>, Status> {
         let tag = CoreTag::new(req.into_inner().title);
-        let created = self
-            .backend
-            .create_tag(tag)
-            .await
-            .map_err(storage_err)?;
+        let created = self.backend.create_tag(tag).await.map_err(storage_err)?;
         Ok(Response::new(CreateTagResponse {
             tag: Some(tag_to_proto(created)),
         }))
@@ -395,11 +347,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         req: Request<GetTagRequest>,
     ) -> Result<Response<GetTagResponse>, Status> {
         let id = parse_uuid(&req.into_inner().id, "id")?;
-        let tag = self
-            .backend
-            .read_tag(id)
-            .await
-            .map_err(storage_err)?;
+        let tag = self.backend.read_tag(id).await.map_err(storage_err)?;
         Ok(Response::new(GetTagResponse {
             tag: Some(tag_to_proto(tag)),
         }))
@@ -426,11 +374,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                 .map_err(|_| Status::invalid_argument("updated_at is invalid"))?,
             deleted_at: parse_optional_dt(&t.deleted_at)?,
         };
-        let updated = self
-            .backend
-            .update_tag(tag)
-            .await
-            .map_err(storage_err)?;
+        let updated = self.backend.update_tag(tag).await.map_err(storage_err)?;
         Ok(Response::new(UpdateTagResponse {
             tag: Some(tag_to_proto(updated)),
         }))
@@ -441,10 +385,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         req: Request<DeleteTagRequest>,
     ) -> Result<Response<DeleteTagResponse>, Status> {
         let id = parse_uuid(&req.into_inner().id, "id")?;
-        self.backend
-            .delete_tag(id)
-            .await
-            .map_err(storage_err)?;
+        self.backend.delete_tag(id).await.map_err(storage_err)?;
         Ok(Response::new(DeleteTagResponse {}))
     }
 
@@ -469,11 +410,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         &self,
         _req: Request<ListResourcesRequest>,
     ) -> Result<Response<ListResourcesResponse>, Status> {
-        let resources = self
-            .backend
-            .list_resources()
-            .await
-            .map_err(storage_err)?;
+        let resources = self.backend.list_resources().await.map_err(storage_err)?;
         Ok(Response::new(ListResourcesResponse {
             resources: resources.into_iter().map(resource_to_proto).collect(),
         }))
@@ -501,11 +438,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         req: Request<GetResourceRequest>,
     ) -> Result<Response<GetResourceResponse>, Status> {
         let id = parse_uuid(&req.into_inner().id, "id")?;
-        let (meta, data) = self
-            .backend
-            .read_resource(id)
-            .await
-            .map_err(storage_err)?;
+        let (meta, data) = self.backend.read_resource(id).await.map_err(storage_err)?;
         Ok(Response::new(GetResourceResponse {
             resource: Some(resource_to_proto(meta)),
             data,
@@ -528,10 +461,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
 
     type SyncStream = SyncStreamPin;
 
-    async fn sync(
-        &self,
-        _req: Request<SyncRequest>,
-    ) -> Result<Response<Self::SyncStream>, Status> {
+    async fn sync(&self, _req: Request<SyncRequest>) -> Result<Response<Self::SyncStream>, Status> {
         let backend = Arc::clone(&self.backend);
         let (tx, rx) = tokio::sync::mpsc::channel::<SyncStreamItem>(16);
 
@@ -592,7 +522,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         });
 
         Ok(Response::new(
-            Box::pin(ReceiverStream::new(rx)) as SyncStreamPin,
+            Box::pin(ReceiverStream::new(rx)) as SyncStreamPin
         ))
     }
 }

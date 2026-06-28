@@ -1,6 +1,6 @@
 use keeplin_core::{
     error::StorageError,
-    models::{Note, Notebook, NoteTag, Resource, Tag},
+    models::{Note, NoteTag, Notebook, Resource, Tag},
     storage::{db::DbBackend, StorageBackend},
 };
 use tempfile::tempdir;
