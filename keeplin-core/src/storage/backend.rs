@@ -64,16 +64,23 @@ pub trait NoteRepository: Send + Sync + 'static {
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError>;
 
-    /// Returns every live note that links **to** `target_id` (its backlinks), ordered by
-    /// `(created_at ASC, id ASC)`.
+    /// Returns a page of the live notes that link **to** `target_id` (its backlinks), ordered
+    /// by `(created_at ASC, id ASC)`. Pagination semantics match [`list_notes`](Self::list_notes):
+    /// `page_size = 0` uses the backend default of 100, and the returned cursor (or `None`)
+    /// drives the next page.
     ///
-    /// The default implementation scans all notes and filters by each link's
-    /// `target_note_id` — correct but `O(N)`. Backends that maintain a link index (e.g.
-    /// `DbBackend`) override this with an indexed lookup. **Decorators must delegate to
-    /// their inner backend** (rather than inheriting this default) so the indexed override
-    /// is actually reached; see `EncryptedBackend`/`LinkingBackend`.
-    async fn note_backlinks(&self, target_id: Uuid) -> Result<Vec<Note>, StorageError> {
-        let mut out = Vec::new();
+    /// The default implementation scans all notes, filters by each link's `target_note_id`,
+    /// and paginates in memory — correct but `O(N)`. Backends that maintain a link index
+    /// (e.g. `DbBackend`) override this with an indexed lookup. **Decorators must delegate to
+    /// their inner backend** (rather than inheriting this default) so the indexed override is
+    /// actually reached; see `EncryptedBackend`/`LinkingBackend`.
+    async fn note_backlinks(
+        &self,
+        target_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        let mut matches = Vec::new();
         let mut token = None;
         loop {
             let (page, next) = self.list_notes(0, token).await?;
@@ -83,7 +90,7 @@ pub trait NoteRepository: Send + Sync + 'static {
                     .iter()
                     .any(|l| l.target_note_id == Some(target_id))
                 {
-                    out.push(note);
+                    matches.push(note);
                 }
             }
             match next {
@@ -91,8 +98,48 @@ pub trait NoteRepository: Send + Sync + 'static {
                 None => break,
             }
         }
-        Ok(out)
+        // `matches` is already in (created_at, id) order because `list_notes` is.
+        Ok(paginate_notes(matches, page_size, page_token.as_deref()))
     }
+}
+
+/// Paginate an already-`(created_at, id)`-ordered slice of notes with a `"created_at|id"`
+/// cursor (the same format used by the backends' `list_*` methods). Used by the default
+/// [`NoteRepository::note_backlinks`] implementation.
+fn paginate_notes(
+    items: Vec<Note>,
+    page_size: u32,
+    token: Option<&str>,
+) -> (Vec<Note>, Option<String>) {
+    let limit = if page_size == 0 {
+        100
+    } else {
+        page_size as usize
+    };
+    let start = match token.filter(|t| !t.is_empty()) {
+        Some(cursor) => match cursor.split_once('|') {
+            Some((ts, id_str)) => {
+                let cursor_id = Uuid::parse_str(id_str).ok();
+                items.partition_point(|n| {
+                    let item_ts = n.created_at.to_rfc3339();
+                    item_ts.as_str() < ts
+                        || (item_ts.as_str() == ts && cursor_id.is_some_and(|c| n.id <= c))
+                })
+            }
+            None => 0,
+        },
+        None => 0,
+    };
+    let remaining: Vec<Note> = items.into_iter().skip(start).collect();
+    let has_more = remaining.len() > limit;
+    let page: Vec<Note> = remaining.into_iter().take(limit).collect();
+    let next = if has_more {
+        page.last()
+            .map(|n| format!("{}|{}", n.created_at.to_rfc3339(), n.id))
+    } else {
+        None
+    };
+    (page, next)
 }
 
 // ── NotebookRepository ────────────────────────────────────────────────────────

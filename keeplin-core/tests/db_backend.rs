@@ -517,16 +517,49 @@ async fn indexed_backlinks_track_writes_and_deletes() {
     // An unrelated note must not appear as a backlink.
     backend.create_note(Note::new("other", "")).await.unwrap();
 
-    let back = backend.note_backlinks(target.id).await.unwrap();
+    let (back, _) = backend.note_backlinks(target.id, 0, None).await.unwrap();
     assert_eq!(back.len(), 2, "both sources link to target");
 
     // Removing src1's link (update) drops it from the index.
     let mut s = src1.clone();
     s.links.clear();
     backend.update_note(s).await.unwrap();
-    assert_eq!(backend.note_backlinks(target.id).await.unwrap().len(), 1);
+    let (back, _) = backend.note_backlinks(target.id, 0, None).await.unwrap();
+    assert_eq!(back.len(), 1);
 
     // Soft-deleting src2 excludes it from backlinks (the JOIN filters deleted sources).
     backend.delete_note(src2.id).await.unwrap();
-    assert!(backend.note_backlinks(target.id).await.unwrap().is_empty());
+    let (back, _) = backend.note_backlinks(target.id, 0, None).await.unwrap();
+    assert!(back.is_empty());
+}
+
+#[tokio::test]
+async fn backlinks_are_paginated() {
+    use keeplin_core::links::{LinkSource, NoteLink};
+
+    let backend = in_memory_backend().await;
+    let target = backend.create_note(Note::new("target", "")).await.unwrap();
+    for i in 0..3 {
+        let mut s = Note::new(format!("s{i}"), "");
+        s.links = vec![NoteLink {
+            source: LinkSource::Content,
+            raw: "#x".to_string(),
+            target_note_id: Some(target.id),
+        }];
+        backend.create_note(s).await.unwrap();
+    }
+
+    let (p1, next) = backend.note_backlinks(target.id, 2, None).await.unwrap();
+    assert_eq!(p1.len(), 2);
+    let cursor = next.expect("a second page");
+    let (p2, next2) = backend
+        .note_backlinks(target.id, 2, Some(cursor))
+        .await
+        .unwrap();
+    assert_eq!(p2.len(), 1);
+    assert!(next2.is_none(), "no third page");
+
+    // The two pages cover all three distinct sources without overlap.
+    let ids: std::collections::HashSet<_> = p1.iter().chain(&p2).map(|n| n.id).collect();
+    assert_eq!(ids.len(), 3);
 }

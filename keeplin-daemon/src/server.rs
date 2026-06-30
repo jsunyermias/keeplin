@@ -703,12 +703,20 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         &self,
         req: Request<ListBacklinksRequest>,
     ) -> Result<Response<ListBacklinksResponse>, Status> {
-        let note_id = parse_uuid(&req.into_inner().note_id, "note_id")?;
-        let notes = linking::backlinks(self.backend.as_ref(), note_id)
-            .await
-            .map_err(storage_err)?;
+        let r = req.into_inner();
+        let note_id = parse_uuid(&r.note_id, "note_id")?;
+        let token = if r.page_token.is_empty() {
+            None
+        } else {
+            Some(r.page_token)
+        };
+        let (notes, next_page_token) =
+            linking::backlinks(self.backend.as_ref(), note_id, r.page_size, token)
+                .await
+                .map_err(storage_err)?;
         Ok(Response::new(ListBacklinksResponse {
             notes: notes.into_iter().map(note_to_proto).collect(),
+            next_page_token: next_page_token.unwrap_or_default(),
         }))
     }
 

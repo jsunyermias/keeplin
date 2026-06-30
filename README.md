@@ -189,7 +189,7 @@ base64(user:password)` header (only required when `auth_username`/`auth_password
 | `PUT /api/notes/:id/bookmarks/:number/alias` | Edit a bookmark's alias (`{ "alias": "…" }`). |
 | `GET/POST /api/notes/:id/links` | List / add a link (`POST {"raw":"#…"}`, manual link). |
 | `DELETE /api/notes/:id/links/:index` | Remove the link at `index`. |
-| `GET /api/notes/:id/backlinks` | Notes that link **to** this note. |
+| `GET /api/notes/:id/backlinks?page_size=&page_token=` | Notes that link **to** this note (cursor pagination). |
 | `GET /api/links/resolve?ref=#…` | Resolve a reference → `{ "note_id", "bookmark_number" }`. |
 | `GET /api/aliases/conflicts` | Aliases shared by 2+ live notes/notebooks (sync collisions). |
 | `POST /api/sync` | Run one sync cycle; returns `{ "applied": <n> }`. |

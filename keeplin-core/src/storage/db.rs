@@ -914,10 +914,18 @@ impl NoteRepository for DbBackend {
         }))
     }
 
-    async fn note_backlinks(&self, target_id: Uuid) -> Result<Vec<Note>, StorageError> {
+    async fn note_backlinks(
+        &self,
+        target_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
         // Indexed lookup via the `note_links` projection joined back to live notes, instead
-        // of the default full scan. `idx_note_links_target` makes the `WHERE` an index seek.
+        // of the default full scan. `idx_note_links_target` makes the `WHERE` an index seek,
+        // and a keyset cursor on `(created_at, id)` plus `LIMIT` keeps the response bounded.
         let _read_guard = self.lock.read().await;
+        let limit = if page_size == 0 { 100u32 } else { page_size };
+        let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
             .conn
             .query(
@@ -926,15 +934,28 @@ impl NoteRepository for DbBackend {
                  FROM note_links nl
                  JOIN notes n ON n.id = nl.source_note_id
                  WHERE nl.target_note_id = ?1 AND n.deleted_at IS NULL
-                 ORDER BY n.created_at ASC, n.id ASC",
-                [target_id.to_string()],
+                   AND (
+                     ?2 = '' OR n.created_at > ?3
+                     OR (n.created_at = ?3 AND n.id > ?4)
+                   )
+                 ORDER BY n.created_at ASC, n.id ASC
+                 LIMIT ?5",
+                libsql::params![
+                    target_id.to_string(),
+                    cursor_ts.clone(),
+                    cursor_ts,
+                    cursor_id,
+                    limit + 1
+                ],
             )
             .await?;
         let mut notes = Vec::new();
         while let Some(row) = rows.next().await? {
             notes.push(Self::row_to_note(&row)?);
         }
-        Ok(notes)
+        Ok(build_page(notes, limit as usize, |n| {
+            format!("{}|{}", n.created_at.to_rfc3339(), n.id)
+        }))
     }
 }
 
@@ -1547,30 +1568,43 @@ impl SyncBackend for DbBackend {
                 {
                     return Ok(());
                 }
-                // Refresh the link index before the INSERT consumes the note's fields.
-                self.refresh_note_links(&note).await?;
-                self.conn
-                    .execute(
-                        "INSERT OR REPLACE INTO notes
-                         (id,title,body,notebook_id,is_todo,todo_due,todo_completed,created_at,updated_at,deleted_at,alias,bookmarks,links)
-                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-                        libsql::params![
-                            note.id.to_string(),
-                            note.title,
-                            note.body,
-                            note.notebook_id.map(|u| u.to_string()),
-                            note.is_todo as i64,
-                            note.todo_due.map(|d| d.to_rfc3339()),
-                            note.todo_completed.map(|d| d.to_rfc3339()),
-                            note.created_at.to_rfc3339(),
-                            note.updated_at.to_rfc3339(),
-                            note.deleted_at.map(|d| d.to_rfc3339()),
-                            note.alias.clone(),
-                            bookmarks_to_json(&note.bookmarks),
-                            links_to_json(&note.links),
-                        ],
-                    )
-                    .await?;
+                // Atomically refresh the `note_links` projection and upsert the note, so a
+                // crash mid-apply cannot leave the index out of sync with the note row
+                // (mirrors the create/update transactions; still idempotent on retry).
+                self.begin().await?;
+                let r: Result<(), StorageError> = async {
+                    // Refresh the link index before the INSERT consumes the note's fields.
+                    self.refresh_note_links(&note).await?;
+                    self.conn
+                        .execute(
+                            "INSERT OR REPLACE INTO notes
+                             (id,title,body,notebook_id,is_todo,todo_due,todo_completed,created_at,updated_at,deleted_at,alias,bookmarks,links)
+                             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                            libsql::params![
+                                note.id.to_string(),
+                                note.title,
+                                note.body,
+                                note.notebook_id.map(|u| u.to_string()),
+                                note.is_todo as i64,
+                                note.todo_due.map(|d| d.to_rfc3339()),
+                                note.todo_completed.map(|d| d.to_rfc3339()),
+                                note.created_at.to_rfc3339(),
+                                note.updated_at.to_rfc3339(),
+                                note.deleted_at.map(|d| d.to_rfc3339()),
+                                note.alias.clone(),
+                                bookmarks_to_json(&note.bookmarks),
+                                links_to_json(&note.links),
+                            ],
+                        )
+                        .await?;
+                    Ok(())
+                }
+                .await;
+                if let Err(e) = r {
+                    self.rollback().await;
+                    return Err(e);
+                }
+                self.commit().await?;
             }
             Change::NoteDelete { id, deleted_at } => {
                 // Tombstone: apply only when it is newer than the local version, and set

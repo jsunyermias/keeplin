@@ -320,8 +320,15 @@ message RemoveNoteLinkRequest {
 }
 message RemoveNoteLinkResponse { Note note = 1; }
 
-message ListBacklinksRequest { string note_id = 1; }
-message ListBacklinksResponse { repeated Note notes = 1; }
+message ListBacklinksRequest {
+  string note_id    = 1;
+  uint32 page_size  = 2;  // 0 → server default (100)
+  string page_token = 3;  // "" → first page
+}
+message ListBacklinksResponse {
+  repeated Note notes   = 1;
+  string next_page_token = 2;  // "" when there are no more pages
+}
 
 message ResolveReferenceRequest { string reference = 1; }  // a `#…` reference
 message ResolveReferenceResponse {
