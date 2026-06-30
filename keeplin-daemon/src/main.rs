@@ -232,6 +232,7 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
         let state = Arc::new(rest::AppState {
             backend: backend.clone(),
             events: events.clone(),
+            max_body_bytes: cfg.max_message_size,
             auth_username: cfg.auth_username.clone(),
             auth_password: cfg.auth_password.clone(),
         });

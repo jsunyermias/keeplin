@@ -196,7 +196,8 @@ base64(user:password)` header (only required when `auth_username`/`auth_password
 | `GET /api/ws` | Upgrade to the WebSocket live‑change feed (see below). |
 
 Resource upload is a raw request body: `POST /api/resources?title=&file_name=` with the
-file bytes as the body and the `Content-Type` header as the MIME type. Reads of a
+file bytes as the body and the `Content-Type` header as the MIME type. The request body is
+capped at `max_message_size` (32 MiB by default), matching the gRPC limit. Reads of a
 soft‑deleted note, notebook, or tag return `404` (the gRPC `Get` RPCs still return the
 tombstone for sync). Errors map to `404` (not found), `409` (duplicate alias), `422`
 (corrupted data / invalid link reference), `400` (invalid UUID/body), and `500` otherwise.
