@@ -247,11 +247,13 @@ link whose destination starts with `#`, e.g. `[texto](#libreta1#nota3#5)` — or
 |------|-------------|
 | `#<note>` | a note, by **alias or uuid** |
 | `#<notebook>#<note>` | a note scoped by notebook (each **alias or uuid**) |
+| `#<note>#<bookmark>` | a note + bookmark (shorthand; see below) |
 | `#<notebook>#<note>#<bookmark>` | a note + bookmark (bookmark by **alias or number**) |
 
 For example `#libreta1#nota3#marcador5` (bookmark by alias) or `#libreta1#nota3#5` (by
-number). The two‑segment form is always `notebook#note`, so a bookmark target needs the full
-three‑segment form. Note and notebook **aliases** are user‑assigned and unique among live
+number). A two‑segment `#a#b` is resolved as `notebook#note` when `b` is a resolvable note;
+otherwise it falls back to `note#bookmark` (so `#nota3#marcador5` / `#nota3#5` targets a
+bookmark without naming a notebook). Note and notebook **aliases** are user‑assigned and unique among live
 entities of each type (a duplicate is rejected with `409`/`ALREADY_EXISTS`); concurrent
 cross‑device edits can still introduce a collision through sync, in which case resolution
 deterministically picks the smallest‑uuid match and logs a warning. Each link records a

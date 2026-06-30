@@ -36,7 +36,7 @@ use uuid::Uuid;
 
 use crate::{
     error::StorageError,
-    links::{self, Bookmark, LinkSource, LinkTarget, NoteLink, Reference},
+    links::{self, Bookmark, LinkSource, NoteLink},
     models::{Change, Note, NoteTag, Notebook, Resource, Tag},
     storage::{
         NoteRepository, NotebookRepository, ResourceRepository, StorageBackend, SyncBackend,
@@ -111,9 +111,7 @@ impl<B: StorageBackend> LinkingBackend<B> {
     /// Fill each link's `target_note_id` from the supplied snapshots of live entities.
     fn resolve_into(note: &mut Note, notes: &[Note], notebooks: &[Notebook]) {
         for link in &mut note.links {
-            link.target_note_id = link
-                .target()
-                .and_then(|t| resolve_note(&t, notes, notebooks));
+            link.target_note_id = resolve_ref(&link.raw, notes, notebooks).map(|r| r.note_id);
         }
     }
 
@@ -190,48 +188,107 @@ pub async fn collect_notebooks(
     Ok(out)
 }
 
-/// Resolve a notebook reference (uuid or alias) to a uuid against live notebooks.
-fn resolve_notebook(r: &Reference, notebooks: &[Notebook]) -> Option<Uuid> {
-    match r {
-        Reference::Id(id) => Some(*id),
-        Reference::Alias(a) => notebooks
+/// Resolve a notebook segment (uuid or alias) to a uuid against live notebooks. A uuid is
+/// returned as-is (existence is not checked); an alias picks the smallest-uuid live match.
+fn resolve_notebook_seg(seg: &str, notebooks: &[Notebook]) -> Option<Uuid> {
+    if let Ok(id) = Uuid::parse_str(seg) {
+        return Some(id);
+    }
+    notebooks
+        .iter()
+        .filter(|nb| nb.alias.as_deref() == Some(seg))
+        .map(|nb| nb.id)
+        .min()
+}
+
+/// Resolve a note segment (uuid or alias) to a uuid against live notes, optionally scoped to
+/// a notebook segment, breaking alias ties by smallest uuid. A uuid is returned as-is; an
+/// alias that matches no live note yields `None` (which drives the 2-segment fallback).
+fn resolve_note_seg(
+    seg: &str,
+    notebook_seg: Option<&str>,
+    notes: &[Note],
+    notebooks: &[Notebook],
+) -> Option<Uuid> {
+    if let Ok(id) = Uuid::parse_str(seg) {
+        return Some(id);
+    }
+    let nb_id = notebook_seg.and_then(|ns| resolve_notebook_seg(ns, notebooks));
+    let mut candidates: Vec<&Note> = notes
+        .iter()
+        .filter(|n| n.alias.as_deref() == Some(seg))
+        .collect();
+    if let Some(nb) = nb_id {
+        let scoped: Vec<&Note> = candidates
             .iter()
-            .filter(|nb| nb.alias.as_deref() == Some(a.as_str()))
-            .map(|nb| nb.id)
-            .min(),
+            .copied()
+            .filter(|n| n.notebook_id == Some(nb))
+            .collect();
+        if !scoped.is_empty() {
+            candidates = scoped;
+        }
+    }
+    if candidates.len() > 1 {
+        tracing::warn!(alias = %seg, "ambiguous note alias; resolving to smallest uuid");
+    }
+    candidates.into_iter().map(|n| n.id).min()
+}
+
+/// Map a bookmark segment (number or alias) to a stored bookmark number within `note_id`,
+/// using the note found in the `notes` snapshot. Returns `None` when the note is not in the
+/// snapshot or has no matching bookmark.
+fn resolve_bookmark_seg(seg: &str, note_id: Uuid, notes: &[Note]) -> Option<u32> {
+    let note = notes.iter().find(|n| n.id == note_id)?;
+    match links::BookmarkRef::parse(seg) {
+        links::BookmarkRef::Number(n) => note
+            .bookmarks
+            .iter()
+            .find(|b| b.number == n)
+            .map(|b| b.number),
+        links::BookmarkRef::Alias(a) => note
+            .bookmarks
+            .iter()
+            .find(|b| b.alias == a)
+            .map(|b| b.number),
     }
 }
 
-/// Resolve a parsed reference's **note** segment to a uuid against live notes, honouring the
-/// optional notebook scope and breaking alias ties by smallest uuid.
-fn resolve_note(target: &LinkTarget, notes: &[Note], notebooks: &[Notebook]) -> Option<Uuid> {
-    match &target.note {
-        Reference::Id(id) => Some(*id),
-        Reference::Alias(a) => {
-            let nb_id = target
-                .notebook
-                .as_ref()
-                .and_then(|nb| resolve_notebook(nb, notebooks));
-            let mut candidates: Vec<&Note> = notes
-                .iter()
-                .filter(|n| n.alias.as_deref() == Some(a.as_str()))
-                .collect();
-            if let Some(nb) = nb_id {
-                let scoped: Vec<&Note> = candidates
-                    .iter()
-                    .copied()
-                    .filter(|n| n.notebook_id == Some(nb))
-                    .collect();
-                if !scoped.is_empty() {
-                    candidates = scoped;
-                }
-            }
-            if candidates.len() > 1 {
-                tracing::warn!(alias = %a, "ambiguous note alias; resolving to smallest uuid");
-            }
-            candidates.into_iter().map(|n| n.id).min()
-        }
+/// Resolve a raw `#…` reference against snapshots of live notes/notebooks (pure).
+///
+/// Segment interpretation:
+/// - `#note`
+/// - `#notebook#note` — preferred when the second segment resolves to a note; otherwise the
+///   reference is re-read as `#note#bookmark` (so a bookmark can be targeted without naming a
+///   notebook).
+/// - `#notebook#note#bookmark`
+fn resolve_ref(raw: &str, notes: &[Note], notebooks: &[Notebook]) -> Option<ResolvedReference> {
+    let body = raw.strip_prefix('#')?;
+    let segments: Vec<&str> = body.split('#').collect();
+    if segments.iter().any(|s| s.is_empty()) {
+        return None;
     }
+    let (note_id, bookmark_number) = match segments.as_slice() {
+        [note] => (resolve_note_seg(note, None, notes, notebooks)?, None),
+        [first, second] => {
+            // Prefer notebook#note; fall back to note#bookmark when the second segment is
+            // not a resolvable note.
+            if let Some(id) = resolve_note_seg(second, Some(first), notes, notebooks) {
+                (id, None)
+            } else {
+                let id = resolve_note_seg(first, None, notes, notebooks)?;
+                (id, resolve_bookmark_seg(second, id, notes))
+            }
+        }
+        [notebook, note, bookmark] => {
+            let id = resolve_note_seg(note, Some(notebook), notes, notebooks)?;
+            (id, resolve_bookmark_seg(bookmark, id, notes))
+        }
+        _ => return None,
+    };
+    Some(ResolvedReference {
+        note_id,
+        bookmark_number,
+    })
 }
 
 /// Resolve a raw `#…` reference to a concrete note (and bookmark number) against the store.
@@ -239,37 +296,9 @@ pub async fn resolve(
     backend: &dyn StorageBackend,
     raw: &str,
 ) -> Result<Option<ResolvedReference>, StorageError> {
-    let Some(target) = links::parse_link_ref(raw) else {
-        return Ok(None);
-    };
     let notes = collect_notes(backend).await?;
     let notebooks = collect_notebooks(backend).await?;
-    let Some(note_id) = resolve_note(&target, &notes, &notebooks) else {
-        return Ok(None);
-    };
-    let bookmark_number = match &target.bookmark {
-        None => None,
-        Some(bref) => {
-            // Read the target note to map a bookmark alias/number to a stored number.
-            let note = backend.read_note(note_id).await?;
-            match bref {
-                links::BookmarkRef::Number(n) => note
-                    .bookmarks
-                    .iter()
-                    .find(|b| b.number == *n)
-                    .map(|b| b.number),
-                links::BookmarkRef::Alias(a) => note
-                    .bookmarks
-                    .iter()
-                    .find(|b| b.alias == *a)
-                    .map(|b| b.number),
-            }
-        }
-    };
-    Ok(Some(ResolvedReference {
-        note_id,
-        bookmark_number,
-    }))
+    Ok(resolve_ref(raw, &notes, &notebooks))
 }
 
 /// Return every live note that links to `target_id`.
@@ -640,5 +669,41 @@ mod tests {
 
         let note = remove_link(&be, note.id, 0).await.unwrap();
         assert!(note.links.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolves_two_segment_note_bookmark_shorthand() {
+        let be = backend().await;
+        let mut target = Note::new("target", "###Anchor body");
+        target.alias = Some("nota3".to_string());
+        let target = be.create_note(target).await.unwrap();
+
+        // `#note#bookmark` by bookmark alias.
+        let r = resolve(&be, "#nota3#Anchor").await.unwrap().unwrap();
+        assert_eq!(r.note_id, target.id);
+        assert_eq!(r.bookmark_number, Some(1));
+
+        // `#note#bookmark` by bookmark number.
+        let r = resolve(&be, "#nota3#1").await.unwrap().unwrap();
+        assert_eq!(r.note_id, target.id);
+        assert_eq!(r.bookmark_number, Some(1));
+    }
+
+    #[tokio::test]
+    async fn two_segment_prefers_notebook_note() {
+        let be = backend().await;
+        let mut nb = Notebook::new("lib");
+        nb.alias = Some("lib1".to_string());
+        let nb = be.create_notebook(nb).await.unwrap();
+
+        let mut note = Note::new("n", "");
+        note.alias = Some("nA".to_string());
+        note.notebook_id = Some(nb.id);
+        let note = be.create_note(note).await.unwrap();
+
+        // `#notebook#note` resolves to the note (not interpreted as note#bookmark).
+        let r = resolve(&be, "#lib1#nA").await.unwrap().unwrap();
+        assert_eq!(r.note_id, note.id);
+        assert_eq!(r.bookmark_number, None);
     }
 }
