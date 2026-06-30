@@ -31,6 +31,8 @@ use axum::{
 use chrono::{DateTime, Utc};
 use keeplin_core::{
     error::{StorageError, SyncError},
+    linking,
+    links::{parse_link_ref, Bookmark, NoteLink},
     models::{now, Change, Note, NoteTag, Notebook, Resource, Tag},
     storage::StorageBackend,
     sync::run_sync,
@@ -69,6 +71,19 @@ pub fn router(state: Shared) -> Router {
             "/notes/:note_id/tags/:tag_id",
             put(add_note_tag).delete(remove_note_tag),
         )
+        .route("/notes/:id/alias", put(set_note_alias))
+        .route("/notes/:id/bookmarks", get(list_bookmarks))
+        .route(
+            "/notes/:id/bookmarks/:number/alias",
+            put(set_bookmark_alias),
+        )
+        .route("/notes/:id/links", get(list_links).post(add_link))
+        .route(
+            "/notes/:id/links/:index",
+            axum::routing::delete(remove_link),
+        )
+        .route("/notes/:id/backlinks", get(list_backlinks))
+        .route("/links/resolve", get(resolve_reference))
         .route("/notebooks", get(list_notebooks).post(create_notebook))
         .route(
             "/notebooks/:id",
@@ -76,6 +91,7 @@ pub fn router(state: Shared) -> Router {
                 .put(update_notebook)
                 .delete(delete_notebook),
         )
+        .route("/notebooks/:id/alias", put(set_notebook_alias))
         .route("/tags", get(list_tags).post(create_tag))
         .route("/tags/:id", get(get_tag).put(update_tag).delete(delete_tag))
         .route("/resources", get(list_resources).post(create_resource))
@@ -138,6 +154,8 @@ impl IntoResponse for ApiError {
         let code = match &self.0 {
             StorageError::NotFound(_) => StatusCode::NOT_FOUND,
             StorageError::CorruptedData(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            // A duplicate alias (uniqueness violation) is a client conflict, not a server bug.
+            StorageError::Conflict(_) => StatusCode::CONFLICT,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (code, Json(json!({ "error": self.0.to_string() }))).into_response()
@@ -265,6 +283,123 @@ async fn remove_note_tag(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ── Bookmarks & links ─────────────────────────────────────────────────────────────
+
+/// `{ "alias": "…" | null }` body shared by the alias-setting endpoints.
+#[derive(Debug, Deserialize)]
+struct AliasBody {
+    #[serde(default)]
+    alias: Option<String>,
+}
+
+/// Read a live note or return 404 for a missing or soft-deleted one (mirrors `get_note`).
+async fn read_live_note(s: &Shared, id: Uuid) -> Result<Note, ApiError> {
+    let note = s.backend.read_note(id).await?;
+    if note.deleted_at.is_some() {
+        return Err(StorageError::NotFound(id.to_string()).into());
+    }
+    Ok(note)
+}
+
+async fn set_note_alias(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+    Json(b): Json<AliasBody>,
+) -> Result<Json<Note>, ApiError> {
+    Ok(Json(
+        linking::set_note_alias(s.backend.as_ref(), id, b.alias).await?,
+    ))
+}
+
+async fn list_bookmarks(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<Bookmark>>, ApiError> {
+    Ok(Json(read_live_note(&s, id).await?.bookmarks))
+}
+
+/// `{ "alias": "…" }` body for editing a bookmark's alias (the alias is required here).
+#[derive(Debug, Deserialize)]
+struct BookmarkAliasBody {
+    alias: String,
+}
+
+async fn set_bookmark_alias(
+    State(s): State<Shared>,
+    Path((id, number)): Path<(Uuid, u32)>,
+    Json(b): Json<BookmarkAliasBody>,
+) -> Result<Json<Note>, ApiError> {
+    Ok(Json(
+        linking::edit_bookmark_alias(s.backend.as_ref(), id, number, b.alias).await?,
+    ))
+}
+
+async fn list_links(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<NoteLink>>, ApiError> {
+    Ok(Json(read_live_note(&s, id).await?.links))
+}
+
+/// `{ "raw": "#libreta1#nota3#5" }` body for adding a manual (global) link.
+#[derive(Debug, Deserialize)]
+struct AddLinkBody {
+    raw: String,
+}
+
+async fn add_link(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+    Json(b): Json<AddLinkBody>,
+) -> Result<Json<Note>, ApiError> {
+    // Validate the reference syntax up front so a bad body is a 422, not a 500.
+    if parse_link_ref(&b.raw).is_none() {
+        return Err(
+            StorageError::CorruptedData(format!("invalid link reference '{}'", b.raw)).into(),
+        );
+    }
+    Ok(Json(
+        linking::add_manual_link(s.backend.as_ref(), id, &b.raw).await?,
+    ))
+}
+
+async fn remove_link(
+    State(s): State<Shared>,
+    Path((id, index)): Path<(Uuid, usize)>,
+) -> Result<Json<Note>, ApiError> {
+    Ok(Json(
+        linking::remove_link(s.backend.as_ref(), id, index).await?,
+    ))
+}
+
+async fn list_backlinks(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Vec<Note>>, ApiError> {
+    Ok(Json(linking::backlinks(s.backend.as_ref(), id).await?))
+}
+
+/// `?ref=#libreta1#nota3#5` query for resolving a reference to a note (+ bookmark number).
+#[derive(Debug, Deserialize)]
+struct ResolveQuery {
+    #[serde(rename = "ref")]
+    reference: String,
+}
+
+async fn resolve_reference(
+    State(s): State<Shared>,
+    Query(q): Query<ResolveQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let resolved = linking::resolve(s.backend.as_ref(), &q.reference).await?;
+    Ok(Json(match resolved {
+        Some(r) => json!({
+            "note_id": r.note_id,
+            "bookmark_number": r.bookmark_number,
+        }),
+        None => json!({ "note_id": null, "bookmark_number": null }),
+    }))
+}
+
 // ── Notebooks ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -317,6 +452,16 @@ async fn delete_notebook(
 ) -> Result<StatusCode, ApiError> {
     s.backend.delete_notebook(id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn set_notebook_alias(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+    Json(b): Json<AliasBody>,
+) -> Result<Json<Notebook>, ApiError> {
+    Ok(Json(
+        linking::set_notebook_alias(s.backend.as_ref(), id, b.alias).await?,
+    ))
 }
 
 // ── Tags ────────────────────────────────────────────────────────────────────────
@@ -511,6 +656,23 @@ mod tests {
         })
     }
 
+    /// Like [`state`] but wraps the backend in `LinkingBackend`, so writes derive bookmarks
+    /// and links and resolve references — required by the bookmark/link endpoint tests.
+    async fn linking_state() -> Shared {
+        use keeplin_core::linking::LinkingBackend;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let fs = FsBackend::new(&path).await.unwrap();
+        let (events, _rx) = broadcast::channel(16);
+        Arc::new(AppState {
+            backend: Arc::new(LinkingBackend::new(fs)),
+            events,
+            auth_username: None,
+            auth_password: None,
+        })
+    }
+
     /// Issue one request against a fresh router over the shared state and return
     /// `(status, body bytes)`.
     async fn call(
@@ -627,6 +789,160 @@ mod tests {
         .await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(data, b"not really json but raw bytes");
+    }
+
+    #[tokio::test]
+    async fn bookmarks_alias_and_links_endpoints() {
+        let st = linking_state().await;
+
+        // Create a note whose body defines a bookmark and a content link.
+        let (code, body) = call(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(r#"{"title":"T","body":"intro ###Marcador1 and [l](#other)"}"#),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        let note: Note = serde_json::from_slice(&body).unwrap();
+        let id = note.id;
+
+        // Bookmarks were derived.
+        let (code, body) = call(
+            &st,
+            "GET",
+            &format!("/api/notes/{id}/bookmarks"),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        let bms: Vec<Bookmark> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(bms.len(), 1);
+        assert_eq!(bms[0].number, 1);
+        assert_eq!(bms[0].text, "Marcador1");
+
+        // Edit the bookmark alias.
+        let (code, body) = call(
+            &st,
+            "PUT",
+            &format!("/api/notes/{id}/bookmarks/1/alias"),
+            Some(r#"{"alias":"Custom"}"#),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(
+            serde_json::from_slice::<Note>(&body).unwrap().bookmarks[0].alias,
+            "Custom"
+        );
+
+        // Content link present; add a manual link and then remove it.
+        let (code, body) = call(&st, "GET", &format!("/api/notes/{id}/links"), None, None).await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(
+            serde_json::from_slice::<Vec<NoteLink>>(&body)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let (code, body) = call(
+            &st,
+            "POST",
+            &format!("/api/notes/{id}/links"),
+            Some(r##"{"raw":"#manualtarget"}"##),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(
+            serde_json::from_slice::<Note>(&body).unwrap().links.len(),
+            2
+        );
+
+        // A malformed link reference is rejected (422).
+        let (code, _) = call(
+            &st,
+            "POST",
+            &format!("/api/notes/{id}/links"),
+            Some(r#"{"raw":"not-a-ref"}"#),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn alias_backlinks_and_resolve_endpoints() {
+        let st = linking_state().await;
+
+        // Target note, then give it an alias via the alias endpoint.
+        let (_, body) = call(
+            &st,
+            "POST",
+            "/api/notes",
+            Some("{\"title\":\"target\",\"body\":\"###Anchor here\"}"),
+            None,
+        )
+        .await;
+        let target: Note = serde_json::from_slice(&body).unwrap();
+        let (code, body) = call(
+            &st,
+            "PUT",
+            &format!("/api/notes/{}/alias", target.id),
+            Some(r#"{"alias":"nota3"}"#),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(
+            serde_json::from_slice::<Note>(&body)
+                .unwrap()
+                .alias
+                .as_deref(),
+            Some("nota3")
+        );
+
+        // Source note links to the target by alias.
+        let (_, body) = call(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(r#"{"title":"src","body":"see [x](#nota3)"}"#),
+            None,
+        )
+        .await;
+        let src: Note = serde_json::from_slice(&body).unwrap();
+
+        // Backlinks of the target include the source.
+        let (code, body) = call(
+            &st,
+            "GET",
+            &format!("/api/notes/{}/backlinks", target.id),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        let back: Vec<Note> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].id, src.id);
+
+        // Resolve a 3-segment reference to the target note + bookmark number 1.
+        let (code, body) = call(
+            &st,
+            "GET",
+            &format!("/api/links/resolve?ref=%23nb%23{}%23Anchor", target.id),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["note_id"], serde_json::json!(target.id.to_string()));
+        assert_eq!(v["bookmark_number"], serde_json::json!(1));
     }
 
     // ── WebSocket feed (real socket, end to end) ─────────────────────────────────

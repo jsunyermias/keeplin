@@ -13,10 +13,14 @@ must be **stable** and **identical on every device that needs to read the same d
 
 | Entity | Encrypted fields |
 |--------|-----------------|
-| Note | `title`, `body` |
-| Notebook | `title` |
+| Note | `title`, `body`, `alias`, each bookmark's `text`/`alias`, each link's `raw` reference |
+| Notebook | `title`, `alias` |
 | Tag | `title` |
 | Resource | `title`, `mime_type`, `file_name`, binary payload |
+
+Bookmark and link strings are derived from (or describe) the note body, so they are
+encrypted alongside it. Alias uniqueness and reference resolution still work because they
+are enforced above the encryption boundary, on the decrypted values.
 
 Each encrypted value is independently nonce-prefixed (12-byte random nonce + AES-GCM
 ciphertext, base64-encoded for string fields; raw bytes for binary data).
@@ -27,8 +31,9 @@ The following fields are **not** encrypted because they are required for indexin
 querying, and sync:
 
 - Timestamps (`created_at`, `updated_at`, `deleted_at`)
-- UUIDs (`id`, `notebook_id`, `note_id`, `tag_id`)
+- UUIDs (`id`, `notebook_id`, `note_id`, `tag_id`, a link's resolved `target_note_id`)
 - `is_todo`, `todo_due`, `todo_completed`
+- A bookmark's `number` and a link's `source` (content/manual)
 - `Resource.size`
 - NoteTag associations (the link between a note UUID and a tag UUID)
 
@@ -126,6 +131,15 @@ ensures the deletion propagates correctly to other synced devices.
   change-propagation mechanism (file replication vs. WebSocket) and the two are
   incompatible. Attempting to mix them may produce undefined behaviour (missing or
   duplicated changes).
+
+- **Alias uniqueness is best-effort across devices.** Note and notebook aliases are
+  enforced unique on the device performing a write (the duplicate is rejected). Because
+  sync replays edits that were made independently on other devices, two devices can each
+  assign the same alias before they exchange changes; that collision is not rejected on
+  apply. Reference resolution tolerates it by deterministically picking the smallest-uuid
+  match and logging a warning, so behaviour stays convergent — but the duplicate persists
+  until a human renames one. (No database `UNIQUE` constraint is used: under encryption the
+  stored alias is per-write ciphertext, and a hard constraint would break sync on apply.)
 
 - **Filesystem notes resolve conflicts with per-note version vectors.** In `FsBackend`,
   each note keeps one append-only log per device (`notes/{id}/log.{device}.msgpack`,
