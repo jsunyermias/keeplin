@@ -165,6 +165,28 @@ impl<B: StorageBackend> LinkingBackend<B> {
         }
         Ok(())
     }
+
+    /// Prepare a note for a create/update: refresh its derived bookmarks/links, then — only
+    /// when needed — scan the corpus to enforce alias uniqueness and resolve link targets.
+    ///
+    /// The corpus scan (`collect_notes`/`collect_notebooks`) is expensive — on `FsBackend` it
+    /// re-materialises every note — so it is skipped entirely for the common case of a note
+    /// with no alias and no links. Notes are fetched only when an alias must be checked or
+    /// links resolved; notebooks only when there are links to resolve.
+    async fn prepare(&self, note: &mut Note) -> Result<(), StorageError> {
+        Self::refresh(note);
+        let needs_notes = note.alias.is_some() || !note.links.is_empty();
+        if !needs_notes {
+            return Ok(());
+        }
+        let notes = collect_notes(&self.inner).await?;
+        Self::ensure_note_alias_unique(note, &notes)?;
+        if !note.links.is_empty() {
+            let notebooks = collect_notebooks(&self.inner).await?;
+            Self::resolve_into(note, &notes, &notebooks);
+        }
+        Ok(())
+    }
 }
 
 // ── Free helpers usable through a type-erased `&dyn StorageBackend` ───────────────
@@ -441,11 +463,7 @@ pub async fn remove_link(
 #[async_trait]
 impl<B: StorageBackend> NoteRepository for LinkingBackend<B> {
     async fn create_note(&self, mut note: Note) -> Result<Note, StorageError> {
-        Self::refresh(&mut note);
-        let notes = collect_notes(&self.inner).await?;
-        let notebooks = collect_notebooks(&self.inner).await?;
-        Self::ensure_note_alias_unique(&note, &notes)?;
-        Self::resolve_into(&mut note, &notes, &notebooks);
+        self.prepare(&mut note).await?;
         self.inner.create_note(note).await
     }
 
@@ -454,11 +472,7 @@ impl<B: StorageBackend> NoteRepository for LinkingBackend<B> {
     }
 
     async fn update_note(&self, mut note: Note) -> Result<Note, StorageError> {
-        Self::refresh(&mut note);
-        let notes = collect_notes(&self.inner).await?;
-        let notebooks = collect_notebooks(&self.inner).await?;
-        Self::ensure_note_alias_unique(&note, &notes)?;
-        Self::resolve_into(&mut note, &notes, &notebooks);
+        self.prepare(&mut note).await?;
         self.inner.update_note(note).await
     }
 

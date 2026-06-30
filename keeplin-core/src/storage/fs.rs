@@ -38,11 +38,13 @@
 
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
@@ -221,6 +223,15 @@ pub struct FsBackend {
     /// `.keeplin/device_id` on startup, or generated and persisted if the file does not
     /// yet exist.
     device_id: String,
+    /// Serialises this device's note-log mutations. A per-note log
+    /// (`log.{device_id}.msgpack`) is updated read-modify-write, then written via an atomic
+    /// temp-then-rename; without this lock, two concurrent writes to the same note read the
+    /// same log and the second rename overwrites the first, silently dropping an entry. The
+    /// version-vector model assumes a single writer per device log, which concurrent daemon
+    /// tasks would otherwise violate. One global mutex (rather than per-note) keeps it simple;
+    /// note writes are infrequent enough in offline mode that the reduced parallelism is fine.
+    /// Reads need no lock: the atomic rename gives them a consistent view of each log file.
+    note_write_lock: Arc<Mutex<()>>,
 }
 
 impl FsBackend {
@@ -254,7 +265,11 @@ impl FsBackend {
         }
 
         let device_id = Self::read_or_create_device_id(&root).await?;
-        let backend = Self { root, device_id };
+        let backend = Self {
+            root,
+            device_id,
+            note_write_lock: Arc::new(Mutex::new(())),
+        };
         backend.ensure_format_version().await?;
         Ok(backend)
     }
@@ -736,6 +751,9 @@ impl FsBackend {
     /// return the merged result. This is the single entry point for every local note
     /// mutation (create, update, delete).
     async fn append_note_op(&self, id: Uuid, op: NoteOp) -> Result<Note, StorageError> {
+        // Serialise the whole read-log → append → write-log critical section so a concurrent
+        // writer cannot overwrite this entry (see `note_write_lock`).
+        let _write_guard = self.note_write_lock.lock().await;
         tokio::fs::create_dir_all(self.note_dir(id)).await?;
         let mut vv = self.note_vv(id).await?;
         note_log::increment(&mut vv, &self.device_id);
@@ -1406,5 +1424,39 @@ impl SyncBackend for FsBackend {
         // those changes permanently, potentially corrupting the sync state. This method
         // therefore intentionally does nothing and always returns zero.
         Ok(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for the lost-update race: many concurrent updates to the *same* note
+    /// must all land in this device's append-only log (none dropped by a racing rename).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_same_note_updates_keep_every_log_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = Arc::new(FsBackend::new(dir.path()).await.unwrap());
+        let note = backend.create_note(Note::new("t", "v0")).await.unwrap();
+        let id = note.id;
+
+        let updates = 20usize;
+        let mut handles = Vec::new();
+        for i in 0..updates {
+            let b = Arc::clone(&backend);
+            let mut edited = note.clone();
+            handles.push(tokio::spawn(async move {
+                edited.body = format!("v{i}");
+                b.update_note(edited).await.unwrap();
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        // Single device → one log file; it must hold the create plus every update.
+        let logs = backend.read_note_logs(id).await.unwrap();
+        let total: usize = logs.iter().map(|l| l.len()).sum();
+        assert_eq!(total, 1 + updates, "create + {updates} updates, none lost");
     }
 }

@@ -49,6 +49,9 @@ pub struct AppState {
     /// Sender for the live change feed. Each WebSocket connection subscribes to a fresh
     /// receiver; mutations published here by the daemon's `EventBackend` are streamed out.
     pub events: broadcast::Sender<Change>,
+    /// Maximum request body size in bytes. Mirrors the gRPC `max_message_size` so a large
+    /// resource upload (`POST /api/resources`) is not silently capped at axum's 2 MiB default.
+    pub max_body_bytes: usize,
     /// Basic-Auth credentials; when both are `Some`, every request must authenticate.
     pub auth_username: Option<String>,
     pub auth_password: Option<String>,
@@ -100,6 +103,9 @@ pub fn router(state: Shared) -> Router {
         .route("/resources/:id/data", get(get_resource_data))
         .route("/sync", post(sync))
         .route("/ws", get(ws_handler))
+        // Raise the request-body cap from axum's 2 MiB default to the configured size so REST
+        // resource uploads match what gRPC accepts.
+        .layer(axum::extract::DefaultBodyLimit::max(state.max_body_bytes))
         .layer(middleware::from_fn_with_state(state.clone(), auth_mw))
         .with_state(state);
     Router::new().nest("/api", api)
@@ -660,6 +666,7 @@ mod tests {
         Arc::new(AppState {
             backend: Arc::new(fs),
             events,
+            max_body_bytes: 32 * 1024 * 1024,
             auth_username: auth.map(|a| a.0.to_string()),
             auth_password: auth.map(|a| a.1.to_string()),
         })
@@ -677,6 +684,7 @@ mod tests {
         Arc::new(AppState {
             backend: Arc::new(LinkingBackend::new(fs)),
             events,
+            max_body_bytes: 32 * 1024 * 1024,
             auth_username: None,
             auth_password: None,
         })
@@ -798,6 +806,25 @@ mod tests {
         .await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(data, b"not really json but raw bytes");
+    }
+
+    #[tokio::test]
+    async fn resource_upload_above_axum_default_limit() {
+        // A 3 MiB body exceeds axum's 2 MiB default; it must succeed because the router
+        // raises the limit to `max_body_bytes` (32 MiB in the test state).
+        let st = state(None).await;
+        let big = "x".repeat(3 * 1024 * 1024);
+        let (code, body) = call(
+            &st,
+            "POST",
+            "/api/resources?title=big&file_name=big.bin",
+            Some(&big),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        let res: Resource = serde_json::from_slice(&body).unwrap();
+        assert_eq!(res.size, big.len() as u64);
     }
 
     #[tokio::test]
@@ -1019,6 +1046,7 @@ mod tests {
         Arc::new(AppState {
             backend,
             events,
+            max_body_bytes: 32 * 1024 * 1024,
             auth_username: None,
             auth_password: None,
         })
