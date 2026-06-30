@@ -256,7 +256,8 @@ entities of each type (a duplicate is rejected with `409`/`ALREADY_EXISTS`); con
 cross‑device edits can still introduce a collision through sync, in which case resolution
 deterministically picks the smallest‑uuid match and logs a warning. Each link records a
 best‑effort `target_note_id`; `GET /api/links/resolve` (or the `ResolveReference` RPC) resolves
-a reference on demand, and `GET /api/notes/:id/backlinks` lists the notes pointing at a note.
+a reference on demand, and `GET /api/notes/:id/backlinks` lists the notes pointing at a note
+(answered by an indexed `note_links` projection in `DbBackend`, and a scan in `FsBackend`).
 
 ---
 

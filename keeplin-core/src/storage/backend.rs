@@ -63,6 +63,36 @@ pub trait NoteRepository: Send + Sync + 'static {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError>;
+
+    /// Returns every live note that links **to** `target_id` (its backlinks), ordered by
+    /// `(created_at ASC, id ASC)`.
+    ///
+    /// The default implementation scans all notes and filters by each link's
+    /// `target_note_id` — correct but `O(N)`. Backends that maintain a link index (e.g.
+    /// `DbBackend`) override this with an indexed lookup. **Decorators must delegate to
+    /// their inner backend** (rather than inheriting this default) so the indexed override
+    /// is actually reached; see `EncryptedBackend`/`LinkingBackend`.
+    async fn note_backlinks(&self, target_id: Uuid) -> Result<Vec<Note>, StorageError> {
+        let mut out = Vec::new();
+        let mut token = None;
+        loop {
+            let (page, next) = self.list_notes(0, token).await?;
+            for note in page {
+                if note
+                    .links
+                    .iter()
+                    .any(|l| l.target_note_id == Some(target_id))
+                {
+                    out.push(note);
+                }
+            }
+            match next {
+                Some(t) => token = Some(t),
+                None => break,
+            }
+        }
+        Ok(out)
+    }
 }
 
 // ── NotebookRepository ────────────────────────────────────────────────────────

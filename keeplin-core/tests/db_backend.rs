@@ -492,3 +492,41 @@ async fn notebook_alias_round_trip() {
     let (list, _) = backend.list_notebooks(10, None).await.unwrap();
     assert_eq!(list[0].alias.as_deref(), Some("libreta1"));
 }
+
+#[tokio::test]
+async fn indexed_backlinks_track_writes_and_deletes() {
+    use keeplin_core::links::{LinkSource, NoteLink};
+
+    let backend = in_memory_backend().await;
+    let target = backend.create_note(Note::new("target", "")).await.unwrap();
+
+    let link_to = |id| NoteLink {
+        source: LinkSource::Content,
+        raw: "#x".to_string(),
+        target_note_id: Some(id),
+    };
+
+    let mut src1 = Note::new("src1", "");
+    src1.links = vec![link_to(target.id)];
+    let src1 = backend.create_note(src1).await.unwrap();
+
+    let mut src2 = Note::new("src2", "");
+    src2.links = vec![link_to(target.id)];
+    let src2 = backend.create_note(src2).await.unwrap();
+
+    // An unrelated note must not appear as a backlink.
+    backend.create_note(Note::new("other", "")).await.unwrap();
+
+    let back = backend.note_backlinks(target.id).await.unwrap();
+    assert_eq!(back.len(), 2, "both sources link to target");
+
+    // Removing src1's link (update) drops it from the index.
+    let mut s = src1.clone();
+    s.links.clear();
+    backend.update_note(s).await.unwrap();
+    assert_eq!(backend.note_backlinks(target.id).await.unwrap().len(), 1);
+
+    // Soft-deleting src2 excludes it from backlinks (the JOIN filters deleted sources).
+    backend.delete_note(src2.id).await.unwrap();
+    assert!(backend.note_backlinks(target.id).await.unwrap().is_empty());
+}

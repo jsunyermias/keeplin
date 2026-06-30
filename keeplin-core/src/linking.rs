@@ -272,16 +272,15 @@ pub async fn resolve(
     }))
 }
 
-/// Return every live note that links to `target_id` (best-effort backlinks via O(N) scan).
+/// Return every live note that links to `target_id`.
+///
+/// Delegates to [`NoteRepository::note_backlinks`](crate::storage::NoteRepository::note_backlinks),
+/// which `DbBackend` answers with an indexed lookup and other backends with an `O(N)` scan.
 pub async fn backlinks(
     backend: &dyn StorageBackend,
     target_id: Uuid,
 ) -> Result<Vec<Note>, StorageError> {
-    let notes = collect_notes(backend).await?;
-    Ok(notes
-        .into_iter()
-        .filter(|n| n.links.iter().any(|l| l.target_note_id == Some(target_id)))
-        .collect())
+    backend.note_backlinks(target_id).await
 }
 
 /// Set (or clear) a note's alias and persist it (read-modify-write → one `NoteUpdate`).
@@ -388,6 +387,11 @@ impl<B: StorageBackend> NoteRepository for LinkingBackend<B> {
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
         self.inner.list_notes(page_size, page_token).await
+    }
+
+    async fn note_backlinks(&self, target_id: Uuid) -> Result<Vec<Note>, StorageError> {
+        // Delegate so an inner indexed backend (e.g. DbBackend) is reached.
+        self.inner.note_backlinks(target_id).await
     }
 }
 

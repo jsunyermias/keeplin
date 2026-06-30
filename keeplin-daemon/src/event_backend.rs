@@ -104,6 +104,11 @@ impl<B: NoteRepository> NoteRepository for EventBackend<B> {
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
         self.inner.list_notes(page_size, page_token).await
     }
+
+    async fn note_backlinks(&self, target_id: Uuid) -> Result<Vec<Note>, StorageError> {
+        // Delegate so an inner indexed backend (e.g. DbBackend) is reached.
+        self.inner.note_backlinks(target_id).await
+    }
 }
 
 #[async_trait]
