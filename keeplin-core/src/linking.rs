@@ -1,0 +1,640 @@
+//! `LinkingBackend<B>`: derives bookmarks/links from note bodies and resolves references.
+//!
+//! This decorator wraps any [`StorageBackend`] and, on every note create/update, rewrites
+//! the note's `bookmarks` and `links` from its markdown body before delegating to `inner`,
+//! then enforces that note/notebook `alias`es are unique. It mirrors the decorator pattern
+//! of [`crate::encryption::EncryptedBackend`].
+//!
+//! # Placement in the decorator stack
+//!
+//! `LinkingBackend` must sit **outside** any `EncryptedBackend` (so it parses the
+//! **plaintext** body and resolves aliases against decrypted reads) and **inside**
+//! `EventBackend` (so the live feed carries the refreshed metadata):
+//! `EventBackend( LinkingBackend( [EncryptedBackend]( Fs|Db ) ) )`.
+//!
+//! # What it does on write
+//!
+//! 1. **Bookmarks** — `###text` tokens in the body become numbered [`Bookmark`]s in order
+//!    of appearance; an edited `alias` on an incoming bookmark with matching `text` is
+//!    carried over (so alias edits survive later body edits).
+//! 2. **Links** — markdown `[t](#…)` destinations become `source = Content` [`NoteLink`]s;
+//!    existing `source = Manual` links (added via the API) are preserved.
+//! 3. **Resolution** — each link's `target_note_id` is filled best-effort by resolving its
+//!    note reference (by uuid or, scanning live notes, by alias).
+//! 4. **Alias uniqueness** — a create/update whose `alias` collides with another **live**
+//!    entity of the same type is rejected with [`StorageError::Conflict`].
+//!
+//! Reads, sync (`apply_change`) and the other entities delegate unchanged. Cross-device
+//! concurrent edits can still introduce duplicate aliases through sync (which cannot be
+//! rejected); resolution then picks the smallest-uuid match deterministically and warns.
+
+use std::collections::HashMap;
+
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use uuid::Uuid;
+
+use crate::{
+    error::StorageError,
+    links::{self, Bookmark, LinkSource, LinkTarget, NoteLink, Reference},
+    models::{Change, Note, NoteTag, Notebook, Resource, Tag},
+    storage::{
+        NoteRepository, NotebookRepository, ResourceRepository, StorageBackend, SyncBackend,
+        TagRepository,
+    },
+};
+
+/// Page size used when scanning every live note/notebook for resolution and uniqueness.
+const SCAN_PAGE: u32 = 500;
+
+/// A resolved `#…` reference: the concrete target note and, when the reference named a
+/// bookmark, its 1-based number within that note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedReference {
+    /// The UUID of the target note.
+    pub note_id: Uuid,
+    /// The 1-based bookmark number, when the reference had a (resolved) bookmark segment.
+    pub bookmark_number: Option<u32>,
+}
+
+/// Decorator that maintains bookmarks/links and enforces alias uniqueness.
+pub struct LinkingBackend<B> {
+    inner: B,
+}
+
+impl<B: StorageBackend> LinkingBackend<B> {
+    /// Wrap `inner`.
+    pub fn new(inner: B) -> Self {
+        Self { inner }
+    }
+
+    /// Rewrite `note.bookmarks` and `note.links` from its body (pure, no I/O).
+    fn refresh(note: &mut Note) {
+        // Bookmarks: re-derive from the body, carrying alias edits keyed by marked text.
+        let overrides: HashMap<String, String> = note
+            .bookmarks
+            .iter()
+            .filter(|b| b.alias != b.text)
+            .map(|b| (b.text.clone(), b.alias.clone()))
+            .collect();
+        note.bookmarks = links::parse_bookmarks(&note.body)
+            .into_iter()
+            .enumerate()
+            .map(|(i, text)| {
+                let alias = overrides
+                    .get(&text)
+                    .cloned()
+                    .unwrap_or_else(|| text.clone());
+                Bookmark {
+                    number: (i + 1) as u32,
+                    text,
+                    alias,
+                }
+            })
+            .collect();
+
+        // Links: keep manual ones, re-derive content ones from the body.
+        let mut links: Vec<NoteLink> = note
+            .links
+            .iter()
+            .filter(|l| l.source == LinkSource::Manual)
+            .cloned()
+            .collect();
+        for raw in links::parse_content_links(&note.body) {
+            if let Some(link) = NoteLink::from_raw(&raw, LinkSource::Content) {
+                links.push(link);
+            }
+        }
+        note.links = links;
+    }
+
+    /// Fill each link's `target_note_id` from the supplied snapshots of live entities.
+    fn resolve_into(note: &mut Note, notes: &[Note], notebooks: &[Notebook]) {
+        for link in &mut note.links {
+            link.target_note_id = link
+                .target()
+                .and_then(|t| resolve_note(&t, notes, notebooks));
+        }
+    }
+
+    /// Reject a note whose alias collides with another live note.
+    fn ensure_note_alias_unique(note: &Note, notes: &[Note]) -> Result<(), StorageError> {
+        if let Some(alias) = &note.alias {
+            if notes
+                .iter()
+                .any(|n| n.id != note.id && n.alias.as_deref() == Some(alias.as_str()))
+            {
+                return Err(StorageError::Conflict(format!(
+                    "note alias '{alias}' is already in use"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Reject a notebook whose alias collides with another live notebook.
+    fn ensure_notebook_alias_unique(
+        notebook: &Notebook,
+        notebooks: &[Notebook],
+    ) -> Result<(), StorageError> {
+        if let Some(alias) = &notebook.alias {
+            if notebooks
+                .iter()
+                .any(|nb| nb.id != notebook.id && nb.alias.as_deref() == Some(alias.as_str()))
+            {
+                return Err(StorageError::Conflict(format!(
+                    "notebook alias '{alias}' is already in use"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+// ── Free helpers usable through a type-erased `&dyn StorageBackend` ───────────────
+//
+// The decorator is wrapped behind `Arc<dyn StorageBackend>`, so the surfaces (REST/gRPC)
+// cannot call its inherent methods. These free functions operate purely through the
+// `StorageBackend` trait — their writes flow back through `LinkingBackend`, so derivation,
+// resolution and uniqueness all still apply.
+
+/// Collect every live note by exhausting the paginated `list_notes`.
+pub async fn collect_notes(backend: &dyn StorageBackend) -> Result<Vec<Note>, StorageError> {
+    let mut out = Vec::new();
+    let mut token = None;
+    loop {
+        let (page, next) = backend.list_notes(SCAN_PAGE, token).await?;
+        out.extend(page);
+        match next {
+            Some(t) => token = Some(t),
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+/// Collect every live notebook by exhausting the paginated `list_notebooks`.
+pub async fn collect_notebooks(
+    backend: &dyn StorageBackend,
+) -> Result<Vec<Notebook>, StorageError> {
+    let mut out = Vec::new();
+    let mut token = None;
+    loop {
+        let (page, next) = backend.list_notebooks(SCAN_PAGE, token).await?;
+        out.extend(page);
+        match next {
+            Some(t) => token = Some(t),
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+/// Resolve a notebook reference (uuid or alias) to a uuid against live notebooks.
+fn resolve_notebook(r: &Reference, notebooks: &[Notebook]) -> Option<Uuid> {
+    match r {
+        Reference::Id(id) => Some(*id),
+        Reference::Alias(a) => notebooks
+            .iter()
+            .filter(|nb| nb.alias.as_deref() == Some(a.as_str()))
+            .map(|nb| nb.id)
+            .min(),
+    }
+}
+
+/// Resolve a parsed reference's **note** segment to a uuid against live notes, honouring the
+/// optional notebook scope and breaking alias ties by smallest uuid.
+fn resolve_note(target: &LinkTarget, notes: &[Note], notebooks: &[Notebook]) -> Option<Uuid> {
+    match &target.note {
+        Reference::Id(id) => Some(*id),
+        Reference::Alias(a) => {
+            let nb_id = target
+                .notebook
+                .as_ref()
+                .and_then(|nb| resolve_notebook(nb, notebooks));
+            let mut candidates: Vec<&Note> = notes
+                .iter()
+                .filter(|n| n.alias.as_deref() == Some(a.as_str()))
+                .collect();
+            if let Some(nb) = nb_id {
+                let scoped: Vec<&Note> = candidates
+                    .iter()
+                    .copied()
+                    .filter(|n| n.notebook_id == Some(nb))
+                    .collect();
+                if !scoped.is_empty() {
+                    candidates = scoped;
+                }
+            }
+            if candidates.len() > 1 {
+                tracing::warn!(alias = %a, "ambiguous note alias; resolving to smallest uuid");
+            }
+            candidates.into_iter().map(|n| n.id).min()
+        }
+    }
+}
+
+/// Resolve a raw `#…` reference to a concrete note (and bookmark number) against the store.
+pub async fn resolve(
+    backend: &dyn StorageBackend,
+    raw: &str,
+) -> Result<Option<ResolvedReference>, StorageError> {
+    let Some(target) = links::parse_link_ref(raw) else {
+        return Ok(None);
+    };
+    let notes = collect_notes(backend).await?;
+    let notebooks = collect_notebooks(backend).await?;
+    let Some(note_id) = resolve_note(&target, &notes, &notebooks) else {
+        return Ok(None);
+    };
+    let bookmark_number = match &target.bookmark {
+        None => None,
+        Some(bref) => {
+            // Read the target note to map a bookmark alias/number to a stored number.
+            let note = backend.read_note(note_id).await?;
+            match bref {
+                links::BookmarkRef::Number(n) => note
+                    .bookmarks
+                    .iter()
+                    .find(|b| b.number == *n)
+                    .map(|b| b.number),
+                links::BookmarkRef::Alias(a) => note
+                    .bookmarks
+                    .iter()
+                    .find(|b| b.alias == *a)
+                    .map(|b| b.number),
+            }
+        }
+    };
+    Ok(Some(ResolvedReference {
+        note_id,
+        bookmark_number,
+    }))
+}
+
+/// Return every live note that links to `target_id` (best-effort backlinks via O(N) scan).
+pub async fn backlinks(
+    backend: &dyn StorageBackend,
+    target_id: Uuid,
+) -> Result<Vec<Note>, StorageError> {
+    let notes = collect_notes(backend).await?;
+    Ok(notes
+        .into_iter()
+        .filter(|n| n.links.iter().any(|l| l.target_note_id == Some(target_id)))
+        .collect())
+}
+
+/// Set (or clear) a note's alias and persist it (read-modify-write → one `NoteUpdate`).
+pub async fn set_note_alias(
+    backend: &dyn StorageBackend,
+    note_id: Uuid,
+    alias: Option<String>,
+) -> Result<Note, StorageError> {
+    let mut note = backend.read_note(note_id).await?;
+    note.alias = alias;
+    backend.update_note(note).await
+}
+
+/// Set (or clear) a notebook's alias and persist it.
+pub async fn set_notebook_alias(
+    backend: &dyn StorageBackend,
+    notebook_id: Uuid,
+    alias: Option<String>,
+) -> Result<Notebook, StorageError> {
+    let mut notebook = backend.read_notebook(notebook_id).await?;
+    notebook.alias = alias;
+    backend.update_notebook(notebook).await
+}
+
+/// Edit a bookmark's alias by its 1-based number and persist it. Returns the updated note.
+pub async fn edit_bookmark_alias(
+    backend: &dyn StorageBackend,
+    note_id: Uuid,
+    number: u32,
+    alias: String,
+) -> Result<Note, StorageError> {
+    let mut note = backend.read_note(note_id).await?;
+    let bookmark = note
+        .bookmarks
+        .iter_mut()
+        .find(|b| b.number == number)
+        .ok_or_else(|| StorageError::NotFound(format!("bookmark {number} in note {note_id}")))?;
+    bookmark.alias = alias;
+    backend.update_note(note).await
+}
+
+/// Add a manual (global) link from `note_id` to a raw `#…` reference. Returns the note.
+pub async fn add_manual_link(
+    backend: &dyn StorageBackend,
+    note_id: Uuid,
+    raw: &str,
+) -> Result<Note, StorageError> {
+    let link = NoteLink::from_raw(raw, LinkSource::Manual)
+        .ok_or_else(|| StorageError::InvalidState(format!("invalid link reference '{raw}'")))?;
+    let mut note = backend.read_note(note_id).await?;
+    note.links.push(link);
+    backend.update_note(note).await
+}
+
+/// Remove the link at `index` (into the note's `links`) and persist. Returns the note.
+pub async fn remove_link(
+    backend: &dyn StorageBackend,
+    note_id: Uuid,
+    index: usize,
+) -> Result<Note, StorageError> {
+    let mut note = backend.read_note(note_id).await?;
+    if index >= note.links.len() {
+        return Err(StorageError::NotFound(format!(
+            "link {index} in note {note_id}"
+        )));
+    }
+    note.links.remove(index);
+    backend.update_note(note).await
+}
+
+// ── Sub-trait impls ──────────────────────────────────────────────────────────────
+
+#[async_trait]
+impl<B: StorageBackend> NoteRepository for LinkingBackend<B> {
+    async fn create_note(&self, mut note: Note) -> Result<Note, StorageError> {
+        Self::refresh(&mut note);
+        let notes = collect_notes(&self.inner).await?;
+        let notebooks = collect_notebooks(&self.inner).await?;
+        Self::ensure_note_alias_unique(&note, &notes)?;
+        Self::resolve_into(&mut note, &notes, &notebooks);
+        self.inner.create_note(note).await
+    }
+
+    async fn read_note(&self, id: Uuid) -> Result<Note, StorageError> {
+        self.inner.read_note(id).await
+    }
+
+    async fn update_note(&self, mut note: Note) -> Result<Note, StorageError> {
+        Self::refresh(&mut note);
+        let notes = collect_notes(&self.inner).await?;
+        let notebooks = collect_notebooks(&self.inner).await?;
+        Self::ensure_note_alias_unique(&note, &notes)?;
+        Self::resolve_into(&mut note, &notes, &notebooks);
+        self.inner.update_note(note).await
+    }
+
+    async fn delete_note(&self, id: Uuid) -> Result<(), StorageError> {
+        self.inner.delete_note(id).await
+    }
+
+    async fn list_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        self.inner.list_notes(page_size, page_token).await
+    }
+}
+
+#[async_trait]
+impl<B: StorageBackend> NotebookRepository for LinkingBackend<B> {
+    async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
+        let notebooks = collect_notebooks(&self.inner).await?;
+        Self::ensure_notebook_alias_unique(&notebook, &notebooks)?;
+        self.inner.create_notebook(notebook).await
+    }
+
+    async fn read_notebook(&self, id: Uuid) -> Result<Notebook, StorageError> {
+        self.inner.read_notebook(id).await
+    }
+
+    async fn update_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
+        let notebooks = collect_notebooks(&self.inner).await?;
+        Self::ensure_notebook_alias_unique(&notebook, &notebooks)?;
+        self.inner.update_notebook(notebook).await
+    }
+
+    async fn delete_notebook(&self, id: Uuid) -> Result<(), StorageError> {
+        self.inner.delete_notebook(id).await
+    }
+
+    async fn list_notebooks(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Notebook>, Option<String>), StorageError> {
+        self.inner.list_notebooks(page_size, page_token).await
+    }
+}
+
+#[async_trait]
+impl<B: StorageBackend> TagRepository for LinkingBackend<B> {
+    async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
+        self.inner.create_tag(tag).await
+    }
+
+    async fn read_tag(&self, id: Uuid) -> Result<Tag, StorageError> {
+        self.inner.read_tag(id).await
+    }
+
+    async fn update_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
+        self.inner.update_tag(tag).await
+    }
+
+    async fn delete_tag(&self, id: Uuid) -> Result<(), StorageError> {
+        self.inner.delete_tag(id).await
+    }
+
+    async fn list_tags(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        self.inner.list_tags(page_size, page_token).await
+    }
+
+    async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
+        self.inner.add_note_tag(note_tag).await
+    }
+
+    async fn remove_note_tag(&self, note_id: Uuid, tag_id: Uuid) -> Result<(), StorageError> {
+        self.inner.remove_note_tag(note_id, tag_id).await
+    }
+
+    async fn list_note_tags(
+        &self,
+        note_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        self.inner
+            .list_note_tags(note_id, page_size, page_token)
+            .await
+    }
+}
+
+#[async_trait]
+impl<B: StorageBackend> ResourceRepository for LinkingBackend<B> {
+    async fn create_resource(
+        &self,
+        resource: Resource,
+        data: Vec<u8>,
+    ) -> Result<Resource, StorageError> {
+        self.inner.create_resource(resource, data).await
+    }
+
+    async fn read_resource(&self, id: Uuid) -> Result<(Resource, Vec<u8>), StorageError> {
+        self.inner.read_resource(id).await
+    }
+
+    async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError> {
+        self.inner.delete_resource(id).await
+    }
+
+    async fn list_resources(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
+        self.inner.list_resources(page_size, page_token).await
+    }
+}
+
+// Sync delegates unchanged: a synced note already carries derived metadata from the origin
+// device, and `target_note_id`s are global uuids, so no re-derivation is needed. Alias
+// uniqueness is best-effort and cannot be enforced against incoming sync.
+#[async_trait]
+impl<B: StorageBackend> SyncBackend for LinkingBackend<B> {
+    async fn get_device_id(&self) -> Result<String, StorageError> {
+        self.inner.get_device_id().await
+    }
+
+    async fn get_last_sync_time(&self) -> Result<DateTime<Utc>, StorageError> {
+        self.inner.get_last_sync_time().await
+    }
+
+    async fn update_sync_time(&self, ts: DateTime<Utc>) -> Result<(), StorageError> {
+        self.inner.update_sync_time(ts).await
+    }
+
+    async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError> {
+        self.inner.get_changes_since(since).await
+    }
+
+    async fn apply_change(&self, change: Change) -> Result<(), StorageError> {
+        self.inner.apply_change(change).await
+    }
+
+    async fn send_changes(&self, changes: Vec<Change>) -> Result<(), StorageError> {
+        self.inner.send_changes(changes).await
+    }
+
+    async fn receive_changes(&self) -> Result<Vec<Change>, StorageError> {
+        self.inner.receive_changes().await
+    }
+
+    async fn prune_change_journal(&self, older_than: DateTime<Utc>) -> Result<u64, StorageError> {
+        self.inner.prune_change_journal(older_than).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::fs::FsBackend;
+
+    async fn backend() -> LinkingBackend<FsBackend> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        LinkingBackend::new(FsBackend::new(&path).await.unwrap())
+    }
+
+    #[tokio::test]
+    async fn derives_bookmarks_and_content_links() {
+        let be = backend().await;
+        let body = "Intro ###Marcador1 y ###Otro y un [enlace](#libreta1#nota3#1)";
+        let stored = be.create_note(Note::new("t", body)).await.unwrap();
+
+        assert_eq!(stored.bookmarks.len(), 2);
+        assert_eq!(stored.bookmarks[0].number, 1);
+        assert_eq!(stored.bookmarks[0].text, "Marcador1");
+        assert_eq!(stored.bookmarks[0].alias, "Marcador1");
+        assert_eq!(stored.bookmarks[1].number, 2);
+
+        assert_eq!(stored.links.len(), 1);
+        assert_eq!(stored.links[0].source, LinkSource::Content);
+        assert_eq!(stored.links[0].raw, "#libreta1#nota3#1");
+    }
+
+    #[tokio::test]
+    async fn bookmark_alias_edit_survives_body_edit() {
+        let be = backend().await;
+        let mut note = be
+            .create_note(Note::new("t", "###Marcador1 hi"))
+            .await
+            .unwrap();
+        // Edit the alias of bookmark 1.
+        note.bookmarks[0].alias = "Custom".to_string();
+        let note = be.update_note(note).await.unwrap();
+        assert_eq!(note.bookmarks[0].alias, "Custom");
+        // Edit the body (append text); the alias override must persist.
+        let mut note = note;
+        note.body = "###Marcador1 hi, edited".to_string();
+        let note = be.update_note(note).await.unwrap();
+        assert_eq!(note.bookmarks[0].text, "Marcador1");
+        assert_eq!(note.bookmarks[0].alias, "Custom");
+    }
+
+    #[tokio::test]
+    async fn resolves_link_by_alias_and_uuid() {
+        let be = backend().await;
+        // Target note with alias "nota3".
+        let mut target = Note::new("target", "###Anchor body");
+        target.alias = Some("nota3".to_string());
+        let target = be.create_note(target).await.unwrap();
+
+        // Source note linking to it by alias.
+        let src = be
+            .create_note(Note::new("src", "go [here](#nota3)"))
+            .await
+            .unwrap();
+        assert_eq!(src.links[0].target_note_id, Some(target.id));
+
+        // Resolve a 3-segment ref to note + bookmark number 1.
+        let resolved = resolve(&be, &format!("#whatever#{}#Anchor", target.id))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.note_id, target.id);
+        assert_eq!(resolved.bookmark_number, Some(1));
+
+        // Backlinks: target is linked by src.
+        let back = backlinks(&be, target.id).await.unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].id, src.id);
+    }
+
+    #[tokio::test]
+    async fn rejects_duplicate_note_alias() {
+        let be = backend().await;
+        let mut a = Note::new("a", "");
+        a.alias = Some("dup".to_string());
+        be.create_note(a).await.unwrap();
+
+        let mut b = Note::new("b", "");
+        b.alias = Some("dup".to_string());
+        let err = be.create_note(b).await.unwrap_err();
+        assert!(matches!(err, StorageError::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn add_and_remove_manual_link() {
+        let be = backend().await;
+        let note = be
+            .create_note(Note::new("a", "no links here"))
+            .await
+            .unwrap();
+        let note = add_manual_link(&be, note.id, "#somealias").await.unwrap();
+        assert_eq!(note.links.len(), 1);
+        assert_eq!(note.links[0].source, LinkSource::Manual);
+
+        let note = remove_link(&be, note.id, 0).await.unwrap();
+        assert!(note.links.is_empty());
+    }
+}

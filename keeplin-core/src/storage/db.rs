@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 use crate::{
     error::StorageError,
+    links::{Bookmark, NoteLink},
     models::{new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag},
 };
 
@@ -161,9 +162,9 @@ impl DbBackend {
     ///
     /// All statements use `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`
     /// so this method is safe to call on every startup without checking the current
-    /// schema version. Adding columns to existing tables requires a separate migration
-    /// path (not yet needed) because SQLite does not support `ADD COLUMN IF NOT EXISTS`
-    /// in older versions.
+    /// schema version. Columns added after a table's first creation (the bookmark/link
+    /// fields) are applied via [`add_column_if_missing`](Self::add_column_if_missing),
+    /// which tolerates the column already existing.
     ///
     /// Tables created:
     /// - `notes` — note records with soft-deletion via `deleted_at`.
@@ -187,7 +188,10 @@ impl DbBackend {
                 todo_completed  TEXT,
                 created_at      TEXT NOT NULL,
                 updated_at      TEXT NOT NULL,
-                deleted_at      TEXT
+                deleted_at      TEXT,
+                alias           TEXT,
+                bookmarks       TEXT NOT NULL DEFAULT '[]',
+                links           TEXT NOT NULL DEFAULT '[]'
             );
 
             CREATE TABLE IF NOT EXISTS notebooks (
@@ -195,7 +199,8 @@ impl DbBackend {
                 title       TEXT NOT NULL,
                 created_at  TEXT NOT NULL,
                 updated_at  TEXT NOT NULL,
-                deleted_at  TEXT
+                deleted_at  TEXT,
+                alias       TEXT
             );
 
             CREATE TABLE IF NOT EXISTS tags (
@@ -257,7 +262,38 @@ impl DbBackend {
             ",
         )
         .await?;
+
+        // Additive migration for databases created before the bookmark/link feature: the
+        // `CREATE TABLE IF NOT EXISTS` above is a no-op on an existing table, so add the new
+        // columns explicitly. `ADD COLUMN` errors with "duplicate column name" on a fresh
+        // database (where the columns already exist) — that case is ignored.
+        Self::add_column_if_missing(conn, "notes", "alias TEXT").await?;
+        Self::add_column_if_missing(conn, "notes", "bookmarks TEXT NOT NULL DEFAULT '[]'").await?;
+        Self::add_column_if_missing(conn, "notes", "links TEXT NOT NULL DEFAULT '[]'").await?;
+        Self::add_column_if_missing(conn, "notebooks", "alias TEXT").await?;
+
+        // Alias uniqueness is enforced at the application layer by `LinkingBackend`, which
+        // checks the *plaintext* alias before a local write. A database UNIQUE index is
+        // deliberately NOT used: under at-rest encryption the stored alias is ciphertext
+        // with a fresh random nonce per write (so it never compares equal), and a hard
+        // constraint would make `apply_change` error — instead of silently tolerating — a
+        // duplicate alias arriving through sync, breaking the sync cycle.
         Ok(())
+    }
+
+    /// Run `ALTER TABLE {table} ADD COLUMN {column_def}`, treating a "duplicate column name"
+    /// error (the column already exists, e.g. on a freshly created database) as success.
+    async fn add_column_if_missing(
+        conn: &libsql::Connection,
+        table: &str,
+        column_def: &str,
+    ) -> Result<(), StorageError> {
+        let sql = format!("ALTER TABLE {table} ADD COLUMN {column_def}");
+        match conn.execute(&sql, ()).await {
+            Ok(_) => Ok(()),
+            Err(e) if e.to_string().contains("duplicate column name") => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     // ── Device ID ─────────────────────────────────────────────────────────────
@@ -370,6 +406,9 @@ impl DbBackend {
         let created_at = Self::parse_required_dt(row.get::<String>(7)?)?;
         let updated_at = Self::parse_required_dt(row.get::<String>(8)?)?;
         let deleted_at = Self::parse_optional_dt(row.get::<Option<String>>(9)?)?;
+        let alias: Option<String> = row.get(10)?;
+        let bookmarks = json_to_bookmarks(&row.get::<String>(11)?);
+        let links = json_to_links(&row.get::<String>(12)?);
 
         Ok(Note {
             id,
@@ -382,6 +421,9 @@ impl DbBackend {
             created_at,
             updated_at,
             deleted_at,
+            alias,
+            bookmarks,
+            links,
         })
     }
 
@@ -412,6 +454,7 @@ impl DbBackend {
             created_at: Self::parse_required_dt(row.get::<String>(2)?)?,
             updated_at: Self::parse_required_dt(row.get::<String>(3)?)?,
             deleted_at: Self::parse_optional_dt(row.get::<Option<String>>(4)?)?,
+            alias: row.get(5)?,
         })
     }
 
@@ -631,6 +674,29 @@ where
     (rows, next_token)
 }
 
+/// Serialise a note's bookmarks to the JSON stored in the `notes.bookmarks` column.
+/// Serialisation of a plain `Vec` of small structs cannot fail in practice; `"[]"` is a
+/// safe fallback that round-trips to an empty list.
+fn bookmarks_to_json(bookmarks: &[Bookmark]) -> String {
+    serde_json::to_string(bookmarks).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Serialise a note's links to the JSON stored in the `notes.links` column.
+fn links_to_json(links: &[NoteLink]) -> String {
+    serde_json::to_string(links).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Parse the `notes.bookmarks` JSON column; a malformed value yields an empty list rather
+/// than failing the whole read.
+fn json_to_bookmarks(s: &str) -> Vec<Bookmark> {
+    serde_json::from_str(s).unwrap_or_default()
+}
+
+/// Parse the `notes.links` JSON column; a malformed value yields an empty list.
+fn json_to_links(s: &str) -> Vec<NoteLink> {
+    serde_json::from_str(s).unwrap_or_default()
+}
+
 // ── NoteRepository impl ───────────────────────────────────────────────────────
 
 #[async_trait]
@@ -642,8 +708,8 @@ impl NoteRepository for DbBackend {
             self.conn
                 .execute(
                     "INSERT INTO notes
-                     (id, title, body, notebook_id, is_todo, todo_due, todo_completed, created_at, updated_at, deleted_at)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                     (id, title, body, notebook_id, is_todo, todo_due, todo_completed, created_at, updated_at, deleted_at, alias, bookmarks, links)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
                     libsql::params![
                         note.id.to_string(),
                         note.title.clone(),
@@ -655,6 +721,9 @@ impl NoteRepository for DbBackend {
                         note.created_at.to_rfc3339(),
                         note.updated_at.to_rfc3339(),
                         note.deleted_at.map(|d| d.to_rfc3339()),
+                        note.alias.clone(),
+                        bookmarks_to_json(&note.bookmarks),
+                        links_to_json(&note.links),
                     ],
                 )
                 .await?;
@@ -681,7 +750,7 @@ impl NoteRepository for DbBackend {
             .conn
             .query(
                 "SELECT id,title,body,notebook_id,is_todo,todo_due,todo_completed,
-                        created_at,updated_at,deleted_at
+                        created_at,updated_at,deleted_at,alias,bookmarks,links
                  FROM notes WHERE id = ?1",
                 [id.to_string()],
             )
@@ -701,7 +770,8 @@ impl NoteRepository for DbBackend {
                 .execute(
                     "UPDATE notes SET
                      title=?2, body=?3, notebook_id=?4, is_todo=?5, todo_due=?6,
-                     todo_completed=?7, updated_at=?8, deleted_at=?9
+                     todo_completed=?7, updated_at=?8, deleted_at=?9,
+                     alias=?10, bookmarks=?11, links=?12
                      WHERE id = ?1",
                     libsql::params![
                         note.id.to_string(),
@@ -713,6 +783,9 @@ impl NoteRepository for DbBackend {
                         note.todo_completed.map(|d| d.to_rfc3339()),
                         note.updated_at.to_rfc3339(),
                         note.deleted_at.map(|d| d.to_rfc3339()),
+                        note.alias.clone(),
+                        bookmarks_to_json(&note.bookmarks),
+                        links_to_json(&note.links),
                     ],
                 )
                 .await?;
@@ -781,7 +854,7 @@ impl NoteRepository for DbBackend {
             .conn
             .query(
                 "SELECT id,title,body,notebook_id,is_todo,todo_due,todo_completed,
-                        created_at,updated_at,deleted_at
+                        created_at,updated_at,deleted_at,alias,bookmarks,links
                  FROM notes
                  WHERE deleted_at IS NULL
                    AND (
@@ -813,14 +886,15 @@ impl NotebookRepository for DbBackend {
         let r: Result<(), StorageError> = async {
             self.conn
                 .execute(
-                    "INSERT INTO notebooks (id,title,created_at,updated_at,deleted_at)
-                     VALUES (?1,?2,?3,?4,?5)",
+                    "INSERT INTO notebooks (id,title,created_at,updated_at,deleted_at,alias)
+                     VALUES (?1,?2,?3,?4,?5,?6)",
                     libsql::params![
                         notebook.id.to_string(),
                         notebook.title.clone(),
                         notebook.created_at.to_rfc3339(),
                         notebook.updated_at.to_rfc3339(),
                         notebook.deleted_at.map(|d| d.to_rfc3339()),
+                        notebook.alias.clone(),
                     ],
                 )
                 .await?;
@@ -847,7 +921,7 @@ impl NotebookRepository for DbBackend {
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,created_at,updated_at,deleted_at
+                "SELECT id,title,created_at,updated_at,deleted_at,alias
                  FROM notebooks WHERE id = ?1",
                 [id.to_string()],
             )
@@ -865,12 +939,13 @@ impl NotebookRepository for DbBackend {
             let affected = self
                 .conn
                 .execute(
-                    "UPDATE notebooks SET title=?2,updated_at=?3,deleted_at=?4 WHERE id=?1",
+                    "UPDATE notebooks SET title=?2,updated_at=?3,deleted_at=?4,alias=?5 WHERE id=?1",
                     libsql::params![
                         notebook.id.to_string(),
                         notebook.title.clone(),
                         notebook.updated_at.to_rfc3339(),
                         notebook.deleted_at.map(|d| d.to_rfc3339()),
+                        notebook.alias.clone(),
                     ],
                 )
                 .await?;
@@ -937,7 +1012,7 @@ impl NotebookRepository for DbBackend {
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,created_at,updated_at,deleted_at
+                "SELECT id,title,created_at,updated_at,deleted_at,alias
                  FROM notebooks
                  WHERE deleted_at IS NULL
                    AND (
@@ -1413,8 +1488,8 @@ impl SyncBackend for DbBackend {
                 self.conn
                     .execute(
                         "INSERT OR REPLACE INTO notes
-                         (id,title,body,notebook_id,is_todo,todo_due,todo_completed,created_at,updated_at,deleted_at)
-                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                         (id,title,body,notebook_id,is_todo,todo_due,todo_completed,created_at,updated_at,deleted_at,alias,bookmarks,links)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
                         libsql::params![
                             note.id.to_string(),
                             note.title,
@@ -1426,6 +1501,9 @@ impl SyncBackend for DbBackend {
                             note.created_at.to_rfc3339(),
                             note.updated_at.to_rfc3339(),
                             note.deleted_at.map(|d| d.to_rfc3339()),
+                            note.alias.clone(),
+                            bookmarks_to_json(&note.bookmarks),
+                            links_to_json(&note.links),
                         ],
                     )
                     .await?;
@@ -1457,14 +1535,15 @@ impl SyncBackend for DbBackend {
                 }
                 self.conn
                     .execute(
-                        "INSERT OR REPLACE INTO notebooks (id,title,created_at,updated_at,deleted_at)
-                         VALUES (?1,?2,?3,?4,?5)",
+                        "INSERT OR REPLACE INTO notebooks (id,title,created_at,updated_at,deleted_at,alias)
+                         VALUES (?1,?2,?3,?4,?5,?6)",
                         libsql::params![
                             notebook.id.to_string(),
                             notebook.title,
                             notebook.created_at.to_rfc3339(),
                             notebook.updated_at.to_rfc3339(),
                             notebook.deleted_at.map(|d| d.to_rfc3339()),
+                            notebook.alias.clone(),
                         ],
                     )
                     .await?;

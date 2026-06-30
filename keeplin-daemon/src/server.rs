@@ -9,6 +9,8 @@ use std::{pin::Pin, sync::Arc};
 
 use keeplin_core::{
     error::{StorageError, SyncError},
+    linking,
+    links::{Bookmark as CoreBookmark, LinkSource, NoteLink as CoreNoteLink},
     models::{
         now, Note as CoreNote, NoteTag, Notebook as CoreNotebook, Resource as CoreResource,
         Tag as CoreTag,
@@ -21,17 +23,22 @@ use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::proto::keeplin::{
-    keeplin_service_server::KeeplinService, sync_progress::Stage, AddNoteTagRequest,
-    AddNoteTagResponse, CreateNoteRequest, CreateNoteResponse, CreateNotebookRequest,
-    CreateNotebookResponse, CreateResourceRequest, CreateResourceResponse, CreateTagRequest,
-    CreateTagResponse, DeleteNoteRequest, DeleteNoteResponse, DeleteNotebookRequest,
-    DeleteNotebookResponse, DeleteResourceRequest, DeleteResourceResponse, DeleteTagRequest,
-    DeleteTagResponse, GetNoteRequest, GetNoteResponse, GetNotebookRequest, GetNotebookResponse,
-    GetResourceRequest, GetResourceResponse, GetTagRequest, GetTagResponse, ListNoteTagsRequest,
-    ListNoteTagsResponse, ListNotebooksRequest, ListNotebooksResponse, ListNotesRequest,
-    ListNotesResponse, ListResourcesRequest, ListResourcesResponse, ListTagsRequest,
-    ListTagsResponse, Note, Notebook, RemoveNoteTagRequest, RemoveNoteTagResponse, Resource,
-    SyncProgress, SyncRequest, Tag, UpdateNoteRequest, UpdateNoteResponse, UpdateNotebookRequest,
+    keeplin_service_server::KeeplinService, sync_progress::Stage, AddNoteLinkRequest,
+    AddNoteLinkResponse, AddNoteTagRequest, AddNoteTagResponse, Bookmark as ProtoBookmark,
+    CreateNoteRequest, CreateNoteResponse, CreateNotebookRequest, CreateNotebookResponse,
+    CreateResourceRequest, CreateResourceResponse, CreateTagRequest, CreateTagResponse,
+    DeleteNoteRequest, DeleteNoteResponse, DeleteNotebookRequest, DeleteNotebookResponse,
+    DeleteResourceRequest, DeleteResourceResponse, DeleteTagRequest, DeleteTagResponse,
+    EditBookmarkAliasRequest, EditBookmarkAliasResponse, GetNoteRequest, GetNoteResponse,
+    GetNotebookRequest, GetNotebookResponse, GetResourceRequest, GetResourceResponse,
+    GetTagRequest, GetTagResponse, ListBacklinksRequest, ListBacklinksResponse,
+    ListNoteTagsRequest, ListNoteTagsResponse, ListNotebooksRequest, ListNotebooksResponse,
+    ListNotesRequest, ListNotesResponse, ListResourcesRequest, ListResourcesResponse,
+    ListTagsRequest, ListTagsResponse, Note, NoteLink as ProtoNoteLink, Notebook,
+    RemoveNoteLinkRequest, RemoveNoteLinkResponse, RemoveNoteTagRequest, RemoveNoteTagResponse,
+    ResolveReferenceRequest, ResolveReferenceResponse, Resource, SetNoteAliasRequest,
+    SetNoteAliasResponse, SetNotebookAliasRequest, SetNotebookAliasResponse, SyncProgress,
+    SyncRequest, Tag, UpdateNoteRequest, UpdateNoteResponse, UpdateNotebookRequest,
     UpdateNotebookResponse, UpdateTagRequest, UpdateTagResponse,
 };
 
@@ -40,6 +47,30 @@ use crate::proto::keeplin::{
 // are kept as free functions rather than `From` impls because the proto and domain
 // types live in separate crates and the orphan rule would prevent implementing
 // `From<CoreNote> for proto::Note` here.
+
+fn bookmark_to_proto(b: CoreBookmark) -> ProtoBookmark {
+    ProtoBookmark {
+        number: b.number,
+        text: b.text,
+        alias: b.alias,
+    }
+}
+
+fn link_source_str(s: LinkSource) -> String {
+    match s {
+        LinkSource::Content => "content",
+        LinkSource::Manual => "manual",
+    }
+    .to_string()
+}
+
+fn notelink_to_proto(l: CoreNoteLink) -> ProtoNoteLink {
+    ProtoNoteLink {
+        source: link_source_str(l.source),
+        raw: l.raw,
+        target_note_id: l.target_note_id.map(|u| u.to_string()),
+    }
+}
 
 fn note_to_proto(n: CoreNote) -> Note {
     Note {
@@ -53,6 +84,9 @@ fn note_to_proto(n: CoreNote) -> Note {
         created_at: n.created_at.to_rfc3339(),
         updated_at: n.updated_at.to_rfc3339(),
         deleted_at: n.deleted_at.map(|d| d.to_rfc3339()),
+        alias: n.alias,
+        bookmarks: n.bookmarks.into_iter().map(bookmark_to_proto).collect(),
+        links: n.links.into_iter().map(notelink_to_proto).collect(),
     }
 }
 
@@ -63,6 +97,7 @@ fn notebook_to_proto(nb: CoreNotebook) -> Notebook {
         created_at: nb.created_at.to_rfc3339(),
         updated_at: nb.updated_at.to_rfc3339(),
         deleted_at: nb.deleted_at.map(|d| d.to_rfc3339()),
+        alias: nb.alias,
     }
 }
 
@@ -99,6 +134,8 @@ fn storage_err(e: StorageError) -> Status {
         // gRPC DATA_LOSS is the closest code: the data exists but cannot be recovered
         // in a trustworthy form.
         StorageError::CorruptedData(_) => Status::data_loss(e.to_string()),
+        // A duplicate alias (or similar uniqueness violation) maps to ALREADY_EXISTS.
+        StorageError::Conflict(_) => Status::already_exists(e.to_string()),
         _ => Status::internal(e.to_string()),
     }
 }
@@ -152,7 +189,34 @@ fn proto_to_note(n: Note) -> Result<CoreNote, Status> {
             .parse::<chrono::DateTime<chrono::Utc>>()
             .map_err(|_| Status::invalid_argument("updated_at is invalid"))?,
         deleted_at: parse_optional_dt(n.deleted_at)?,
+        alias: n.alias,
+        // Incoming bookmarks/links are mapped so a read-modify-write client preserves manual
+        // links and bookmark-alias edits; `LinkingBackend` re-derives content entries from
+        // the body and resolves targets on write.
+        bookmarks: n.bookmarks.into_iter().map(proto_to_bookmark).collect(),
+        links: n.links.into_iter().map(proto_to_notelink).collect(),
     })
+}
+
+fn proto_to_bookmark(b: ProtoBookmark) -> CoreBookmark {
+    CoreBookmark {
+        number: b.number,
+        text: b.text,
+        alias: b.alias,
+    }
+}
+
+fn proto_to_notelink(l: ProtoNoteLink) -> CoreNoteLink {
+    CoreNoteLink {
+        // Any value other than "manual" is treated as content-derived (the default).
+        source: if l.source == "manual" {
+            LinkSource::Manual
+        } else {
+            LinkSource::Content
+        },
+        raw: l.raw,
+        target_note_id: l.target_note_id.and_then(|s| s.parse().ok()),
+    }
 }
 
 // ── Server ────────────────────────────────────────────────────────────────────
@@ -341,6 +405,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                 .parse()
                 .map_err(|_| Status::invalid_argument("updated_at is invalid"))?,
             deleted_at: parse_optional_dt(nb.deleted_at)?,
+            alias: nb.alias,
         };
         let updated = self
             .backend
@@ -559,6 +624,110 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .await
             .map_err(storage_err)?;
         Ok(Response::new(DeleteResourceResponse {}))
+    }
+
+    // ── Bookmarks & links ─────────────────────────────────────────────────────
+
+    async fn set_note_alias(
+        &self,
+        req: Request<SetNoteAliasRequest>,
+    ) -> Result<Response<SetNoteAliasResponse>, Status> {
+        let r = req.into_inner();
+        let id = parse_uuid(&r.id, "id")?;
+        let note = linking::set_note_alias(self.backend.as_ref(), id, r.alias)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(SetNoteAliasResponse {
+            note: Some(note_to_proto(note)),
+        }))
+    }
+
+    async fn set_notebook_alias(
+        &self,
+        req: Request<SetNotebookAliasRequest>,
+    ) -> Result<Response<SetNotebookAliasResponse>, Status> {
+        let r = req.into_inner();
+        let id = parse_uuid(&r.id, "id")?;
+        let notebook = linking::set_notebook_alias(self.backend.as_ref(), id, r.alias)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(SetNotebookAliasResponse {
+            notebook: Some(notebook_to_proto(notebook)),
+        }))
+    }
+
+    async fn edit_bookmark_alias(
+        &self,
+        req: Request<EditBookmarkAliasRequest>,
+    ) -> Result<Response<EditBookmarkAliasResponse>, Status> {
+        let r = req.into_inner();
+        let note_id = parse_uuid(&r.note_id, "note_id")?;
+        let note = linking::edit_bookmark_alias(self.backend.as_ref(), note_id, r.number, r.alias)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(EditBookmarkAliasResponse {
+            note: Some(note_to_proto(note)),
+        }))
+    }
+
+    async fn add_note_link(
+        &self,
+        req: Request<AddNoteLinkRequest>,
+    ) -> Result<Response<AddNoteLinkResponse>, Status> {
+        let r = req.into_inner();
+        let note_id = parse_uuid(&r.note_id, "note_id")?;
+        let note = linking::add_manual_link(self.backend.as_ref(), note_id, &r.raw)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(AddNoteLinkResponse {
+            note: Some(note_to_proto(note)),
+        }))
+    }
+
+    async fn remove_note_link(
+        &self,
+        req: Request<RemoveNoteLinkRequest>,
+    ) -> Result<Response<RemoveNoteLinkResponse>, Status> {
+        let r = req.into_inner();
+        let note_id = parse_uuid(&r.note_id, "note_id")?;
+        let note = linking::remove_link(self.backend.as_ref(), note_id, r.index as usize)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(RemoveNoteLinkResponse {
+            note: Some(note_to_proto(note)),
+        }))
+    }
+
+    async fn list_backlinks(
+        &self,
+        req: Request<ListBacklinksRequest>,
+    ) -> Result<Response<ListBacklinksResponse>, Status> {
+        let note_id = parse_uuid(&req.into_inner().note_id, "note_id")?;
+        let notes = linking::backlinks(self.backend.as_ref(), note_id)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(ListBacklinksResponse {
+            notes: notes.into_iter().map(note_to_proto).collect(),
+        }))
+    }
+
+    async fn resolve_reference(
+        &self,
+        req: Request<ResolveReferenceRequest>,
+    ) -> Result<Response<ResolveReferenceResponse>, Status> {
+        let resolved = linking::resolve(self.backend.as_ref(), &req.into_inner().reference)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(match resolved {
+            Some(r) => ResolveReferenceResponse {
+                note_id: Some(r.note_id.to_string()),
+                bookmark_number: r.bookmark_number,
+            },
+            None => ResolveReferenceResponse {
+                note_id: None,
+                bookmark_number: None,
+            },
+        }))
     }
 
     // ── Sync (server-streaming) ───────────────────────────────────────────────

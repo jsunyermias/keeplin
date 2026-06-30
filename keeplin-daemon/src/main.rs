@@ -183,10 +183,13 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
     addr: std::net::SocketAddr,
     backend: B,
 ) -> anyhow::Result<()> {
-    // Wrap the backend so that every successful mutation — from gRPC or REST — is published
-    // to the live-change broadcast channel that WebSocket clients subscribe to. The
-    // `EventBackend` sits outside any `EncryptedBackend`, so the changes it broadcasts carry
-    // already-decrypted (plaintext) values for connected API clients.
+    // Decorator stack (innermost → outermost): the storage backend, then (optionally)
+    // `EncryptedBackend` already applied by the caller, then `LinkingBackend` which derives
+    // bookmarks/links from each plaintext note body and resolves references, then
+    // `EventBackend` which publishes every mutation to the live-change broadcast channel.
+    // `LinkingBackend` sits outside encryption so it parses plaintext bodies; `EventBackend`
+    // sits outside it so the feed carries the refreshed metadata.
+    let backend = keeplin_core::linking::LinkingBackend::new(backend);
     let (events, _rx) = tokio::sync::broadcast::channel::<keeplin_core::models::Change>(1024);
     let backend = Arc::new(event_backend::EventBackend::new(backend, events.clone()));
 

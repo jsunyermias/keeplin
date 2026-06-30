@@ -157,9 +157,11 @@ encryption is on without `key_salt`.
 The service is defined in
 [`keeplin-daemon/proto/keeplin.proto`](keeplin-daemon/proto/keeplin.proto). `KeeplinService`
 provides CRUD + paginated list RPCs for **notes, notebooks, tags, and resources**, the
-note↔tag association RPCs, and a server‑streaming **`Sync`** RPC that reports progress
-through one sync cycle. Authentication is HTTP Basic Auth via the `authorization` metadata
-header: `Basic base64(user:password)`.
+note↔tag association RPCs, the **bookmark/link** RPCs (`SetNoteAlias`, `SetNotebookAlias`,
+`EditBookmarkAlias`, `AddNoteLink`, `RemoveNoteLink`, `ListBacklinks`, `ResolveReference` —
+see [Bookmarks & links](#bookmarks--links)), and a server‑streaming **`Sync`** RPC that
+reports progress through one sync cycle. Authentication is HTTP Basic Auth via the
+`authorization` metadata header: `Basic base64(user:password)`.
 
 ---
 
@@ -182,14 +184,21 @@ base64(user:password)` header (only required when `auth_username`/`auth_password
 | `GET/POST /api/tags`, `GET/PUT/DELETE /api/tags/:id` | Tag CRUD. |
 | `GET/POST /api/resources`, `GET/PUT/DELETE /api/resources/:id` | Resource metadata CRUD. |
 | `GET /api/resources/:id/data` | Download the raw resource bytes. |
+| `PUT /api/notes/:id/alias`, `PUT /api/notebooks/:id/alias` | Set/clear an alias (`{ "alias": "…" \| null }`). |
+| `GET /api/notes/:id/bookmarks` | List a note's bookmarks. |
+| `PUT /api/notes/:id/bookmarks/:number/alias` | Edit a bookmark's alias (`{ "alias": "…" }`). |
+| `GET/POST /api/notes/:id/links` | List / add a link (`POST {"raw":"#…"}`, manual link). |
+| `DELETE /api/notes/:id/links/:index` | Remove the link at `index`. |
+| `GET /api/notes/:id/backlinks` | Notes that link **to** this note. |
+| `GET /api/links/resolve?ref=#…` | Resolve a reference → `{ "note_id", "bookmark_number" }`. |
 | `POST /api/sync` | Run one sync cycle; returns `{ "applied": <n> }`. |
 | `GET /api/ws` | Upgrade to the WebSocket live‑change feed (see below). |
 
 Resource upload is a raw request body: `POST /api/resources?title=&file_name=` with the
 file bytes as the body and the `Content-Type` header as the MIME type. Reads of a
 soft‑deleted note, notebook, or tag return `404` (the gRPC `Get` RPCs still return the
-tombstone for sync). Errors map to `404` (not found), `422` (corrupted data), `400`
-(invalid UUID/body), and `500` otherwise.
+tombstone for sync). Errors map to `404` (not found), `409` (duplicate alias), `422`
+(corrupted data / invalid link reference), `400` (invalid UUID/body), and `500` otherwise.
 
 The HTTP listener is **plain HTTP** — terminate TLS at a reverse proxy in production, exactly
 as for the WebSocket sync token.
@@ -215,6 +224,39 @@ websocat ws://127.0.0.1:50052/api/ws
 curl -X POST 127.0.0.1:50052/api/notes -H 'content-type: application/json' \
   -d '{"title":"hi","body":"there"}'
 ```
+
+---
+
+## Bookmarks & links
+
+Notes carry two kinds of in‑content navigation, both stored on the note (in `meta.msgpack`
+for the filesystem backend, in the `notes` row for the database backend) and synced like any
+other note edit.
+
+**Bookmarks (marcadores)** are in‑note anchors written as a **triple‑hash token** in the
+body — `###Marcador1` (a hashtag with three `#`). Each bookmark's `text` is the marked word,
+its `number` is its 1‑based position among the note's bookmarks, and its `alias` defaults to
+the text but can be edited (the edit survives later body changes). A `### ` markdown heading
+(space after the hashes) and a longer `####` run are **not** bookmarks.
+
+**Links (enlaces)** connect notes. They are either **content‑derived** — a standard markdown
+link whose destination starts with `#`, e.g. `[texto](#libreta1#nota3#5)` — or **manual**
+(added via the API, not present in the body). A reference uses this grammar:
+
+| Form | Resolves to |
+|------|-------------|
+| `#<note>` | a note, by **alias or uuid** |
+| `#<notebook>#<note>` | a note scoped by notebook (each **alias or uuid**) |
+| `#<notebook>#<note>#<bookmark>` | a note + bookmark (bookmark by **alias or number**) |
+
+For example `#libreta1#nota3#marcador5` (bookmark by alias) or `#libreta1#nota3#5` (by
+number). The two‑segment form is always `notebook#note`, so a bookmark target needs the full
+three‑segment form. Note and notebook **aliases** are user‑assigned and unique among live
+entities of each type (a duplicate is rejected with `409`/`ALREADY_EXISTS`); concurrent
+cross‑device edits can still introduce a collision through sync, in which case resolution
+deterministically picks the smallest‑uuid match and logs a warning. Each link records a
+best‑effort `target_note_id`; `GET /api/links/resolve` (or the `ResolveReference` RPC) resolves
+a reference on demand, and `GET /api/notes/:id/backlinks` lists the notes pointing at a note.
 
 ---
 

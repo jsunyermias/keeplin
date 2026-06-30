@@ -15,6 +15,7 @@ thiserror.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
+regex.workspace = true
 
 # Only the local-SQLite engine is used (DbBackend opens databases with
 # `Builder::new_local`). Disabling default features drops libsql's remote

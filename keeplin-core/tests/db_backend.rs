@@ -443,3 +443,52 @@ async fn concurrent_reads_and_writes_make_progress() {
     let (notes, _) = backend.list_notes(100, None).await.unwrap();
     assert_eq!(notes.len(), 21, "seed + 20 writers");
 }
+
+#[tokio::test]
+async fn note_alias_bookmarks_links_round_trip() {
+    use keeplin_core::links::{Bookmark, LinkSource, NoteLink};
+
+    let backend = in_memory_backend().await;
+    let mut note = Note::new("titled", "###Marcador1 and a [link](#other)");
+    note.alias = Some("nota3".to_string());
+    note.bookmarks = vec![Bookmark {
+        number: 1,
+        text: "Marcador1".to_string(),
+        alias: "Custom".to_string(),
+    }];
+    note.links = vec![NoteLink {
+        source: LinkSource::Content,
+        raw: "#other".to_string(),
+        target_note_id: None,
+    }];
+    let created = backend.create_note(note.clone()).await.unwrap();
+    assert_eq!(created, note);
+
+    // Read back: alias, bookmarks and links survive the SQLite columns.
+    let read = backend.read_note(note.id).await.unwrap();
+    assert_eq!(read.alias.as_deref(), Some("nota3"));
+    assert_eq!(read.bookmarks, note.bookmarks);
+    assert_eq!(read.links, note.links);
+
+    // Update the alias and a bookmark; verify persistence.
+    let mut edited = read;
+    edited.alias = Some("renamed".to_string());
+    edited.bookmarks[0].alias = "Edited".to_string();
+    backend.update_note(edited.clone()).await.unwrap();
+    let reread = backend.read_note(note.id).await.unwrap();
+    assert_eq!(reread.alias.as_deref(), Some("renamed"));
+    assert_eq!(reread.bookmarks[0].alias, "Edited");
+}
+
+#[tokio::test]
+async fn notebook_alias_round_trip() {
+    let backend = in_memory_backend().await;
+    let mut nb = Notebook::new("Work");
+    nb.alias = Some("libreta1".to_string());
+    backend.create_notebook(nb.clone()).await.unwrap();
+    let read = backend.read_notebook(nb.id).await.unwrap();
+    assert_eq!(read.alias.as_deref(), Some("libreta1"));
+
+    let (list, _) = backend.list_notebooks(10, None).await.unwrap();
+    assert_eq!(list[0].alias.as_deref(), Some("libreta1"));
+}

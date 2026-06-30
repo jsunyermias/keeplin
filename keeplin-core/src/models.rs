@@ -11,6 +11,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::links::{Bookmark, NoteLink};
+
 /// Generates a new random UUID version 4.
 ///
 /// All entity constructors (`Note::new`, `Notebook::new`, etc.) call this function to
@@ -64,12 +66,24 @@ pub struct Note {
     pub updated_at: DateTime<Utc>,
     /// UTC timestamp set when the note is soft-deleted. `None` means the note is active.
     pub deleted_at: Option<DateTime<Utc>>,
+    /// Optional human-readable alias, unique among live notes. Lets links target the note as
+    /// `#<alias>` instead of `#<uuid>`. Encrypted at rest. Defaults to `None`.
+    #[serde(default)]
+    pub alias: Option<String>,
+    /// Bookmarks (in-note anchors) derived from `###text` tokens in the body, plus any alias
+    /// edits. Maintained by [`crate::linking::LinkingBackend`]. Defaults to empty.
+    #[serde(default)]
+    pub bookmarks: Vec<Bookmark>,
+    /// Links to other notes: content-derived (markdown `#` links) and manually added.
+    /// Maintained by [`crate::linking::LinkingBackend`]. Defaults to empty.
+    #[serde(default)]
+    pub links: Vec<NoteLink>,
 }
 
 impl Note {
     /// Creates a new note with a fresh UUID, the given title and body, and the current
     /// UTC time for both `created_at` and `updated_at`. All optional fields are
-    /// initialised to `None` / `false`.
+    /// initialised to `None` / `false` / empty.
     pub fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
         let ts = now();
         Self {
@@ -83,6 +97,9 @@ impl Note {
             created_at: ts,
             updated_at: ts,
             deleted_at: None,
+            alias: None,
+            bookmarks: Vec::new(),
+            links: Vec::new(),
         }
     }
 }
@@ -104,11 +121,15 @@ pub struct Notebook {
     pub updated_at: DateTime<Utc>,
     /// UTC timestamp set on soft-delete. `None` means the notebook is active.
     pub deleted_at: Option<DateTime<Utc>>,
+    /// Optional human-readable alias, unique among live notebooks. Lets links scope a note as
+    /// `#<notebook alias>#<note>`. Encrypted at rest. Defaults to `None`.
+    #[serde(default)]
+    pub alias: Option<String>,
 }
 
 impl Notebook {
     /// Creates a new notebook with a fresh UUID, the given title, and the current UTC
-    /// time for both timestamps. `deleted_at` is `None`.
+    /// time for both timestamps. `deleted_at` and `alias` are `None`.
     pub fn new(title: impl Into<String>) -> Self {
         let ts = now();
         Self {
@@ -117,6 +138,7 @@ impl Notebook {
             created_at: ts,
             updated_at: ts,
             deleted_at: None,
+            alias: None,
         }
     }
 }

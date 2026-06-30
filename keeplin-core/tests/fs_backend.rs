@@ -496,3 +496,41 @@ async fn fs_two_device_concurrent_edits_converge() {
         "both devices must converge to one winner"
     );
 }
+
+#[tokio::test]
+async fn note_alias_bookmarks_links_persist_in_meta() {
+    use keeplin_core::links::{Bookmark, LinkSource, NoteLink};
+
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    let mut note = Note::new("t", "###Marcador1 [l](#other)");
+    note.alias = Some("nota3".to_string());
+    note.bookmarks = vec![Bookmark {
+        number: 1,
+        text: "Marcador1".to_string(),
+        alias: "Custom".to_string(),
+    }];
+    note.links = vec![NoteLink {
+        source: LinkSource::Manual,
+        raw: "#other".to_string(),
+        target_note_id: None,
+    }];
+    let id = note.id;
+    backend.create_note(note.clone()).await.unwrap();
+
+    // Reads materialize from the per-device log; the new fields survive the round-trip
+    // through `log.{device}.msgpack` + `meta.msgpack`.
+    let read = backend.read_note(id).await.unwrap();
+    assert_eq!(read.alias.as_deref(), Some("nota3"));
+    assert_eq!(read.bookmarks, note.bookmarks);
+    assert_eq!(read.links, note.links);
+
+    // A second backend over the same root (a different "device") materializes the same
+    // state from the replicated log — i.e. the fields converge.
+    let backend2 = FsBackend::new(dir.path()).await.unwrap();
+    let seen = backend2.read_note(id).await.unwrap();
+    assert_eq!(seen.alias.as_deref(), Some("nota3"));
+    assert_eq!(seen.bookmarks, note.bookmarks);
+    assert_eq!(seen.links, note.links);
+}

@@ -19,6 +19,12 @@ message Note {
   string updated_at      = 9;  // RFC-3339
   // absent means the note has not been deleted
   optional string deleted_at     = 10; // RFC-3339
+  // absent means the note has no alias
+  optional string alias  = 11;
+  // bookmarks (in-note anchors) derived from `###text` tokens in the body
+  repeated Bookmark bookmarks = 12;
+  // links to other notes (content-derived and manually added)
+  repeated NoteLink links     = 13;
 }
 
 message Notebook {
@@ -28,6 +34,24 @@ message Notebook {
   string updated_at = 4;  // RFC-3339
   // absent means the notebook has not been deleted
   optional string deleted_at = 5;  // RFC-3339
+  // absent means the notebook has no alias
+  optional string alias = 6;
+}
+
+// An in-note anchor. `number` is the 1-based position among the note's bookmarks;
+// `text` is the marked `###text` token; `alias` defaults to `text` and is editable.
+message Bookmark {
+  uint32 number = 1;
+  string text   = 2;
+  string alias  = 3;
+}
+
+// A link from a note to another note. `source` is "content" or "manual"; `raw` is the
+// literal `#…` reference; `target_note_id` is the best-effort resolved note UUID.
+message NoteLink {
+  string source = 1;
+  string raw    = 2;
+  optional string target_note_id = 3;
 }
 
 message Tag {
@@ -261,6 +285,52 @@ message SyncProgress {
   string message        = 3;
 }
 
+// ── Bookmarks & links ─────────────────────────────────────────────────────────
+
+message SetNoteAliasRequest {
+  string id = 1;
+  // absent clears the alias
+  optional string alias = 2;
+}
+message SetNoteAliasResponse { Note note = 1; }
+
+message SetNotebookAliasRequest {
+  string id = 1;
+  // absent clears the alias
+  optional string alias = 2;
+}
+message SetNotebookAliasResponse { Notebook notebook = 1; }
+
+message EditBookmarkAliasRequest {
+  string note_id = 1;
+  uint32 number  = 2;  // 1-based bookmark number
+  string alias   = 3;
+}
+message EditBookmarkAliasResponse { Note note = 1; }
+
+message AddNoteLinkRequest {
+  string note_id = 1;
+  string raw     = 2;  // a `#…` reference
+}
+message AddNoteLinkResponse { Note note = 1; }
+
+message RemoveNoteLinkRequest {
+  string note_id = 1;
+  uint32 index   = 2;  // 0-based index into the note's links
+}
+message RemoveNoteLinkResponse { Note note = 1; }
+
+message ListBacklinksRequest { string note_id = 1; }
+message ListBacklinksResponse { repeated Note notes = 1; }
+
+message ResolveReferenceRequest { string reference = 1; }  // a `#…` reference
+message ResolveReferenceResponse {
+  // absent when the reference does not resolve to any note
+  optional string note_id        = 1;
+  // absent when the reference had no (resolvable) bookmark segment
+  optional uint32 bookmark_number = 2;
+}
+
 // ── Service definition ────────────────────────────────────────────────────────
 
 service KeeplinService {
@@ -293,6 +363,15 @@ service KeeplinService {
   rpc CreateResource  (CreateResourceRequest)  returns (CreateResourceResponse);
   rpc GetResource     (GetResourceRequest)     returns (GetResourceResponse);
   rpc DeleteResource  (DeleteResourceRequest)  returns (DeleteResourceResponse);
+
+  // Bookmarks & links
+  rpc SetNoteAlias      (SetNoteAliasRequest)      returns (SetNoteAliasResponse);
+  rpc SetNotebookAlias  (SetNotebookAliasRequest)  returns (SetNotebookAliasResponse);
+  rpc EditBookmarkAlias (EditBookmarkAliasRequest) returns (EditBookmarkAliasResponse);
+  rpc AddNoteLink       (AddNoteLinkRequest)       returns (AddNoteLinkResponse);
+  rpc RemoveNoteLink    (RemoveNoteLinkRequest)    returns (RemoveNoteLinkResponse);
+  rpc ListBacklinks     (ListBacklinksRequest)     returns (ListBacklinksResponse);
+  rpc ResolveReference  (ResolveReferenceRequest)  returns (ResolveReferenceResponse);
 
   // Sync (server-streaming so progress can be reported)
   rpc Sync (SyncRequest) returns (stream SyncProgress);
