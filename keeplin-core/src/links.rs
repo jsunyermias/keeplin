@@ -27,8 +27,10 @@
 //! | `#<notebook>#<note>` | notebook + note (each alias or uuid) |
 //! | `#<notebook>#<note>#<bookmark>` | + bookmark by alias or number |
 //!
-//! The two-segment form is always `notebook#note`; a bookmark target therefore requires the
-//! full three-segment form.
+//! [`parse_link_ref`] is purely structural and reads a two-segment `#a#b` as `notebook#note`.
+//! Resolution (in [`crate::linking`]) is smarter: it keeps that reading when `b` is a
+//! resolvable note, but otherwise falls back to `note#bookmark`, so a bookmark can be targeted
+//! without naming a notebook (`#nota3#marcador5`).
 
 use std::sync::OnceLock;
 

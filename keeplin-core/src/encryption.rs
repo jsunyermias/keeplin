@@ -273,6 +273,13 @@ impl<B: StorageBackend> NoteRepository for EncryptedBackend<B> {
             notes.into_iter().map(|n| self.dec_note(n)).collect();
         Ok((decrypted?, next))
     }
+
+    async fn note_backlinks(&self, target_id: Uuid) -> Result<Vec<Note>, StorageError> {
+        // Delegate so an inner indexed backend is reached (`target_note_id` is stored in
+        // plaintext, so the index works under encryption), then decrypt the results.
+        let notes = self.inner.note_backlinks(target_id).await?;
+        notes.into_iter().map(|n| self.dec_note(n)).collect()
+    }
 }
 
 #[async_trait]

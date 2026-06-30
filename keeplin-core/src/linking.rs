@@ -32,11 +32,12 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::{
     error::StorageError,
-    links::{self, Bookmark, LinkSource, LinkTarget, NoteLink, Reference},
+    links::{self, Bookmark, LinkSource, NoteLink},
     models::{Change, Note, NoteTag, Notebook, Resource, Tag},
     storage::{
         NoteRepository, NotebookRepository, ResourceRepository, StorageBackend, SyncBackend,
@@ -55,6 +56,23 @@ pub struct ResolvedReference {
     pub note_id: Uuid,
     /// The 1-based bookmark number, when the reference had a (resolved) bookmark segment.
     pub bookmark_number: Option<u32>,
+}
+
+/// One alias shared by two or more live entities of the same type — the residue of a
+/// cross-device alias collision that sync could not reject.
+#[derive(Debug, Clone, Serialize)]
+pub struct AliasConflict<T> {
+    /// The duplicated alias.
+    pub alias: String,
+    /// The colliding entities, ordered by uuid (the smallest is what resolution prefers).
+    pub entities: Vec<T>,
+}
+
+/// All current alias collisions, grouped by entity type. Empty vectors mean no conflicts.
+#[derive(Debug, Clone, Serialize)]
+pub struct AliasConflicts {
+    pub notes: Vec<AliasConflict<Note>>,
+    pub notebooks: Vec<AliasConflict<Notebook>>,
 }
 
 /// Decorator that maintains bookmarks/links and enforces alias uniqueness.
@@ -111,9 +129,7 @@ impl<B: StorageBackend> LinkingBackend<B> {
     /// Fill each link's `target_note_id` from the supplied snapshots of live entities.
     fn resolve_into(note: &mut Note, notes: &[Note], notebooks: &[Notebook]) {
         for link in &mut note.links {
-            link.target_note_id = link
-                .target()
-                .and_then(|t| resolve_note(&t, notes, notebooks));
+            link.target_note_id = resolve_ref(&link.raw, notes, notebooks).map(|r| r.note_id);
         }
     }
 
@@ -190,48 +206,107 @@ pub async fn collect_notebooks(
     Ok(out)
 }
 
-/// Resolve a notebook reference (uuid or alias) to a uuid against live notebooks.
-fn resolve_notebook(r: &Reference, notebooks: &[Notebook]) -> Option<Uuid> {
-    match r {
-        Reference::Id(id) => Some(*id),
-        Reference::Alias(a) => notebooks
+/// Resolve a notebook segment (uuid or alias) to a uuid against live notebooks. A uuid is
+/// returned as-is (existence is not checked); an alias picks the smallest-uuid live match.
+fn resolve_notebook_seg(seg: &str, notebooks: &[Notebook]) -> Option<Uuid> {
+    if let Ok(id) = Uuid::parse_str(seg) {
+        return Some(id);
+    }
+    notebooks
+        .iter()
+        .filter(|nb| nb.alias.as_deref() == Some(seg))
+        .map(|nb| nb.id)
+        .min()
+}
+
+/// Resolve a note segment (uuid or alias) to a uuid against live notes, optionally scoped to
+/// a notebook segment, breaking alias ties by smallest uuid. A uuid is returned as-is; an
+/// alias that matches no live note yields `None` (which drives the 2-segment fallback).
+fn resolve_note_seg(
+    seg: &str,
+    notebook_seg: Option<&str>,
+    notes: &[Note],
+    notebooks: &[Notebook],
+) -> Option<Uuid> {
+    if let Ok(id) = Uuid::parse_str(seg) {
+        return Some(id);
+    }
+    let nb_id = notebook_seg.and_then(|ns| resolve_notebook_seg(ns, notebooks));
+    let mut candidates: Vec<&Note> = notes
+        .iter()
+        .filter(|n| n.alias.as_deref() == Some(seg))
+        .collect();
+    if let Some(nb) = nb_id {
+        let scoped: Vec<&Note> = candidates
             .iter()
-            .filter(|nb| nb.alias.as_deref() == Some(a.as_str()))
-            .map(|nb| nb.id)
-            .min(),
+            .copied()
+            .filter(|n| n.notebook_id == Some(nb))
+            .collect();
+        if !scoped.is_empty() {
+            candidates = scoped;
+        }
+    }
+    if candidates.len() > 1 {
+        tracing::warn!(alias = %seg, "ambiguous note alias; resolving to smallest uuid");
+    }
+    candidates.into_iter().map(|n| n.id).min()
+}
+
+/// Map a bookmark segment (number or alias) to a stored bookmark number within `note_id`,
+/// using the note found in the `notes` snapshot. Returns `None` when the note is not in the
+/// snapshot or has no matching bookmark.
+fn resolve_bookmark_seg(seg: &str, note_id: Uuid, notes: &[Note]) -> Option<u32> {
+    let note = notes.iter().find(|n| n.id == note_id)?;
+    match links::BookmarkRef::parse(seg) {
+        links::BookmarkRef::Number(n) => note
+            .bookmarks
+            .iter()
+            .find(|b| b.number == n)
+            .map(|b| b.number),
+        links::BookmarkRef::Alias(a) => note
+            .bookmarks
+            .iter()
+            .find(|b| b.alias == a)
+            .map(|b| b.number),
     }
 }
 
-/// Resolve a parsed reference's **note** segment to a uuid against live notes, honouring the
-/// optional notebook scope and breaking alias ties by smallest uuid.
-fn resolve_note(target: &LinkTarget, notes: &[Note], notebooks: &[Notebook]) -> Option<Uuid> {
-    match &target.note {
-        Reference::Id(id) => Some(*id),
-        Reference::Alias(a) => {
-            let nb_id = target
-                .notebook
-                .as_ref()
-                .and_then(|nb| resolve_notebook(nb, notebooks));
-            let mut candidates: Vec<&Note> = notes
-                .iter()
-                .filter(|n| n.alias.as_deref() == Some(a.as_str()))
-                .collect();
-            if let Some(nb) = nb_id {
-                let scoped: Vec<&Note> = candidates
-                    .iter()
-                    .copied()
-                    .filter(|n| n.notebook_id == Some(nb))
-                    .collect();
-                if !scoped.is_empty() {
-                    candidates = scoped;
-                }
-            }
-            if candidates.len() > 1 {
-                tracing::warn!(alias = %a, "ambiguous note alias; resolving to smallest uuid");
-            }
-            candidates.into_iter().map(|n| n.id).min()
-        }
+/// Resolve a raw `#…` reference against snapshots of live notes/notebooks (pure).
+///
+/// Segment interpretation:
+/// - `#note`
+/// - `#notebook#note` — preferred when the second segment resolves to a note; otherwise the
+///   reference is re-read as `#note#bookmark` (so a bookmark can be targeted without naming a
+///   notebook).
+/// - `#notebook#note#bookmark`
+fn resolve_ref(raw: &str, notes: &[Note], notebooks: &[Notebook]) -> Option<ResolvedReference> {
+    let body = raw.strip_prefix('#')?;
+    let segments: Vec<&str> = body.split('#').collect();
+    if segments.iter().any(|s| s.is_empty()) {
+        return None;
     }
+    let (note_id, bookmark_number) = match segments.as_slice() {
+        [note] => (resolve_note_seg(note, None, notes, notebooks)?, None),
+        [first, second] => {
+            // Prefer notebook#note; fall back to note#bookmark when the second segment is
+            // not a resolvable note.
+            if let Some(id) = resolve_note_seg(second, Some(first), notes, notebooks) {
+                (id, None)
+            } else {
+                let id = resolve_note_seg(first, None, notes, notebooks)?;
+                (id, resolve_bookmark_seg(second, id, notes))
+            }
+        }
+        [notebook, note, bookmark] => {
+            let id = resolve_note_seg(note, Some(notebook), notes, notebooks)?;
+            (id, resolve_bookmark_seg(bookmark, id, notes))
+        }
+        _ => return None,
+    };
+    Some(ResolvedReference {
+        note_id,
+        bookmark_number,
+    })
 }
 
 /// Resolve a raw `#…` reference to a concrete note (and bookmark number) against the store.
@@ -239,49 +314,58 @@ pub async fn resolve(
     backend: &dyn StorageBackend,
     raw: &str,
 ) -> Result<Option<ResolvedReference>, StorageError> {
-    let Some(target) = links::parse_link_ref(raw) else {
-        return Ok(None);
-    };
     let notes = collect_notes(backend).await?;
     let notebooks = collect_notebooks(backend).await?;
-    let Some(note_id) = resolve_note(&target, &notes, &notebooks) else {
-        return Ok(None);
-    };
-    let bookmark_number = match &target.bookmark {
-        None => None,
-        Some(bref) => {
-            // Read the target note to map a bookmark alias/number to a stored number.
-            let note = backend.read_note(note_id).await?;
-            match bref {
-                links::BookmarkRef::Number(n) => note
-                    .bookmarks
-                    .iter()
-                    .find(|b| b.number == *n)
-                    .map(|b| b.number),
-                links::BookmarkRef::Alias(a) => note
-                    .bookmarks
-                    .iter()
-                    .find(|b| b.alias == *a)
-                    .map(|b| b.number),
-            }
-        }
-    };
-    Ok(Some(ResolvedReference {
-        note_id,
-        bookmark_number,
-    }))
+    Ok(resolve_ref(raw, &notes, &notebooks))
 }
 
-/// Return every live note that links to `target_id` (best-effort backlinks via O(N) scan).
+/// Return every live note that links to `target_id`.
+///
+/// Delegates to [`NoteRepository::note_backlinks`](crate::storage::NoteRepository::note_backlinks),
+/// which `DbBackend` answers with an indexed lookup and other backends with an `O(N)` scan.
 pub async fn backlinks(
     backend: &dyn StorageBackend,
     target_id: Uuid,
 ) -> Result<Vec<Note>, StorageError> {
-    let notes = collect_notes(backend).await?;
-    Ok(notes
+    backend.note_backlinks(target_id).await
+}
+
+/// Group `items` by their (optional) alias, keeping only aliases shared by two or more
+/// entities. Groups are ordered by alias; entities within a group are ordered by uuid.
+fn group_conflicts<T>(
+    items: Vec<T>,
+    alias_of: impl Fn(&T) -> Option<String>,
+    id_of: impl Fn(&T) -> Uuid,
+) -> Vec<AliasConflict<T>> {
+    let mut by_alias: std::collections::BTreeMap<String, Vec<T>> =
+        std::collections::BTreeMap::new();
+    for item in items {
+        if let Some(alias) = alias_of(&item) {
+            by_alias.entry(alias).or_default().push(item);
+        }
+    }
+    by_alias
         .into_iter()
-        .filter(|n| n.links.iter().any(|l| l.target_note_id == Some(target_id)))
-        .collect())
+        .filter(|(_, group)| group.len() >= 2)
+        .map(|(alias, mut entities)| {
+            entities.sort_by_key(&id_of);
+            AliasConflict { alias, entities }
+        })
+        .collect()
+}
+
+/// List every alias currently shared by two or more **live** notes (or notebooks).
+///
+/// Local writes reject duplicate aliases, but sync replays edits made independently on other
+/// devices, so a collision can still appear after a sync. This surfaces those collisions so a
+/// human can rename one side; resolution itself stays deterministic in the meantime.
+pub async fn alias_conflicts(backend: &dyn StorageBackend) -> Result<AliasConflicts, StorageError> {
+    let notes = collect_notes(backend).await?;
+    let notebooks = collect_notebooks(backend).await?;
+    Ok(AliasConflicts {
+        notes: group_conflicts(notes, |n| n.alias.clone(), |n| n.id),
+        notebooks: group_conflicts(notebooks, |nb| nb.alias.clone(), |nb| nb.id),
+    })
 }
 
 /// Set (or clear) a note's alias and persist it (read-modify-write → one `NoteUpdate`).
@@ -388,6 +472,11 @@ impl<B: StorageBackend> NoteRepository for LinkingBackend<B> {
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
         self.inner.list_notes(page_size, page_token).await
+    }
+
+    async fn note_backlinks(&self, target_id: Uuid) -> Result<Vec<Note>, StorageError> {
+        // Delegate so an inner indexed backend (e.g. DbBackend) is reached.
+        self.inner.note_backlinks(target_id).await
     }
 }
 
@@ -636,5 +725,66 @@ mod tests {
 
         let note = remove_link(&be, note.id, 0).await.unwrap();
         assert!(note.links.is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolves_two_segment_note_bookmark_shorthand() {
+        let be = backend().await;
+        let mut target = Note::new("target", "###Anchor body");
+        target.alias = Some("nota3".to_string());
+        let target = be.create_note(target).await.unwrap();
+
+        // `#note#bookmark` by bookmark alias.
+        let r = resolve(&be, "#nota3#Anchor").await.unwrap().unwrap();
+        assert_eq!(r.note_id, target.id);
+        assert_eq!(r.bookmark_number, Some(1));
+
+        // `#note#bookmark` by bookmark number.
+        let r = resolve(&be, "#nota3#1").await.unwrap().unwrap();
+        assert_eq!(r.note_id, target.id);
+        assert_eq!(r.bookmark_number, Some(1));
+    }
+
+    #[tokio::test]
+    async fn two_segment_prefers_notebook_note() {
+        let be = backend().await;
+        let mut nb = Notebook::new("lib");
+        nb.alias = Some("lib1".to_string());
+        let nb = be.create_notebook(nb).await.unwrap();
+
+        let mut note = Note::new("n", "");
+        note.alias = Some("nA".to_string());
+        note.notebook_id = Some(nb.id);
+        let note = be.create_note(note).await.unwrap();
+
+        // `#notebook#note` resolves to the note (not interpreted as note#bookmark).
+        let r = resolve(&be, "#lib1#nA").await.unwrap().unwrap();
+        assert_eq!(r.note_id, note.id);
+        assert_eq!(r.bookmark_number, None);
+    }
+
+    #[tokio::test]
+    async fn alias_conflicts_lists_duplicates() {
+        // A raw FsBackend (no LinkingBackend) lets us plant a duplicate alias the way sync
+        // would, bypassing the write-time uniqueness check.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let fs = FsBackend::new(&path).await.unwrap();
+
+        for title in ["a", "b"] {
+            let mut n = Note::new(title, "");
+            n.alias = Some("dup".to_string());
+            fs.create_note(n).await.unwrap();
+        }
+        let mut unique = Note::new("c", "");
+        unique.alias = Some("unique".to_string());
+        fs.create_note(unique).await.unwrap();
+
+        let conflicts = alias_conflicts(&fs).await.unwrap();
+        assert_eq!(conflicts.notes.len(), 1);
+        assert_eq!(conflicts.notes[0].alias, "dup");
+        assert_eq!(conflicts.notes[0].entities.len(), 2);
+        assert!(conflicts.notebooks.is_empty());
     }
 }

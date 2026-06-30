@@ -217,6 +217,17 @@ impl DbBackend {
                 PRIMARY KEY (note_id, tag_id)
             );
 
+            -- Projection of each note's resolved outgoing links, maintained on every note
+            -- write, so backlinks (who links to a given note) is an indexed lookup rather
+            -- than a full scan. Only links with a resolved `target_note_id` are recorded;
+            -- the target UUID is plaintext (like `notebook_id`), so the index also works
+            -- under at-rest encryption.
+            CREATE TABLE IF NOT EXISTS note_links (
+                source_note_id TEXT NOT NULL,
+                target_note_id TEXT NOT NULL,
+                PRIMARY KEY (source_note_id, target_note_id)
+            );
+
             CREATE TABLE IF NOT EXISTS resources (
                 id          TEXT PRIMARY KEY,
                 title       TEXT NOT NULL,
@@ -258,6 +269,7 @@ impl DbBackend {
             CREATE INDEX IF NOT EXISTS idx_note_tags_note_id       ON note_tags(note_id);
             CREATE INDEX IF NOT EXISTS idx_note_tags_tag_id        ON note_tags(tag_id);
             CREATE INDEX IF NOT EXISTS idx_resources_created_at    ON resources(created_at);
+            CREATE INDEX IF NOT EXISTS idx_note_links_target       ON note_links(target_note_id);
             CREATE INDEX IF NOT EXISTS idx_entity_changes_changed_at ON entity_changes(changed_at);
             ",
         )
@@ -356,6 +368,31 @@ impl DbBackend {
                 libsql::params![entity_type, entity_id, operation, now().to_rfc3339(), data,],
             )
             .await?;
+        Ok(())
+    }
+
+    /// Rebuild the `note_links` projection rows for `note`: clear the note's existing rows
+    /// and insert one row per distinct resolved `target_note_id`. Called on every note write
+    /// (create/update and applied sync changes) so backlinks stay indexed. Runs on the same
+    /// connection as the surrounding note write.
+    async fn refresh_note_links(&self, note: &Note) -> Result<(), StorageError> {
+        self.conn
+            .execute(
+                "DELETE FROM note_links WHERE source_note_id = ?1",
+                [note.id.to_string()],
+            )
+            .await?;
+        for link in &note.links {
+            if let Some(target) = link.target_note_id {
+                self.conn
+                    .execute(
+                        "INSERT OR IGNORE INTO note_links (source_note_id, target_note_id)
+                         VALUES (?1, ?2)",
+                        [note.id.to_string(), target.to_string()],
+                    )
+                    .await?;
+            }
+        }
         Ok(())
     }
 
@@ -727,6 +764,7 @@ impl NoteRepository for DbBackend {
                     ],
                 )
                 .await?;
+            self.refresh_note_links(&note).await?;
             let data = serde_json::to_value(&note).ok().map(|v| v.to_string());
             self.record_change("note", &note.id.to_string(), "create", data).await
         }
@@ -792,6 +830,7 @@ impl NoteRepository for DbBackend {
             if affected == 0 {
                 return Err(StorageError::NotFound(note.id.to_string()));
             }
+            self.refresh_note_links(&note).await?;
             let data = serde_json::to_value(&note).ok().map(|v| v.to_string());
             self.record_change("note", &note.id.to_string(), "update", data)
                 .await
@@ -873,6 +912,29 @@ impl NoteRepository for DbBackend {
         Ok(build_page(notes, limit as usize, |n| {
             format!("{}|{}", n.created_at.to_rfc3339(), n.id)
         }))
+    }
+
+    async fn note_backlinks(&self, target_id: Uuid) -> Result<Vec<Note>, StorageError> {
+        // Indexed lookup via the `note_links` projection joined back to live notes, instead
+        // of the default full scan. `idx_note_links_target` makes the `WHERE` an index seek.
+        let _read_guard = self.lock.read().await;
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT n.id,n.title,n.body,n.notebook_id,n.is_todo,n.todo_due,n.todo_completed,
+                        n.created_at,n.updated_at,n.deleted_at,n.alias,n.bookmarks,n.links
+                 FROM note_links nl
+                 JOIN notes n ON n.id = nl.source_note_id
+                 WHERE nl.target_note_id = ?1 AND n.deleted_at IS NULL
+                 ORDER BY n.created_at ASC, n.id ASC",
+                [target_id.to_string()],
+            )
+            .await?;
+        let mut notes = Vec::new();
+        while let Some(row) = rows.next().await? {
+            notes.push(Self::row_to_note(&row)?);
+        }
+        Ok(notes)
     }
 }
 
@@ -1485,6 +1547,8 @@ impl SyncBackend for DbBackend {
                 {
                     return Ok(());
                 }
+                // Refresh the link index before the INSERT consumes the note's fields.
+                self.refresh_note_links(&note).await?;
                 self.conn
                     .execute(
                         "INSERT OR REPLACE INTO notes
