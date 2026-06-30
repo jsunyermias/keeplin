@@ -331,6 +331,20 @@ message ResolveReferenceResponse {
   optional uint32 bookmark_number = 2;
 }
 
+message NoteAliasConflict {
+  string alias       = 1;
+  repeated Note notes = 2;  // the colliding notes, ordered by uuid
+}
+message NotebookAliasConflict {
+  string alias                = 1;
+  repeated Notebook notebooks = 2;  // the colliding notebooks, ordered by uuid
+}
+message ListAliasConflictsRequest {}
+message ListAliasConflictsResponse {
+  repeated NoteAliasConflict notes         = 1;
+  repeated NotebookAliasConflict notebooks = 2;
+}
+
 // ── Service definition ────────────────────────────────────────────────────────
 
 service KeeplinService {
@@ -372,6 +386,7 @@ service KeeplinService {
   rpc RemoveNoteLink    (RemoveNoteLinkRequest)    returns (RemoveNoteLinkResponse);
   rpc ListBacklinks     (ListBacklinksRequest)     returns (ListBacklinksResponse);
   rpc ResolveReference  (ResolveReferenceRequest)  returns (ResolveReferenceResponse);
+  rpc ListAliasConflicts (ListAliasConflictsRequest) returns (ListAliasConflictsResponse);
 
   // Sync (server-streaming so progress can be reported)
   rpc Sync (SyncRequest) returns (stream SyncProgress);

@@ -31,10 +31,11 @@ use crate::proto::keeplin::{
     DeleteResourceRequest, DeleteResourceResponse, DeleteTagRequest, DeleteTagResponse,
     EditBookmarkAliasRequest, EditBookmarkAliasResponse, GetNoteRequest, GetNoteResponse,
     GetNotebookRequest, GetNotebookResponse, GetResourceRequest, GetResourceResponse,
-    GetTagRequest, GetTagResponse, ListBacklinksRequest, ListBacklinksResponse,
-    ListNoteTagsRequest, ListNoteTagsResponse, ListNotebooksRequest, ListNotebooksResponse,
-    ListNotesRequest, ListNotesResponse, ListResourcesRequest, ListResourcesResponse,
-    ListTagsRequest, ListTagsResponse, Note, NoteLink as ProtoNoteLink, Notebook,
+    GetTagRequest, GetTagResponse, ListAliasConflictsRequest, ListAliasConflictsResponse,
+    ListBacklinksRequest, ListBacklinksResponse, ListNoteTagsRequest, ListNoteTagsResponse,
+    ListNotebooksRequest, ListNotebooksResponse, ListNotesRequest, ListNotesResponse,
+    ListResourcesRequest, ListResourcesResponse, ListTagsRequest, ListTagsResponse, Note,
+    NoteAliasConflict, NoteLink as ProtoNoteLink, Notebook, NotebookAliasConflict,
     RemoveNoteLinkRequest, RemoveNoteLinkResponse, RemoveNoteTagRequest, RemoveNoteTagResponse,
     ResolveReferenceRequest, ResolveReferenceResponse, Resource, SetNoteAliasRequest,
     SetNoteAliasResponse, SetNotebookAliasRequest, SetNotebookAliasResponse, SyncProgress,
@@ -727,6 +728,33 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                 note_id: None,
                 bookmark_number: None,
             },
+        }))
+    }
+
+    async fn list_alias_conflicts(
+        &self,
+        _req: Request<ListAliasConflictsRequest>,
+    ) -> Result<Response<ListAliasConflictsResponse>, Status> {
+        let conflicts = linking::alias_conflicts(self.backend.as_ref())
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(ListAliasConflictsResponse {
+            notes: conflicts
+                .notes
+                .into_iter()
+                .map(|c| NoteAliasConflict {
+                    alias: c.alias,
+                    notes: c.entities.into_iter().map(note_to_proto).collect(),
+                })
+                .collect(),
+            notebooks: conflicts
+                .notebooks
+                .into_iter()
+                .map(|c| NotebookAliasConflict {
+                    alias: c.alias,
+                    notebooks: c.entities.into_iter().map(notebook_to_proto).collect(),
+                })
+                .collect(),
         }))
     }
 

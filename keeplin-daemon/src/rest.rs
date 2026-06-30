@@ -84,6 +84,7 @@ pub fn router(state: Shared) -> Router {
         )
         .route("/notes/:id/backlinks", get(list_backlinks))
         .route("/links/resolve", get(resolve_reference))
+        .route("/aliases/conflicts", get(list_alias_conflicts))
         .route("/notebooks", get(list_notebooks).post(create_notebook))
         .route(
             "/notebooks/:id",
@@ -398,6 +399,14 @@ async fn resolve_reference(
         }),
         None => json!({ "note_id": null, "bookmark_number": null }),
     }))
+}
+
+/// `GET /api/aliases/conflicts` — list note/notebook aliases shared by two or more live
+/// entities (the residue of a cross-device alias collision), so a human can rename one side.
+async fn list_alias_conflicts(
+    State(s): State<Shared>,
+) -> Result<Json<linking::AliasConflicts>, ApiError> {
+    Ok(Json(linking::alias_conflicts(s.backend.as_ref()).await?))
 }
 
 // ── Notebooks ───────────────────────────────────────────────────────────────────
@@ -943,6 +952,52 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["note_id"], serde_json::json!(target.id.to_string()));
         assert_eq!(v["bookmark_number"], serde_json::json!(1));
+    }
+
+    #[tokio::test]
+    async fn alias_conflicts_endpoint() {
+        // A plain FsBackend state (no LinkingBackend) has no write-time uniqueness check, so
+        // the same alias can be planted on two notes — the way a cross-device sync collision
+        // would appear.
+        let st = state(None).await;
+        let (_, b1) = call(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(r#"{"title":"a","body":""}"#),
+            None,
+        )
+        .await;
+        let (_, b2) = call(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(r#"{"title":"b","body":""}"#),
+            None,
+        )
+        .await;
+        let n1: Note = serde_json::from_slice(&b1).unwrap();
+        let n2: Note = serde_json::from_slice(&b2).unwrap();
+
+        for id in [n1.id, n2.id] {
+            let (code, _) = call(
+                &st,
+                "PUT",
+                &format!("/api/notes/{id}/alias"),
+                Some(r#"{"alias":"dup"}"#),
+                None,
+            )
+            .await;
+            assert_eq!(code, StatusCode::OK);
+        }
+
+        let (code, body) = call(&st, "GET", "/api/aliases/conflicts", None, None).await;
+        assert_eq!(code, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["notes"].as_array().unwrap().len(), 1);
+        assert_eq!(v["notes"][0]["alias"], "dup");
+        assert_eq!(v["notes"][0]["entities"].as_array().unwrap().len(), 2);
+        assert!(v["notebooks"].as_array().unwrap().is_empty());
     }
 
     // ── WebSocket feed (real socket, end to end) ─────────────────────────────────

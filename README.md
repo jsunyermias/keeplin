@@ -158,8 +158,8 @@ The service is defined in
 [`keeplin-daemon/proto/keeplin.proto`](keeplin-daemon/proto/keeplin.proto). `KeeplinService`
 provides CRUD + paginated list RPCs for **notes, notebooks, tags, and resources**, the
 note↔tag association RPCs, the **bookmark/link** RPCs (`SetNoteAlias`, `SetNotebookAlias`,
-`EditBookmarkAlias`, `AddNoteLink`, `RemoveNoteLink`, `ListBacklinks`, `ResolveReference` —
-see [Bookmarks & links](#bookmarks--links)), and a server‑streaming **`Sync`** RPC that
+`EditBookmarkAlias`, `AddNoteLink`, `RemoveNoteLink`, `ListBacklinks`, `ResolveReference`,
+`ListAliasConflicts` — see [Bookmarks & links](#bookmarks--links)), and a server‑streaming **`Sync`** RPC that
 reports progress through one sync cycle. Authentication is HTTP Basic Auth via the
 `authorization` metadata header: `Basic base64(user:password)`.
 
@@ -191,6 +191,7 @@ base64(user:password)` header (only required when `auth_username`/`auth_password
 | `DELETE /api/notes/:id/links/:index` | Remove the link at `index`. |
 | `GET /api/notes/:id/backlinks` | Notes that link **to** this note. |
 | `GET /api/links/resolve?ref=#…` | Resolve a reference → `{ "note_id", "bookmark_number" }`. |
+| `GET /api/aliases/conflicts` | Aliases shared by 2+ live notes/notebooks (sync collisions). |
 | `POST /api/sync` | Run one sync cycle; returns `{ "applied": <n> }`. |
 | `GET /api/ws` | Upgrade to the WebSocket live‑change feed (see below). |
 
@@ -256,7 +257,8 @@ otherwise it falls back to `note#bookmark` (so `#nota3#marcador5` / `#nota3#5` t
 bookmark without naming a notebook). Note and notebook **aliases** are user‑assigned and unique among live
 entities of each type (a duplicate is rejected with `409`/`ALREADY_EXISTS`); concurrent
 cross‑device edits can still introduce a collision through sync, in which case resolution
-deterministically picks the smallest‑uuid match and logs a warning. Each link records a
+deterministically picks the smallest‑uuid match and logs a warning, and the collision is
+listed by `GET /api/aliases/conflicts` (or `ListAliasConflicts`) so it can be cleaned up. Each link records a
 best‑effort `target_note_id`; `GET /api/links/resolve` (or the `ResolveReference` RPC) resolves
 a reference on demand, and `GET /api/notes/:id/backlinks` lists the notes pointing at a note
 (answered by an indexed `note_links` projection in `DbBackend`, and a scan in `FsBackend`).

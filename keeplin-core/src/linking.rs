@@ -32,6 +32,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::{
@@ -55,6 +56,23 @@ pub struct ResolvedReference {
     pub note_id: Uuid,
     /// The 1-based bookmark number, when the reference had a (resolved) bookmark segment.
     pub bookmark_number: Option<u32>,
+}
+
+/// One alias shared by two or more live entities of the same type — the residue of a
+/// cross-device alias collision that sync could not reject.
+#[derive(Debug, Clone, Serialize)]
+pub struct AliasConflict<T> {
+    /// The duplicated alias.
+    pub alias: String,
+    /// The colliding entities, ordered by uuid (the smallest is what resolution prefers).
+    pub entities: Vec<T>,
+}
+
+/// All current alias collisions, grouped by entity type. Empty vectors mean no conflicts.
+#[derive(Debug, Clone, Serialize)]
+pub struct AliasConflicts {
+    pub notes: Vec<AliasConflict<Note>>,
+    pub notebooks: Vec<AliasConflict<Notebook>>,
 }
 
 /// Decorator that maintains bookmarks/links and enforces alias uniqueness.
@@ -310,6 +328,44 @@ pub async fn backlinks(
     target_id: Uuid,
 ) -> Result<Vec<Note>, StorageError> {
     backend.note_backlinks(target_id).await
+}
+
+/// Group `items` by their (optional) alias, keeping only aliases shared by two or more
+/// entities. Groups are ordered by alias; entities within a group are ordered by uuid.
+fn group_conflicts<T>(
+    items: Vec<T>,
+    alias_of: impl Fn(&T) -> Option<String>,
+    id_of: impl Fn(&T) -> Uuid,
+) -> Vec<AliasConflict<T>> {
+    let mut by_alias: std::collections::BTreeMap<String, Vec<T>> =
+        std::collections::BTreeMap::new();
+    for item in items {
+        if let Some(alias) = alias_of(&item) {
+            by_alias.entry(alias).or_default().push(item);
+        }
+    }
+    by_alias
+        .into_iter()
+        .filter(|(_, group)| group.len() >= 2)
+        .map(|(alias, mut entities)| {
+            entities.sort_by_key(&id_of);
+            AliasConflict { alias, entities }
+        })
+        .collect()
+}
+
+/// List every alias currently shared by two or more **live** notes (or notebooks).
+///
+/// Local writes reject duplicate aliases, but sync replays edits made independently on other
+/// devices, so a collision can still appear after a sync. This surfaces those collisions so a
+/// human can rename one side; resolution itself stays deterministic in the meantime.
+pub async fn alias_conflicts(backend: &dyn StorageBackend) -> Result<AliasConflicts, StorageError> {
+    let notes = collect_notes(backend).await?;
+    let notebooks = collect_notebooks(backend).await?;
+    Ok(AliasConflicts {
+        notes: group_conflicts(notes, |n| n.alias.clone(), |n| n.id),
+        notebooks: group_conflicts(notebooks, |nb| nb.alias.clone(), |nb| nb.id),
+    })
 }
 
 /// Set (or clear) a note's alias and persist it (read-modify-write → one `NoteUpdate`).
@@ -705,5 +761,30 @@ mod tests {
         let r = resolve(&be, "#lib1#nA").await.unwrap().unwrap();
         assert_eq!(r.note_id, note.id);
         assert_eq!(r.bookmark_number, None);
+    }
+
+    #[tokio::test]
+    async fn alias_conflicts_lists_duplicates() {
+        // A raw FsBackend (no LinkingBackend) lets us plant a duplicate alias the way sync
+        // would, bypassing the write-time uniqueness check.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let fs = FsBackend::new(&path).await.unwrap();
+
+        for title in ["a", "b"] {
+            let mut n = Note::new(title, "");
+            n.alias = Some("dup".to_string());
+            fs.create_note(n).await.unwrap();
+        }
+        let mut unique = Note::new("c", "");
+        unique.alias = Some("unique".to_string());
+        fs.create_note(unique).await.unwrap();
+
+        let conflicts = alias_conflicts(&fs).await.unwrap();
+        assert_eq!(conflicts.notes.len(), 1);
+        assert_eq!(conflicts.notes[0].alias, "dup");
+        assert_eq!(conflicts.notes[0].entities.len(), 2);
+        assert!(conflicts.notebooks.is_empty());
     }
 }

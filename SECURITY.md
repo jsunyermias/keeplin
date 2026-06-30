@@ -138,8 +138,10 @@ ensures the deletion propagates correctly to other synced devices.
   assign the same alias before they exchange changes; that collision is not rejected on
   apply. Reference resolution tolerates it by deterministically picking the smallest-uuid
   match and logging a warning, so behaviour stays convergent — but the duplicate persists
-  until a human renames one. (No database `UNIQUE` constraint is used: under encryption the
-  stored alias is per-write ciphertext, and a hard constraint would break sync on apply.)
+  until a human renames one. Such collisions are surfaced by `GET /api/aliases/conflicts`
+  (and the `ListAliasConflicts` RPC) for cleanup. (No database `UNIQUE` constraint is used:
+  under encryption the stored alias is per-write ciphertext, and a hard constraint would
+  break sync on apply.)
 
 - **Filesystem notes resolve conflicts with per-note version vectors.** In `FsBackend`,
   each note keeps one append-only log per device (`notes/{id}/log.{device}.msgpack`,
