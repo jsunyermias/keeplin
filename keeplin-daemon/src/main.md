@@ -13,25 +13,57 @@ REST/JSON + WebSocket surface on a second listener, both sharing one backend `Ar
 
 | Type | Kind | Description |
 |------|------|-------------|
-| `Args` | struct | Command-line arguments parsed by `clap` |
+| `Args` | struct | Command-line arguments parsed by `clap` (a `--config` flag + an optional subcommand) |
+| `Command` | enum | The optional subcommands; currently just `Migrate { from, to }` |
 
 ## Program flow
 
 ```
 main()
- 1. Parse Args (--config flag; default: keeplin.toml)
- 2. Load Config from file (or default if file absent)
- 3. Apply env var overrides (KEEPLIN_ENCRYPTION_PASSWORD, KEEPLIN_AUTH_PASSWORD, KEEPLIN_AUTH_USERNAME)
- 4. Warn if gRPC is exposed to the network without authentication
- 5. Construct backend according to (mode, encryption_password):
+ 1. Parse Args (--config flag; default: keeplin.toml) + optional subcommand
+ 2. Dispatch:
+      • no subcommand  → serve(load_config(--config))
+      • `migrate`      → run_migrate(--from, --to)
+```
+
+`load_config(path)` reads the TOML file (or falls back to `Config::default`) and applies the
+env-var overrides (`KEEPLIN_ENCRYPTION_PASSWORD`, `KEEPLIN_KEY_SALT`, `KEEPLIN_AUTH_PASSWORD`,
+`KEEPLIN_AUTH_USERNAME`). Both `serve` and `run_migrate` use it, so a migration side is
+configured exactly like a running daemon.
+
+### `serve` (the default, no-subcommand path)
+
+```
+serve(cfg)
+ 1. Warn if gRPC / HTTP is exposed to the network without authentication
+ 2. Construct backend according to (mode, encryption_password):
     ┌─────────────────────┬───────────────────────────────────┐
     │ (Offline, None)     │ FsBackend                         │
     │ (Offline, Some(pw)) │ EncryptedBackend<FsBackend>       │
     │ (Server, None)      │ DbBackend                         │
     │ (Server, Some(pw))  │ EncryptedBackend<DbBackend>       │
     └─────────────────────┴───────────────────────────────────┘
- 6. Call run_server(cfg, addr, backend)
+ 3. Call run_server(cfg, addr, backend)
 ```
+
+### `migrate` subcommand — `run_migrate(from, to)`
+
+`keeplin-daemon migrate --from <a.toml> --to <b.toml>` copies a whole store between backends
+and exits (it does **not** start the server):
+
+1. `load_config` each side independently (so modes, paths, and encryption keys are separate).
+2. `build_storage(cfg)` builds each side's **base** stack — `Fs|Db` + optional
+   `EncryptedBackend`, **without** the `LinkingBackend`/`EventBackend` decorators — type-erased
+   as `Arc<dyn StorageBackend>` so both heterogeneous backends can be held at once.
+3. `keeplin_core::migrate::migrate(src, dst)` copies all live entities via the typed `create_*`
+   methods; the resulting `MigrationReport` counts are logged and printed.
+
+Because each side is built from its own config, migration handles `Fs ↔ Db` and
+plaintext ↔ encrypted (even different keys) transparently. See `keeplin-core/src/migrate.md`.
+
+> `build_storage` returns the base stack only; the server path (`serve` → `run_server`) keeps
+> its own generic, monomorphised construction because `run_server<B>` and the decorator
+> wrapping need the concrete backend type.
 
 ### `run_server`
 
@@ -81,11 +113,16 @@ immediately without inspecting the header (authentication is disabled).
 ## Command-line interface
 
 ```
-keeplin-daemon [OPTIONS]
+keeplin-daemon [OPTIONS]                     # run the server (default)
+keeplin-daemon migrate --from <A> --to <B>   # copy a store between backends, then exit
 
 Options:
   -c, --config <PATH>  Path to the TOML configuration file [default: keeplin.toml]
   -h, --help           Print help
+
+migrate:
+  --from <PATH>  Config of the source backend to read from
+  --to <PATH>    Config of the destination backend to write to
 ```
 
 ## Environment variables
@@ -123,6 +160,7 @@ deliberate reminder that the server is exposed to the network without protection
 - `keeplin-daemon/src/rest.rs` — the REST/WebSocket surface served on `http_addr`
 - `keeplin-daemon/src/event_backend.rs` — the outermost decorator + live-feed source
 - `keeplin-core/src/linking.rs` — the `LinkingBackend` decorator added here
+- `keeplin-core/src/migrate.rs` — the state copy driven by the `migrate` subcommand
 - `keeplin-core/src/storage/fs.rs` — used in offline mode
 - `keeplin-core/src/storage/db.rs` — used in server mode
 - `keeplin-core/src/encryption.rs` — wraps the backend when a password is configured

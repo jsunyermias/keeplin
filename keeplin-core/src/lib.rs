@@ -12,6 +12,7 @@
 //! - [`links`] — bookmark/link types and the pure `#…` reference + `[t](###)` bookmark grammar.
 //! - [`linking`] — `LinkingBackend<B>`: decorator that derives bookmarks/links from each
 //!   note body, resolves references, and enforces alias uniqueness.
+//! - [`migrate`] — one-shot state copy between any two backends (e.g. `FsBackend ↔ DbBackend`).
 //! - [`models`] — Domain types (`Note`, `Notebook`, `Tag`, `Resource`, `Change`, …).
 //! - [`storage`] — `StorageBackend` trait plus `FsBackend` and `DbBackend` implementations.
 //! - [`sync`] — `SyncEngine`: orchestrates a full push-then-pull sync cycle.
@@ -20,6 +21,7 @@ pub mod encryption;
 pub mod error;
 pub mod linking;
 pub mod links;
+pub mod migrate;
 pub mod models;
 pub mod storage;
 pub mod sync;

@@ -40,6 +40,28 @@ struct Args {
     /// and logs a warning.
     #[arg(short, long, default_value = "keeplin.toml")]
     config: std::path::PathBuf,
+
+    /// When present, run a one-off subcommand instead of starting the server.
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Command {
+    /// Copy all data from one backend into another, then exit (does not start the server).
+    ///
+    /// Each side is described by its own config file, so this works for any combination of
+    /// filesystem/server mode and plaintext/encrypted storage. It is a one-shot copy of the
+    /// current live state into a fresh destination — see the "Migrating between backends"
+    /// section of the README.
+    Migrate {
+        /// Config file describing the source backend to read from.
+        #[arg(long)]
+        from: std::path::PathBuf,
+        /// Config file describing the destination backend to write to.
+        #[arg(long)]
+        to: std::path::PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -50,20 +72,26 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    let mut cfg = if args.config.exists() {
-        Config::from_file(&args.config)?
+    match args.command {
+        Some(Command::Migrate { from, to }) => run_migrate(&from, &to).await,
+        None => serve(load_config(&args.config)?).await,
+    }
+}
+
+/// Load a [`Config`] from `path` (falling back to defaults if the file is absent) and apply
+/// the environment-variable overrides.
+///
+/// Overrides are applied after the TOML file is parsed so operators can keep sensitive
+/// credentials out of the configuration file entirely — the file can be committed to version
+/// control while secrets are injected at deploy time through environment variables.
+fn load_config(path: &std::path::Path) -> anyhow::Result<Config> {
+    let mut cfg = if path.exists() {
+        Config::from_file(path)?
     } else {
-        tracing::warn!(
-            path = %args.config.display(),
-            "Config file not found; using defaults"
-        );
+        tracing::warn!(path = %path.display(), "Config file not found; using defaults");
         Config::default()
     };
 
-    // Environment variable overrides are applied after the TOML file is parsed.
-    // This allows operators to keep sensitive credentials out of the configuration
-    // file entirely — the file can be committed to version control while secrets
-    // are injected at deploy time through environment variables.
     if let Ok(pw) = std::env::var("KEEPLIN_ENCRYPTION_PASSWORD") {
         cfg.encryption_password = Some(pw);
     }
@@ -76,7 +104,12 @@ async fn main() -> anyhow::Result<()> {
     if let Ok(user) = std::env::var("KEEPLIN_AUTH_USERNAME") {
         cfg.auth_username = Some(user);
     }
+    Ok(cfg)
+}
 
+/// Build the storage backend and run the gRPC (+ optional REST/WebSocket) server until
+/// shutdown.
+async fn serve(cfg: Config) -> anyhow::Result<()> {
     let addr: std::net::SocketAddr = cfg.grpc_addr.parse()?;
 
     // Emit a warning when the gRPC port is bound to a non-loopback address but
@@ -160,6 +193,73 @@ async fn resolve_key_salt<B: StorageBackend>(cfg: &Config, backend: &B) -> anyho
         Some(salt) => Ok(salt.as_bytes().to_vec()),
         None => Ok(backend.get_device_id().await?.into_bytes()),
     }
+}
+
+/// Build the **base** storage stack described by `cfg`, type-erased behind
+/// `Arc<dyn StorageBackend>`.
+///
+/// This is the storage layer only — `FsBackend`/`DbBackend` plus an optional
+/// [`EncryptedBackend`] — **without** the `LinkingBackend`/`EventBackend` decorators the
+/// server adds. It is used by [`run_migrate`], which needs to hold two heterogeneous backends
+/// at once and does not need link derivation or the live-change feed. The server path keeps
+/// its own generic (monomorphised) construction in [`serve`].
+async fn build_storage(cfg: &Config) -> anyhow::Result<Arc<dyn StorageBackend>> {
+    // Ensure the data directory exists. `FsBackend::new` already does this, but
+    // `DbBackend::new` opens the `.db` file directly and fails (SQLITE_CANTOPEN) if the
+    // parent is missing — which is the common case for a fresh migration destination.
+    tokio::fs::create_dir_all(&cfg.data_dir).await?;
+    Ok(match (cfg.mode.clone(), cfg.encryption_password.clone()) {
+        (Mode::Offline, None) => Arc::new(FsBackend::new(&cfg.data_dir).await?) as _,
+        (Mode::Offline, Some(pw)) => {
+            let backend = FsBackend::new(&cfg.data_dir).await?;
+            let salt = resolve_key_salt(cfg, &backend).await?;
+            Arc::new(EncryptedBackend::new(backend, &pw, &salt).await?) as _
+        }
+        (Mode::Server, None) => {
+            let db_path = cfg.data_dir.join("keeplin.db");
+            Arc::new(DbBackend::new(&db_path, &cfg.server_url, &cfg.auth_token).await?) as _
+        }
+        (Mode::Server, Some(pw)) => {
+            let db_path = cfg.data_dir.join("keeplin.db");
+            let backend = DbBackend::new(&db_path, &cfg.server_url, &cfg.auth_token).await?;
+            let salt = resolve_key_salt(cfg, &backend).await?;
+            Arc::new(EncryptedBackend::new(backend, &pw, &salt).await?) as _
+        }
+    })
+}
+
+/// Copy all data from the backend described by `from` into the backend described by `to`.
+///
+/// Each side is built from its own config (so encryption keys, modes, and paths are
+/// independent) and the copy runs through [`keeplin_core::migrate::migrate`], which uses the
+/// typed `create_*` methods so the destination stores and re-indexes every entity natively.
+/// This is a one-shot copy of the current live state into a fresh destination.
+async fn run_migrate(from: &std::path::Path, to: &std::path::Path) -> anyhow::Result<()> {
+    let from_cfg = load_config(from)?;
+    let to_cfg = load_config(to)?;
+    tracing::info!(
+        from = %from.display(), from_mode = ?from_cfg.mode,
+        to = %to.display(), to_mode = ?to_cfg.mode,
+        "Starting migration",
+    );
+
+    let src = build_storage(&from_cfg).await?;
+    let dst = build_storage(&to_cfg).await?;
+
+    let report = keeplin_core::migrate::migrate(src.as_ref(), dst.as_ref()).await?;
+    tracing::info!(
+        notebooks = report.notebooks,
+        tags = report.tags,
+        notes = report.notes,
+        note_tags = report.note_tags,
+        resources = report.resources,
+        "Migration complete",
+    );
+    println!(
+        "Migration complete: {} notebooks, {} tags, {} notes, {} note-tags, {} resources",
+        report.notebooks, report.tags, report.notes, report.note_tags, report.resources,
+    );
+    Ok(())
 }
 
 /// Configure and start the tonic gRPC server with the given `backend`.
