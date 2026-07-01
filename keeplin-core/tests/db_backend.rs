@@ -449,11 +449,11 @@ async fn note_alias_bookmarks_links_round_trip() {
     use keeplin_core::links::{Bookmark, LinkSource, NoteLink};
 
     let backend = in_memory_backend().await;
-    let mut note = Note::new("titled", "###Marcador1 and a [link](#other)");
-    note.alias = Some("nota3".to_string());
+    let mut note = Note::new("titled", "###Bookmark1 and a [link](#other)");
+    note.alias = Some("note3".to_string());
     note.bookmarks = vec![Bookmark {
         number: 1,
-        text: "Marcador1".to_string(),
+        text: "Bookmark1".to_string(),
         alias: "Custom".to_string(),
     }];
     note.links = vec![NoteLink {
@@ -466,7 +466,7 @@ async fn note_alias_bookmarks_links_round_trip() {
 
     // Read back: alias, bookmarks and links survive the SQLite columns.
     let read = backend.read_note(note.id).await.unwrap();
-    assert_eq!(read.alias.as_deref(), Some("nota3"));
+    assert_eq!(read.alias.as_deref(), Some("note3"));
     assert_eq!(read.bookmarks, note.bookmarks);
     assert_eq!(read.links, note.links);
 
@@ -484,13 +484,13 @@ async fn note_alias_bookmarks_links_round_trip() {
 async fn notebook_alias_round_trip() {
     let backend = in_memory_backend().await;
     let mut nb = Notebook::new("Work");
-    nb.alias = Some("libreta1".to_string());
+    nb.alias = Some("notebook1".to_string());
     backend.create_notebook(nb.clone()).await.unwrap();
     let read = backend.read_notebook(nb.id).await.unwrap();
-    assert_eq!(read.alias.as_deref(), Some("libreta1"));
+    assert_eq!(read.alias.as_deref(), Some("notebook1"));
 
     let (list, _) = backend.list_notebooks(10, None).await.unwrap();
-    assert_eq!(list[0].alias.as_deref(), Some("libreta1"));
+    assert_eq!(list[0].alias.as_deref(), Some("notebook1"));
 }
 
 #[tokio::test]

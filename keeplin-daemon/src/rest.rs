@@ -32,7 +32,7 @@ use chrono::{DateTime, Utc};
 use keeplin_core::{
     error::{StorageError, SyncError},
     linking,
-    links::{parse_link_ref, Bookmark, NoteLink},
+    links::{parse_link_ref, NoteLink},
     models::{now, Change, Note, NoteTag, Notebook, Resource, Tag},
     storage::StorageBackend,
     sync::run_sync,
@@ -75,7 +75,6 @@ pub fn router(state: Shared) -> Router {
             put(add_note_tag).delete(remove_note_tag),
         )
         .route("/notes/:id/alias", put(set_note_alias))
-        .route("/notes/:id/bookmarks", get(list_bookmarks))
         .route("/notes/:id/links", get(list_links).post(add_link))
         .route(
             "/notes/:id/links/:index",
@@ -286,7 +285,7 @@ async fn remove_note_tag(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ── Bookmarks & links ─────────────────────────────────────────────────────────────
+// ── Aliases & links ───────────────────────────────────────────────────────────────
 
 /// `{ "alias": "…" | null }` body shared by the alias-setting endpoints.
 #[derive(Debug, Deserialize)]
@@ -314,13 +313,6 @@ async fn set_note_alias(
     ))
 }
 
-async fn list_bookmarks(
-    State(s): State<Shared>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<Vec<Bookmark>>, ApiError> {
-    Ok(Json(read_live_note(&s, id).await?.bookmarks))
-}
-
 async fn list_links(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -328,7 +320,7 @@ async fn list_links(
     Ok(Json(read_live_note(&s, id).await?.links))
 }
 
-/// `{ "raw": "#libreta1#nota3#5" }` body for adding a manual (global) link.
+/// `{ "raw": "#notebook1#note3#5" }` body for adding a manual (global) link.
 #[derive(Debug, Deserialize)]
 struct AddLinkBody {
     raw: String,
@@ -369,7 +361,7 @@ async fn list_backlinks(
     ))
 }
 
-/// `?ref=#libreta1#nota3#5` query for resolving a reference to a note (+ bookmark number).
+/// `?ref=#notebook1#note3#5` query for resolving a reference to a note (+ bookmark number).
 #[derive(Debug, Deserialize)]
 struct ResolveQuery {
     #[serde(rename = "ref")]
@@ -811,7 +803,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bookmarks_alias_and_links_endpoints() {
+    async fn alias_and_links_endpoints() {
         let st = linking_state().await;
 
         // Create a note whose body declares a bookmark (with an inline alias) and a link.
@@ -819,7 +811,7 @@ mod tests {
             &st,
             "POST",
             "/api/notes",
-            Some(r#"{"title":"T","body":"intro [Marcador1](### \"Custom\") and [l](#other)"}"#),
+            Some(r#"{"title":"T","body":"intro [Anchor1](### \"Custom\") and [l](#other)"}"#),
             None,
         )
         .await;
@@ -827,21 +819,12 @@ mod tests {
         let note: Note = serde_json::from_slice(&body).unwrap();
         let id = note.id;
 
-        // The bookmark was derived, with its alias taken from the link title.
-        let (code, body) = call(
-            &st,
-            "GET",
-            &format!("/api/notes/{id}/bookmarks"),
-            None,
-            None,
-        )
-        .await;
-        assert_eq!(code, StatusCode::OK);
-        let bms: Vec<Bookmark> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(bms.len(), 1);
-        assert_eq!(bms[0].number, 1);
-        assert_eq!(bms[0].text, "Marcador1");
-        assert_eq!(bms[0].alias, "Custom");
+        // The bookmark was derived from the body and is returned inline on the note
+        // (there is no dedicated bookmark endpoint — the body is the source of truth).
+        assert_eq!(note.bookmarks.len(), 1);
+        assert_eq!(note.bookmarks[0].number, 1);
+        assert_eq!(note.bookmarks[0].text, "Anchor1");
+        assert_eq!(note.bookmarks[0].alias, "Custom");
 
         // Content link present; add a manual link and then remove it.
         let (code, body) = call(&st, "GET", &format!("/api/notes/{id}/links"), None, None).await;
@@ -897,7 +880,7 @@ mod tests {
             &st,
             "PUT",
             &format!("/api/notes/{}/alias", target.id),
-            Some(r#"{"alias":"nota3"}"#),
+            Some(r#"{"alias":"note3"}"#),
             None,
         )
         .await;
@@ -907,7 +890,7 @@ mod tests {
                 .unwrap()
                 .alias
                 .as_deref(),
-            Some("nota3")
+            Some("note3")
         );
 
         // Source note links to the target by alias.
@@ -915,7 +898,7 @@ mod tests {
             &st,
             "POST",
             "/api/notes",
-            Some(r#"{"title":"src","body":"see [x](#nota3)"}"#),
+            Some(r#"{"title":"src","body":"see [x](#note3)"}"#),
             None,
         )
         .await;

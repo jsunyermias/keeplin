@@ -29,7 +29,6 @@ All under `/api`, all behind the auth middleware.
 | `GET/POST /notes`, `GET/PUT/DELETE /notes/:id` | note CRUD (cursor pagination on list) |
 | `GET /notes/:id/tags`, `PUT/DELETE /notes/:note_id/tags/:tag_id` | note↔tag associations |
 | `PUT /notes/:id/alias`, `PUT /notebooks/:id/alias` | set/clear an alias |
-| `GET /notes/:id/bookmarks` | list bookmarks (declared in the body) |
 | `GET/POST /notes/:id/links`, `DELETE /notes/:id/links/:index` | list / add-manual / remove links |
 | `GET /notes/:id/backlinks?page_size=&page_token=` | notes linking **to** this note (paginated) |
 | `GET /links/resolve?ref=#…` | resolve a reference → `{ note_id, bookmark_number }` |

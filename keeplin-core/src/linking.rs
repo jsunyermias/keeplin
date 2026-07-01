@@ -671,22 +671,22 @@ mod tests {
     async fn derives_bookmarks_and_content_links() {
         let be = backend().await;
         let body =
-            "Intro [Marcador1](###) y [Otro](### \"Alias2\") y un [enlace](#libreta1#nota3#1)";
+            "Intro [Bookmark1](###) and [Other](### \"Alias2\") and a [link](#notebook1#note3#1)";
         let stored = be.create_note(Note::new("t", body)).await.unwrap();
 
         assert_eq!(stored.bookmarks.len(), 2);
         assert_eq!(stored.bookmarks[0].number, 1);
-        assert_eq!(stored.bookmarks[0].text, "Marcador1");
+        assert_eq!(stored.bookmarks[0].text, "Bookmark1");
         // No title → alias defaults to the link text.
-        assert_eq!(stored.bookmarks[0].alias, "Marcador1");
+        assert_eq!(stored.bookmarks[0].alias, "Bookmark1");
         assert_eq!(stored.bookmarks[1].number, 2);
-        assert_eq!(stored.bookmarks[1].text, "Otro");
+        assert_eq!(stored.bookmarks[1].text, "Other");
         // Title present → alias is the title.
         assert_eq!(stored.bookmarks[1].alias, "Alias2");
 
         assert_eq!(stored.links.len(), 1);
         assert_eq!(stored.links[0].source, LinkSource::Content);
-        assert_eq!(stored.links[0].raw, "#libreta1#nota3#1");
+        assert_eq!(stored.links[0].raw, "#notebook1#note3#1");
     }
 
     #[tokio::test]
@@ -694,14 +694,14 @@ mod tests {
         let be = backend().await;
         // The alias lives in the body (the link title); editing the body changes it.
         let note = be
-            .create_note(Note::new("t", "[Marcador1](### \"Custom\") hi"))
+            .create_note(Note::new("t", "[Bookmark1](### \"Custom\") hi"))
             .await
             .unwrap();
-        assert_eq!(note.bookmarks[0].text, "Marcador1");
+        assert_eq!(note.bookmarks[0].text, "Bookmark1");
         assert_eq!(note.bookmarks[0].alias, "Custom");
 
         let mut note = note;
-        note.body = "[Marcador1](### \"Renamed\") hi, edited".to_string();
+        note.body = "[Bookmark1](### \"Renamed\") hi, edited".to_string();
         let note = be.update_note(note).await.unwrap();
         assert_eq!(note.bookmarks[0].alias, "Renamed");
     }
@@ -709,14 +709,14 @@ mod tests {
     #[tokio::test]
     async fn resolves_link_by_alias_and_uuid() {
         let be = backend().await;
-        // Target note with alias "nota3".
+        // Target note with alias "note3".
         let mut target = Note::new("target", "[Anchor](###) body");
-        target.alias = Some("nota3".to_string());
+        target.alias = Some("note3".to_string());
         let target = be.create_note(target).await.unwrap();
 
         // Source note linking to it by alias.
         let src = be
-            .create_note(Note::new("src", "go [here](#nota3)"))
+            .create_note(Note::new("src", "go [here](#note3)"))
             .await
             .unwrap();
         assert_eq!(src.links[0].target_note_id, Some(target.id));
@@ -768,16 +768,16 @@ mod tests {
     async fn resolves_two_segment_note_bookmark_shorthand() {
         let be = backend().await;
         let mut target = Note::new("target", "[Anchor](###) body");
-        target.alias = Some("nota3".to_string());
+        target.alias = Some("note3".to_string());
         let target = be.create_note(target).await.unwrap();
 
         // `#note#bookmark` by bookmark alias.
-        let r = resolve(&be, "#nota3#Anchor").await.unwrap().unwrap();
+        let r = resolve(&be, "#note3#Anchor").await.unwrap().unwrap();
         assert_eq!(r.note_id, target.id);
         assert_eq!(r.bookmark_number, Some(1));
 
         // `#note#bookmark` by bookmark number.
-        let r = resolve(&be, "#nota3#1").await.unwrap().unwrap();
+        let r = resolve(&be, "#note3#1").await.unwrap().unwrap();
         assert_eq!(r.note_id, target.id);
         assert_eq!(r.bookmark_number, Some(1));
     }

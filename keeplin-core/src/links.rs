@@ -1,4 +1,4 @@
-//! Note bookmarks (marcadores) and inter-note links (enlaces): types and pure parsing.
+//! Note bookmarks and inter-note links: types and pure parsing.
 //!
 //! This module is intentionally I/O-free so the grammar can be unit-tested in isolation.
 //! It defines the persisted [`Bookmark`] / [`NoteLink`] types that live as fields on
@@ -10,16 +10,16 @@
 //! # Bookmarks
 //!
 //! A bookmark is an in-note anchor written as a **markdown link whose destination is exactly
-//! `###`** — a link that goes nowhere: `[Texto del marcador](### "Alias del marcador")`. The
-//! link **text** becomes the bookmark's `text`; the optional link **title** (in quotes) becomes
-//! its `alias`, defaulting to the text when omitted (`[Texto](###)`); its `number` is its
-//! 1-based position among the note's bookmarks. The body is the single source of truth — the
-//! alias is edited by editing the title in the body, not through a separate API.
+//! `###`** — a link that goes nowhere: `[text](### "alias")`. The link **text** becomes the
+//! bookmark's `text`; the optional link **title** (in quotes) becomes its `alias`, defaulting
+//! to the text when omitted (`[text](###)`); its `number` is its 1-based position among the
+//! note's bookmarks. The body is the single source of truth — there is no bookmark API;
+//! bookmarks are created, renamed, and removed by editing the note body.
 //!
 //! # Links
 //!
 //! Content links are standard markdown links whose destination starts with `#`, e.g.
-//! `[texto](#libreta1#nota3#5)`. The destination is a reference with this grammar:
+//! `[text](#notebook1#note3#5)`. The destination is a reference with this grammar:
 //!
 //! | Form | Meaning |
 //! |------|---------|
@@ -30,7 +30,7 @@
 //! [`parse_link_ref`] is purely structural and reads a two-segment `#a#b` as `notebook#note`.
 //! Resolution (in [`crate::linking`]) is smarter: it keeps that reading when `b` is a
 //! resolvable note, but otherwise falls back to `note#bookmark`, so a bookmark can be targeted
-//! without naming a notebook (`#nota3#marcador5`).
+//! without naming a notebook (`#note3#anchor5`).
 
 use std::sync::OnceLock;
 
@@ -239,19 +239,19 @@ mod tests {
 
     #[test]
     fn parses_one_two_three_segments() {
-        let one = parse_link_ref("#nota3").unwrap();
-        assert_eq!(one.note, Reference::Alias("nota3".into()));
+        let one = parse_link_ref("#note3").unwrap();
+        assert_eq!(one.note, Reference::Alias("note3".into()));
         assert!(one.notebook.is_none() && one.bookmark.is_none());
 
-        let two = parse_link_ref("#libreta1#nota3").unwrap();
-        assert_eq!(two.notebook, Some(Reference::Alias("libreta1".into())));
-        assert_eq!(two.note, Reference::Alias("nota3".into()));
+        let two = parse_link_ref("#notebook1#note3").unwrap();
+        assert_eq!(two.notebook, Some(Reference::Alias("notebook1".into())));
+        assert_eq!(two.note, Reference::Alias("note3".into()));
         assert!(two.bookmark.is_none());
 
-        let three = parse_link_ref("#libreta1#nota3#marcador5").unwrap();
-        assert_eq!(three.bookmark, Some(BookmarkRef::Alias("marcador5".into())));
+        let three = parse_link_ref("#notebook1#note3#anchor5").unwrap();
+        assert_eq!(three.bookmark, Some(BookmarkRef::Alias("anchor5".into())));
 
-        let numbered = parse_link_ref("#libreta1#nota3#5").unwrap();
+        let numbered = parse_link_ref("#notebook1#note3#5").unwrap();
         assert_eq!(numbered.bookmark, Some(BookmarkRef::Number(5)));
     }
 
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn rejects_malformed_refs() {
-        assert!(parse_link_ref("nota3").is_none()); // missing leading '#'
+        assert!(parse_link_ref("note3").is_none()); // missing leading '#'
         assert!(parse_link_ref("#").is_none()); // empty single segment
         assert!(parse_link_ref("#a##b").is_none()); // empty middle segment
         assert!(parse_link_ref("#a#b#c#d").is_none()); // too many segments
@@ -281,17 +281,17 @@ mod tests {
     #[test]
     fn extracts_bookmarks_with_and_without_alias_in_order() {
         let body =
-            "Intro [Marcador1](###) mid\n### not a bookmark (heading)\n[Otro](### \"Alias\") end";
+            "Intro [Bookmark1](###) mid\n### not a bookmark (heading)\n[Other](### \"Alias\") end";
         let marks = parse_bookmarks(body);
         assert_eq!(
             marks,
             vec![
                 DerivedBookmark {
-                    text: "Marcador1".to_string(),
+                    text: "Bookmark1".to_string(),
                     alias: None,
                 },
                 DerivedBookmark {
-                    text: "Otro".to_string(),
+                    text: "Other".to_string(),
                     alias: Some("Alias".to_string()),
                 },
             ]
@@ -301,11 +301,11 @@ mod tests {
     #[test]
     fn extracts_content_links_excluding_bookmarks() {
         let body =
-            "see [a](#nota3) and [b](#libreta1#nota3#5), a bookmark [c](###), but not [d](http://x) or [e](#)";
+            "see [a](#note3) and [b](#notebook1#note3#5), a bookmark [c](###), but not [d](http://x) or [e](#)";
         let links = parse_content_links(body);
         assert_eq!(
             links,
-            vec!["#nota3".to_string(), "#libreta1#nota3#5".to_string()]
+            vec!["#note3".to_string(), "#notebook1#note3#5".to_string()]
         );
     }
 }

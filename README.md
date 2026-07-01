@@ -164,7 +164,7 @@ encryption is on without `key_salt`.
 The service is defined in
 [`keeplin-daemon/proto/keeplin.proto`](keeplin-daemon/proto/keeplin.proto). `KeeplinService`
 provides CRUD + paginated list RPCs for **notes, notebooks, tags, and resources**, the
-note↔tag association RPCs, the **bookmark/link** RPCs (`SetNoteAlias`, `SetNotebookAlias`,
+note↔tag association RPCs, the **alias/link** RPCs (`SetNoteAlias`, `SetNotebookAlias`,
 `AddNoteLink`, `RemoveNoteLink`, `ListBacklinks`, `ResolveReference`,
 `ListAliasConflicts` — see [Bookmarks & links](#bookmarks--links)), and a server‑streaming **`Sync`** RPC that
 reports progress through one sync cycle. Authentication is HTTP Basic Auth via the
@@ -192,7 +192,6 @@ base64(user:password)` header (only required when `auth_username`/`auth_password
 | `GET/POST /api/resources`, `GET/PUT/DELETE /api/resources/:id` | Resource metadata CRUD. |
 | `GET /api/resources/:id/data` | Download the raw resource bytes. |
 | `PUT /api/notes/:id/alias`, `PUT /api/notebooks/:id/alias` | Set/clear an alias (`{ "alias": "…" \| null }`). |
-| `GET /api/notes/:id/bookmarks` | List a note's bookmarks (declared in the body). |
 | `GET/POST /api/notes/:id/links` | List / add a link (`POST {"raw":"#…"}`, manual link). |
 | `DELETE /api/notes/:id/links/:index` | Remove the link at `index`. |
 | `GET /api/notes/:id/backlinks?page_size=&page_token=` | Notes that link **to** this note (cursor pagination). |
@@ -241,21 +240,23 @@ Notes carry two kinds of in‑content navigation, both stored on the note (in `m
 for the filesystem backend, in the `notes` row for the database backend) and synced like any
 other note edit.
 
-**Bookmarks (marcadores)** are in‑note anchors written as a **markdown link whose destination
-is exactly `###`** — a link that goes nowhere:
+**Bookmarks** are in‑note anchors written as a **markdown link whose destination is exactly
+`###`** — a link that goes nowhere:
 
 ```markdown
-[Texto del marcador](### "Alias del marcador")
+[Bookmark text](### "Bookmark alias")
 ```
 
 The link **text** becomes the bookmark's `text`; the optional link **title** (in quotes) is its
-`alias`, defaulting to the text when omitted (`[Texto](###)`); its `number` is its 1‑based
-position among the note's bookmarks. The **body is the single source of truth** — to rename a
-bookmark you edit its title in the body (there is no separate alias endpoint).
+`alias`, defaulting to the text when omitted (`[Bookmark text](###)`); its `number` is its
+1‑based position among the note's bookmarks. The **body is the single source of truth**: there
+is **no bookmark API** — you create, rename, and delete bookmarks by editing the note body.
+The derived bookmarks are returned inline in the `bookmarks` field of each note (over gRPC and
+REST) so clients can display and reference them.
 
-**Links (enlaces)** connect notes. They are either **content‑derived** — a standard markdown
-link whose destination starts with `#`, e.g. `[texto](#libreta1#nota3#5)` — or **manual**
-(added via the API, not present in the body). A reference uses this grammar:
+**Links** connect notes. They are either **content‑derived** — a standard markdown link whose
+destination starts with `#`, e.g. `[text](#notebook1#note3#5)` — or **manual** (added via the
+API, not present in the body). A reference uses this grammar:
 
 | Form | Resolves to |
 |------|-------------|
@@ -264,17 +265,18 @@ link whose destination starts with `#`, e.g. `[texto](#libreta1#nota3#5)` — or
 | `#<note>#<bookmark>` | a note + bookmark (shorthand; see below) |
 | `#<notebook>#<note>#<bookmark>` | a note + bookmark (bookmark by **alias or number**) |
 
-For example `#libreta1#nota3#marcador5` (bookmark by alias) or `#libreta1#nota3#5` (by
+For example `#notebook1#note3#anchor5` (bookmark by alias) or `#notebook1#note3#5` (by
 number). A two‑segment `#a#b` is resolved as `notebook#note` when `b` is a resolvable note;
-otherwise it falls back to `note#bookmark` (so `#nota3#marcador5` / `#nota3#5` targets a
-bookmark without naming a notebook). Note and notebook **aliases** are user‑assigned and unique among live
-entities of each type (a duplicate is rejected with `409`/`ALREADY_EXISTS`); concurrent
-cross‑device edits can still introduce a collision through sync, in which case resolution
-deterministically picks the smallest‑uuid match and logs a warning, and the collision is
-listed by `GET /api/aliases/conflicts` (or `ListAliasConflicts`) so it can be cleaned up. Each link records a
-best‑effort `target_note_id`; `GET /api/links/resolve` (or the `ResolveReference` RPC) resolves
-a reference on demand, and `GET /api/notes/:id/backlinks` lists the notes pointing at a note
-(answered by an indexed `note_links` projection in `DbBackend`, and a scan in `FsBackend`).
+otherwise it falls back to `note#bookmark` (so `#note3#anchor5` / `#note3#5` targets a
+bookmark without naming a notebook). Note and notebook **aliases** are user‑assigned and unique
+among live entities of each type (a duplicate is rejected with `409`/`ALREADY_EXISTS`);
+concurrent cross‑device edits can still introduce a collision through sync, in which case
+resolution deterministically picks the smallest‑uuid match and logs a warning, and the
+collision is listed by `GET /api/aliases/conflicts` (or `ListAliasConflicts`) so it can be
+cleaned up. Each link records a best‑effort `target_note_id`; `GET /api/links/resolve` (or the
+`ResolveReference` RPC) resolves a reference on demand, and `GET /api/notes/:id/backlinks`
+lists the notes pointing at a note (answered by an indexed `note_links` projection in
+`DbBackend`, and a scan in `FsBackend`).
 
 > **Note on resolution cost.** Writing a note that *contains* links (or that sets an alias)
 > scans the note corpus to resolve alias references and enforce alias uniqueness; a plain note
