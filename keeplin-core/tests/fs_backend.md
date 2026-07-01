@@ -35,6 +35,7 @@ function returns. Tests run against the real filesystem — there is no mocking.
 | Test function | Scenario | Expected outcome |
 |---------------|----------|-----------------|
 | `create_and_read_notebook` | Create a notebook, read by ID | `title` matches; `deleted_at` is `None` |
+| `list_notebooks_includes_created` | Create a notebook, then `list_notebooks` | The notebook appears in the list (regression: the `.msgpack` sidecar must be matched by the listing filter) |
 | `delete_notebook_soft_deletes` | Create, delete, list, then read raw | Absent from list; `deleted_at` is set when read directly |
 | `update_nonexistent_notebook_returns_not_found` | Update a notebook that does not exist | `StorageError::NotFound` |
 | `delete_nonexistent_notebook_returns_not_found` | Delete a notebook with an unknown UUID | `StorageError::NotFound` |
@@ -44,6 +45,7 @@ function returns. Tests run against the real filesystem — there is no mocking.
 | Test function | Scenario | Expected outcome |
 |---------------|----------|-----------------|
 | `create_and_read_tag` | Create a tag, read by ID | `title` matches |
+| `list_tags_includes_created` | Create a tag, then `list_tags` | The tag appears in the list (same `.msgpack` listing regression as notebooks) |
 | `add_and_list_note_tags` | Create note + tag, add association, list tags for the note | Returns one tag with the expected ID |
 | `remove_note_tag` | Add then remove a note-tag association, list again | Returns an empty list |
 | `update_nonexistent_tag_returns_not_found` | Update a tag that was never created | `StorageError::NotFound` |

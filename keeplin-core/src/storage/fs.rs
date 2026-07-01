@@ -1026,7 +1026,7 @@ impl NotebookRepository for FsBackend {
         let mut dir = tokio::fs::read_dir(self.root.join("notebooks")).await?;
         while let Some(entry) = dir.next_entry().await? {
             let fname = entry.file_name().to_string_lossy().to_string();
-            if let Some(stem) = fname.strip_suffix(".json") {
+            if let Some(stem) = fname.strip_suffix(".msgpack") {
                 if let Ok(id) = Uuid::parse_str(stem) {
                     match self.read_sidecar::<Notebook>(&entry.path(), id).await {
                         Ok(nb) if nb.deleted_at.is_none() => notebooks.push(nb),
@@ -1096,7 +1096,7 @@ impl TagRepository for FsBackend {
         let mut dir = tokio::fs::read_dir(self.root.join("tags")).await?;
         while let Some(entry) = dir.next_entry().await? {
             let fname = entry.file_name().to_string_lossy().to_string();
-            if let Some(stem) = fname.strip_suffix(".json") {
+            if let Some(stem) = fname.strip_suffix(".msgpack") {
                 if let Ok(id) = Uuid::parse_str(stem) {
                     match self.read_sidecar::<Tag>(&entry.path(), id).await {
                         Ok(t) if t.deleted_at.is_none() => tags.push(t),
@@ -1186,7 +1186,7 @@ impl ResourceRepository for FsBackend {
         let dir = self.resource_dir(resource.id);
         tokio::fs::create_dir_all(&dir).await?;
         // Write the binary payload first, then the metadata file. `read_resource` treats
-        // the presence of `meta.json` as proof the resource exists, so writing it last
+        // the presence of `meta.msgpack` as proof the resource exists, so writing it last
         // makes it the commit marker: a crash between the two writes leaves an orphan
         // data file (harmless, overwritten on retry) rather than a metadata record that
         // points at a missing payload.

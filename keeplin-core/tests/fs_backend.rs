@@ -225,6 +225,21 @@ async fn create_and_read_notebook() {
 }
 
 #[tokio::test]
+async fn list_notebooks_includes_created() {
+    // Regression: the sidecar is written as `{id}.msgpack`, so the listing must filter on
+    // that extension. A previous `.json` filter matched nothing and returned an empty list.
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    let nb = Notebook::new("Work");
+    let id = nb.id;
+    backend.create_notebook(nb).await.unwrap();
+
+    let (notebooks, _) = backend.list_notebooks(0, None).await.unwrap();
+    assert!(notebooks.iter().any(|n| n.id == id && n.title == "Work"));
+}
+
+#[tokio::test]
 async fn delete_notebook_soft_deletes() {
     let dir = tempdir().unwrap();
     let backend = FsBackend::new(dir.path()).await.unwrap();
@@ -254,6 +269,20 @@ async fn create_and_read_tag() {
 
     let read = backend.read_tag(id).await.unwrap();
     assert_eq!(read.title, "rust");
+}
+
+#[tokio::test]
+async fn list_tags_includes_created() {
+    // Regression: same `.msgpack`-vs-`.json` listing bug as notebooks, for tags.
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    let tag = Tag::new("rust");
+    let id = tag.id;
+    backend.create_tag(tag).await.unwrap();
+
+    let (tags, _) = backend.list_tags(0, None).await.unwrap();
+    assert!(tags.iter().any(|t| t.id == id && t.title == "rust"));
 }
 
 #[tokio::test]
