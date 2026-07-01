@@ -27,14 +27,20 @@
 //!
 //! ## Operational note: log growth
 //!
-//! Both the per-note logs and the global `logs/` NDJSON files are append-only and are
-//! **never pruned** by the backend (`prune_change_journal` is a deliberate no-op here,
-//! because removing entries a peer has not yet consumed would corrupt that peer's sync
-//! state). They therefore grow over the lifetime of the store — acceptable for typical
-//! note volumes, but operators running very large or long-lived stores should compact
-//! out-of-band once every device is known to have synced past a given point. There is
-//! intentionally no automatic mechanism, since safe compaction requires knowing every
-//! peer's consumed position, which lives outside this backend.
+//! **Per-note logs are compacted automatically.** Because each `log.{device}.msgpack` has a
+//! single writer, its last entry dominates all earlier ones, so once the log passes
+//! [`FsBackend::NOTE_LOG_COMPACT_THRESHOLD`] entries `append_note_op` collapses it to its
+//! frontier (the head, plus the newest `Upsert` needed to recover a tombstone winner's
+//! content) via [`note_log::compact_own_log`]. This is lossless — `merge` yields the same
+//! result — and bounds each per-note per-device log regardless of edit churn.
+//!
+//! The global `logs/` NDJSON files are still append-only and **not yet pruned** by the
+//! backend (`prune_change_journal` is a deliberate no-op, because peers track their read
+//! position by byte offset and blindly removing entries would corrupt that cursor). They
+//! grow with entity *churn* rather than entity count; automatic snapshot-based pruning of
+//! these logs is a scheduled follow-up. Until then, operators running very large or
+//! long-lived stores can compact them out-of-band once every device is known to have synced
+//! past a given point.
 
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
@@ -419,6 +425,12 @@ impl FsBackend {
     /// additions that are handled transparently by serde (such as new optional fields
     /// or serde aliases) do not require a version bump.
     const FORMAT_VERSION: u32 = 4;
+
+    /// How many entries a single device's per-note log may reach before [`append_note_op`]
+    /// compacts it back to its frontier via [`note_log::compact_own_log`]. Chosen well above
+    /// the handful of entries a note accrues in normal editing, so compaction (a full log
+    /// rewrite) is rare while still bounding pathological edit churn on one note.
+    const NOTE_LOG_COMPACT_THRESHOLD: usize = 256;
 
     /// Returns the path of the format-version stamp file: `.keeplin/format_version`.
     fn format_version_path(&self) -> PathBuf {
@@ -1111,6 +1123,12 @@ impl FsBackend {
             device_id: self.device_id.clone(),
             op,
         });
+        // Bound this device's own note log: once it grows past the threshold, collapse it to
+        // its frontier (see `note_log::compact_own_log`). Safe because this log has a single
+        // writer, so its last entry dominates all earlier ones and `merge` is unaffected.
+        if log.len() > Self::NOTE_LOG_COMPACT_THRESHOLD {
+            log = note_log::compact_own_log(&log);
+        }
         self.write_sidecar(&log_path, &log).await?;
         self.materialize(id)
             .await?

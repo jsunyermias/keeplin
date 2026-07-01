@@ -47,6 +47,19 @@ For a `Tombstone` winner, the returned note carries the most recent known conten
 with `deleted_at`/`updated_at` set to the tombstone time, so the note is both hidden from
 listings and still comparable against a later concurrent edit.
 
+### `fn compact_own_log(log: &[NoteLogEntry]) -> Vec<NoteLogEntry>`
+
+Bounds a device's **own** per-device log without changing what `merge` returns. Within one
+single-writer log every entry's version vector dominates all earlier ones (each local write
+increments this device's component over everything seen so far), so the last entry is the log's
+frontier and alone determines this device's contribution to `merge`'s heads and merged vector.
+The only other entry `merge` can consult from a log is the newest `Upsert` (used to recover a
+`Tombstone` winner's content fields), so compaction keeps **at most two** entries: the head, plus
+the highest-`(timestamp, device_id)` `Upsert` when that is not already the head. `FsBackend`
+calls this from `append_note_op` once a log passes `NOTE_LOG_COMPACT_THRESHOLD` entries. It is
+sound **only** for a device's own log — a foreign or multi-writer log is not totally ordered by
+domination, so compacting it could drop entries `merge` still needs.
+
 ### `fn resolve(local: (vv, ts, device), incoming: (vv, ts, device)) -> Winner`
 
 The **state-based** (current-value) analogue of `merge`, for backends that keep only the

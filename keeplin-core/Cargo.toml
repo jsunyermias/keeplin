@@ -33,3 +33,4 @@ rmp-serde = "1"
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["full"] }
+rmp-serde = "1"
