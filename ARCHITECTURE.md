@@ -115,7 +115,13 @@ Two navigation features layered on notes, both **stored on the note** (so they r
 `run_sync` drives one cycle: collect local `Change`s since the last sync watermark → send →
 receive remote `Change`s → apply each (`apply_change` is **idempotent**) → record the new
 watermark → optionally prune old journal entries. `FsBackend` "sends" passively (Syncthing
-copies its logs); `DbBackend` sends/receives over WebSocket with retry.
+copies its logs); `DbBackend` sends/receives over WebSocket with retry. The two backends'
+`Change` channels are **not** interchangeable for live sync, so they don't cross-sync directly.
+
+**Migration** (`keeplin-core/src/migrate.rs`) is the one-shot escape hatch: `migrate(src, dst)`
+copies all live state between any two backends via the typed `create_*` methods (not
+`apply_change`), so `Fs ↔ Db` and plaintext ↔ encrypted all work. Exposed as
+`keeplin-daemon migrate --from a.toml --to b.toml`.
 
 ---
 
@@ -135,6 +141,7 @@ All three share one backend `Arc` and **one auth model**: a constant-time HTTP B
 ## 9. Where to read next
 
 - Storage internals: `keeplin-core/src/storage/{backend,fs,db,note_log}.md`.
+- Migration between backends: `keeplin-core/src/migrate.md`.
 - Encryption + threat model: `keeplin-core/src/encryption.md` and `SECURITY.md`.
 - Bookmarks/links: `keeplin-core/src/links.md`, `keeplin-core/src/linking.md`.
 - Surfaces: `keeplin-daemon/src/{server,rest,event_backend,auth}.md` and

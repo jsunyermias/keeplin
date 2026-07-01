@@ -73,8 +73,10 @@ single MessagePack sidecars plus a per‑device NDJSON change log.
 `Change` over a WebSocket to a central relay, which forwards it to the other devices.
 Conflict resolution here is last‑write‑wins for all entities (no version vectors).
 
-> The two backends are **not interchangeable in one sync topology**, and they differ in
+> The two backends are **not interchangeable in one *live* sync topology**, and they differ in
 > conflict‑resolution strength — see ["Conflict resolution differs by backend"](SECURITY.md).
+> You **can**, however, do a one‑shot copy of a store from one backend to the other — see
+> [Migrating between backends](#migrating-between-backends).
 
 ---
 
@@ -284,6 +286,31 @@ lists the notes pointing at a note (answered by an indexed `note_links` projecti
 > resolution runs above the encryption boundary on decrypted values, and under at‑rest
 > encryption the stored alias is per‑write ciphertext, so a database index could not answer an
 > alias lookup. For large corpora, prefer referencing notes by uuid.
+
+---
+
+## Migrating between backends
+
+You can copy a whole store from one backend to the other — `offline` (FsBackend) ↔ `server`
+(DbBackend), in either direction:
+
+```bash
+keeplin-daemon migrate --from source.toml --to dest.toml
+```
+
+Each side is described by its **own** config file, so any combination works: filesystem ↔
+database, and plaintext ↔ encrypted (even with a different `key_salt`/password on each side —
+the copy reads decrypted from the source and re‑encrypts for the destination). The command
+prints a per‑entity count and exits; it does not start the server.
+
+It copies notes (with their `alias`/`bookmarks`/`links`), notebooks, tags, note↔tag
+associations, and resources (metadata **and** bytes), rebuilding the destination's own indexes
+(e.g. `DbBackend`'s backlink projection) as it goes.
+
+**Scope:** this is a **one‑shot copy of current live state into a fresh destination**, not
+live sync. Soft‑deleted (tombstoned) items are not carried, and the destination should be
+empty (entities keep their original ids, so re‑importing an existing id errors). After
+migrating, each backend continues with its own native replication (Syncthing or WebSocket).
 
 ---
 
