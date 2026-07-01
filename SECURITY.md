@@ -78,11 +78,12 @@ same winner. This is being rolled out in phases; the current state is:
 | Notebooks / tags | **Version vectors** — converge | **Version vectors** — converge |
 | Resources | Last-write-wins (hard delete; VV/tombstone pending) | Last-write-wins (hard delete; pending) |
 
-Both backends stamp a version vector on every notebook/tag/note write and resolve incoming
-changes with `note_log::resolve` (`FsBackend`) / the same via `apply_change` (`DbBackend`), so
-concurrent edits — including two that share an `updated_at` — converge on the same deterministic
-winner instead of the old bare-`updated_at` last-write-wins that **diverged permanently** on a
-tie.
+Both backends stamp a version vector on every note/notebook/tag write **and every note↔tag
+add/remove** (associations are a versioned present/tombstone state), resolving incoming changes
+with `note_log::resolve`, so concurrent edits — including two that share an `updated_at`, and a
+concurrent tag attach-vs-detach — converge on the same deterministic winner instead of the old
+bare-`updated_at` last-write-wins (which **diverged permanently** on a tie) or the timestamp-less
+association add/remove (which was order-dependent).
 
 The remaining asymmetry is **resources** (still hard-delete last-write-wins on both backends);
 versioned resource tombstones are a scheduled follow-up phase. Until then, prefer deleting a

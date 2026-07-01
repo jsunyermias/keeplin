@@ -208,13 +208,26 @@ impl<B: TagRepository> TagRepository for EventBackend<B> {
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
         let (note_id, tag_id) = (note_tag.note_id, note_tag.tag_id);
         self.inner.add_note_tag(note_tag).await?;
-        self.publish(Change::NoteTagAdd { note_id, tag_id });
+        // The live feed is a best-effort notification; version metadata is left empty.
+        self.publish(Change::NoteTagAdd {
+            note_id,
+            tag_id,
+            updated_at: chrono::Utc::now(),
+            vv: Default::default(),
+            last_writer: String::new(),
+        });
         Ok(())
     }
 
     async fn remove_note_tag(&self, note_id: Uuid, tag_id: Uuid) -> Result<(), StorageError> {
         self.inner.remove_note_tag(note_id, tag_id).await?;
-        self.publish(Change::NoteTagRemove { note_id, tag_id });
+        self.publish(Change::NoteTagRemove {
+            note_id,
+            tag_id,
+            updated_at: chrono::Utc::now(),
+            vv: Default::default(),
+            last_writer: String::new(),
+        });
         Ok(())
     }
 

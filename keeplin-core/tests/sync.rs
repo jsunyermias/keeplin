@@ -9,8 +9,8 @@
 
 use chrono::{Duration, Utc};
 use keeplin_core::{
-    models::{Change, Note},
-    storage::{db::DbBackend, fs::FsBackend, NoteRepository, SyncBackend},
+    models::{Change, Note, NoteTag, Tag},
+    storage::{db::DbBackend, fs::FsBackend, NoteRepository, SyncBackend, TagRepository},
 };
 use tempfile::tempdir;
 
@@ -224,3 +224,63 @@ async fn fs_tombstones_resolve_by_timestamp() {
 // not by applying wire `Change::NoteUpdate` records, so the FsBackend equivalent of the
 // last-write-wins guarantee is covered by `fs_two_device_concurrent_edits_converge` in
 // `tests/fs_backend.rs` rather than by an `apply_change`-driven test here.
+
+/// A concurrent note↔tag add on one device and remove on another converge: both devices end
+/// up agreeing on whether the tag is attached. Before Phase 3 associations carried no version
+/// (add = INSERT OR IGNORE, remove = DELETE), so the outcome was order-dependent and could
+/// differ between devices.
+#[tokio::test]
+async fn db_concurrent_note_tag_add_remove_converges() {
+    let epoch = chrono::DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+    let a = device().await;
+    let b = device().await;
+
+    // Baseline: note + tag + attached association on A, replicated to B.
+    let note = a.create_note(Note::new("n", "")).await.unwrap();
+    let tag = a.create_tag(Tag::new("t")).await.unwrap();
+    a.add_note_tag(NoteTag {
+        note_id: note.id,
+        tag_id: tag.id,
+    })
+    .await
+    .unwrap();
+    for c in a.get_changes_since(epoch).await.unwrap() {
+        b.apply_change(c).await.unwrap();
+    }
+    assert_eq!(a.list_note_tags(note.id, 0, None).await.unwrap().0.len(), 1);
+    assert_eq!(b.list_note_tags(note.id, 0, None).await.unwrap().0.len(), 1);
+
+    // Concurrent: A detaches, B re-attaches (each from the shared baseline).
+    a.remove_note_tag(note.id, tag.id).await.unwrap();
+    b.add_note_tag(NoteTag {
+        note_id: note.id,
+        tag_id: tag.id,
+    })
+    .await
+    .unwrap();
+
+    // Exchange local changes both ways.
+    let a_changes = a.get_changes_since(epoch).await.unwrap();
+    let b_changes = b.get_changes_since(epoch).await.unwrap();
+    for c in b_changes {
+        a.apply_change(c).await.unwrap();
+    }
+    for c in a_changes {
+        b.apply_change(c).await.unwrap();
+    }
+
+    // Both devices agree on the association's final presence (converged).
+    let present_a = !a
+        .list_note_tags(note.id, 0, None)
+        .await
+        .unwrap()
+        .0
+        .is_empty();
+    let present_b = !b
+        .list_note_tags(note.id, 0, None)
+        .await
+        .unwrap()
+        .0
+        .is_empty();
+    assert_eq!(present_a, present_b, "concurrent add/remove must converge");
+}

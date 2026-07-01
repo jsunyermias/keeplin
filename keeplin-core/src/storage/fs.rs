@@ -67,6 +67,21 @@ struct NoteMeta {
     vv: VersionVector,
 }
 
+/// The versioned state of one note↔tag association, stored as the MessagePack contents of
+/// `note_tags/{note}/{tag}` (previously an empty marker). `deleted_at: None` means the tag is
+/// attached (present); `Some` is a tombstone (detached) kept so a remove can beat a concurrent
+/// add through `note_log::resolve`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NoteTagState {
+    updated_at: DateTime<Utc>,
+    #[serde(default)]
+    deleted_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    vv: VersionVector,
+    #[serde(default)]
+    last_writer: String,
+}
+
 // ── Log entry ─────────────────────────────────────────────────────────────────
 
 /// One line in a per-device NDJSON change log.
@@ -109,6 +124,45 @@ fn fs_tombstone_value(
         "vv": vv,
         "last_writer": last_writer,
     })
+}
+
+/// Build the global-log `data` payload for a note↔tag add/remove: the tag id plus the
+/// association's version metadata, so `log_entry_to_change` reconstructs a versioned change.
+fn fs_assoc_value(
+    tag_id: Uuid,
+    updated_at: DateTime<Utc>,
+    vv: &VersionVector,
+    last_writer: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "tag_id": tag_id,
+        "updated_at": updated_at,
+        "vv": vv,
+        "last_writer": last_writer,
+    })
+}
+
+/// Reconstruct an association change's `(updated_at, vv, last_writer)` from a global-log `data`
+/// value. Falls back to the entry timestamp and an empty vector for pre-version records.
+fn fs_assoc_from_data(
+    data: &serde_json::Value,
+    fallback_ts: DateTime<Utc>,
+) -> (DateTime<Utc>, VersionVector, String) {
+    let updated_at = data
+        .get("updated_at")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+        .unwrap_or(fallback_ts);
+    let vv = data
+        .get("vv")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let last_writer = data
+        .get("last_writer")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    (updated_at, vv, last_writer)
 }
 
 /// Reconstruct a notebook/tag delete's `(deleted_at, vv, last_writer)` from a global-log `data`
@@ -206,16 +260,24 @@ fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
         // because the primary key (note_id) is already captured by `entity_id`.
         ("note_tag", "add") => {
             let tag_id: Uuid = entry.data["tag_id"].as_str()?.parse().ok()?;
+            let (updated_at, vv, last_writer) = fs_assoc_from_data(&entry.data, ts);
             Some(Change::NoteTagAdd {
                 note_id: id,
                 tag_id,
+                updated_at,
+                vv,
+                last_writer,
             })
         }
         ("note_tag", "remove") => {
             let tag_id: Uuid = entry.data["tag_id"].as_str()?.parse().ok()?;
+            let (updated_at, vv, last_writer) = fs_assoc_from_data(&entry.data, ts);
             Some(Change::NoteTagRemove {
                 note_id: id,
                 tag_id,
+                updated_at,
+                vv,
+                last_writer,
             })
         }
         // Resource log entries carry metadata (title, MIME type, file name) but not
@@ -795,6 +857,79 @@ impl FsBackend {
         ))
     }
 
+    // ── note↔tag association version helpers ──────────────────────────────────
+
+    /// Read the versioned state of a note↔tag association file, or `None` when absent. An empty
+    /// or unparseable file (a pre-version marker written before this feature) is reported as a
+    /// **present** association with an empty vector, preserving backward compatibility.
+    async fn read_assoc_state(&self, path: &Path) -> Result<Option<NoteTagState>, StorageError> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let marker = || NoteTagState {
+            updated_at: DateTime::<Utc>::from_timestamp(0, 0).unwrap_or_default(),
+            deleted_at: None,
+            vv: VersionVector::new(),
+            last_writer: String::new(),
+        };
+        let bytes = tokio::fs::read(path).await?;
+        if bytes.is_empty() {
+            return Ok(Some(marker()));
+        }
+        Ok(Some(
+            rmp_serde::from_slice(&bytes).unwrap_or_else(|_| marker()),
+        ))
+    }
+
+    /// Version vector for a **local** association write: current vector (empty if new) with this
+    /// device's component incremented.
+    async fn next_assoc_vv(&self, path: &Path) -> Result<VersionVector, StorageError> {
+        let mut vv = self
+            .read_assoc_state(path)
+            .await?
+            .map(|s| s.vv)
+            .unwrap_or_default();
+        note_log::increment(&mut vv, &self.device_id);
+        Ok(vv)
+    }
+
+    /// Whether an incoming association write should replace the local state, via [`resolve`].
+    /// `true` when the pair has no local file.
+    async fn assoc_incoming_wins(
+        &self,
+        path: &Path,
+        incoming_vv: &VersionVector,
+        incoming_updated: DateTime<Utc>,
+        incoming_writer: &str,
+    ) -> Result<bool, StorageError> {
+        match self.read_assoc_state(path).await? {
+            None => Ok(true),
+            Some(s) => Ok(matches!(
+                resolve(
+                    &s.vv,
+                    s.updated_at,
+                    &s.last_writer,
+                    incoming_vv,
+                    incoming_updated,
+                    incoming_writer,
+                ),
+                Winner::Incoming
+            )),
+        }
+    }
+
+    /// Write an association's versioned state, creating the `note_tags/{note}` directory first.
+    async fn write_assoc_state(
+        &self,
+        note_id: Uuid,
+        tag_id: Uuid,
+        state: &NoteTagState,
+    ) -> Result<(), StorageError> {
+        tokio::fs::create_dir_all(self.note_tag_dir(note_id)).await?;
+        self.write_sidecar(&self.note_tag_path(note_id, tag_id), state)
+            .await
+    }
+
     // ── Versioned note storage (per-device logs + version-vector merge) ────────
 
     /// Return a note's current merged version vector from its meta projection, or an
@@ -1266,13 +1401,24 @@ impl TagRepository for FsBackend {
     }
 
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
-        tokio::fs::create_dir_all(self.note_tag_dir(note_tag.note_id)).await?;
-        tokio::fs::write(self.note_tag_path(note_tag.note_id, note_tag.tag_id), b"").await?;
+        let path = self.note_tag_path(note_tag.note_id, note_tag.tag_id);
+        let vv = self.next_assoc_vv(&path).await?;
+        let ts = now();
+        // An add is the association's *present* state (deleted_at = None), versioned so a
+        // concurrent add-vs-remove converges through `resolve`.
+        let state = NoteTagState {
+            updated_at: ts,
+            deleted_at: None,
+            vv: vv.clone(),
+            last_writer: self.device_id.clone(),
+        };
+        self.write_assoc_state(note_tag.note_id, note_tag.tag_id, &state)
+            .await?;
         self.append_log(
             "note_tag",
             note_tag.note_id,
             "add",
-            serde_json::json!({ "tag_id": note_tag.tag_id }),
+            fs_assoc_value(note_tag.tag_id, ts, &vv, &self.device_id),
         )
         .await?;
         Ok(())
@@ -1280,14 +1426,21 @@ impl TagRepository for FsBackend {
 
     async fn remove_note_tag(&self, note_id: Uuid, tag_id: Uuid) -> Result<(), StorageError> {
         let path = self.note_tag_path(note_id, tag_id);
-        if path.exists() {
-            tokio::fs::remove_file(path).await?;
-        }
+        let vv = self.next_assoc_vv(&path).await?;
+        let ts = now();
+        // A remove is a *tombstone* (deleted_at set) kept so it can beat a concurrent add.
+        let state = NoteTagState {
+            updated_at: ts,
+            deleted_at: Some(ts),
+            vv: vv.clone(),
+            last_writer: self.device_id.clone(),
+        };
+        self.write_assoc_state(note_id, tag_id, &state).await?;
         self.append_log(
             "note_tag",
             note_id,
             "remove",
-            serde_json::json!({ "tag_id": tag_id }),
+            fs_assoc_value(tag_id, ts, &vv, &self.device_id),
         )
         .await?;
         Ok(())
@@ -1312,12 +1465,22 @@ impl TagRepository for FsBackend {
         let mut dir = tokio::fs::read_dir(&dir_path).await?;
         while let Some(entry) = dir.next_entry().await? {
             let fname = entry.file_name().to_string_lossy().to_string();
-            if let Ok(tag_id) = Uuid::parse_str(&fname) {
-                match self.read_tag(tag_id).await {
-                    Ok(t) if t.deleted_at.is_none() => tags.push(t),
-                    Ok(_) => {}
-                    Err(e) => tracing::warn!("Could not load tag {tag_id} for note {note_id}: {e}"),
+            let Ok(tag_id) = Uuid::parse_str(&fname) else {
+                continue;
+            };
+            // Skip a detached association (tombstone).
+            match self.read_assoc_state(&entry.path()).await {
+                Ok(Some(s)) if s.deleted_at.is_some() => continue,
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!("Could not read note_tag {note_id}/{tag_id}: {e}");
+                    continue;
                 }
+            }
+            match self.read_tag(tag_id).await {
+                Ok(t) if t.deleted_at.is_none() => tags.push(t),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("Could not load tag {tag_id} for note {note_id}: {e}"),
             }
         }
         tags.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
@@ -1517,17 +1680,49 @@ impl SyncBackend for FsBackend {
                 }
             }
             // NoteTag associations
-            Change::NoteTagAdd { note_id, tag_id } => {
-                tokio::fs::create_dir_all(self.note_tag_dir(note_id)).await?;
-                tokio::fs::write(self.note_tag_path(note_id, tag_id), b"").await?;
-                tracing::debug!(%note_id, %tag_id, "Applied remote note_tag add");
-            }
-            Change::NoteTagRemove { note_id, tag_id } => {
+            Change::NoteTagAdd {
+                note_id,
+                tag_id,
+                updated_at,
+                vv,
+                last_writer,
+            } => {
                 let path = self.note_tag_path(note_id, tag_id);
-                if path.exists() {
-                    tokio::fs::remove_file(path).await?;
+                if self
+                    .assoc_incoming_wins(&path, &vv, updated_at, &last_writer)
+                    .await?
+                {
+                    let state = NoteTagState {
+                        updated_at,
+                        deleted_at: None,
+                        vv,
+                        last_writer,
+                    };
+                    self.write_assoc_state(note_id, tag_id, &state).await?;
+                    tracing::debug!(%note_id, %tag_id, "Applied remote note_tag add");
                 }
-                tracing::debug!(%note_id, %tag_id, "Applied remote note_tag remove");
+            }
+            Change::NoteTagRemove {
+                note_id,
+                tag_id,
+                updated_at,
+                vv,
+                last_writer,
+            } => {
+                let path = self.note_tag_path(note_id, tag_id);
+                if self
+                    .assoc_incoming_wins(&path, &vv, updated_at, &last_writer)
+                    .await?
+                {
+                    let state = NoteTagState {
+                        updated_at,
+                        deleted_at: Some(updated_at),
+                        vv,
+                        last_writer,
+                    };
+                    self.write_assoc_state(note_id, tag_id, &state).await?;
+                    tracing::debug!(%note_id, %tag_id, "Applied remote note_tag remove");
+                }
             }
             // Resource changes from a DbBackend peer include the binary payload
             // (data=Some) because the database stores bytes directly and can embed

@@ -352,10 +352,34 @@ pub enum Change {
         #[serde(default)]
         last_writer: String,
     },
-    /// A tag was attached to a note on the originating device.
-    NoteTagAdd { note_id: Uuid, tag_id: Uuid },
-    /// A tag was detached from a note on the originating device.
-    NoteTagRemove { note_id: Uuid, tag_id: Uuid },
+    /// A tag was attached to a note on the originating device. The association is a versioned
+    /// present/absent state (an add sets it present), carrying its own `vv`/`updated_at`/
+    /// `last_writer` so a concurrent add-vs-remove converges through `note_log::resolve` exactly
+    /// like a note edit. The version fields are `#[serde(default)]` so pre-version records still
+    /// parse (empty vv ⇒ treated as an uninformed write).
+    NoteTagAdd {
+        note_id: Uuid,
+        tag_id: Uuid,
+        #[serde(default = "now")]
+        updated_at: DateTime<Utc>,
+        #[serde(default)]
+        vv: VersionVector,
+        #[serde(default)]
+        last_writer: String,
+    },
+    /// A tag was detached from a note on the originating device — the association's tombstone
+    /// (absent state). Carries the same version metadata as [`Change::NoteTagAdd`] so add and
+    /// remove compete deterministically.
+    NoteTagRemove {
+        note_id: Uuid,
+        tag_id: Uuid,
+        #[serde(default = "now")]
+        updated_at: DateTime<Utc>,
+        #[serde(default)]
+        vv: VersionVector,
+        #[serde(default)]
+        last_writer: String,
+    },
     /// A resource was created on the originating device.
     ///
     /// `data` carries the binary payload when syncing through `DbBackend` (where there

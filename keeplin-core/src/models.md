@@ -94,8 +94,8 @@ on the `NoteCreate`, `NoteUpdate`, and `NoteDelete` variants accept the old shor
 | `TagCreate` | `{ tag: Tag }` | A new tag was created |
 | `TagUpdate` | `{ tag: Tag }` | A tag was renamed |
 | `TagDelete` | `{ id, deleted_at, vv, last_writer }` | A tag was soft-deleted |
-| `NoteTagAdd` | `{ note_id, tag_id }` | A tag was attached to a note |
-| `NoteTagRemove` | `{ note_id, tag_id }` | A tag was detached from a note |
+| `NoteTagAdd` | `{ note_id, tag_id, updated_at, vv, last_writer }` | A tag was attached (versioned present state) |
+| `NoteTagRemove` | `{ note_id, tag_id, updated_at, vv, last_writer }` | A tag was detached (versioned tombstone) |
 | `ResourceCreate` | `{ resource, data? }` | A resource was added; `data` is `Some` in `DbBackend` and `None` in `FsBackend` |
 | `ResourceDelete` | `{ id: Uuid }` | A resource was permanently deleted |
 

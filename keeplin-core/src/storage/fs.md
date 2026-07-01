@@ -36,7 +36,7 @@ Note-log types (`NoteOp`, `NoteLogEntry`, `VersionVector`, `merge`) live in the 
 ├── notes/{uuid}/log.{device_id}.msgpack    ← that device's append-only note-op log (truth)
 ├── notebooks/{uuid}.msgpack                ← notebook sidecar
 ├── tags/{uuid}.msgpack                     ← tag sidecar
-├── note_tags/{note_uuid}/{tag_uuid}        ← empty marker file; existence = linked
+├── note_tags/{note_uuid}/{tag_uuid}        ← versioned association state (msgpack: vv + deleted_at)
 ├── resources/{uuid}/meta.msgpack           ← resource metadata
 ├── resources/{uuid}/data                   ← resource binary payload
 ├── logs/{device_id}.log                    ← this device's global NDJSON journal
@@ -113,13 +113,19 @@ Applies all 13 `Change` variants: notes go through the version-vector log (an in
 version-vector resolved** — `sidecar_incoming_wins` runs `note_log::resolve` over the stored
 sidecar's `(vv, updated_at, last_writer)` and the incoming write, so concurrent edits converge
 deterministically (a delete carries its own `vv` in the global-log entry via
-`fs_tombstone_value`, so it competes like an edit); `NoteTagAdd`/`Remove` create/remove the
-marker file; `ResourceCreate` writes the metadata sidecar and, if `data: Some(bytes)`, the
-payload too (used when receiving from `DbBackend`; Syncthing handles the normal case);
-`ResourceDelete` removes the resource dir.
+`fs_tombstone_value`, so it competes like an edit); **`NoteTagAdd`/`Remove` are also
+version-vector resolved** — the association file at `note_tags/{note}/{tag}` now holds a
+versioned `NoteTagState` (msgpack: `updated_at`/`deleted_at`/`vv`/`last_writer`), so a
+concurrent add-vs-remove converges (an add is the present state, a remove a tombstone kept so
+it can beat a concurrent add); `ResourceCreate` writes the metadata sidecar and, if
+`data: Some(bytes)`, the payload too (used when receiving from `DbBackend`; Syncthing handles
+the normal case); `ResourceDelete` removes the resource dir.
 
 Local notebook/tag writes stamp the sidecar's `vv`/`last_writer` (`next_sidecar_vv` loads the
-current vector and increments this device's component), matching notes and `DbBackend`.
+current vector and increments this device's component), and note↔tag adds/removes stamp the
+association file's `vv`/`last_writer` the same way — matching notes and `DbBackend`. An old
+empty marker file (pre-version) is read as a present association with an empty vector, so
+existing stores keep working.
 
 ## Design notes
 
