@@ -27,7 +27,7 @@ Two crates:
 Everything is one of a handful of plain structs, all deriving `Serialize`/`Deserialize`:
 
 - **`Note`** — `title`, `body`, optional `notebook_id`, to-do fields, timestamps, and the
-  navigation fields **`alias`**, **`bookmarks`**, **`links`** (see §6).
+  navigation fields **`alias`**, **`bookmarks`**, **`links`** (see section 6).
 - **`Notebook`**, **`Tag`** — a title + timestamps; notebooks also have an **`alias`**.
 - **`NoteTag`** — a (note, tag) association.
 - **`Resource`** — metadata for a binary attachment (the bytes are stored separately).
@@ -94,18 +94,19 @@ needed for indexing and sync and carry no user content. Every value gets a fresh
 Two navigation features layered on notes, both **stored on the note** (so they ride the normal
 `Change` sync path — no new `Change` variants):
 
-- **Bookmarks (marcadores)** — in-note anchors declared in the body as a markdown link whose
-  destination is exactly `###`: `[Texto](### "Alias")`. The link text is the bookmark `text`,
-  the optional title is its `alias` (default = text), and its `number` is its order of
-  appearance. The **body is the single source of truth**.
-- **Links (enlaces)** — connections to other notes: **content-derived** from markdown links
-  `[t](#…)`, or **manual** (added via the API). A reference resolves as `#note`,
-  `#notebook#note`, or `#notebook#note#bookmark`; each segment is alias-or-uuid (the bookmark
-  segment is alias-or-number).
+- **Bookmarks** — in-note anchors declared in the body as a markdown link whose destination is
+  exactly `###`: `[text](### "alias")`. The link text is the bookmark `text`, the optional
+  title is its `alias` (default = text), and its `number` is its order of appearance. The
+  **body is the single source of truth** — there is **no bookmark API**; bookmarks are created,
+  renamed, and removed by editing the note body, and are returned inline in each note's
+  `bookmarks` field.
+- **Links** — connections to other notes: **content-derived** from markdown links `[t](#…)`, or
+  **manual** (added via the API). A reference resolves as `#note`, `#notebook#note`, or
+  `#notebook#note#bookmark`; each segment is alias-or-uuid (the bookmark segment is
+  alias-or-number).
 
 `LinkingBackend` re-derives bookmarks/content-links on every note write, resolves each link's
-`target_note_id`, and enforces that note/notebook aliases are unique. Aliases and bookmark/link
-text are edited by editing the body/note — there is no separate alias-editing endpoint.
+`target_note_id`, and enforces that note/notebook aliases are unique.
 
 ---
 

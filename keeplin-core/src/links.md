@@ -3,14 +3,14 @@
 ## Purpose
 
 Defines the data types and the **pure, I/O-free grammar** for the two note-navigation
-features: **bookmarks (marcadores)** and **inter-note links (enlaces)**. Everything here is
-side-effect-free so the grammar can be unit-tested in isolation. Anything that needs store
-access (resolving an alias to a concrete note) lives in `linking.rs`.
+features: **bookmarks** and **inter-note links**. Everything here is side-effect-free so the
+grammar can be unit-tested in isolation. Anything that needs store access (resolving an alias
+to a concrete note) lives in `linking.rs`.
 
 ## The two features in one sentence each
 
 - **Bookmark** — an in-note anchor declared in the body as a markdown link whose destination
-  is exactly `###`: `[Texto](### "Alias")`.
+  is exactly `###`: `[text](### "alias")`.
 - **Link** — a connection from one note to another, either parsed from a markdown link in the
   body (`[t](#…)`) or added manually via the API.
 
@@ -46,7 +46,7 @@ A link destination is `#`-separated. `parse_link_ref` reads it structurally:
 
 `parse_link_ref` reads a two-segment `#a#b` as `notebook#note`. Resolution in `linking.rs` is
 smarter: it keeps that reading when `b` resolves to a note, otherwise falls back to
-`note#bookmark` (so `#nota3#marcador5` works without naming a notebook).
+`note#bookmark` (so `#note3#anchor5` works without naming a notebook).
 
 ## Pure functions
 

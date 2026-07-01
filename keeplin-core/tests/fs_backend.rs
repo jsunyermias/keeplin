@@ -504,11 +504,11 @@ async fn note_alias_bookmarks_links_persist_in_meta() {
     let dir = tempdir().unwrap();
     let backend = FsBackend::new(dir.path()).await.unwrap();
 
-    let mut note = Note::new("t", "###Marcador1 [l](#other)");
-    note.alias = Some("nota3".to_string());
+    let mut note = Note::new("t", "###Bookmark1 [l](#other)");
+    note.alias = Some("note3".to_string());
     note.bookmarks = vec![Bookmark {
         number: 1,
-        text: "Marcador1".to_string(),
+        text: "Bookmark1".to_string(),
         alias: "Custom".to_string(),
     }];
     note.links = vec![NoteLink {
@@ -522,7 +522,7 @@ async fn note_alias_bookmarks_links_persist_in_meta() {
     // Reads materialize from the per-device log; the new fields survive the round-trip
     // through `log.{device}.msgpack` + `meta.msgpack`.
     let read = backend.read_note(id).await.unwrap();
-    assert_eq!(read.alias.as_deref(), Some("nota3"));
+    assert_eq!(read.alias.as_deref(), Some("note3"));
     assert_eq!(read.bookmarks, note.bookmarks);
     assert_eq!(read.links, note.links);
 
@@ -530,7 +530,7 @@ async fn note_alias_bookmarks_links_persist_in_meta() {
     // state from the replicated log — i.e. the fields converge.
     let backend2 = FsBackend::new(dir.path()).await.unwrap();
     let seen = backend2.read_note(id).await.unwrap();
-    assert_eq!(seen.alias.as_deref(), Some("nota3"));
+    assert_eq!(seen.alias.as_deref(), Some("note3"));
     assert_eq!(seen.bookmarks, note.bookmarks);
     assert_eq!(seen.links, note.links);
 }
