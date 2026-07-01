@@ -193,8 +193,9 @@ files); `DbBackend` keeps the current row plus its `vv`. See `SECURITY.md`.
   within a transaction"), a bare write landing inside another task's open transaction,
   and a query observing another task's uncommitted rows mid-transaction. SQLite allows
   only one writer at a time, so the exclusive write side is free; readers still run
-  concurrently. `should_apply` runs under the caller's write guard and therefore does not
-  take its own.
+  concurrently. The version-vector resolution in `apply_change` (the `*_incoming_wins` helpers
+  over `note_log::resolve`) runs under the caller's write guard and therefore does not take its
+  own.
 - The `ws` field is wrapped in `Arc<Mutex<Option<WsStream>>>` so the backend can be
   shared across gRPC handler tasks (via `Arc<B>`) while still allowing exclusive write
   access to the WebSocket.

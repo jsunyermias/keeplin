@@ -59,10 +59,12 @@ The cycle executes six steps in sequence:
 - `SyncEngine` is generic over `T: StorageBackend`. This means there is no dynamic
   dispatch and no `Box<dyn StorageBackend>` indirection. The compiler monomorphises a
   separate sync function for each concrete backend type.
-- The sync cycle uses a last-write-wins conflict resolution strategy: whichever change
-  is applied last to the local store wins. Because all changes are applied in
-  chronological order of their remote timestamps, the outcome across all devices
-  eventually converges to the same state.
+- The `SyncEngine` does not itself resolve conflicts: it collects and hands each remote
+  `Change` to `apply_change`, and every backend resolves it with **version vectors** (see
+  `note_log::resolve`/`merge`). Because that decision is order-independent and deterministic —
+  a strictly-dominating write wins, and a genuine concurrent conflict is broken by the shared
+  `(timestamp, device_id)` tiebreak — the outcome across all devices converges to the same state
+  regardless of the order changes arrive in.
 - The `SyncEngine` does not retry on failure. The caller is responsible for scheduling
   and retrying sync cycles; a simple approach is to call `sync()` periodically or on
   reconnect.

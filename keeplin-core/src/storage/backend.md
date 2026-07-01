@@ -88,8 +88,9 @@ association methods:
 - `async-trait` boxes each future (one small heap alloc per call) so the trait stays
   object-safe — negligible next to the I/O each method performs.
 - `apply_change` **must be idempotent**: a change arriving twice yields the same state as once.
-  Backends satisfy this with `INSERT OR IGNORE/REPLACE`, version-vector merge (FS notes), or
-  last-write-wins guards.
+  Backends satisfy this with version-vector resolution (`note_log::resolve` for current-state
+  rows/sidecars, `merge` for FS per-device note logs) — re-applying a change the store already
+  dominates is a no-op — plus `INSERT OR IGNORE/REPLACE` for the underlying writes.
 
 ## Related files
 

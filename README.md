@@ -74,11 +74,14 @@ single MessagePack sidecars plus a per‑device NDJSON change log.
 
 **Server mode** keeps everything in a local SQLite database and ships each mutation as a
 `Change` over a WebSocket to a central relay, which forwards it to the other devices.
-Conflict resolution here is last‑write‑wins for all entities (no version vectors).
+Conflict resolution here is the **same version‑vector `resolve`** applied to current‑state rows,
+so it converges identically to offline mode — only the storage shape (rows vs. per‑device logs)
+differs.
 
-> The two backends are **not interchangeable in one *live* sync topology**, and they differ in
-> conflict‑resolution strength — see ["Conflict resolution differs by backend"](SECURITY.md).
-> You **can**, however, do a one‑shot copy of a store from one backend to the other — see
+> The two backends are **not interchangeable in one *live* sync topology** (different transports),
+> but they share the same version‑vector convergence — see
+> ["Conflict resolution is unified on version vectors"](SECURITY.md#conflict-resolution-is-unified-on-version-vectors).
+> You **can** do a one‑shot copy of a store from one backend to the other — see
 > [Migrating between backends](#migrating-between-backends).
 
 ---
