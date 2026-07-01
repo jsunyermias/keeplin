@@ -56,14 +56,15 @@ type WsStream =
 ///
 /// ## Conflict resolution
 ///
-/// `DbBackend` resolves concurrent edits with **last-write-wins by `updated_at`** for
-/// every entity, notes included (see `apply_change`). It does **not** implement the
-/// per-note version-vector merge that [`super::fs::FsBackend`] uses (see
-/// [`super::note_log`]): if two devices edit the same note while offline and then sync,
-/// the edit with the later `updated_at` wins and the other is overwritten without a
-/// merge. Choose `FsBackend` (offline mode) when strong note-merge guarantees matter;
-/// `DbBackend` trades that for a central WebSocket relay. This difference is documented
-/// in `SECURITY.md`.
+/// `DbBackend` resolves concurrent edits with **version vectors** for every entity
+/// (see [`super::note_log::resolve`]): `apply_change` compares the stored and incoming
+/// `(vv, updated_at, last_writer)` and applies the incoming write only when it wins.
+/// A causally newer write applies cleanly; a genuine concurrent conflict is broken by
+/// the deterministic `(timestamp, device_id)` tiebreak, so every device converges on
+/// the same winner. This is the same decision procedure [`super::fs::FsBackend`] uses
+/// — state-based `resolve` over current rows here, log-based `merge` over per-device
+/// note logs there; only the storage shape differs. See `SECURITY.md`
+/// ("Conflict resolution is unified on version vectors").
 pub struct DbBackend {
     /// The open LibSQL connection to the local database file.
     conn: libsql::Connection,
