@@ -29,10 +29,12 @@
 //! rejected); resolution then picks the smallest-uuid match deterministically and warns.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::{
@@ -78,12 +80,20 @@ pub struct AliasConflicts {
 /// Decorator that maintains bookmarks/links and enforces alias uniqueness.
 pub struct LinkingBackend<B> {
     inner: B,
+    /// Serialises alias-bearing writes so the "scan for a duplicate, then write" sequence is
+    /// atomic. Without it, two concurrent writes claiming the same alias could each pass the
+    /// uniqueness check before either is persisted, creating a local duplicate. Only taken
+    /// when the entity actually carries an alias, so plain notes never serialise here.
+    alias_write_lock: Arc<Mutex<()>>,
 }
 
 impl<B: StorageBackend> LinkingBackend<B> {
     /// Wrap `inner`.
     pub fn new(inner: B) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            alias_write_lock: Arc::new(Mutex::new(())),
+        }
     }
 
     /// Rewrite `note.bookmarks` and `note.links` from its body (pure, no I/O).
@@ -341,15 +351,20 @@ pub async fn resolve(
     Ok(resolve_ref(raw, &notes, &notebooks))
 }
 
-/// Return every live note that links to `target_id`.
+/// Return a page of the live notes that link to `target_id`.
 ///
 /// Delegates to [`NoteRepository::note_backlinks`](crate::storage::NoteRepository::note_backlinks),
-/// which `DbBackend` answers with an indexed lookup and other backends with an `O(N)` scan.
+/// which `DbBackend` answers with an indexed, paginated lookup and other backends with an
+/// `O(N)` scan paginated in memory.
 pub async fn backlinks(
     backend: &dyn StorageBackend,
     target_id: Uuid,
-) -> Result<Vec<Note>, StorageError> {
-    backend.note_backlinks(target_id).await
+    page_size: u32,
+    page_token: Option<String>,
+) -> Result<(Vec<Note>, Option<String>), StorageError> {
+    backend
+        .note_backlinks(target_id, page_size, page_token)
+        .await
 }
 
 /// Group `items` by their (optional) alias, keeping only aliases shared by two or more
@@ -463,6 +478,12 @@ pub async fn remove_link(
 #[async_trait]
 impl<B: StorageBackend> NoteRepository for LinkingBackend<B> {
     async fn create_note(&self, mut note: Note) -> Result<Note, StorageError> {
+        // Hold the lock across the uniqueness check + write only when an alias is involved.
+        let _guard = if note.alias.is_some() {
+            Some(self.alias_write_lock.lock().await)
+        } else {
+            None
+        };
         self.prepare(&mut note).await?;
         self.inner.create_note(note).await
     }
@@ -472,6 +493,11 @@ impl<B: StorageBackend> NoteRepository for LinkingBackend<B> {
     }
 
     async fn update_note(&self, mut note: Note) -> Result<Note, StorageError> {
+        let _guard = if note.alias.is_some() {
+            Some(self.alias_write_lock.lock().await)
+        } else {
+            None
+        };
         self.prepare(&mut note).await?;
         self.inner.update_note(note).await
     }
@@ -488,15 +514,26 @@ impl<B: StorageBackend> NoteRepository for LinkingBackend<B> {
         self.inner.list_notes(page_size, page_token).await
     }
 
-    async fn note_backlinks(&self, target_id: Uuid) -> Result<Vec<Note>, StorageError> {
+    async fn note_backlinks(
+        &self,
+        target_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
         // Delegate so an inner indexed backend (e.g. DbBackend) is reached.
-        self.inner.note_backlinks(target_id).await
+        self.inner
+            .note_backlinks(target_id, page_size, page_token)
+            .await
     }
 }
 
 #[async_trait]
 impl<B: StorageBackend> NotebookRepository for LinkingBackend<B> {
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
+        if notebook.alias.is_none() {
+            return self.inner.create_notebook(notebook).await;
+        }
+        let _guard = self.alias_write_lock.lock().await;
         let notebooks = collect_notebooks(&self.inner).await?;
         Self::ensure_notebook_alias_unique(&notebook, &notebooks)?;
         self.inner.create_notebook(notebook).await
@@ -507,6 +544,10 @@ impl<B: StorageBackend> NotebookRepository for LinkingBackend<B> {
     }
 
     async fn update_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
+        if notebook.alias.is_none() {
+            return self.inner.update_notebook(notebook).await;
+        }
+        let _guard = self.alias_write_lock.lock().await;
         let notebooks = collect_notebooks(&self.inner).await?;
         Self::ensure_notebook_alias_unique(&notebook, &notebooks)?;
         self.inner.update_notebook(notebook).await
@@ -708,9 +749,10 @@ mod tests {
         assert_eq!(resolved.bookmark_number, Some(1));
 
         // Backlinks: target is linked by src.
-        let back = backlinks(&be, target.id).await.unwrap();
+        let (back, next) = backlinks(&be, target.id, 0, None).await.unwrap();
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].id, src.id);
+        assert!(next.is_none());
     }
 
     #[tokio::test]
@@ -800,5 +842,36 @@ mod tests {
         assert_eq!(conflicts.notes[0].alias, "dup");
         assert_eq!(conflicts.notes[0].entities.len(), 2);
         assert!(conflicts.notebooks.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_duplicate_alias_yields_exactly_one_winner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let be = Arc::new(LinkingBackend::new(FsBackend::new(&path).await.unwrap()));
+
+        // Eight concurrent creates all claim alias "dup"; the write lock must let exactly one
+        // through and reject the rest as conflicts (no local duplicate).
+        let mut handles = Vec::new();
+        for i in 0..8 {
+            let b = Arc::clone(&be);
+            handles.push(tokio::spawn(async move {
+                let mut note = Note::new(format!("n{i}"), "");
+                note.alias = Some("dup".to_string());
+                b.create_note(note).await
+            }));
+        }
+
+        let (mut ok, mut conflict) = (0, 0);
+        for h in handles {
+            match h.await.unwrap() {
+                Ok(_) => ok += 1,
+                Err(StorageError::Conflict(_)) => conflict += 1,
+                Err(e) => panic!("unexpected error: {e}"),
+            }
+        }
+        assert_eq!(ok, 1, "exactly one create wins the alias");
+        assert_eq!(conflict, 7, "the rest are rejected");
     }
 }

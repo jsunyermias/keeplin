@@ -274,11 +274,21 @@ impl<B: StorageBackend> NoteRepository for EncryptedBackend<B> {
         Ok((decrypted?, next))
     }
 
-    async fn note_backlinks(&self, target_id: Uuid) -> Result<Vec<Note>, StorageError> {
+    async fn note_backlinks(
+        &self,
+        target_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
         // Delegate so an inner indexed backend is reached (`target_note_id` is stored in
-        // plaintext, so the index works under encryption), then decrypt the results.
-        let notes = self.inner.note_backlinks(target_id).await?;
-        notes.into_iter().map(|n| self.dec_note(n)).collect()
+        // plaintext, so the index works under encryption), then decrypt the page.
+        let (notes, next) = self
+            .inner
+            .note_backlinks(target_id, page_size, page_token)
+            .await?;
+        let decrypted: Result<Vec<Note>, StorageError> =
+            notes.into_iter().map(|n| self.dec_note(n)).collect();
+        Ok((decrypted?, next))
     }
 }
 

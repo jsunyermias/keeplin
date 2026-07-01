@@ -382,8 +382,11 @@ async fn remove_link(
 async fn list_backlinks(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<Note>>, ApiError> {
-    Ok(Json(linking::backlinks(s.backend.as_ref(), id).await?))
+    Query(p): Query<Pagination>,
+) -> Result<Json<Page<Note>>, ApiError> {
+    Ok(page(
+        linking::backlinks(s.backend.as_ref(), id, p.page_size, p.page_token).await?,
+    ))
 }
 
 /// `?ref=#libreta1#nota3#5` query for resolving a reference to a note (+ bookmark number).
@@ -962,9 +965,10 @@ mod tests {
         )
         .await;
         assert_eq!(code, StatusCode::OK);
-        let back: Vec<Note> = serde_json::from_slice(&body).unwrap();
+        let backv: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let back = backv["items"].as_array().unwrap();
         assert_eq!(back.len(), 1);
-        assert_eq!(back[0].id, src.id);
+        assert_eq!(back[0]["id"], serde_json::json!(src.id.to_string()));
 
         // Resolve a 3-segment reference to the target note + bookmark number 1.
         let (code, body) = call(

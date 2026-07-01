@@ -534,3 +534,33 @@ async fn note_alias_bookmarks_links_persist_in_meta() {
     assert_eq!(seen.bookmarks, note.bookmarks);
     assert_eq!(seen.links, note.links);
 }
+
+#[tokio::test]
+async fn backlinks_default_scan_is_paginated() {
+    use keeplin_core::links::{LinkSource, NoteLink};
+
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+    let target = backend.create_note(Note::new("target", "")).await.unwrap();
+    for i in 0..3 {
+        let mut s = Note::new(format!("s{i}"), "");
+        s.links = vec![NoteLink {
+            source: LinkSource::Content,
+            raw: "#x".to_string(),
+            target_note_id: Some(target.id),
+        }];
+        backend.create_note(s).await.unwrap();
+    }
+
+    let (p1, next) = backend.note_backlinks(target.id, 2, None).await.unwrap();
+    assert_eq!(p1.len(), 2);
+    let cursor = next.expect("a second page");
+    let (p2, next2) = backend
+        .note_backlinks(target.id, 2, Some(cursor))
+        .await
+        .unwrap();
+    assert_eq!(p2.len(), 1);
+    assert!(next2.is_none());
+    let ids: std::collections::HashSet<_> = p1.iter().chain(&p2).map(|n| n.id).collect();
+    assert_eq!(ids.len(), 3);
+}
