@@ -52,7 +52,7 @@ use crate::{
     models::{new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag},
 };
 
-use super::note_log::{self, NoteLogEntry, NoteOp, VersionVector};
+use super::note_log::{self, resolve, NoteLogEntry, NoteOp, VersionVector, Winner};
 use super::{NoteRepository, NotebookRepository, ResourceRepository, SyncBackend, TagRepository};
 
 /// The materialized projection written to `notes/{id}/meta.msgpack`.
@@ -94,6 +94,45 @@ struct LogEntry {
 
 fn default_entity_type() -> String {
     "note".to_string()
+}
+
+/// Build the global-log `data` payload for a notebook/tag delete: the tombstone timestamp plus
+/// the deleting write's version vector and author, so `log_entry_to_change` can reconstruct a
+/// delete `Change` carrying everything `note_log::resolve` needs on the receiving device.
+fn fs_tombstone_value(
+    deleted_at: DateTime<Utc>,
+    vv: &VersionVector,
+    last_writer: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "deleted_at": deleted_at,
+        "vv": vv,
+        "last_writer": last_writer,
+    })
+}
+
+/// Reconstruct a notebook/tag delete's `(deleted_at, vv, last_writer)` from a global-log `data`
+/// value. Falls back to the log entry's own timestamp and an empty vector for pre-VV records
+/// that stored `{ "id": … }`.
+fn fs_tombstone_from_data(
+    data: &serde_json::Value,
+    fallback_ts: DateTime<Utc>,
+) -> (DateTime<Utc>, VersionVector, String) {
+    let deleted_at = data
+        .get("deleted_at")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+        .unwrap_or(fallback_ts);
+    let vv = data
+        .get("vv")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let last_writer = data
+        .get("last_writer")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    (deleted_at, vv, last_writer)
 }
 
 /// Convert a single [`LogEntry`] read from a log file into a typed [`Change`] variant.
@@ -138,12 +177,15 @@ fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
         ("notebook", "update") => serde_json::from_value(entry.data)
             .ok()
             .map(|notebook| Change::NotebookUpdate { notebook }),
-        ("notebook", "delete") => Some(Change::NotebookDelete {
-            id,
-            deleted_at: ts,
-            vv: VersionVector::new(),
-            last_writer: String::new(),
-        }),
+        ("notebook", "delete") => {
+            let (deleted_at, vv, last_writer) = fs_tombstone_from_data(&entry.data, ts);
+            Some(Change::NotebookDelete {
+                id,
+                deleted_at,
+                vv,
+                last_writer,
+            })
+        }
         // Tags
         ("tag", "create") => serde_json::from_value(entry.data)
             .ok()
@@ -151,12 +193,15 @@ fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
         ("tag", "update") => serde_json::from_value(entry.data)
             .ok()
             .map(|tag| Change::TagUpdate { tag }),
-        ("tag", "delete") => Some(Change::TagDelete {
-            id,
-            deleted_at: ts,
-            vv: VersionVector::new(),
-            last_writer: String::new(),
-        }),
+        ("tag", "delete") => {
+            let (deleted_at, vv, last_writer) = fs_tombstone_from_data(&entry.data, ts);
+            Some(Change::TagDelete {
+                id,
+                deleted_at,
+                vv,
+                last_writer,
+            })
+        }
         // NoteTag associations store only the secondary key in the `data` field
         // because the primary key (note_id) is already captured by `entity_id`.
         ("note_tag", "add") => {
@@ -686,6 +731,70 @@ impl FsBackend {
             .map_err(|e| StorageError::CorruptedData(format!("msgpack decode: {e}")))
     }
 
+    /// Read the version vector currently stored in a MessagePack sidecar (notebook/tag), or an
+    /// empty vector when the file is absent. Used to base a local write's incremented vector on
+    /// the current state, so notebooks/tags resolve conflicts with `note_log::resolve` just like
+    /// notes and `DbBackend` do. Deserialises only the `vv` field, ignoring the rest.
+    async fn sidecar_vv(&self, path: &Path) -> Result<VersionVector, StorageError> {
+        #[derive(serde::Deserialize)]
+        struct VvProbe {
+            #[serde(default)]
+            vv: VersionVector,
+        }
+        if !path.exists() {
+            return Ok(VersionVector::new());
+        }
+        let bytes = tokio::fs::read(path).await?;
+        let probe: VvProbe = rmp_serde::from_slice(&bytes)
+            .map_err(|e| StorageError::CorruptedData(format!("msgpack decode: {e}")))?;
+        Ok(probe.vv)
+    }
+
+    /// Compute the version vector for a **local** notebook/tag write: the current stored vector
+    /// (empty for a new sidecar) with this device's component incremented.
+    async fn next_sidecar_vv(&self, path: &Path) -> Result<VersionVector, StorageError> {
+        let mut vv = self.sidecar_vv(path).await?;
+        note_log::increment(&mut vv, &self.device_id);
+        Ok(vv)
+    }
+
+    /// Whether an incoming remote notebook/tag write should replace the local sidecar, decided
+    /// by `note_log::resolve` over the stored and incoming `(vv, updated_at, last_writer)`.
+    /// Returns `true` when there is no local sidecar yet.
+    async fn sidecar_incoming_wins(
+        &self,
+        path: &Path,
+        incoming_vv: &VersionVector,
+        incoming_updated: DateTime<Utc>,
+        incoming_writer: &str,
+    ) -> Result<bool, StorageError> {
+        #[derive(serde::Deserialize)]
+        struct MetaProbe {
+            updated_at: DateTime<Utc>,
+            #[serde(default)]
+            vv: VersionVector,
+            #[serde(default)]
+            last_writer: String,
+        }
+        if !path.exists() {
+            return Ok(true);
+        }
+        let bytes = tokio::fs::read(path).await?;
+        let m: MetaProbe = rmp_serde::from_slice(&bytes)
+            .map_err(|e| StorageError::CorruptedData(format!("msgpack decode: {e}")))?;
+        Ok(matches!(
+            resolve(
+                &m.vv,
+                m.updated_at,
+                &m.last_writer,
+                incoming_vv,
+                incoming_updated,
+                incoming_writer,
+            ),
+            Winner::Incoming
+        ))
+    }
+
     // ── Versioned note storage (per-device logs + version-vector merge) ────────
 
     /// Return a note's current merged version vector from its meta projection, or an
@@ -983,9 +1092,11 @@ impl NoteRepository for FsBackend {
 
 #[async_trait]
 impl NotebookRepository for FsBackend {
-    async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
-        self.write_sidecar(&self.notebook_path(notebook.id), &notebook)
-            .await?;
+    async fn create_notebook(&self, mut notebook: Notebook) -> Result<Notebook, StorageError> {
+        let path = self.notebook_path(notebook.id);
+        notebook.vv = self.next_sidecar_vv(&path).await?;
+        notebook.last_writer = self.device_id.clone();
+        self.write_sidecar(&path, &notebook).await?;
         self.append_log(
             "notebook",
             notebook.id,
@@ -1001,12 +1112,14 @@ impl NotebookRepository for FsBackend {
         self.read_sidecar(&self.notebook_path(id), id).await
     }
 
-    async fn update_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
-        if !self.notebook_path(notebook.id).exists() {
+    async fn update_notebook(&self, mut notebook: Notebook) -> Result<Notebook, StorageError> {
+        let path = self.notebook_path(notebook.id);
+        if !path.exists() {
             return Err(StorageError::NotFound(notebook.id.to_string()));
         }
-        self.write_sidecar(&self.notebook_path(notebook.id), &notebook)
-            .await?;
+        notebook.vv = self.next_sidecar_vv(&path).await?;
+        notebook.last_writer = self.device_id.clone();
+        self.write_sidecar(&path, &notebook).await?;
         self.append_log(
             "notebook",
             notebook.id,
@@ -1019,13 +1132,21 @@ impl NotebookRepository for FsBackend {
     }
 
     async fn delete_notebook(&self, id: Uuid) -> Result<(), StorageError> {
-        let mut nb: Notebook = self.read_sidecar(&self.notebook_path(id), id).await?;
+        let path = self.notebook_path(id);
+        let mut nb: Notebook = self.read_sidecar(&path, id).await?;
         let ts = now();
         nb.deleted_at = Some(ts);
         nb.updated_at = ts;
-        self.write_sidecar(&self.notebook_path(id), &nb).await?;
-        self.append_log("notebook", id, "delete", serde_json::json!({ "id": id }))
-            .await?;
+        note_log::increment(&mut nb.vv, &self.device_id);
+        nb.last_writer = self.device_id.clone();
+        self.write_sidecar(&path, &nb).await?;
+        self.append_log(
+            "notebook",
+            id,
+            "delete",
+            fs_tombstone_value(ts, &nb.vv, &nb.last_writer),
+        )
+        .await?;
         tracing::info!(%id, "Notebook deleted");
         Ok(())
     }
@@ -1065,8 +1186,11 @@ impl NotebookRepository for FsBackend {
 
 #[async_trait]
 impl TagRepository for FsBackend {
-    async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
-        self.write_sidecar(&self.tag_path(tag.id), &tag).await?;
+    async fn create_tag(&self, mut tag: Tag) -> Result<Tag, StorageError> {
+        let path = self.tag_path(tag.id);
+        tag.vv = self.next_sidecar_vv(&path).await?;
+        tag.last_writer = self.device_id.clone();
+        self.write_sidecar(&path, &tag).await?;
         self.append_log("tag", tag.id, "create", serde_json::to_value(&tag)?)
             .await?;
         tracing::info!(id = %tag.id, "Tag created");
@@ -1077,11 +1201,14 @@ impl TagRepository for FsBackend {
         self.read_sidecar(&self.tag_path(id), id).await
     }
 
-    async fn update_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
-        if !self.tag_path(tag.id).exists() {
+    async fn update_tag(&self, mut tag: Tag) -> Result<Tag, StorageError> {
+        let path = self.tag_path(tag.id);
+        if !path.exists() {
             return Err(StorageError::NotFound(tag.id.to_string()));
         }
-        self.write_sidecar(&self.tag_path(tag.id), &tag).await?;
+        tag.vv = self.next_sidecar_vv(&path).await?;
+        tag.last_writer = self.device_id.clone();
+        self.write_sidecar(&path, &tag).await?;
         self.append_log("tag", tag.id, "update", serde_json::to_value(&tag)?)
             .await?;
         tracing::info!(id = %tag.id, "Tag updated");
@@ -1089,13 +1216,21 @@ impl TagRepository for FsBackend {
     }
 
     async fn delete_tag(&self, id: Uuid) -> Result<(), StorageError> {
-        let mut tag: Tag = self.read_sidecar(&self.tag_path(id), id).await?;
+        let path = self.tag_path(id);
+        let mut tag: Tag = self.read_sidecar(&path, id).await?;
         let ts = now();
         tag.deleted_at = Some(ts);
         tag.updated_at = ts;
-        self.write_sidecar(&self.tag_path(id), &tag).await?;
-        self.append_log("tag", id, "delete", serde_json::json!({ "id": id }))
-            .await?;
+        note_log::increment(&mut tag.vv, &self.device_id);
+        tag.last_writer = self.device_id.clone();
+        self.write_sidecar(&path, &tag).await?;
+        self.append_log(
+            "tag",
+            id,
+            "delete",
+            fs_tombstone_value(ts, &tag.vv, &tag.last_writer),
+        )
+        .await?;
         tracing::info!(%id, "Tag deleted");
         Ok(())
     }
@@ -1307,62 +1442,78 @@ impl SyncBackend for FsBackend {
                 self.materialize(id).await?;
                 tracing::debug!(%id, "Materialized remote note delete");
             }
-            // Notebooks — last-write-wins by `updated_at` (see the note arm above).
+            // Notebooks — version-vector conflict resolution (see `note_log::resolve`),
+            // matching notes and `DbBackend`.
             Change::NotebookCreate { notebook } | Change::NotebookUpdate { notebook } => {
                 let path = self.notebook_path(notebook.id);
-                let apply = match self.read_sidecar::<Notebook>(&path, notebook.id).await {
-                    Ok(existing) => notebook.updated_at > existing.updated_at,
-                    Err(StorageError::NotFound(_)) => true,
-                    Err(e) => return Err(e),
-                };
-                if apply {
+                if self
+                    .sidecar_incoming_wins(
+                        &path,
+                        &notebook.vv,
+                        notebook.updated_at,
+                        &notebook.last_writer,
+                    )
+                    .await?
+                {
                     self.write_sidecar(&path, &notebook).await?;
                     tracing::debug!(id = %notebook.id, "Applied remote notebook change");
                 } else {
                     tracing::debug!(id = %notebook.id, "Skipped stale remote notebook change");
                 }
             }
-            Change::NotebookDelete { id, deleted_at, .. } => {
+            Change::NotebookDelete {
+                id,
+                deleted_at,
+                vv,
+                last_writer,
+            } => {
                 let path = self.notebook_path(id);
-                if path.exists() {
+                if path.exists()
+                    && self
+                        .sidecar_incoming_wins(&path, &vv, deleted_at, &last_writer)
+                        .await?
+                {
                     let mut nb: Notebook = self.read_sidecar(&path, id).await?;
-                    if deleted_at > nb.updated_at {
-                        nb.deleted_at = Some(deleted_at);
-                        nb.updated_at = deleted_at;
-                        self.write_sidecar(&path, &nb).await?;
-                        tracing::debug!(%id, "Applied remote notebook delete");
-                    } else {
-                        tracing::debug!(%id, "Skipped stale remote notebook delete");
-                    }
+                    nb.deleted_at = Some(deleted_at);
+                    nb.updated_at = deleted_at;
+                    nb.vv = vv;
+                    nb.last_writer = last_writer;
+                    self.write_sidecar(&path, &nb).await?;
+                    tracing::debug!(%id, "Applied remote notebook delete");
                 }
             }
-            // Tags — last-write-wins by `updated_at` (see the note arm above).
+            // Tags — version-vector conflict resolution (see `note_log::resolve`).
             Change::TagCreate { tag } | Change::TagUpdate { tag } => {
                 let path = self.tag_path(tag.id);
-                let apply = match self.read_sidecar::<Tag>(&path, tag.id).await {
-                    Ok(existing) => tag.updated_at > existing.updated_at,
-                    Err(StorageError::NotFound(_)) => true,
-                    Err(e) => return Err(e),
-                };
-                if apply {
+                if self
+                    .sidecar_incoming_wins(&path, &tag.vv, tag.updated_at, &tag.last_writer)
+                    .await?
+                {
                     self.write_sidecar(&path, &tag).await?;
                     tracing::debug!(id = %tag.id, "Applied remote tag change");
                 } else {
                     tracing::debug!(id = %tag.id, "Skipped stale remote tag change");
                 }
             }
-            Change::TagDelete { id, deleted_at, .. } => {
+            Change::TagDelete {
+                id,
+                deleted_at,
+                vv,
+                last_writer,
+            } => {
                 let path = self.tag_path(id);
-                if path.exists() {
+                if path.exists()
+                    && self
+                        .sidecar_incoming_wins(&path, &vv, deleted_at, &last_writer)
+                        .await?
+                {
                     let mut t: Tag = self.read_sidecar(&path, id).await?;
-                    if deleted_at > t.updated_at {
-                        t.deleted_at = Some(deleted_at);
-                        t.updated_at = deleted_at;
-                        self.write_sidecar(&path, &t).await?;
-                        tracing::debug!(%id, "Applied remote tag delete");
-                    } else {
-                        tracing::debug!(%id, "Skipped stale remote tag delete");
-                    }
+                    t.deleted_at = Some(deleted_at);
+                    t.updated_at = deleted_at;
+                    t.vv = vv;
+                    t.last_writer = last_writer;
+                    self.write_sidecar(&path, &t).await?;
+                    tracing::debug!(%id, "Applied remote tag delete");
                 }
             }
             // NoteTag associations
