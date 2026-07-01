@@ -119,13 +119,17 @@ versioned `NoteTagState` (msgpack: `updated_at`/`deleted_at`/`vv`/`last_writer`)
 concurrent add-vs-remove converges (an add is the present state, a remove a tombstone kept so
 it can beat a concurrent add); `ResourceCreate` writes the metadata sidecar and, if
 `data: Some(bytes)`, the payload too (used when receiving from `DbBackend`; Syncthing handles
-the normal case); `ResourceDelete` removes the resource dir.
+the normal case); **`ResourceDelete` is version-vector resolved too** — `resource_incoming_wins`
+runs `note_log::resolve` over the resource sidecar's `(vv, effective_ts, last_writer)`, and a
+winning delete soft-deletes the metadata (`deleted_at` set, blob retained) rather than removing
+the resource dir, so a concurrent delete-vs-recreate converges.
 
-Local notebook/tag writes stamp the sidecar's `vv`/`last_writer` (`next_sidecar_vv` loads the
-current vector and increments this device's component), and note↔tag adds/removes stamp the
-association file's `vv`/`last_writer` the same way — matching notes and `DbBackend`. An old
-empty marker file (pre-version) is read as a present association with an empty vector, so
-existing stores keep working.
+Local notebook/tag/resource writes stamp the sidecar's `vv`/`last_writer` (`next_sidecar_vv` /
+`next_resource_vv` load the current vector and increment this device's component), and note↔tag
+adds/removes stamp the association file's `vv`/`last_writer` the same way — matching notes and
+`DbBackend`. An old empty marker file (pre-version) is read as a present association with an empty
+vector, so existing stores keep working. `list_resources` skips soft-deleted sidecars and
+`read_resource` returns `NotFound` for one.
 
 ## Design notes
 

@@ -22,14 +22,17 @@ content can be **encrypted at rest** with AES‑256‑GCM.
   - **Offline (`FsBackend`)** — JSON/MessagePack files on disk, replicated by Syncthing.
   - **Server (`DbBackend`)** — local LibSQL (embedded SQLite) + WebSocket sync.
 - **Conflict resolution:**
-  - Filesystem notes use **per‑note version vectors** with deterministic convergence
-    (genuine concurrent edits merge; no silent divergence).
-  - Everything else uses **last‑write‑wins** by `updated_at`, with **tombstones** so a
-    stale edit can never resurrect a delete.
+  - **Every entity** — notes, notebooks, tags, note↔tag associations, and resources —
+    converges through **version vectors** with a deterministic `(timestamp, device_id)`
+    tiebreak (genuine concurrent edits resolve the same way on every device; no silent
+    divergence). Filesystem notes carry per‑note version‑vector logs; everything else
+    carries a version vector on its record.
+  - Every delete is a **versioned tombstone** that competes in the same resolution, so a
+    stale edit can never resurrect a delete and a stale delete can never clobber a newer edit.
 - **At‑rest encryption:** AES‑256‑GCM with an Argon2id‑derived key (opt‑in).
 - **gRPC API** with HTTP Basic Auth (constant‑time check) and optional TLS.
 - **Cursor pagination** on every list endpoint.
-- **Soft delete** for notes/notebooks/tags; hard delete for resources.
+- **Soft delete** (versioned tombstones) for every entity, resources included.
 
 ---
 

@@ -244,6 +244,18 @@ pub struct Resource {
     pub size: u64,
     /// UTC timestamp set once at creation.
     pub created_at: DateTime<Utc>,
+    /// UTC timestamp set on soft-delete. `None` means the resource is active. Resources now
+    /// use soft-delete (a tombstone) rather than physical removal, so a delete converges with
+    /// a concurrent create through `note_log::resolve`. The binary payload is retained on
+    /// delete (reclaiming it is a separate compaction concern). Defaults to `None`.
+    #[serde(default)]
+    pub deleted_at: Option<DateTime<Utc>>,
+    /// Version vector for conflict resolution (see [`Note::vv`]). Plaintext. Defaults to empty.
+    #[serde(default)]
+    pub vv: VersionVector,
+    /// Device id that authored the current value; concurrent tiebreak (see [`Note::last_writer`]).
+    #[serde(default)]
+    pub last_writer: String,
 }
 
 impl Resource {
@@ -270,6 +282,9 @@ impl Resource {
             file_name: file_name.into(),
             size,
             created_at: now(),
+            deleted_at: None,
+            vv: VersionVector::new(),
+            last_writer: String::new(),
         }
     }
 }
@@ -395,8 +410,17 @@ pub enum Change {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         data: Option<Vec<u8>>,
     },
-    /// A resource was permanently deleted on the originating device.
-    /// Resources use hard delete (no soft-delete) because binary payloads can be very
-    /// large and there is no benefit to retaining them after deletion.
-    ResourceDelete { id: Uuid },
+    /// A resource was soft-deleted on the originating device. Carries the tombstone timestamp
+    /// plus the deleting write's `vv`/`last_writer` so it competes in `note_log::resolve` like
+    /// any other delete (a stale delete cannot override a newer create, etc.). The binary
+    /// payload is retained on delete; reclaiming it is a separate compaction concern.
+    ResourceDelete {
+        id: Uuid,
+        #[serde(default = "now")]
+        deleted_at: DateTime<Utc>,
+        #[serde(default)]
+        vv: VersionVector,
+        #[serde(default)]
+        last_writer: String,
+    },
 }

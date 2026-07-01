@@ -34,8 +34,10 @@ Everything is one of a handful of plain structs, all deriving `Serialize`/`Deser
 - **`Change`** — the unit of sync: one enum variant per mutation (`NoteCreate`, `NoteDelete`,
   `NoteTagAdd`, `ResourceCreate`, …). Replaying a device's `Change`s reproduces its state.
 
-Notes/notebooks/tags use **soft delete** (`deleted_at` is set, the row is kept as a tombstone
-for sync); resources use **hard delete**.
+Every entity — notes, notebooks, tags, note↔tag associations, and resources — uses **soft
+delete** (`deleted_at` is set, the record is kept as a versioned tombstone for sync). A resource's
+binary payload is retained after a soft delete; reclaiming that space is left to the `FsBackend`
+compaction phase.
 
 ---
 
@@ -46,12 +48,15 @@ for sync); resources use **hard delete**.
 A blanket impl means any type implementing all five *is* a `StorageBackend`, so
 `Arc<dyn StorageBackend>` is usable everywhere. Two concrete backends:
 
-| Backend | Storage | Conflict resolution for notes | Sync transport |
-|---------|---------|-------------------------------|----------------|
-| **`FsBackend`** (`storage/fs.rs`) | files under a root dir | **per-note version vectors** (true concurrent merge, deterministic convergence) | passive — an external tool (Syncthing) replicates the files |
-| **`DbBackend`** (`storage/db.rs`) | one local LibSQL/SQLite database | **last-write-wins** by `updated_at` | active — WebSocket to a sync server |
+| Backend | Storage | Conflict resolution | Sync transport |
+|---------|---------|---------------------|----------------|
+| **`FsBackend`** (`storage/fs.rs`) | files under a root dir | **version vectors** (per-note logs merged; sidecar entities resolved by `note_log::resolve`) | passive — an external tool (Syncthing) replicates the files |
+| **`DbBackend`** (`storage/db.rs`) | one local LibSQL/SQLite database | **version vectors** (current-state rows resolved by `note_log::resolve`) | active — WebSocket to a sync server |
 
-This per-backend conflict difference is deliberate and documented in `SECURITY.md`.
+Both backends resolve **every** entity — notes, notebooks, tags, note↔tag associations, and
+resources — through version vectors with the same deterministic `(timestamp, device_id)` tiebreak,
+so every device converges. The storage shapes differ (append-only per-device logs vs. current-state
+rows) but the decision is shared; see `SECURITY.md`.
 
 ---
 

@@ -26,7 +26,7 @@ All tables are created idempotently by `run_migrations` on first connection.
 | `tags` | Tag rows with soft-delete column and `vv`/`last_writer` |
 | `note_tags` | Many-to-many association (PK `(note_id, tag_id)`), **versioned**: `updated_at`, `deleted_at` (tombstone), `vv`, `last_writer` so add/remove converge like other entities |
 | `note_links` | Projection of each note's resolved outgoing links (see below) — powers indexed backlinks |
-| `resources` | Resource metadata + BLOB (`data` column) |
+| `resources` | Resource metadata + BLOB (`data` column), soft-delete (`deleted_at`), and `vv`/`last_writer` so deletes converge like other entities |
 | `sync_state` | Key-value store for the last-sync timestamp |
 | `device` | Single-row table holding the stable device UUID |
 | `entity_changes` | Append-only change journal (see below) |
@@ -158,7 +158,7 @@ as a `Vec<Change>` and appended to the result. Binary messages and errors are ig
 | `NoteTagAdd` | version-vector `resolve`, then `INSERT OR REPLACE` the present state (`deleted_at` NULL) |
 | `NoteTagRemove` | version-vector `resolve`, then `INSERT OR REPLACE` a tombstone (`deleted_at` set) |
 | `ResourceCreate` | `INSERT OR IGNORE INTO resources (…, data) VALUES (…, ?)` with `data = payload.unwrap_or_default()` |
-| `ResourceDelete` | `DELETE FROM resources WHERE id = ?` (resources use hard delete) |
+| `ResourceDelete` | version-vector `resolve`, then `UPDATE resources SET deleted_at=?, vv=?, last_writer=? WHERE id = ?` (soft-delete tombstone; BLOB retained) |
 
 All operations are idempotent by design. The create/update/delete arms for notes, notebooks,
 and tags are guarded by **version-vector conflict resolution** (`incoming_wins` → `resolve`,
@@ -200,14 +200,12 @@ files); `DbBackend` keeps the current row plus its `vv`. See `SECURITY.md`.
   access to the WebSocket.
 - `libsql` with `feature = "core"` uses an embedded SQLite library (no system libsql
   required). This keeps the binary self-contained.
-- Resources use **hard delete** in `DbBackend`: the `resources` table has no `deleted_at`
-  column, and both `delete_resource` and the `ResourceDelete` arm of `apply_change` run a
-  physical `DELETE FROM resources`. This matches `FsBackend` (which removes the resource
-  directory) and the documented model-wide choice to hard-delete resources because their BLOB
-  payloads can be large (see `models.md`). Notes, notebooks, and tags, by contrast, use
-  soft-delete (a `deleted_at` tombstone) so a delete can win last-write-wins against a
-  concurrent edit. The `ResourceDelete` change still propagates normally through the journal;
-  it just isn't retained as a tombstone row afterwards.
+- Resources use **soft delete** in `DbBackend`, like every other entity: `delete_resource`
+  and the `ResourceDelete` arm of `apply_change` stamp `deleted_at` plus a bumped `vv`/`last_writer`
+  (resolved through `note_log::resolve`) rather than running a physical `DELETE`, so a concurrent
+  delete-vs-recreate converges. `list_resources` filters `deleted_at IS NULL` and `read_resource`
+  returns `NotFound` for a tombstoned row. The BLOB in the `data` column is **retained** after a
+  soft delete; reclaiming that space is left to the scheduled `FsBackend` compaction phase.
 
 ## Related files
 

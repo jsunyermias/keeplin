@@ -291,7 +291,15 @@ fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
                     data: None,
                 })
         }
-        ("resource", "delete") => Some(Change::ResourceDelete { id }),
+        ("resource", "delete") => {
+            let (deleted_at, vv, last_writer) = fs_tombstone_from_data(&entry.data, ts);
+            Some(Change::ResourceDelete {
+                id,
+                deleted_at,
+                vv,
+                last_writer,
+            })
+        }
         _ => None,
     }
 }
@@ -930,6 +938,61 @@ impl FsBackend {
             .await
     }
 
+    // ── resource version helpers ──────────────────────────────────────────────
+
+    /// Read a resource's metadata sidecar, or `None` when absent.
+    async fn read_resource_meta(&self, id: Uuid) -> Result<Option<Resource>, StorageError> {
+        match self
+            .read_sidecar::<Resource>(&self.resource_meta_path(id), id)
+            .await
+        {
+            Ok(r) => Ok(Some(r)),
+            Err(StorageError::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Version vector for a **local** resource write (create or delete): current vector (empty
+    /// if new) with this device's component incremented.
+    async fn next_resource_vv(&self, id: Uuid) -> Result<VersionVector, StorageError> {
+        let mut vv = self
+            .read_resource_meta(id)
+            .await?
+            .map(|r| r.vv)
+            .unwrap_or_default();
+        note_log::increment(&mut vv, &self.device_id);
+        Ok(vv)
+    }
+
+    /// Whether an incoming resource change should replace the local metadata, via [`resolve`].
+    /// The resource has no `updated_at`, so the tiebreak timestamp is `deleted_at` when
+    /// tombstoned else `created_at`. `true` when the resource has no local metadata.
+    async fn resource_incoming_wins(
+        &self,
+        id: Uuid,
+        incoming_vv: &VersionVector,
+        incoming_ts: DateTime<Utc>,
+        incoming_writer: &str,
+    ) -> Result<bool, StorageError> {
+        match self.read_resource_meta(id).await? {
+            None => Ok(true),
+            Some(r) => {
+                let local_ts = r.deleted_at.unwrap_or(r.created_at);
+                Ok(matches!(
+                    resolve(
+                        &r.vv,
+                        local_ts,
+                        &r.last_writer,
+                        incoming_vv,
+                        incoming_ts,
+                        incoming_writer,
+                    ),
+                    Winner::Incoming
+                ))
+            }
+        }
+    }
+
     // ── Versioned note storage (per-device logs + version-vector merge) ────────
 
     /// Return a note's current merged version vector from its meta projection, or an
@@ -1496,11 +1559,13 @@ impl TagRepository for FsBackend {
 impl ResourceRepository for FsBackend {
     async fn create_resource(
         &self,
-        resource: Resource,
+        mut resource: Resource,
         data: Vec<u8>,
     ) -> Result<Resource, StorageError> {
         let dir = self.resource_dir(resource.id);
         tokio::fs::create_dir_all(&dir).await?;
+        resource.vv = self.next_resource_vv(resource.id).await?;
+        resource.last_writer = self.device_id.clone();
         // Write the binary payload first, then the metadata file. `read_resource` treats
         // the presence of `meta.msgpack` as proof the resource exists, so writing it last
         // makes it the commit marker: a crash between the two writes leaves an orphan
@@ -1526,18 +1591,31 @@ impl ResourceRepository for FsBackend {
             return Err(StorageError::NotFound(id.to_string()));
         }
         let resource: Resource = self.read_sidecar(&meta_path, id).await?;
+        // Soft-deleted resources read as NotFound (the metadata tombstone is kept for sync).
+        if resource.deleted_at.is_some() {
+            return Err(StorageError::NotFound(id.to_string()));
+        }
         let data = tokio::fs::read(self.resource_data_path(id)).await?;
         Ok((resource, data))
     }
 
     async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError> {
-        let dir = self.resource_dir(id);
-        if !dir.exists() {
-            return Err(StorageError::NotFound(id.to_string()));
-        }
-        tokio::fs::remove_dir_all(&dir).await?;
-        self.append_log("resource", id, "delete", serde_json::json!({ "id": id }))
-            .await?;
+        let meta_path = self.resource_meta_path(id);
+        let mut resource: Resource = self.read_sidecar(&meta_path, id).await?;
+        // Soft-delete: set the tombstone and bump the vector; the binary payload is retained
+        // (reclaiming it is a separate compaction concern).
+        let ts = now();
+        resource.deleted_at = Some(ts);
+        note_log::increment(&mut resource.vv, &self.device_id);
+        resource.last_writer = self.device_id.clone();
+        self.write_sidecar(&meta_path, &resource).await?;
+        self.append_log(
+            "resource",
+            id,
+            "delete",
+            fs_tombstone_value(ts, &resource.vv, &resource.last_writer),
+        )
+        .await?;
         tracing::info!(%id, "Resource deleted");
         Ok(())
     }
@@ -1559,7 +1637,8 @@ impl ResourceRepository for FsBackend {
             if let Ok(id) = Uuid::parse_str(&id_str) {
                 let meta_path = self.resource_meta_path(id);
                 match self.read_sidecar::<Resource>(&meta_path, id).await {
-                    Ok(r) => resources.push(r),
+                    Ok(r) if r.deleted_at.is_none() => resources.push(r),
+                    Ok(_) => {}
                     Err(e) => tracing::warn!("Could not load resource {id}: {e}"),
                 }
             }
@@ -1732,21 +1811,40 @@ impl SyncBackend for FsBackend {
             // case, writing the metadata file is sufficient; the data file is already
             // in place or will arrive shortly via replication.
             Change::ResourceCreate { resource, data } => {
-                let dir = self.resource_dir(resource.id);
-                tokio::fs::create_dir_all(&dir).await?;
-                self.write_sidecar(&self.resource_meta_path(resource.id), &resource)
-                    .await?;
-                if let Some(bytes) = data {
-                    tokio::fs::write(self.resource_data_path(resource.id), &bytes).await?;
+                let ts = resource.deleted_at.unwrap_or(resource.created_at);
+                if self
+                    .resource_incoming_wins(resource.id, &resource.vv, ts, &resource.last_writer)
+                    .await?
+                {
+                    tokio::fs::create_dir_all(self.resource_dir(resource.id)).await?;
+                    self.write_sidecar(&self.resource_meta_path(resource.id), &resource)
+                        .await?;
+                    if let Some(bytes) = data {
+                        tokio::fs::write(self.resource_data_path(resource.id), &bytes).await?;
+                    }
+                    tracing::debug!(id = %resource.id, "Applied remote resource create");
                 }
-                tracing::debug!(id = %resource.id, "Applied remote resource create");
             }
-            Change::ResourceDelete { id } => {
-                let dir = self.resource_dir(id);
-                if dir.exists() {
-                    tokio::fs::remove_dir_all(dir).await?;
+            Change::ResourceDelete {
+                id,
+                deleted_at,
+                vv,
+                last_writer,
+            } => {
+                // Soft-delete: tombstone the metadata (keep the blob) only when the delete wins.
+                if let Some(mut resource) = self.read_resource_meta(id).await? {
+                    if self
+                        .resource_incoming_wins(id, &vv, deleted_at, &last_writer)
+                        .await?
+                    {
+                        resource.deleted_at = Some(deleted_at);
+                        resource.vv = vv;
+                        resource.last_writer = last_writer;
+                        self.write_sidecar(&self.resource_meta_path(id), &resource)
+                            .await?;
+                        tracing::debug!(%id, "Applied remote resource delete");
+                    }
                 }
-                tracing::debug!(%id, "Applied remote resource delete");
             }
         }
         Ok(())
