@@ -640,3 +640,65 @@ async fn fs_notebook_concurrent_equal_timestamp_edits_converge() {
     assert_eq!(title_a, title_b, "concurrent notebook edits must converge");
     assert!(title_a == "from A" || title_a == "from B");
 }
+
+/// Count the entries in a note's single per-device log file (the `log.*.msgpack` in its dir).
+async fn note_log_len(root: &std::path::Path, id: uuid::Uuid) -> usize {
+    use keeplin_core::storage::note_log::NoteLogEntry;
+    let dir = root.join("notes").join(id.to_string());
+    let mut rd = tokio::fs::read_dir(&dir).await.unwrap();
+    while let Some(e) = rd.next_entry().await.unwrap() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with("log.") && name.ends_with(".msgpack") {
+            let bytes = tokio::fs::read(e.path()).await.unwrap();
+            let entries: Vec<NoteLogEntry> = rmp_serde::from_slice(&bytes).unwrap();
+            return entries.len();
+        }
+    }
+    panic!("no per-device note log found for {id}");
+}
+
+/// A note edited far past the compaction threshold keeps its own per-device log bounded (the
+/// log is collapsed to its frontier) while reads still return the latest content, and the
+/// compacted log replicates to a peer that converges on the same state — including after a
+/// delete, whose tombstone still recovers its content from the retained newest upsert.
+#[tokio::test]
+async fn fs_note_log_compacts_and_still_converges() {
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    let a = FsBackend::new(dir_a.path()).await.unwrap();
+    let b = FsBackend::new(dir_b.path()).await.unwrap();
+
+    let note = Note::new("t", "v0");
+    let id = note.id;
+    a.create_note(note.clone()).await.unwrap();
+
+    // Edit well past the compaction threshold so compaction fires repeatedly.
+    let edits = 1000u64;
+    for i in 1..=edits {
+        let mut edited = note.clone();
+        edited.body = format!("v{i}");
+        a.update_note(edited).await.unwrap();
+    }
+
+    // Despite 1000 edits, the log is bounded to at most the threshold (+1): each time it grows
+    // past 256 entries it is collapsed back to its frontier, rather than growing to 1001.
+    let len = note_log_len(dir_a.path(), id).await;
+    assert!(
+        len <= 257,
+        "compacted per-note log must stay bounded, had {len} entries"
+    );
+    assert_eq!(a.read_note(id).await.unwrap().body, format!("v{edits}"));
+
+    // The compacted log replicates to a fresh peer, which converges on the latest content.
+    replicate_note(dir_a.path(), dir_b.path(), id).await;
+    assert_eq!(b.read_note(id).await.unwrap().body, format!("v{edits}"));
+
+    // Deleting after all that churn still produces a tombstone that carries the recovered
+    // content (the newest upsert was retained by compaction), and it propagates.
+    a.delete_note(id).await.unwrap();
+    replicate_note(dir_a.path(), dir_b.path(), id).await;
+    assert!(
+        b.read_note(id).await.unwrap().deleted_at.is_some(),
+        "the delete must converge on the peer after compaction"
+    );
+}

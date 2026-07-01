@@ -179,6 +179,45 @@ pub fn merge(logs: &[Vec<NoteLogEntry>]) -> Merged {
     }
 }
 
+/// Compact one device's **own** append-only log without changing the result of [`merge`].
+///
+/// Within a single device's log every entry's version vector dominates all earlier ones: each
+/// local write bases its vector on the merge of all state seen so far and then increments this
+/// device's own component (see `FsBackend::append_note_op`). The last entry is therefore the
+/// log's frontier and alone determines this device's contribution to `merge`'s heads and merged
+/// vector. The only other entry `merge` can consult from a log is the newest `Upsert` — used to
+/// recover a tombstone winner's content fields (see the `Tombstone` arm of [`merge`]) — so
+/// compaction keeps at most two entries: the head, plus the highest-`(timestamp, device_id)`
+/// `Upsert` when that is not already the head. `merge` over the compacted log (in any device
+/// combination) yields an identical note and merged vector.
+///
+/// This is sound **only** for a device's own single-writer log (`log.{own_device}.msgpack`);
+/// applying it to a foreign or multi-writer log, whose entries are not totally ordered by
+/// domination, would drop entries `merge` still needs.
+pub fn compact_own_log(log: &[NoteLogEntry]) -> Vec<NoteLogEntry> {
+    if log.len() <= 1 {
+        return log.to_vec();
+    }
+    let head = log.last().expect("len > 1");
+    // The highest-(timestamp, device_id) Upsert anywhere in the log — exactly what merge's
+    // tombstone-content recovery selects with its `max_by_key(timestamp)` over all upserts.
+    let newest_upsert = log
+        .iter()
+        .filter(|e| matches!(e.op, NoteOp::Upsert(_)))
+        .max_by(|a, b| {
+            a.timestamp
+                .cmp(&b.timestamp)
+                .then_with(|| a.device_id.cmp(&b.device_id))
+        });
+    match newest_upsert {
+        // No upserts (a bare tombstone) or the head already is the newest upsert → head suffices.
+        None => vec![head.clone()],
+        Some(u) if std::ptr::eq(u, head) => vec![head.clone()],
+        // Keep the newest upsert (for tombstone recovery) followed by the frontier head.
+        Some(u) => vec![u.clone(), head.clone()],
+    }
+}
+
 /// The outcome of a pairwise version-vector comparison: which side should win.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Winner {
@@ -387,6 +426,72 @@ mod tests {
         assert!(m.conflict, "delete vs concurrent edit is a real conflict");
         let n = m.note.unwrap();
         assert!(n.deleted_at.is_some(), "tombstone wins by later timestamp");
+    }
+
+    /// Compaction must not change what `merge` yields, for every shape of a device's own log:
+    /// a long upsert history, and a history ending in a tombstone (whose content is recovered
+    /// from the newest upsert). It must also bound the log to at most two entries.
+    #[test]
+    fn compact_own_log_preserves_merge() {
+        // Case 1: a long single-device upsert history → compacts to just the head.
+        let mut long = Vec::new();
+        for i in 1..=10u64 {
+            long.push(entry(
+                &[("A", i)],
+                "A",
+                i as i64 * 10,
+                NoteOp::Upsert(note(&format!("v{i}"))),
+            ));
+        }
+        let c = compact_own_log(&long);
+        assert_eq!(c.len(), 1, "upsert-headed history compacts to the head");
+        assert_eq!(
+            merge(&[c]).note.unwrap().body,
+            merge(&[long]).note.unwrap().body
+        );
+
+        // Case 2: history ending in a tombstone → keeps the newest upsert + the tombstone head,
+        // so the tombstone winner still recovers its content fields.
+        let del_ts = DateTime::<Utc>::from_timestamp(200, 0).unwrap();
+        let mut with_delete = Vec::new();
+        for i in 1..=5u64 {
+            with_delete.push(entry(
+                &[("A", i)],
+                "A",
+                i as i64 * 10,
+                NoteOp::Upsert(note(&format!("body{i}"))),
+            ));
+        }
+        with_delete.push(entry(
+            &[("A", 6)],
+            "A",
+            200,
+            NoteOp::Tombstone { deleted_at: del_ts },
+        ));
+        let c = compact_own_log(&with_delete);
+        assert_eq!(
+            c.len(),
+            2,
+            "tombstone-headed history keeps upsert + tombstone"
+        );
+        let m_orig = merge(std::slice::from_ref(&with_delete));
+        let m_comp = merge(std::slice::from_ref(&c));
+        let n_orig = m_orig.note.unwrap();
+        let n_comp = m_comp.note.unwrap();
+        assert_eq!(n_comp.body, n_orig.body, "recovered content is unchanged");
+        assert!(n_comp.deleted_at.is_some());
+        assert_eq!(m_comp.vv, m_orig.vv, "merged vector is unchanged");
+
+        // Case 3: the compacted log still merges correctly against a *concurrent* peer log —
+        // the newest upsert survives so a winning peer tombstone can recover content from it.
+        let peer = vec![entry(&[("B", 1)], "B", 15, NoteOp::Upsert(note("peer")))];
+        let full = merge(&[with_delete, peer.clone()]);
+        let comp = merge(&[c, peer]);
+        assert_eq!(comp.vv, full.vv);
+        assert_eq!(
+            comp.note.map(|n| (n.body, n.deleted_at.is_some())),
+            full.note.map(|n| (n.body, n.deleted_at.is_some())),
+        );
     }
 
     #[test]

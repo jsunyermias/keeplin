@@ -135,11 +135,18 @@ vector, so existing stores keep working. `list_resources` skips soft-deleted sid
 
 - `send_changes` / `receive_changes` push/pull is a no-op: replication is entirely
   Syncthing's job. The sync engine still calls them; they return immediately.
-- Logs (both per-note and the global NDJSON journal) are append-only and **never pruned** by
-  the backend — dropping an entry a peer has not yet consumed would corrupt that peer's sync
-  cursor. They grow over the store's lifetime (fine for typical note volumes); safe compaction
-  needs every peer's consumed position, which lives outside this backend, so there is no
-  automatic mechanism.
+- **Per-note logs are compacted automatically.** Each `log.{device}.msgpack` has a single
+  writer, so its last entry dominates all earlier ones; once a log passes
+  `NOTE_LOG_COMPACT_THRESHOLD` entries, `append_note_op` collapses it to its frontier (the head
+  plus the newest `Upsert` needed to recover a tombstone winner's content) via
+  `note_log::compact_own_log`. This is lossless — `merge` yields the same result — and bounds
+  each per-note per-device log regardless of how many times the note is edited.
+- The **global NDJSON journal** is still append-only and **not yet pruned** by the backend:
+  peers track their read position by byte offset, so blindly dropping entries would corrupt that
+  cursor. It grows with entity *churn* (not entity count); snapshot-based pruning of these logs
+  is a scheduled follow-up. `prune_change_journal` remains a no-op until then.
+- FsBackend targets single-user, low-concurrency desktop use; cross-*process* writes to the
+  same store are still unsupported (the lock is per-process).
 - FsBackend targets single-user, low-concurrency desktop use; cross-*process* writes to the
   same store are still unsupported (the lock is per-process).
 
