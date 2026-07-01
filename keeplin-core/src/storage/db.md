@@ -205,7 +205,8 @@ files); `DbBackend` keeps the current row plus its `vv`. See `SECURITY.md`.
   (resolved through `note_log::resolve`) rather than running a physical `DELETE`, so a concurrent
   delete-vs-recreate converges. `list_resources` filters `deleted_at IS NULL` and `read_resource`
   returns `NotFound` for a tombstoned row. The BLOB in the `data` column is **retained** after a
-  soft delete; reclaiming that space is left to the scheduled `FsBackend` compaction phase.
+  soft delete (the tombstone must persist for convergence); reclaiming that space is left to
+  out-of-band maintenance.
 
 ## Related files
 

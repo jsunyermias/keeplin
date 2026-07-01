@@ -39,10 +39,10 @@ Note-log types (`NoteOp`, `NoteLogEntry`, `VersionVector`, `merge`) live in the 
 ├── note_tags/{note_uuid}/{tag_uuid}        ← versioned association state (msgpack: vv + deleted_at)
 ├── resources/{uuid}/meta.msgpack           ← resource metadata
 ├── resources/{uuid}/data                   ← resource binary payload
-├── logs/{device_id}.log                    ← this device's global NDJSON journal
+├── logs/{device_id}.log                    ← this device's global NDJSON journal (optional epoch header line)
 ├── .keeplin/device_id                      ← stable identifier for this installation
-├── .keeplin/format_version                 ← storage format version (currently 4)
-├── .keeplin/offsets/{device_id}            ← byte offset consumed in each foreign global log
+├── .keeplin/format_version                 ← storage format version (currently 5)
+├── .keeplin/offsets/{device_id}            ← "{epoch}:{offset}" cursor consumed in each foreign global log
 └── .keeplin/sync_state.json                ← last successful sync timestamp
 ```
 
@@ -68,12 +68,13 @@ last-write-wins tiebreak. See `note_log.md` for the merge rules.
 ## Global journal & format — `LogEntry`, `SyncState`
 
 Notebook/tag/resource/note-tag mutations append a `LogEntry` (NDJSON) to
-`logs/{device_id}.log`. `get_changes_since` reads new foreign entries via the byte-offset
-cursors in `.keeplin/offsets/`, so each entry is processed exactly once, and also picks up
-this device's own new lines. Each line is decoded by `log_entry_to_change`; unrecognised
-`(entity_type, operation)` pairs are skipped (forward/backward compatibility). A `delete`
-line's own timestamp becomes the tombstone time, so replayed deletes compete in
-last-write-wins on the receiver.
+`logs/{device_id}.log`. `receive_changes` reads new foreign entries via the `{epoch}:{offset}`
+cursors in `.keeplin/offsets/`, so each entry is processed exactly once (an epoch change means the
+foreign log was compacted, so its snapshot is re-read from the start — see the compaction design
+note). Each line is decoded by `log_entry_to_change`; unrecognised `(entity_type, operation)`
+pairs are skipped (forward/backward compatibility), as is the optional `EpochHeader` first line. A
+`delete` line carries the tombstone's own `(deleted_at, vv, last_writer)`, so replayed deletes
+compete through `note_log::resolve` on the receiver.
 
 ### Backward compatibility
 
@@ -141,10 +142,16 @@ vector, so existing stores keep working. `list_resources` skips soft-deleted sid
   plus the newest `Upsert` needed to recover a tombstone winner's content) via
   `note_log::compact_own_log`. This is lossless — `merge` yields the same result — and bounds
   each per-note per-device log regardless of how many times the note is edited.
-- The **global NDJSON journal** is still append-only and **not yet pruned** by the backend:
-  peers track their read position by byte offset, so blindly dropping entries would corrupt that
-  cursor. It grows with entity *churn* (not entity count); snapshot-based pruning of these logs
-  is a scheduled follow-up. `prune_change_journal` remains a no-op until then.
+- The **global NDJSON journal is compacted too**, by generation-epoch snapshots. Peers track
+  their read position by byte offset, so entries cannot simply be dropped. Instead, once this
+  device's own log passes `GLOBAL_LOG_COMPACT_THRESHOLD` entries, `append_log` rewrites it as a
+  current-state snapshot — one entry per notebook/tag/resource/association (a `create`/`add`, or a
+  `delete`/`remove` tombstone when soft-deleted) — behind a bumped `EpochHeader` first line. A
+  peer whose cursor is from an older epoch re-reads the snapshot from the start (`read_new_entries`
+  compares the header epoch to the stored `{epoch}:{offset}` cursor); because every entry is
+  version-vector resolved and idempotent, replay converges rather than duplicating or resurrecting
+  state. This bounds the log by entity count, not mutation count. `prune_change_journal` stays a
+  no-op — compaction, not time-based deletion, does the bounding.
 - FsBackend targets single-user, low-concurrency desktop use; cross-*process* writes to the
   same store are still unsupported (the lock is per-process).
 - FsBackend targets single-user, low-concurrency desktop use; cross-*process* writes to the

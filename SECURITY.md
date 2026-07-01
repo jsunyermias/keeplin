@@ -88,8 +88,9 @@ old bare-`updated_at` last-write-wins (which **diverged permanently** on a tie),
 association add/remove (which was order-dependent), or the order-dependent resource hard delete.
 
 Cross-backend live sync remains unsupported — use the one-shot `migrate` command to move a store
-between backends. The remaining phased work is `FsBackend` log compaction/pruning, which bounds
-on-disk log growth without changing convergence.
+between backends. `FsBackend` bounds its on-disk logs automatically without affecting convergence:
+per-note logs collapse to their frontier, and the global journal is rewritten as a generation-epoch
+snapshot (peers reading by byte offset re-read the snapshot when the epoch changes).
 
 ### Multi-device encryption constraint
 
@@ -122,8 +123,9 @@ resource's metadata so the tombstone competes in `note_log::resolve` exactly lik
 delete. This makes concurrent delete-vs-recreate converge on every device instead of depending on
 apply order. Deleted resources are excluded from `list_resources` and read as `NotFound`, and the
 `ResourceDelete` change carries the tombstone's `vv`/`last_writer` so it propagates and resolves
-correctly. The binary payload is **retained on disk / in the database** after a soft delete;
-reclaiming that space is handled by the scheduled `FsBackend` compaction phase.
+correctly. The binary payload is **retained on disk / in the database** after a soft delete: the
+tombstone must persist so the deletion converges, and log compaction rewrites change history, not
+attachment blobs. Reclaiming a deleted attachment's bytes is left to out-of-band maintenance.
 
 ## Known limitations
 
@@ -169,7 +171,7 @@ reclaiming that space is handled by the scheduled `FsBackend` compaction phase.
   against edits through the same `resolve`/`merge`: a stale edit cannot resurrect a newer
   delete, and a stale delete cannot override a newer edit. Resources follow the same rule via a
   **soft-delete** tombstone (`deleted_at` + `vv`), so a concurrent resource recreate-vs-delete
-  converges; only the on-disk blob is retained (pending compaction).
+  converges; only the on-disk blob is retained (reclaimed by out-of-band maintenance, not sync).
 
 ## Reporting vulnerabilities
 
