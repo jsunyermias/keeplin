@@ -47,6 +47,17 @@ For a `Tombstone` winner, the returned note carries the most recent known conten
 with `deleted_at`/`updated_at` set to the tombstone time, so the note is both hidden from
 listings and still comparable against a later concurrent edit.
 
+### `fn resolve(local: (vv, ts, device), incoming: (vv, ts, device)) -> Winner`
+
+The **state-based** (current-value) analogue of `merge`, for backends that keep only the
+current state instead of a full op log — used by `DbBackend::apply_change` (via `incoming_wins`)
+for **every** entity type. Returns `Winner::Incoming` iff the incoming vector strictly dominates
+local's; `Winner::Local` iff local dominates (including equal vectors, so re-applying is a
+no-op); otherwise (concurrent) the greater `(timestamp, device_id)` wins — the **same** frontier
+tiebreak `merge` uses. So `FsBackend`'s log merge and `DbBackend`'s state resolve compute the
+identical winner, and the two backends converge deterministically. This replaced `DbBackend`'s
+old bare-`updated_at` last-write-wins, which diverged permanently on equal timestamps.
+
 ## Design notes
 
 - **Convergence** is the central CRDT property: independent of message order or which

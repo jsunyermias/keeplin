@@ -90,9 +90,13 @@ impl<B: NoteRepository> NoteRepository for EventBackend<B> {
 
     async fn delete_note(&self, id: Uuid) -> Result<(), StorageError> {
         self.inner.delete_note(id).await?;
+        // The live feed is a best-effort notification (clients reload via REST/gRPC), so the
+        // conflict-resolution metadata is not needed here and is left empty.
         self.publish(Change::NoteDelete {
             id,
             deleted_at: Utc::now(),
+            vv: Default::default(),
+            last_writer: String::new(),
         });
         Ok(())
     }
@@ -145,6 +149,8 @@ impl<B: NotebookRepository> NotebookRepository for EventBackend<B> {
         self.publish(Change::NotebookDelete {
             id,
             deleted_at: Utc::now(),
+            vv: Default::default(),
+            last_writer: String::new(),
         });
         Ok(())
     }
@@ -185,6 +191,8 @@ impl<B: TagRepository> TagRepository for EventBackend<B> {
         self.publish(Change::TagDelete {
             id,
             deleted_at: Utc::now(),
+            vv: Default::default(),
+            last_writer: String::new(),
         });
         Ok(())
     }

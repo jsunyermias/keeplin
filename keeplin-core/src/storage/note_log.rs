@@ -179,10 +179,125 @@ pub fn merge(logs: &[Vec<NoteLogEntry>]) -> Merged {
     }
 }
 
+/// The outcome of a pairwise version-vector comparison: which side should win.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Winner {
+    /// Keep the local value; the incoming write is stale, equal, or loses the tiebreak.
+    Local,
+    /// Replace with the incoming value; it is causally newer or wins the concurrent tiebreak.
+    Incoming,
+}
+
+/// Decide whether an `incoming` versioned write should replace the `local` one for a single
+/// entity — the state-based (current-value) analogue of [`merge`], for backends that keep only
+/// the current state (e.g. `DbBackend`) rather than a full per-device op log.
+///
+/// The rules match `merge`'s frontier + tiebreak exactly, so every backend converges to the
+/// same state regardless of the order changes arrive in:
+/// - `incoming` wins iff its vector **strictly dominates** local's (it has causally seen the
+///   local write and moved past it);
+/// - `local` wins iff its vector dominates incoming's — including the case where the vectors
+///   are **equal**, so re-applying a change is an idempotent no-op;
+/// - otherwise the two writes are **concurrent**, and the winner is the one with the greater
+///   `(timestamp, device_id)` — a deterministic last-write-wins tiebreak that avoids the
+///   permanent divergence a bare `updated_at` comparison suffers when two edits share a
+///   timestamp.
+pub fn resolve(
+    local_vv: &VersionVector,
+    local_ts: DateTime<Utc>,
+    local_device: &str,
+    incoming_vv: &VersionVector,
+    incoming_ts: DateTime<Utc>,
+    incoming_device: &str,
+) -> Winner {
+    let incoming_dominates = dominates(incoming_vv, local_vv);
+    let local_dominates = dominates(local_vv, incoming_vv);
+    match (incoming_dominates, local_dominates) {
+        // Incoming has seen strictly more than local → it is causally newer.
+        (true, false) => Winner::Incoming,
+        // Local dominates (incoming is stale) or the vectors are equal (idempotent no-op).
+        (_, true) => Winner::Local,
+        // Concurrent: neither dominates → deterministic (timestamp, device) tiebreak.
+        (false, false) => {
+            if (incoming_ts, incoming_device) > (local_ts, local_device) {
+                Winner::Incoming
+            } else {
+                Winner::Local
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::Note;
+
+    fn vv(pairs: &[(&str, u64)]) -> VersionVector {
+        pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
+    fn ts(secs: i64) -> DateTime<Utc> {
+        DateTime::<Utc>::from_timestamp(secs, 0).unwrap()
+    }
+
+    #[test]
+    fn resolve_incoming_causally_newer_wins() {
+        // incoming {A:1,B:1} dominates local {A:1} → incoming has seen local and moved past.
+        let w = resolve(
+            &vv(&[("A", 1)]),
+            ts(10),
+            "A",
+            &vv(&[("A", 1), ("B", 1)]),
+            ts(5),
+            "B",
+        );
+        assert_eq!(w, Winner::Incoming);
+    }
+
+    #[test]
+    fn resolve_stale_incoming_loses() {
+        let w = resolve(
+            &vv(&[("A", 1), ("B", 1)]),
+            ts(5),
+            "B",
+            &vv(&[("A", 1)]),
+            ts(10),
+            "A",
+        );
+        assert_eq!(w, Winner::Local);
+    }
+
+    #[test]
+    fn resolve_equal_vectors_is_noop() {
+        // Same vector on both sides → idempotent re-apply → keep local.
+        let w = resolve(&vv(&[("A", 2)]), ts(10), "A", &vv(&[("A", 2)]), ts(99), "A");
+        assert_eq!(w, Winner::Local);
+    }
+
+    #[test]
+    fn resolve_concurrent_equal_timestamp_converges_by_device() {
+        // The case bare-`updated_at` LWW gets wrong: two concurrent edits, identical timestamp.
+        // Both devices must pick the SAME winner. Device B's write has the greater device id.
+        let local_a = vv(&[("A", 1)]);
+        let incoming_b = vv(&[("B", 1)]);
+        // On device A: local=A's edit, incoming=B's edit.
+        assert_eq!(
+            resolve(&local_a, ts(10), "A", &incoming_b, ts(10), "B"),
+            Winner::Incoming
+        );
+        // On device B: local=B's edit, incoming=A's edit → keeps B. Same converged winner (B).
+        assert_eq!(
+            resolve(&incoming_b, ts(10), "B", &local_a, ts(10), "A"),
+            Winner::Local
+        );
+    }
+
+    #[test]
+    fn resolve_concurrent_breaks_by_timestamp() {
+        let w = resolve(&vv(&[("A", 1)]), ts(10), "A", &vv(&[("B", 1)]), ts(30), "B");
+        assert_eq!(w, Winner::Incoming);
+    }
 
     fn entry(vv: &[(&str, u64)], dev: &str, secs: i64, op: NoteOp) -> NoteLogEntry {
         let vv = vv

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::links::{Bookmark, NoteLink};
+use crate::storage::note_log::VersionVector;
 
 /// Generates a new random UUID version 4.
 ///
@@ -78,6 +79,17 @@ pub struct Note {
     /// Maintained by [`crate::linking::LinkingBackend`]. Defaults to empty.
     #[serde(default)]
     pub links: Vec<NoteLink>,
+    /// Version vector for conflict resolution — per-device edit counters. A local write
+    /// increments this device's component; on sync, [`crate::storage::note_log::resolve`]
+    /// compares vectors so concurrent edits converge deterministically (rather than a bare
+    /// `updated_at` last-write-wins). Empty on records written before VV tracking. Plaintext
+    /// (sync metadata, not user content), so it is not encrypted at rest. Defaults to empty.
+    #[serde(default)]
+    pub vv: VersionVector,
+    /// Device id that authored the current value, used as the concurrent tiebreak alongside
+    /// `updated_at`. Empty on pre-VV records. Plaintext. Defaults to empty.
+    #[serde(default)]
+    pub last_writer: String,
 }
 
 impl Note {
@@ -100,6 +112,8 @@ impl Note {
             alias: None,
             bookmarks: Vec::new(),
             links: Vec::new(),
+            vv: VersionVector::new(),
+            last_writer: String::new(),
         }
     }
 }
@@ -125,6 +139,12 @@ pub struct Notebook {
     /// `#<notebook alias>#<note>`. Encrypted at rest. Defaults to `None`.
     #[serde(default)]
     pub alias: Option<String>,
+    /// Version vector for conflict resolution (see [`Note::vv`]). Plaintext. Defaults to empty.
+    #[serde(default)]
+    pub vv: VersionVector,
+    /// Device id that authored the current value; concurrent tiebreak (see [`Note::last_writer`]).
+    #[serde(default)]
+    pub last_writer: String,
 }
 
 impl Notebook {
@@ -139,6 +159,8 @@ impl Notebook {
             updated_at: ts,
             deleted_at: None,
             alias: None,
+            vv: VersionVector::new(),
+            last_writer: String::new(),
         }
     }
 }
@@ -160,6 +182,12 @@ pub struct Tag {
     pub updated_at: DateTime<Utc>,
     /// UTC timestamp set on soft-delete. `None` means the tag is active.
     pub deleted_at: Option<DateTime<Utc>>,
+    /// Version vector for conflict resolution (see [`Note::vv`]). Plaintext. Defaults to empty.
+    #[serde(default)]
+    pub vv: VersionVector,
+    /// Device id that authored the current value; concurrent tiebreak (see [`Note::last_writer`]).
+    #[serde(default)]
+    pub last_writer: String,
 }
 
 impl Tag {
@@ -173,6 +201,8 @@ impl Tag {
             created_at: ts,
             updated_at: ts,
             deleted_at: None,
+            vv: VersionVector::new(),
+            last_writer: String::new(),
         }
     }
 }
@@ -275,38 +305,52 @@ pub enum Change {
     /// A note was soft-deleted on the originating device.
     ///
     /// `id` is the UUID of the deleted note and `deleted_at` is when the deletion
-    /// happened. The timestamp turns the deletion into a proper tombstone: when applied
-    /// remotely it competes in last-write-wins against the local `updated_at`, so a stale
-    /// edit can never resurrect a newer delete and a stale delete can never override a
-    /// newer edit. `#[serde(default = "now")]` keeps v1 records (which had no timestamp)
-    /// readable, and `#[serde(alias = "delete")]` preserves the v1 op tag.
+    /// happened. The tombstone also carries the deleting write's version vector (`vv`) and
+    /// author (`last_writer`), so it competes in [`crate::storage::note_log::resolve`] exactly
+    /// like an edit: a stale edit can never resurrect a newer delete, a stale delete can never
+    /// override a newer edit, and a causal edit made *after* seeing the delete revives the
+    /// note. `#[serde(default)]` on `vv`/`last_writer` and `#[serde(default = "now")]` on
+    /// `deleted_at` keep older records readable, and `#[serde(alias = "delete")]` preserves the
+    /// v1 op tag.
     #[serde(alias = "delete")]
     NoteDelete {
         id: Uuid,
         #[serde(default = "now")]
         deleted_at: DateTime<Utc>,
+        #[serde(default)]
+        vv: VersionVector,
+        #[serde(default)]
+        last_writer: String,
     },
     /// A new notebook was created on the originating device.
     NotebookCreate { notebook: Notebook },
     /// An existing notebook's title was changed on the originating device.
     NotebookUpdate { notebook: Notebook },
-    /// A notebook was soft-deleted on the originating device. `deleted_at` is the
-    /// tombstone timestamp used for last-write-wins (see [`Change::NoteDelete`]).
+    /// A notebook was soft-deleted on the originating device. Carries the tombstone timestamp
+    /// plus the deleting write's `vv`/`last_writer` for `resolve` (see [`Change::NoteDelete`]).
     NotebookDelete {
         id: Uuid,
         #[serde(default = "now")]
         deleted_at: DateTime<Utc>,
+        #[serde(default)]
+        vv: VersionVector,
+        #[serde(default)]
+        last_writer: String,
     },
     /// A new tag was created on the originating device.
     TagCreate { tag: Tag },
     /// An existing tag's title was changed on the originating device.
     TagUpdate { tag: Tag },
-    /// A tag was soft-deleted on the originating device. `deleted_at` is the tombstone
-    /// timestamp used for last-write-wins (see [`Change::NoteDelete`]).
+    /// A tag was soft-deleted on the originating device. Carries the tombstone timestamp plus
+    /// the deleting write's `vv`/`last_writer` for `resolve` (see [`Change::NoteDelete`]).
     TagDelete {
         id: Uuid,
         #[serde(default = "now")]
         deleted_at: DateTime<Utc>,
+        #[serde(default)]
+        vv: VersionVector,
+        #[serde(default)]
+        last_writer: String,
     },
     /// A tag was attached to a note on the originating device.
     NoteTagAdd { note_id: Uuid, tag_id: Uuid },

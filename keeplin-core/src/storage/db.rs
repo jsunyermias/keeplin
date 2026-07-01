@@ -25,6 +25,7 @@ use crate::{
     models::{new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag},
 };
 
+use super::note_log::{self, resolve, VersionVector, Winner};
 use super::{NoteRepository, NotebookRepository, ResourceRepository, SyncBackend, TagRepository};
 
 /// A WebSocket stream over either a plain TCP connection or a TLS-wrapped TCP connection.
@@ -191,7 +192,9 @@ impl DbBackend {
                 deleted_at      TEXT,
                 alias           TEXT,
                 bookmarks       TEXT NOT NULL DEFAULT '[]',
-                links           TEXT NOT NULL DEFAULT '[]'
+                links           TEXT NOT NULL DEFAULT '[]',
+                vv              TEXT NOT NULL DEFAULT '{}',
+                last_writer     TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS notebooks (
@@ -200,7 +203,9 @@ impl DbBackend {
                 created_at  TEXT NOT NULL,
                 updated_at  TEXT NOT NULL,
                 deleted_at  TEXT,
-                alias       TEXT
+                alias       TEXT,
+                vv          TEXT NOT NULL DEFAULT '{}',
+                last_writer TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS tags (
@@ -208,7 +213,9 @@ impl DbBackend {
                 title       TEXT NOT NULL,
                 created_at  TEXT NOT NULL,
                 updated_at  TEXT NOT NULL,
-                deleted_at  TEXT
+                deleted_at  TEXT,
+                vv          TEXT NOT NULL DEFAULT '{}',
+                last_writer TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS note_tags (
@@ -283,6 +290,16 @@ impl DbBackend {
         Self::add_column_if_missing(conn, "notes", "bookmarks TEXT NOT NULL DEFAULT '[]'").await?;
         Self::add_column_if_missing(conn, "notes", "links TEXT NOT NULL DEFAULT '[]'").await?;
         Self::add_column_if_missing(conn, "notebooks", "alias TEXT").await?;
+
+        // Additive migration for the version-vector conflict-resolution columns (see
+        // `note_log::resolve`). `vv` is the JSON per-device counter map, `last_writer` the
+        // authoring device id used as the concurrent tiebreak. Pre-VV rows default to an empty
+        // vector, so they behave like today until the next local write stamps them.
+        for table in ["notes", "notebooks", "tags"] {
+            Self::add_column_if_missing(conn, table, "vv TEXT NOT NULL DEFAULT '{}'").await?;
+            Self::add_column_if_missing(conn, table, "last_writer TEXT NOT NULL DEFAULT ''")
+                .await?;
+        }
 
         // Alias uniqueness is enforced at the application layer by `LinkingBackend`, which
         // checks the *plaintext* alias before a local write. A database UNIQUE index is
@@ -446,6 +463,8 @@ impl DbBackend {
         let alias: Option<String> = row.get(10)?;
         let bookmarks = json_to_bookmarks(&row.get::<String>(11)?);
         let links = json_to_links(&row.get::<String>(12)?);
+        let vv = json_to_vv(&row.get::<String>(13)?);
+        let last_writer: String = row.get(14)?;
 
         Ok(Note {
             id,
@@ -461,6 +480,8 @@ impl DbBackend {
             alias,
             bookmarks,
             links,
+            vv,
+            last_writer,
         })
     }
 
@@ -492,6 +513,8 @@ impl DbBackend {
             updated_at: Self::parse_required_dt(row.get::<String>(3)?)?,
             deleted_at: Self::parse_optional_dt(row.get::<Option<String>>(4)?)?,
             alias: row.get(5)?,
+            vv: json_to_vv(&row.get::<String>(6)?),
+            last_writer: row.get(7)?,
         })
     }
 
@@ -502,6 +525,8 @@ impl DbBackend {
             created_at: Self::parse_required_dt(row.get::<String>(2)?)?,
             updated_at: Self::parse_required_dt(row.get::<String>(3)?)?,
             deleted_at: Self::parse_optional_dt(row.get::<Option<String>>(4)?)?,
+            vv: json_to_vv(&row.get::<String>(5)?),
+            last_writer: row.get(6)?,
         })
     }
 
@@ -537,30 +562,45 @@ impl DbBackend {
             ("note", "update") => serde_json::from_value(data.clone())
                 .ok()
                 .map(|note| Change::NoteUpdate { note }),
-            ("note", "delete") => Some(Change::NoteDelete {
-                id,
-                deleted_at: changed_at,
-            }),
+            ("note", "delete") => {
+                let (deleted_at, vv, last_writer) = tombstone_from_data(data, changed_at);
+                Some(Change::NoteDelete {
+                    id,
+                    deleted_at,
+                    vv,
+                    last_writer,
+                })
+            }
             ("notebook", "create") => serde_json::from_value(data.clone())
                 .ok()
                 .map(|notebook| Change::NotebookCreate { notebook }),
             ("notebook", "update") => serde_json::from_value(data.clone())
                 .ok()
                 .map(|notebook| Change::NotebookUpdate { notebook }),
-            ("notebook", "delete") => Some(Change::NotebookDelete {
-                id,
-                deleted_at: changed_at,
-            }),
+            ("notebook", "delete") => {
+                let (deleted_at, vv, last_writer) = tombstone_from_data(data, changed_at);
+                Some(Change::NotebookDelete {
+                    id,
+                    deleted_at,
+                    vv,
+                    last_writer,
+                })
+            }
             ("tag", "create") => serde_json::from_value(data.clone())
                 .ok()
                 .map(|tag| Change::TagCreate { tag }),
             ("tag", "update") => serde_json::from_value(data.clone())
                 .ok()
                 .map(|tag| Change::TagUpdate { tag }),
-            ("tag", "delete") => Some(Change::TagDelete {
-                id,
-                deleted_at: changed_at,
-            }),
+            ("tag", "delete") => {
+                let (deleted_at, vv, last_writer) = tombstone_from_data(data, changed_at);
+                Some(Change::TagDelete {
+                    id,
+                    deleted_at,
+                    vv,
+                    last_writer,
+                })
+            }
             ("note_tag", "add") => {
                 let tag_id: Uuid = data["tag_id"].as_str()?.parse().ok()?;
                 Some(Change::NoteTagAdd {
@@ -642,36 +682,72 @@ impl DbBackend {
         }
     }
 
-    /// Decides whether an incoming remote create/update should be applied, implementing
-    /// last-write-wins by `updated_at`.
+    /// Read the version-vector metadata `(vv, updated_at, last_writer)` of a row, or `None`
+    /// when the row does not exist. Used by `apply_change` to feed [`resolve`].
     ///
-    /// Returns `true` when there is no existing row (the change is a genuine create) or
-    /// when `incoming_updated` is strictly newer than the stored `updated_at`. Returns
-    /// `false` when the local copy is equal or newer, so a stale remote edit can never
-    /// clobber a more recent local one. Ties (equal timestamps) keep the existing row.
-    ///
-    /// `table` is always one of the hard-coded literals `"notes"`, `"notebooks"`, or
-    /// `"tags"` — never caller-supplied — so interpolating it into the query is safe.
-    async fn should_apply(
+    /// `table` is always one of the hard-coded literals `"notes"`, `"notebooks"`, or `"tags"`
+    /// — never caller-supplied — so interpolating it into the query is safe.
+    async fn current_meta(
         &self,
         table: &str,
         id: &str,
-        incoming_updated: DateTime<Utc>,
-    ) -> Result<bool, StorageError> {
+    ) -> Result<Option<(VersionVector, DateTime<Utc>, String)>, StorageError> {
         let mut rows = self
             .conn
             .query(
-                &format!("SELECT updated_at FROM {table} WHERE id = ?1"),
+                &format!("SELECT vv, updated_at, last_writer FROM {table} WHERE id = ?1"),
                 [id.to_owned()],
             )
             .await?;
         match rows.next().await? {
-            Some(row) => {
-                let existing = Self::parse_required_dt(row.get::<String>(0)?)?;
-                Ok(incoming_updated > existing)
-            }
-            None => Ok(true),
+            Some(row) => Ok(Some((
+                json_to_vv(&row.get::<String>(0)?),
+                Self::parse_required_dt(row.get::<String>(1)?)?,
+                row.get::<String>(2)?,
+            ))),
+            None => Ok(None),
         }
+    }
+
+    /// Decide whether an incoming remote write should replace the local row via [`resolve`]:
+    /// `true` when there is no local row, or when the incoming `(vv, updated_at, last_writer)`
+    /// wins the version-vector comparison against the stored one. This replaces the old bare
+    /// `updated_at` last-write-wins, so concurrent edits converge deterministically.
+    async fn incoming_wins(
+        &self,
+        table: &str,
+        id: &str,
+        incoming_vv: &VersionVector,
+        incoming_updated: DateTime<Utc>,
+        incoming_writer: &str,
+    ) -> Result<bool, StorageError> {
+        match self.current_meta(table, id).await? {
+            None => Ok(true),
+            Some((local_vv, local_updated, local_writer)) => Ok(matches!(
+                resolve(
+                    &local_vv,
+                    local_updated,
+                    &local_writer,
+                    incoming_vv,
+                    incoming_updated,
+                    incoming_writer,
+                ),
+                Winner::Incoming
+            )),
+        }
+    }
+
+    /// Compute the version vector for a **local** write to `(table, id)`: the current stored
+    /// vector (or empty for a new row) with this device's component incremented. The caller
+    /// stamps the entity with this vector and sets `last_writer = self.device_id`.
+    async fn next_local_vv(&self, table: &str, id: &str) -> Result<VersionVector, StorageError> {
+        let mut vv = self
+            .current_meta(table, id)
+            .await?
+            .map(|(vv, _, _)| vv)
+            .unwrap_or_default();
+        note_log::increment(&mut vv, &self.device_id);
+        Ok(vv)
     }
 }
 
@@ -734,19 +810,68 @@ fn json_to_links(s: &str) -> Vec<NoteLink> {
     serde_json::from_str(s).unwrap_or_default()
 }
 
+/// Serialise a version vector to the JSON stored in the `vv` column (`"{}"` fallback).
+fn vv_to_json(vv: &VersionVector) -> String {
+    serde_json::to_string(vv).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Parse a `vv` JSON column; a malformed value yields an empty vector.
+fn json_to_vv(s: &str) -> VersionVector {
+    serde_json::from_str(s).unwrap_or_default()
+}
+
+/// Build the `entity_changes.data` JSON for a delete: the tombstone timestamp plus the
+/// deleting write's version vector and author, so `row_to_change` can reconstruct a delete
+/// `Change` that carries everything `resolve` needs on the receiving peer.
+fn tombstone_data(deleted_at: DateTime<Utc>, vv: &VersionVector, last_writer: &str) -> String {
+    serde_json::json!({
+        "deleted_at": deleted_at,
+        "vv": vv,
+        "last_writer": last_writer,
+    })
+    .to_string()
+}
+
+/// Reconstruct a delete's `(deleted_at, vv, last_writer)` from a journal `data` value.
+/// Falls back to `changed_at` and empty vv/writer for pre-VV records that stored `NULL`.
+fn tombstone_from_data(
+    data: &serde_json::Value,
+    changed_at: DateTime<Utc>,
+) -> (DateTime<Utc>, VersionVector, String) {
+    let deleted_at = data
+        .get("deleted_at")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+        .unwrap_or(changed_at);
+    let vv = data
+        .get("vv")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let last_writer = data
+        .get("last_writer")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    (deleted_at, vv, last_writer)
+}
+
 // ── NoteRepository impl ───────────────────────────────────────────────────────
 
 #[async_trait]
 impl NoteRepository for DbBackend {
-    async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
+    async fn create_note(&self, mut note: Note) -> Result<Note, StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
+        // Stamp this local write with a freshly incremented version vector so remote peers can
+        // resolve it against their own edits (see `note_log::resolve`).
+        note.vv = self.next_local_vv("notes", &note.id.to_string()).await?;
+        note.last_writer = self.device_id.clone();
         let r: Result<(), StorageError> = async {
             self.conn
                 .execute(
                     "INSERT INTO notes
-                     (id, title, body, notebook_id, is_todo, todo_due, todo_completed, created_at, updated_at, deleted_at, alias, bookmarks, links)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                     (id, title, body, notebook_id, is_todo, todo_due, todo_completed, created_at, updated_at, deleted_at, alias, bookmarks, links, vv, last_writer)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
                     libsql::params![
                         note.id.to_string(),
                         note.title.clone(),
@@ -761,6 +886,8 @@ impl NoteRepository for DbBackend {
                         note.alias.clone(),
                         bookmarks_to_json(&note.bookmarks),
                         links_to_json(&note.links),
+                        vv_to_json(&note.vv),
+                        note.last_writer.clone(),
                     ],
                 )
                 .await?;
@@ -788,7 +915,7 @@ impl NoteRepository for DbBackend {
             .conn
             .query(
                 "SELECT id,title,body,notebook_id,is_todo,todo_due,todo_completed,
-                        created_at,updated_at,deleted_at,alias,bookmarks,links
+                        created_at,updated_at,deleted_at,alias,bookmarks,links,vv,last_writer
                  FROM notes WHERE id = ?1",
                 [id.to_string()],
             )
@@ -799,9 +926,11 @@ impl NoteRepository for DbBackend {
         }
     }
 
-    async fn update_note(&self, note: Note) -> Result<Note, StorageError> {
+    async fn update_note(&self, mut note: Note) -> Result<Note, StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
+        note.vv = self.next_local_vv("notes", &note.id.to_string()).await?;
+        note.last_writer = self.device_id.clone();
         let r: Result<(), StorageError> = async {
             let affected = self
                 .conn
@@ -809,7 +938,7 @@ impl NoteRepository for DbBackend {
                     "UPDATE notes SET
                      title=?2, body=?3, notebook_id=?4, is_todo=?5, todo_due=?6,
                      todo_completed=?7, updated_at=?8, deleted_at=?9,
-                     alias=?10, bookmarks=?11, links=?12
+                     alias=?10, bookmarks=?11, links=?12, vv=?13, last_writer=?14
                      WHERE id = ?1",
                     libsql::params![
                         note.id.to_string(),
@@ -824,6 +953,8 @@ impl NoteRepository for DbBackend {
                         note.alias.clone(),
                         bookmarks_to_json(&note.bookmarks),
                         links_to_json(&note.links),
+                        vv_to_json(&note.vv),
+                        note.last_writer.clone(),
                     ],
                 )
                 .await?;
@@ -852,19 +983,21 @@ impl NoteRepository for DbBackend {
     async fn delete_note(&self, id: Uuid) -> Result<(), StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
+        let vv = self.next_local_vv("notes", &id.to_string()).await?;
+        let writer = self.device_id.clone();
         let r: Result<(), StorageError> = async {
-            let ts = now().to_rfc3339();
+            let ts = now();
             let affected = self
                 .conn
                 .execute(
-                    "UPDATE notes SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
-                    [id.to_string(), ts],
+                    "UPDATE notes SET deleted_at = ?2, updated_at = ?2, vv = ?3, last_writer = ?4 WHERE id = ?1",
+                    libsql::params![id.to_string(), ts.to_rfc3339(), vv_to_json(&vv), writer.clone()],
                 )
                 .await?;
             if affected == 0 {
                 return Err(StorageError::NotFound(id.to_string()));
             }
-            self.record_change("note", &id.to_string(), "delete", None)
+            self.record_change("note", &id.to_string(), "delete", Some(tombstone_data(ts, &vv, &writer)))
                 .await
         }
         .await;
@@ -893,7 +1026,7 @@ impl NoteRepository for DbBackend {
             .conn
             .query(
                 "SELECT id,title,body,notebook_id,is_todo,todo_due,todo_completed,
-                        created_at,updated_at,deleted_at,alias,bookmarks,links
+                        created_at,updated_at,deleted_at,alias,bookmarks,links,vv,last_writer
                  FROM notes
                  WHERE deleted_at IS NULL
                    AND (
@@ -930,7 +1063,7 @@ impl NoteRepository for DbBackend {
             .conn
             .query(
                 "SELECT n.id,n.title,n.body,n.notebook_id,n.is_todo,n.todo_due,n.todo_completed,
-                        n.created_at,n.updated_at,n.deleted_at,n.alias,n.bookmarks,n.links
+                        n.created_at,n.updated_at,n.deleted_at,n.alias,n.bookmarks,n.links,n.vv,n.last_writer
                  FROM note_links nl
                  JOIN notes n ON n.id = nl.source_note_id
                  WHERE nl.target_note_id = ?1 AND n.deleted_at IS NULL
@@ -963,14 +1096,18 @@ impl NoteRepository for DbBackend {
 
 #[async_trait]
 impl NotebookRepository for DbBackend {
-    async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
+    async fn create_notebook(&self, mut notebook: Notebook) -> Result<Notebook, StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
+        notebook.vv = self
+            .next_local_vv("notebooks", &notebook.id.to_string())
+            .await?;
+        notebook.last_writer = self.device_id.clone();
         let r: Result<(), StorageError> = async {
             self.conn
                 .execute(
-                    "INSERT INTO notebooks (id,title,created_at,updated_at,deleted_at,alias)
-                     VALUES (?1,?2,?3,?4,?5,?6)",
+                    "INSERT INTO notebooks (id,title,created_at,updated_at,deleted_at,alias,vv,last_writer)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
                     libsql::params![
                         notebook.id.to_string(),
                         notebook.title.clone(),
@@ -978,6 +1115,8 @@ impl NotebookRepository for DbBackend {
                         notebook.updated_at.to_rfc3339(),
                         notebook.deleted_at.map(|d| d.to_rfc3339()),
                         notebook.alias.clone(),
+                        vv_to_json(&notebook.vv),
+                        notebook.last_writer.clone(),
                     ],
                 )
                 .await?;
@@ -1004,7 +1143,7 @@ impl NotebookRepository for DbBackend {
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,created_at,updated_at,deleted_at,alias
+                "SELECT id,title,created_at,updated_at,deleted_at,alias,vv,last_writer
                  FROM notebooks WHERE id = ?1",
                 [id.to_string()],
             )
@@ -1015,20 +1154,26 @@ impl NotebookRepository for DbBackend {
         }
     }
 
-    async fn update_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
+    async fn update_notebook(&self, mut notebook: Notebook) -> Result<Notebook, StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
+        notebook.vv = self
+            .next_local_vv("notebooks", &notebook.id.to_string())
+            .await?;
+        notebook.last_writer = self.device_id.clone();
         let r: Result<(), StorageError> = async {
             let affected = self
                 .conn
                 .execute(
-                    "UPDATE notebooks SET title=?2,updated_at=?3,deleted_at=?4,alias=?5 WHERE id=?1",
+                    "UPDATE notebooks SET title=?2,updated_at=?3,deleted_at=?4,alias=?5,vv=?6,last_writer=?7 WHERE id=?1",
                     libsql::params![
                         notebook.id.to_string(),
                         notebook.title.clone(),
                         notebook.updated_at.to_rfc3339(),
                         notebook.deleted_at.map(|d| d.to_rfc3339()),
                         notebook.alias.clone(),
+                        vv_to_json(&notebook.vv),
+                        notebook.last_writer.clone(),
                     ],
                 )
                 .await?;
@@ -1056,18 +1201,21 @@ impl NotebookRepository for DbBackend {
     async fn delete_notebook(&self, id: Uuid) -> Result<(), StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
+        let vv = self.next_local_vv("notebooks", &id.to_string()).await?;
+        let writer = self.device_id.clone();
         let r: Result<(), StorageError> = async {
+            let ts = now();
             let affected = self
                 .conn
                 .execute(
-                    "UPDATE notebooks SET deleted_at=?2, updated_at=?2 WHERE id=?1",
-                    [id.to_string(), now().to_rfc3339()],
+                    "UPDATE notebooks SET deleted_at=?2, updated_at=?2, vv=?3, last_writer=?4 WHERE id=?1",
+                    libsql::params![id.to_string(), ts.to_rfc3339(), vv_to_json(&vv), writer.clone()],
                 )
                 .await?;
             if affected == 0 {
                 return Err(StorageError::NotFound(id.to_string()));
             }
-            self.record_change("notebook", &id.to_string(), "delete", None)
+            self.record_change("notebook", &id.to_string(), "delete", Some(tombstone_data(ts, &vv, &writer)))
                 .await
         }
         .await;
@@ -1095,7 +1243,7 @@ impl NotebookRepository for DbBackend {
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,created_at,updated_at,deleted_at,alias
+                "SELECT id,title,created_at,updated_at,deleted_at,alias,vv,last_writer
                  FROM notebooks
                  WHERE deleted_at IS NULL
                    AND (
@@ -1121,20 +1269,24 @@ impl NotebookRepository for DbBackend {
 
 #[async_trait]
 impl TagRepository for DbBackend {
-    async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
+    async fn create_tag(&self, mut tag: Tag) -> Result<Tag, StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
+        tag.vv = self.next_local_vv("tags", &tag.id.to_string()).await?;
+        tag.last_writer = self.device_id.clone();
         let r: Result<(), StorageError> = async {
             self.conn
                 .execute(
-                    "INSERT INTO tags (id,title,created_at,updated_at,deleted_at)
-                     VALUES (?1,?2,?3,?4,?5)",
+                    "INSERT INTO tags (id,title,created_at,updated_at,deleted_at,vv,last_writer)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7)",
                     libsql::params![
                         tag.id.to_string(),
                         tag.title.clone(),
                         tag.created_at.to_rfc3339(),
                         tag.updated_at.to_rfc3339(),
                         tag.deleted_at.map(|d| d.to_rfc3339()),
+                        vv_to_json(&tag.vv),
+                        tag.last_writer.clone(),
                     ],
                 )
                 .await?;
@@ -1161,7 +1313,7 @@ impl TagRepository for DbBackend {
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,created_at,updated_at,deleted_at
+                "SELECT id,title,created_at,updated_at,deleted_at,vv,last_writer
                  FROM tags WHERE id = ?1",
                 [id.to_string()],
             )
@@ -1172,19 +1324,23 @@ impl TagRepository for DbBackend {
         }
     }
 
-    async fn update_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
+    async fn update_tag(&self, mut tag: Tag) -> Result<Tag, StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
+        tag.vv = self.next_local_vv("tags", &tag.id.to_string()).await?;
+        tag.last_writer = self.device_id.clone();
         let r: Result<(), StorageError> = async {
             let affected = self
                 .conn
                 .execute(
-                    "UPDATE tags SET title=?2,updated_at=?3,deleted_at=?4 WHERE id=?1",
+                    "UPDATE tags SET title=?2,updated_at=?3,deleted_at=?4,vv=?5,last_writer=?6 WHERE id=?1",
                     libsql::params![
                         tag.id.to_string(),
                         tag.title.clone(),
                         tag.updated_at.to_rfc3339(),
                         tag.deleted_at.map(|d| d.to_rfc3339()),
+                        vv_to_json(&tag.vv),
+                        tag.last_writer.clone(),
                     ],
                 )
                 .await?;
@@ -1212,18 +1368,21 @@ impl TagRepository for DbBackend {
     async fn delete_tag(&self, id: Uuid) -> Result<(), StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
+        let vv = self.next_local_vv("tags", &id.to_string()).await?;
+        let writer = self.device_id.clone();
         let r: Result<(), StorageError> = async {
+            let ts = now();
             let affected = self
                 .conn
                 .execute(
-                    "UPDATE tags SET deleted_at=?2, updated_at=?2 WHERE id=?1",
-                    [id.to_string(), now().to_rfc3339()],
+                    "UPDATE tags SET deleted_at=?2, updated_at=?2, vv=?3, last_writer=?4 WHERE id=?1",
+                    libsql::params![id.to_string(), ts.to_rfc3339(), vv_to_json(&vv), writer.clone()],
                 )
                 .await?;
             if affected == 0 {
                 return Err(StorageError::NotFound(id.to_string()));
             }
-            self.record_change("tag", &id.to_string(), "delete", None)
+            self.record_change("tag", &id.to_string(), "delete", Some(tombstone_data(ts, &vv, &writer)))
                 .await
         }
         .await;
@@ -1251,7 +1410,7 @@ impl TagRepository for DbBackend {
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,created_at,updated_at,deleted_at
+                "SELECT id,title,created_at,updated_at,deleted_at,vv,last_writer
                  FROM tags
                  WHERE deleted_at IS NULL
                    AND (
@@ -1338,7 +1497,7 @@ impl TagRepository for DbBackend {
         let mut rows = self
             .conn
             .query(
-                "SELECT t.id,t.title,t.created_at,t.updated_at,t.deleted_at
+                "SELECT t.id,t.title,t.created_at,t.updated_at,t.deleted_at,t.vv,t.last_writer
                  FROM tags t
                  JOIN note_tags nt ON t.id = nt.tag_id
                  WHERE nt.note_id = ?1 AND t.deleted_at IS NULL
@@ -1570,8 +1729,17 @@ impl SyncBackend for DbBackend {
         match change {
             // Notes
             Change::NoteCreate { note } | Change::NoteUpdate { note } => {
+                // Version-vector conflict resolution: apply only when the incoming write wins
+                // against the local row (see `resolve`), so concurrent edits converge instead
+                // of the old bare-`updated_at` last-write-wins.
                 if !self
-                    .should_apply("notes", &note.id.to_string(), note.updated_at)
+                    .incoming_wins(
+                        "notes",
+                        &note.id.to_string(),
+                        &note.vv,
+                        note.updated_at,
+                        &note.last_writer,
+                    )
                     .await?
                 {
                     return Ok(());
@@ -1586,8 +1754,8 @@ impl SyncBackend for DbBackend {
                     self.conn
                         .execute(
                             "INSERT OR REPLACE INTO notes
-                             (id,title,body,notebook_id,is_todo,todo_due,todo_completed,created_at,updated_at,deleted_at,alias,bookmarks,links)
-                             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                             (id,title,body,notebook_id,is_todo,todo_due,todo_completed,created_at,updated_at,deleted_at,alias,bookmarks,links,vv,last_writer)
+                             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
                             libsql::params![
                                 note.id.to_string(),
                                 note.title,
@@ -1602,6 +1770,8 @@ impl SyncBackend for DbBackend {
                                 note.alias.clone(),
                                 bookmarks_to_json(&note.bookmarks),
                                 links_to_json(&note.links),
+                                vv_to_json(&note.vv),
+                                note.last_writer.clone(),
                             ],
                         )
                         .await?;
@@ -1614,35 +1784,52 @@ impl SyncBackend for DbBackend {
                 }
                 self.commit().await?;
             }
-            Change::NoteDelete { id, deleted_at } => {
-                // Tombstone: apply only when it is newer than the local version, and set
-                // `updated_at = deleted_at` so a later edit must beat the delete's time to
-                // resurrect the note. `?2` binds both columns.
+            Change::NoteDelete {
+                id,
+                deleted_at,
+                vv,
+                last_writer,
+            } => {
+                // Tombstone competes in `resolve` exactly like an edit (using `deleted_at` as
+                // its timestamp), so a stale delete never overrides a newer edit and a causal
+                // edit made after the delete can still revive the note. Store the tombstone's
+                // own vv/writer so it can beat later concurrent edits deterministically.
                 if !self
-                    .should_apply("notes", &id.to_string(), deleted_at)
+                    .incoming_wins("notes", &id.to_string(), &vv, deleted_at, &last_writer)
                     .await?
                 {
                     return Ok(());
                 }
                 self.conn
                     .execute(
-                        "UPDATE notes SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
-                        [id.to_string(), deleted_at.to_rfc3339()],
+                        "UPDATE notes SET deleted_at = ?2, updated_at = ?2, vv = ?3, last_writer = ?4 WHERE id = ?1",
+                        libsql::params![
+                            id.to_string(),
+                            deleted_at.to_rfc3339(),
+                            vv_to_json(&vv),
+                            last_writer,
+                        ],
                     )
                     .await?;
             }
             // Notebooks
             Change::NotebookCreate { notebook } | Change::NotebookUpdate { notebook } => {
                 if !self
-                    .should_apply("notebooks", &notebook.id.to_string(), notebook.updated_at)
+                    .incoming_wins(
+                        "notebooks",
+                        &notebook.id.to_string(),
+                        &notebook.vv,
+                        notebook.updated_at,
+                        &notebook.last_writer,
+                    )
                     .await?
                 {
                     return Ok(());
                 }
                 self.conn
                     .execute(
-                        "INSERT OR REPLACE INTO notebooks (id,title,created_at,updated_at,deleted_at,alias)
-                         VALUES (?1,?2,?3,?4,?5,?6)",
+                        "INSERT OR REPLACE INTO notebooks (id,title,created_at,updated_at,deleted_at,alias,vv,last_writer)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
                         libsql::params![
                             notebook.id.to_string(),
                             notebook.title,
@@ -1650,57 +1837,77 @@ impl SyncBackend for DbBackend {
                             notebook.updated_at.to_rfc3339(),
                             notebook.deleted_at.map(|d| d.to_rfc3339()),
                             notebook.alias.clone(),
+                            vv_to_json(&notebook.vv),
+                            notebook.last_writer.clone(),
                         ],
                     )
                     .await?;
             }
-            Change::NotebookDelete { id, deleted_at } => {
+            Change::NotebookDelete {
+                id,
+                deleted_at,
+                vv,
+                last_writer,
+            } => {
                 if !self
-                    .should_apply("notebooks", &id.to_string(), deleted_at)
+                    .incoming_wins("notebooks", &id.to_string(), &vv, deleted_at, &last_writer)
                     .await?
                 {
                     return Ok(());
                 }
                 self.conn
                     .execute(
-                        "UPDATE notebooks SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
-                        [id.to_string(), deleted_at.to_rfc3339()],
+                        "UPDATE notebooks SET deleted_at = ?2, updated_at = ?2, vv = ?3, last_writer = ?4 WHERE id = ?1",
+                        libsql::params![id.to_string(), deleted_at.to_rfc3339(), vv_to_json(&vv), last_writer],
                     )
                     .await?;
             }
             // Tags
             Change::TagCreate { tag } | Change::TagUpdate { tag } => {
                 if !self
-                    .should_apply("tags", &tag.id.to_string(), tag.updated_at)
+                    .incoming_wins(
+                        "tags",
+                        &tag.id.to_string(),
+                        &tag.vv,
+                        tag.updated_at,
+                        &tag.last_writer,
+                    )
                     .await?
                 {
                     return Ok(());
                 }
                 self.conn
                     .execute(
-                        "INSERT OR REPLACE INTO tags (id,title,created_at,updated_at,deleted_at)
-                         VALUES (?1,?2,?3,?4,?5)",
+                        "INSERT OR REPLACE INTO tags (id,title,created_at,updated_at,deleted_at,vv,last_writer)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7)",
                         libsql::params![
                             tag.id.to_string(),
                             tag.title,
                             tag.created_at.to_rfc3339(),
                             tag.updated_at.to_rfc3339(),
                             tag.deleted_at.map(|d| d.to_rfc3339()),
+                            vv_to_json(&tag.vv),
+                            tag.last_writer.clone(),
                         ],
                     )
                     .await?;
             }
-            Change::TagDelete { id, deleted_at } => {
+            Change::TagDelete {
+                id,
+                deleted_at,
+                vv,
+                last_writer,
+            } => {
                 if !self
-                    .should_apply("tags", &id.to_string(), deleted_at)
+                    .incoming_wins("tags", &id.to_string(), &vv, deleted_at, &last_writer)
                     .await?
                 {
                     return Ok(());
                 }
                 self.conn
                     .execute(
-                        "UPDATE tags SET deleted_at = ?2, updated_at = ?2 WHERE id = ?1",
-                        [id.to_string(), deleted_at.to_rfc3339()],
+                        "UPDATE tags SET deleted_at = ?2, updated_at = ?2, vv = ?3, last_writer = ?4 WHERE id = ?1",
+                        libsql::params![id.to_string(), deleted_at.to_rfc3339(), vv_to_json(&vv), last_writer],
                     )
                     .await?;
             }

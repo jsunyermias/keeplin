@@ -37,9 +37,12 @@ layer.
 | `alias` | `Option<String>` | Optional human-readable alias, unique among live notes; lets links target `#<alias>`. Encrypted at rest. |
 | `bookmarks` | `Vec<Bookmark>` | In-note anchors derived from `[text](### "alias")` links in the body (see `links.rs`) |
 | `links` | `Vec<NoteLink>` | Links to other notes: content-derived (`[t](#…)`) and manual |
+| `vv` | `VersionVector` | Per-device version vector for conflict resolution; a local write increments this device's counter. Plaintext sync metadata. See `note_log::resolve` |
+| `last_writer` | `String` | Device id that authored the current value; the concurrent tiebreak alongside `updated_at`. Plaintext |
 
 The three navigation fields are `#[serde(default)]` (older rows without them still parse) and are
-maintained by `LinkingBackend` — see `links.md` / `linking.md`.
+maintained by `LinkingBackend` — see `links.md` / `linking.md`. The `vv`/`last_writer` fields
+are also `#[serde(default)]` (empty ⇒ pre-VV record) and are stamped by the backends on write.
 
 ### `Notebook`
 | Field | Type | Description |
@@ -50,10 +53,12 @@ maintained by `LinkingBackend` — see `links.md` / `linking.md`.
 | `updated_at` | `DateTime<Utc>` | Refreshed on every mutation |
 | `deleted_at` | `Option<DateTime<Utc>>` | Set on soft-delete |
 | `alias` | `Option<String>` | Optional alias, unique among live notebooks; scopes `#<notebook>#<note>`. Encrypted at rest. |
+| `vv` / `last_writer` | `VersionVector` / `String` | Version-vector conflict-resolution metadata (see `Note`). |
 
 ### `Tag`
 
-Same fields as `Notebook`: `id`, `title`, `created_at`, `updated_at`, `deleted_at`.
+Same fields as `Notebook` minus `alias`: `id`, `title`, `created_at`, `updated_at`,
+`deleted_at`, `vv`, `last_writer`.
 
 ### `NoteTag`
 | Field | Type | Description |
@@ -82,13 +87,13 @@ on the `NoteCreate`, `NoteUpdate`, and `NoteDelete` variants accept the old shor
 |---------|---------|-------------|
 | `NoteCreate` | `{ note: Note }` | A new note was created |
 | `NoteUpdate` | `{ note: Note }` | An existing note was updated |
-| `NoteDelete` | `{ id: Uuid, deleted_at }` | A note was soft-deleted (the tombstone timestamp drives last-write-wins) |
+| `NoteDelete` | `{ id, deleted_at, vv, last_writer }` | A note was soft-deleted; the tombstone carries its version vector so it resolves like an edit |
 | `NotebookCreate` | `{ notebook: Notebook }` | A new notebook was created |
 | `NotebookUpdate` | `{ notebook: Notebook }` | A notebook was renamed |
-| `NotebookDelete` | `{ id: Uuid, deleted_at }` | A notebook was soft-deleted |
+| `NotebookDelete` | `{ id, deleted_at, vv, last_writer }` | A notebook was soft-deleted |
 | `TagCreate` | `{ tag: Tag }` | A new tag was created |
 | `TagUpdate` | `{ tag: Tag }` | A tag was renamed |
-| `TagDelete` | `{ id: Uuid, deleted_at }` | A tag was soft-deleted |
+| `TagDelete` | `{ id, deleted_at, vv, last_writer }` | A tag was soft-deleted |
 | `NoteTagAdd` | `{ note_id, tag_id }` | A tag was attached to a note |
 | `NoteTagRemove` | `{ note_id, tag_id }` | A tag was detached from a note |
 | `ResourceCreate` | `{ resource, data? }` | A resource was added; `data` is `Some` in `DbBackend` and `None` in `FsBackend` |
