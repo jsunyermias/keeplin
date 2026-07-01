@@ -70,25 +70,26 @@ It does **not** protect against:
 Both backends resolve concurrent edits with **version vectors** and the same deterministic
 `(timestamp, device_id)` tiebreak (`note_log::merge` for `FsBackend`'s per-device logs,
 `note_log::resolve` for `DbBackend`'s current-state rows), so every device **converges** on the
-same winner. This is being rolled out in phases; the current state is:
+same winner across **every** entity type:
 
 | | `FsBackend` (offline / Syncthing) | `DbBackend` (server mode) |
 |---|---|---|
 | Notes | **Version vectors** — converge | **Version vectors** — converge |
 | Notebooks / tags | **Version vectors** — converge | **Version vectors** — converge |
-| Resources | Last-write-wins (hard delete; VV/tombstone pending) | Last-write-wins (hard delete; pending) |
+| Note↔tag associations | **Version vectors** — converge | **Version vectors** — converge |
+| Resources | **Version vectors** — converge (soft-delete tombstone; blob retained) | **Version vectors** — converge (soft-delete tombstone) |
 
-Both backends stamp a version vector on every note/notebook/tag write **and every note↔tag
-add/remove** (associations are a versioned present/tombstone state), resolving incoming changes
-with `note_log::resolve`, so concurrent edits — including two that share an `updated_at`, and a
-concurrent tag attach-vs-detach — converge on the same deterministic winner instead of the old
-bare-`updated_at` last-write-wins (which **diverged permanently** on a tie) or the timestamp-less
-association add/remove (which was order-dependent).
+Both backends stamp a version vector on every note/notebook/tag/resource write, **every note↔tag
+add/remove** (associations are a versioned present/tombstone state), and **every resource delete**
+(a versioned soft-delete tombstone), resolving incoming changes with `note_log::resolve`. So
+concurrent edits — including two that share an `updated_at`, a concurrent tag attach-vs-detach, and
+a concurrent resource delete-vs-recreate — converge on the same deterministic winner instead of the
+old bare-`updated_at` last-write-wins (which **diverged permanently** on a tie), the timestamp-less
+association add/remove (which was order-dependent), or the order-dependent resource hard delete.
 
-The remaining asymmetry is **resources** (still hard-delete last-write-wins on both backends);
-versioned resource tombstones are a scheduled follow-up phase. Until then, prefer deleting a
-resource from one device at a time. Cross-backend live sync remains unsupported — use the
-one-shot `migrate` command to move a store between backends.
+Cross-backend live sync remains unsupported — use the one-shot `migrate` command to move a store
+between backends. The remaining phased work is `FsBackend` log compaction/pruning, which bounds
+on-disk log growth without changing convergence.
 
 ### Multi-device encryption constraint
 
@@ -116,10 +117,13 @@ re-delivery is safe.
 
 ### Resource deletion
 
-Resources use **hard delete** (data removed immediately from disk / database).
-This is intentional: binary payloads can be large and there is no business need to
-retain deleted attachment data. The `ResourceDelete` entry in the change journal
-ensures the deletion propagates correctly to other synced devices.
+Resources are **soft-deleted**: a delete stamps `deleted_at` plus a version vector on the
+resource's metadata so the tombstone competes in `note_log::resolve` exactly like a note or tag
+delete. This makes concurrent delete-vs-recreate converge on every device instead of depending on
+apply order. Deleted resources are excluded from `list_resources` and read as `NotFound`, and the
+`ResourceDelete` change carries the tombstone's `vv`/`last_writer` so it propagates and resolves
+correctly. The binary payload is **retained on disk / in the database** after a soft delete;
+reclaiming that space is handled by the scheduled `FsBackend` compaction phase.
 
 ## Known limitations
 
@@ -158,14 +162,14 @@ ensures the deletion propagates correctly to other synced devices.
   notebooks, and tags: a strictly-dominating write wins, and a genuine concurrent conflict is
   broken by the deterministic `(updated_at, device_id)` tiebreak — so, unlike the old bare
   timestamp comparison, two edits sharing a timestamp converge instead of diverging. `FsBackend`
-  stamps and resolves notebooks/tags the same way (in `apply_change`, via `resolve` over the
-  sidecar's stored vector). Resources on both backends still use plain `updated_at`
-  last-write-wins (hard delete) pending a later phase.
+  stamps and resolves notebooks/tags/resources the same way (in `apply_change`, via `resolve` over
+  the sidecar's stored vector).
 - **Deletes are tombstones that participate in conflict resolution.** A delete bumps
   `updated_at`/`vv` and the `Change::*Delete` records carry that version, so a delete competes
   against edits through the same `resolve`/`merge`: a stale edit cannot resurrect a newer
-  delete, and a stale delete cannot override a newer edit. (Resources are an
-  exception — they are hard-deleted, so there is nothing to resurrect.)
+  delete, and a stale delete cannot override a newer edit. Resources follow the same rule via a
+  **soft-delete** tombstone (`deleted_at` + `vv`), so a concurrent resource recreate-vs-delete
+  converges; only the on-disk blob is retained (pending compaction).
 
 ## Reporting vulnerabilities
 

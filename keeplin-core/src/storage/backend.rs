@@ -231,9 +231,10 @@ pub trait TagRepository: Send + Sync + 'static {
 
 /// CRUD operations for binary [`Resource`] attachments.
 ///
-/// Resources use **hard delete** (data removed immediately) rather than soft
-/// delete. Binary payloads can be large and there is no business requirement to
-/// retain deleted attachment data.
+/// Resources use a **soft-delete tombstone** (`deleted_at` + version vector), like every
+/// other entity, so a concurrent delete-vs-recreate converges. The binary payload is retained
+/// on disk / in the database after a soft delete; reclaiming that space is left to the
+/// `FsBackend` compaction phase.
 #[async_trait]
 pub trait ResourceRepository: Send + Sync + 'static {
     /// Stores resource metadata alongside its binary payload and returns the metadata.
@@ -250,7 +251,9 @@ pub trait ResourceRepository: Send + Sync + 'static {
     /// Returns [`StorageError::NotFound`] if no resource with the given `id` exists.
     async fn read_resource(&self, id: Uuid) -> Result<(Resource, Vec<u8>), StorageError>;
 
-    /// Permanently removes a resource and its binary payload (hard delete).
+    /// Soft-deletes a resource: stamps a `deleted_at` tombstone plus a bumped version vector so
+    /// the delete competes in conflict resolution. The resource then reads as
+    /// [`StorageError::NotFound`] and is excluded from listings; the binary payload is retained.
     ///
     /// Returns [`StorageError::NotFound`] if no resource with the given `id` exists.
     async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError>;

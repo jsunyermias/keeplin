@@ -67,7 +67,7 @@ association methods:
 |--------|-------------|
 | `create_resource(resource, data) -> Resource` | Store metadata + binary payload |
 | `read_resource(id) -> (Resource, Vec<u8>)` | Retrieve metadata and bytes together |
-| `delete_resource(id) -> ()` | Remove a resource (hard delete on FS; see `db.md` for DbBackend) |
+| `delete_resource(id) -> ()` | Soft-delete a resource (versioned tombstone; blob retained on both backends) |
 | `list_resources(page_size, page_token) -> (Vec<Resource>, Option<String>)` | Metadata only, paginated |
 
 ## Synchronisation (`SyncBackend`)

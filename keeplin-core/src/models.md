@@ -75,6 +75,9 @@ Same fields as `Notebook` minus `alias`: `id`, `title`, `created_at`, `updated_a
 | `file_name` | `String` | Original file name; may be encrypted |
 | `size` | `u64` | Binary payload size in bytes; stored in plaintext |
 | `created_at` | `DateTime<Utc>` | Set once at creation |
+| `deleted_at` | `Option<DateTime<Utc>>` | Set on soft-delete; `None` means the resource is active |
+| `vv` | `VersionVector` | Version vector; bumped on every write and on delete |
+| `last_writer` | `String` | Device id of the most recent writer; the `resolve` tiebreak |
 
 ## `Change` enum — all 13 variants
 
@@ -97,7 +100,7 @@ on the `NoteCreate`, `NoteUpdate`, and `NoteDelete` variants accept the old shor
 | `NoteTagAdd` | `{ note_id, tag_id, updated_at, vv, last_writer }` | A tag was attached (versioned present state) |
 | `NoteTagRemove` | `{ note_id, tag_id, updated_at, vv, last_writer }` | A tag was detached (versioned tombstone) |
 | `ResourceCreate` | `{ resource, data? }` | A resource was added; `data` is `Some` in `DbBackend` and `None` in `FsBackend` |
-| `ResourceDelete` | `{ id: Uuid }` | A resource was permanently deleted |
+| `ResourceDelete` | `{ id, deleted_at, vv, last_writer }` | A resource was soft-deleted; the tombstone carries its version vector so it resolves like an edit |
 
 ### `ResourceCreate.data` semantics
 
@@ -120,9 +123,11 @@ engine when recording a sync timestamp.
 
 - All structs derive `PartialEq + Eq + Hash` so they can be stored in `HashSet` or used
   as `HashMap` keys, which is necessary for deduplicating change lists in the sync engine.
-- Soft deletes (`deleted_at: Option<DateTime<Utc>>`) are used for notes, notebooks, and
-  tags. Resources use hard delete because binary blobs can be very large and there is no
-  benefit to retaining them after deletion.
+- Soft deletes (`deleted_at: Option<DateTime<Utc>>`) are used for every entity — notes,
+  notebooks, tags, note↔tag associations, and resources — so that every delete is a versioned
+  tombstone that competes in `note_log::resolve`. A resource's binary blob is retained on disk /
+  in the database after a soft delete; reclaiming that space is left to the `FsBackend` compaction
+  phase.
 - `Uuid::new_v4()` produces a random UUID that is globally unique with overwhelming
   probability, so IDs generated on different offline devices will never collide.
 

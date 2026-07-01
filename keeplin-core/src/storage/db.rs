@@ -246,7 +246,10 @@ impl DbBackend {
                 file_name   TEXT NOT NULL,
                 size        INTEGER NOT NULL,
                 data        BLOB,
-                created_at  TEXT NOT NULL
+                created_at  TEXT NOT NULL,
+                deleted_at  TEXT,
+                vv          TEXT NOT NULL DEFAULT '{}',
+                last_writer TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS sync_state (
@@ -310,6 +313,11 @@ impl DbBackend {
         Self::add_column_if_missing(conn, "note_tags", "deleted_at TEXT").await?;
         Self::add_column_if_missing(conn, "note_tags", "vv TEXT NOT NULL DEFAULT '{}'").await?;
         Self::add_column_if_missing(conn, "note_tags", "last_writer TEXT NOT NULL DEFAULT ''")
+            .await?;
+        // Resource soft-delete + version vectors (previously hard delete).
+        Self::add_column_if_missing(conn, "resources", "deleted_at TEXT").await?;
+        Self::add_column_if_missing(conn, "resources", "vv TEXT NOT NULL DEFAULT '{}'").await?;
+        Self::add_column_if_missing(conn, "resources", "last_writer TEXT NOT NULL DEFAULT ''")
             .await?;
 
         // Alias uniqueness is enforced at the application layer by `LinkingBackend`, which
@@ -541,6 +549,22 @@ impl DbBackend {
         })
     }
 
+    /// Parse a `Resource` from a row selecting, in order:
+    /// `id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer` (no `data`).
+    fn row_to_resource(row: &libsql::Row) -> Result<Resource, StorageError> {
+        Ok(Resource {
+            id: Self::parse_uuid(row.get::<String>(0)?)?,
+            title: row.get(1)?,
+            mime_type: row.get(2)?,
+            file_name: row.get(3)?,
+            size: row.get::<i64>(4)? as u64,
+            created_at: Self::parse_required_dt(row.get::<String>(5)?)?,
+            deleted_at: Self::parse_optional_dt(row.get::<Option<String>>(6)?)?,
+            vv: json_to_vv(&row.get::<String>(7)?),
+            last_writer: row.get(8)?,
+        })
+    }
+
     /// Convert a row from the `entity_changes` table into a typed [`Change`] variant.
     ///
     /// The arguments correspond to the `entity_type`, `entity_id`, `operation`,
@@ -645,7 +669,15 @@ impl DbBackend {
                         data: binary,
                     })
             }
-            ("resource", "delete") => Some(Change::ResourceDelete { id }),
+            ("resource", "delete") => {
+                let (deleted_at, vv, last_writer) = tombstone_from_data(data, changed_at);
+                Some(Change::ResourceDelete {
+                    id,
+                    deleted_at,
+                    vv,
+                    last_writer,
+                })
+            }
             _ => None,
         }
     }
@@ -870,6 +902,73 @@ impl DbBackend {
             )
             .await?;
         Ok(())
+    }
+
+    // ── resource version helpers ──────────────────────────────────────────────
+
+    /// Version metadata `(vv, effective_ts, last_writer)` of a resource, or `None` if absent.
+    /// Resources have no `updated_at`, so the tiebreak timestamp is `deleted_at` when tombstoned
+    /// else `created_at`.
+    async fn resource_meta(
+        &self,
+        id: &str,
+    ) -> Result<Option<(VersionVector, DateTime<Utc>, String)>, StorageError> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT vv, created_at, deleted_at, last_writer FROM resources WHERE id=?1",
+                [id.to_owned()],
+            )
+            .await?;
+        match rows.next().await? {
+            Some(row) => {
+                let created_at = Self::parse_required_dt(row.get::<String>(1)?)?;
+                let deleted_at = Self::parse_optional_dt(row.get::<Option<String>>(2)?)?;
+                Ok(Some((
+                    json_to_vv(&row.get::<String>(0)?),
+                    deleted_at.unwrap_or(created_at),
+                    row.get::<String>(3)?,
+                )))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Version vector for a **local** resource write (create or delete): current vector (empty
+    /// if new) with this device's component incremented.
+    async fn next_resource_vv(&self, id: &str) -> Result<VersionVector, StorageError> {
+        let mut vv = self
+            .resource_meta(id)
+            .await?
+            .map(|(vv, _, _)| vv)
+            .unwrap_or_default();
+        note_log::increment(&mut vv, &self.device_id);
+        Ok(vv)
+    }
+
+    /// Whether an incoming resource change should replace the local row, via [`resolve`].
+    /// `true` when the resource has no local row.
+    async fn resource_incoming_wins(
+        &self,
+        id: &str,
+        incoming_vv: &VersionVector,
+        incoming_ts: DateTime<Utc>,
+        incoming_writer: &str,
+    ) -> Result<bool, StorageError> {
+        match self.resource_meta(id).await? {
+            None => Ok(true),
+            Some((lvv, lts, lwriter)) => Ok(matches!(
+                resolve(
+                    &lvv,
+                    lts,
+                    &lwriter,
+                    incoming_vv,
+                    incoming_ts,
+                    incoming_writer
+                ),
+                Winner::Incoming
+            )),
+        }
     }
 }
 
@@ -1700,11 +1799,13 @@ impl TagRepository for DbBackend {
 impl ResourceRepository for DbBackend {
     async fn create_resource(
         &self,
-        resource: Resource,
+        mut resource: Resource,
         data: Vec<u8>,
     ) -> Result<Resource, StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
+        resource.vv = self.next_resource_vv(&resource.id.to_string()).await?;
+        resource.last_writer = self.device_id.clone();
         let r: Result<(), StorageError> = async {
             // Encode the binary payload as Base64 before moving `data` into the SQL
             // parameter list. The Base64 string is stored in the `entity_changes` journal
@@ -1714,8 +1815,8 @@ impl ResourceRepository for DbBackend {
             let data_b64 = STANDARD.encode(&data);
             self.conn
                 .execute(
-                    "INSERT INTO resources (id,title,mime_type,file_name,size,data,created_at)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    "INSERT INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                     libsql::params![
                         resource.id.to_string(),
                         resource.title.clone(),
@@ -1724,6 +1825,9 @@ impl ResourceRepository for DbBackend {
                         resource.size as i64,
                         data,
                         resource.created_at.to_rfc3339(),
+                        resource.deleted_at.map(|d| d.to_rfc3339()),
+                        vv_to_json(&resource.vv),
+                        resource.last_writer.clone(),
                     ],
                 )
                 .await?;
@@ -1753,7 +1857,7 @@ impl ResourceRepository for DbBackend {
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,mime_type,file_name,size,data,created_at
+                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer,data
                  FROM resources WHERE id=?1",
                 [id.to_string()],
             )
@@ -1761,15 +1865,11 @@ impl ResourceRepository for DbBackend {
         match rows.next().await? {
             None => Err(StorageError::NotFound(id.to_string())),
             Some(row) => {
-                let resource = Resource {
-                    id: Self::parse_uuid(row.get::<String>(0)?)?,
-                    title: row.get(1)?,
-                    mime_type: row.get(2)?,
-                    file_name: row.get(3)?,
-                    size: row.get::<i64>(4)? as u64,
-                    created_at: Self::parse_required_dt(row.get::<String>(6)?)?,
-                };
-                let blob: Vec<u8> = row.get(5)?;
+                let resource = Self::row_to_resource(&row)?;
+                if resource.deleted_at.is_some() {
+                    return Err(StorageError::NotFound(id.to_string()));
+                }
+                let blob: Vec<u8> = row.get(9)?;
                 Ok((resource, blob))
             }
         }
@@ -1778,16 +1878,34 @@ impl ResourceRepository for DbBackend {
     async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
+        let vv = self.next_resource_vv(&id.to_string()).await?;
+        let writer = self.device_id.clone();
+        let ts = now();
         let r: Result<(), StorageError> = async {
+            // Soft-delete: set the tombstone and bump the vector; the binary payload is
+            // retained (reclaiming it is a separate compaction concern).
             let affected = self
                 .conn
-                .execute("DELETE FROM resources WHERE id=?1", [id.to_string()])
+                .execute(
+                    "UPDATE resources SET deleted_at=?2, vv=?3, last_writer=?4 WHERE id=?1",
+                    libsql::params![
+                        id.to_string(),
+                        ts.to_rfc3339(),
+                        vv_to_json(&vv),
+                        writer.clone()
+                    ],
+                )
                 .await?;
             if affected == 0 {
                 return Err(StorageError::NotFound(id.to_string()));
             }
-            self.record_change("resource", &id.to_string(), "delete", None)
-                .await
+            self.record_change(
+                "resource",
+                &id.to_string(),
+                "delete",
+                Some(tombstone_data(ts, &vv, &writer)),
+            )
+            .await
         }
         .await;
         match r {
@@ -1814,10 +1932,10 @@ impl ResourceRepository for DbBackend {
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,mime_type,file_name,size,created_at
+                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer
                  FROM resources
-                 WHERE ?1 = '' OR created_at > ?2
-                    OR (created_at = ?2 AND id > ?3)
+                 WHERE deleted_at IS NULL
+                   AND (?1 = '' OR created_at > ?2 OR (created_at = ?2 AND id > ?3))
                  ORDER BY created_at ASC, id ASC
                  LIMIT ?4",
                 libsql::params![cursor_ts.clone(), cursor_ts, cursor_id, limit + 1],
@@ -1825,14 +1943,7 @@ impl ResourceRepository for DbBackend {
             .await?;
         let mut resources = Vec::new();
         while let Some(row) = rows.next().await? {
-            resources.push(Resource {
-                id: Self::parse_uuid(row.get::<String>(0)?)?,
-                title: row.get(1)?,
-                mime_type: row.get(2)?,
-                file_name: row.get(3)?,
-                size: row.get::<i64>(4)? as u64,
-                created_at: Self::parse_required_dt(row.get::<String>(5)?)?,
-            });
+            resources.push(Self::row_to_resource(&row)?);
         }
         Ok(build_page(resources, limit as usize, |r| {
             format!("{}|{}", r.created_at.to_rfc3339(), r.id)
@@ -2112,35 +2223,60 @@ impl SyncBackend for DbBackend {
                         .await?;
                 }
             }
-            // Apply a remote resource-create change. When `data` is `Some` (the change
-            // came from a peer that embedded the binary payload in the change record),
-            // the payload is inserted into the `resources.data` column. When `data` is
-            // `None` (the change came from an FsBackend peer that relies on file
-            // replication), an empty byte vector is stored as a placeholder.
-            // `INSERT OR IGNORE` is used to avoid overwriting a row that was already
-            // inserted with a real payload by a concurrent or earlier operation.
+            // Resource create — version-vector resolved. `data` carries the payload from a
+            // `DbBackend` peer (the normal case); it is stored in the `resources.data` column.
             Change::ResourceCreate { resource, data } => {
-                let blob = data.unwrap_or_default();
-                self.conn
-                    .execute(
-                        "INSERT OR IGNORE INTO resources (id,title,mime_type,file_name,size,data,created_at)
-                         VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                        libsql::params![
-                            resource.id.to_string(),
-                            resource.title,
-                            resource.mime_type,
-                            resource.file_name,
-                            resource.size as i64,
-                            blob,
-                            resource.created_at.to_rfc3339(),
-                        ],
-                    )
-                    .await?;
+                let id = resource.id.to_string();
+                let ts = resource.deleted_at.unwrap_or(resource.created_at);
+                if self
+                    .resource_incoming_wins(&id, &resource.vv, ts, &resource.last_writer)
+                    .await?
+                {
+                    let blob = data.unwrap_or_default();
+                    self.conn
+                        .execute(
+                            "INSERT OR REPLACE INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer)
+                             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                            libsql::params![
+                                id,
+                                resource.title,
+                                resource.mime_type,
+                                resource.file_name,
+                                resource.size as i64,
+                                blob,
+                                resource.created_at.to_rfc3339(),
+                                resource.deleted_at.map(|d| d.to_rfc3339()),
+                                vv_to_json(&resource.vv),
+                                resource.last_writer,
+                            ],
+                        )
+                        .await?;
+                }
             }
-            Change::ResourceDelete { id } => {
-                self.conn
-                    .execute("DELETE FROM resources WHERE id = ?1", [id.to_string()])
-                    .await?;
+            // Resource delete — soft-delete (tombstone) resolved like other deletes; the blob
+            // is retained.
+            Change::ResourceDelete {
+                id,
+                deleted_at,
+                vv,
+                last_writer,
+            } => {
+                if self
+                    .resource_incoming_wins(&id.to_string(), &vv, deleted_at, &last_writer)
+                    .await?
+                {
+                    self.conn
+                        .execute(
+                            "UPDATE resources SET deleted_at=?2, vv=?3, last_writer=?4 WHERE id=?1",
+                            libsql::params![
+                                id.to_string(),
+                                deleted_at.to_rfc3339(),
+                                vv_to_json(&vv),
+                                last_writer,
+                            ],
+                        )
+                        .await?;
+                }
             }
         }
         Ok(())

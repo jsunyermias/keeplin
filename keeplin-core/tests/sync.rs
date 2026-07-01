@@ -9,8 +9,12 @@
 
 use chrono::{Duration, Utc};
 use keeplin_core::{
-    models::{Change, Note, NoteTag, Tag},
-    storage::{db::DbBackend, fs::FsBackend, NoteRepository, SyncBackend, TagRepository},
+    error::StorageError,
+    models::{Change, Note, NoteTag, Resource, Tag},
+    storage::{
+        db::DbBackend, fs::FsBackend, NoteRepository, ResourceRepository, SyncBackend,
+        TagRepository,
+    },
 };
 use tempfile::tempdir;
 
@@ -283,4 +287,42 @@ async fn db_concurrent_note_tag_add_remove_converges() {
         .0
         .is_empty();
     assert_eq!(present_a, present_b, "concurrent add/remove must converge");
+}
+
+/// A resource delete now soft-deletes (a versioned tombstone) and propagates: after a create
+/// syncs to a peer and the origin deletes it, both devices agree the resource is gone (read
+/// returns NotFound, list excludes it), instead of the old order-dependent hard delete.
+#[tokio::test]
+async fn db_resource_delete_propagates_and_converges() {
+    let epoch = chrono::DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+    let a = device().await;
+    let b = device().await;
+
+    let res = Resource::new("f", "text/plain", "f.txt", 3);
+    let id = res.id;
+    a.create_resource(res, b"abc".to_vec()).await.unwrap();
+    for c in a.get_changes_since(epoch).await.unwrap() {
+        b.apply_change(c).await.unwrap();
+    }
+    assert!(b.read_resource(id).await.is_ok(), "create must propagate");
+
+    // Origin soft-deletes; propagate the tombstone.
+    a.delete_resource(id).await.unwrap();
+    for c in a.get_changes_since(epoch).await.unwrap() {
+        b.apply_change(c).await.unwrap();
+    }
+
+    for backend in [&a, &b] {
+        assert!(
+            matches!(
+                backend.read_resource(id).await,
+                Err(StorageError::NotFound(_))
+            ),
+            "a soft-deleted resource reads as NotFound"
+        );
+        assert!(
+            backend.list_resources(0, None).await.unwrap().0.is_empty(),
+            "a soft-deleted resource is excluded from listings"
+        );
+    }
 }

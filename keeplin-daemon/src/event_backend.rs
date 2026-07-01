@@ -267,7 +267,12 @@ impl<B: ResourceRepository> ResourceRepository for EventBackend<B> {
 
     async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError> {
         self.inner.delete_resource(id).await?;
-        self.publish(Change::ResourceDelete { id });
+        self.publish(Change::ResourceDelete {
+            id,
+            deleted_at: chrono::Utc::now(),
+            vv: Default::default(),
+            last_writer: String::new(),
+        });
         Ok(())
     }
 
