@@ -75,16 +75,19 @@ same winner. This is being rolled out in phases; the current state is:
 | | `FsBackend` (offline / Syncthing) | `DbBackend` (server mode) |
 |---|---|---|
 | Notes | **Version vectors** — converge | **Version vectors** — converge |
-| Notebooks / tags | Last-write-wins by `updated_at` (VV pending) | **Version vectors** — converge |
+| Notebooks / tags | **Version vectors** — converge | **Version vectors** — converge |
 | Resources | Last-write-wins (hard delete; VV/tombstone pending) | Last-write-wins (hard delete; pending) |
 
-`DbBackend` no longer uses the old bare-`updated_at` last-write-wins, which **diverged
-permanently** when two edits shared a timestamp (each device kept its own). Its `apply_change`
-now runs `resolve` over the stored and incoming version vectors, matching `FsBackend`.
+Both backends stamp a version vector on every notebook/tag/note write and resolve incoming
+changes with `note_log::resolve` (`FsBackend`) / the same via `apply_change` (`DbBackend`), so
+concurrent edits — including two that share an `updated_at` — converge on the same deterministic
+winner instead of the old bare-`updated_at` last-write-wins that **diverged permanently** on a
+tie.
 
-Remaining asymmetries (FS notebooks/tags, resources on both) are scheduled follow-up phases;
-until then, prefer editing those entity types from one device at a time. Cross-backend live
-sync remains unsupported — use the one-shot `migrate` command to move a store between backends.
+The remaining asymmetry is **resources** (still hard-delete last-write-wins on both backends);
+versioned resource tombstones are a scheduled follow-up phase. Until then, prefer deleting a
+resource from one device at a time. Cross-backend live sync remains unsupported — use the
+one-shot `migrate` command to move a store between backends.
 
 ### Multi-device encryption constraint
 
@@ -154,8 +157,9 @@ ensures the deletion propagates correctly to other synced devices.
   notebooks, and tags: a strictly-dominating write wins, and a genuine concurrent conflict is
   broken by the deterministic `(updated_at, device_id)` tiebreak — so, unlike the old bare
   timestamp comparison, two edits sharing a timestamp converge instead of diverging. `FsBackend`
-  notebooks/tags and resources on both backends still use plain `updated_at` last-write-wins
-  pending later phases.
+  stamps and resolves notebooks/tags the same way (in `apply_change`, via `resolve` over the
+  sidecar's stored vector). Resources on both backends still use plain `updated_at`
+  last-write-wins (hard delete) pending a later phase.
 - **Deletes are tombstones that participate in conflict resolution.** A delete bumps
   `updated_at`/`vv` and the `Change::*Delete` records carry that version, so a delete competes
   against edits through the same `resolve`/`merge`: a stale edit cannot resurrect a newer

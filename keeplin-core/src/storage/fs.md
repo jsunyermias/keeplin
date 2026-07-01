@@ -109,10 +109,17 @@ tokio::fs::rename(&tmp, &final_path).await?;
 ## `apply_change`
 
 Applies all 13 `Change` variants: notes go through the version-vector log (an incoming
-`NoteCreate`/`NoteUpdate` is merged, not blindly overwritten); notebooks/tags write their
-sidecar; `NoteTagAdd`/`Remove` create/remove the marker file; `ResourceCreate` writes the
-metadata sidecar and, if `data: Some(bytes)`, the payload too (used when receiving from
-`DbBackend`; Syncthing handles the normal case); `ResourceDelete` removes the resource dir.
+`NoteCreate`/`NoteUpdate` is merged, not blindly overwritten); **notebooks/tags are
+version-vector resolved** — `sidecar_incoming_wins` runs `note_log::resolve` over the stored
+sidecar's `(vv, updated_at, last_writer)` and the incoming write, so concurrent edits converge
+deterministically (a delete carries its own `vv` in the global-log entry via
+`fs_tombstone_value`, so it competes like an edit); `NoteTagAdd`/`Remove` create/remove the
+marker file; `ResourceCreate` writes the metadata sidecar and, if `data: Some(bytes)`, the
+payload too (used when receiving from `DbBackend`; Syncthing handles the normal case);
+`ResourceDelete` removes the resource dir.
+
+Local notebook/tag writes stamp the sidecar's `vv`/`last_writer` (`next_sidecar_vv` loads the
+current vector and increments this device's component), matching notes and `DbBackend`.
 
 ## Design notes
 

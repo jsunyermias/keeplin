@@ -6,9 +6,10 @@
 //! happy path (create → read → update → delete) and error paths (operations on
 //! non-existent entities must return [`StorageError::NotFound`]).
 
+use chrono::Utc;
 use keeplin_core::{
     error::StorageError,
-    models::{Note, NoteTag, Notebook, Resource, Tag},
+    models::{Change, Note, NoteTag, Notebook, Resource, Tag},
     storage::{
         fs::FsBackend, NoteRepository, NotebookRepository, ResourceRepository, SyncBackend,
         TagRepository,
@@ -592,4 +593,50 @@ async fn backlinks_default_scan_is_paginated() {
     assert!(next2.is_none());
     let ids: std::collections::HashSet<_> = p1.iter().chain(&p2).map(|n| n.id).collect();
     assert_eq!(ids.len(), 3);
+}
+
+/// Two `FsBackend` devices editing the same notebook concurrently with the **identical**
+/// `updated_at` converge on one deterministic winner via version-vector `resolve`. Under the
+/// old `updated_at`-only comparison (`>`), equal timestamps meant neither device applied the
+/// other's edit → permanent divergence.
+#[tokio::test]
+async fn fs_notebook_concurrent_equal_timestamp_edits_converge() {
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    let a = FsBackend::new(dir_a.path()).await.unwrap();
+    let b = FsBackend::new(dir_b.path()).await.unwrap();
+
+    // Shared baseline: create on A, replicate the create to B (B now holds vv {A:1}).
+    let nb = a.create_notebook(Notebook::new("shared")).await.unwrap();
+    let id = nb.id;
+    b.apply_change(Change::NotebookCreate {
+        notebook: nb.clone(),
+    })
+    .await
+    .unwrap();
+
+    // Concurrent edits sharing the SAME updated_at.
+    let t = Utc::now();
+    let mut ea = a.read_notebook(id).await.unwrap();
+    ea.title = "from A".to_string();
+    ea.updated_at = t;
+    let ua = a.update_notebook(ea).await.unwrap();
+
+    let mut eb = b.read_notebook(id).await.unwrap();
+    eb.title = "from B".to_string();
+    eb.updated_at = t;
+    let ub = b.update_notebook(eb).await.unwrap();
+
+    // Exchange the concurrent edits.
+    a.apply_change(Change::NotebookUpdate { notebook: ub })
+        .await
+        .unwrap();
+    b.apply_change(Change::NotebookUpdate { notebook: ua })
+        .await
+        .unwrap();
+
+    let title_a = a.read_notebook(id).await.unwrap().title;
+    let title_b = b.read_notebook(id).await.unwrap().title;
+    assert_eq!(title_a, title_b, "concurrent notebook edits must converge");
+    assert!(title_a == "from A" || title_a == "from B");
 }

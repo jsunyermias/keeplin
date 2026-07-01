@@ -51,7 +51,8 @@ listings and still comparable against a later concurrent edit.
 
 The **state-based** (current-value) analogue of `merge`, for backends that keep only the
 current state instead of a full op log — used by `DbBackend::apply_change` (via `incoming_wins`)
-for **every** entity type. Returns `Winner::Incoming` iff the incoming vector strictly dominates
+for every entity type, and by `FsBackend::apply_change` (via `sidecar_incoming_wins`) for
+notebooks and tags. Returns `Winner::Incoming` iff the incoming vector strictly dominates
 local's; `Winner::Local` iff local dominates (including equal vectors, so re-applying is a
 no-op); otherwise (concurrent) the greater `(timestamp, device_id)` wins — the **same** frontier
 tiebreak `merge` uses. So `FsBackend`'s log merge and `DbBackend`'s state resolve compute the
