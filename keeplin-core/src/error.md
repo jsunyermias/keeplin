@@ -23,7 +23,7 @@ below).
 | `Database(String)` | manual impl | LibSQL or SQLite error (full chain included) |
 | `WebSocket(String)` | auto-converted | `tokio-tungstenite` connection or protocol error |
 | `NotFound(String)` | manual | Entity with the given ID does not exist |
-| `Conflict(String)` | manual | Reserved — not returned by the built-in backends (conflicts are resolved by last-write-wins) |
+| `Conflict(String)` | manual | Reserved — not returned by the built-in backends (conflicts are resolved automatically by version vectors) |
 | `InvalidState(String)` | manual | Key-derivation failure or other unexpected internal state |
 | `CorruptedData(String)` | manual | Stored data could not be decrypted (bad base64, short buffer, failed AES-GCM tag, or non-UTF-8 plaintext) |
 
@@ -32,7 +32,7 @@ below).
 | Variant | Description |
 |---------|-------------|
 | `Storage(StorageError)` | Underlying storage operation failed during sync |
-| `Conflict { local_id, remote_id }` | Reserved — the default cycle resolves conflicts via last-write-wins |
+| `Conflict { local_id, remote_id }` | Reserved — the default cycle resolves conflicts automatically via version vectors |
 | `Failed(String)` | Reserved — general (non-storage) sync failure |
 
 ## `From` conversions

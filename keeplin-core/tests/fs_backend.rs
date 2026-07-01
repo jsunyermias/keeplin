@@ -641,6 +641,63 @@ async fn fs_notebook_concurrent_equal_timestamp_edits_converge() {
     assert!(title_a == "from A" || title_a == "from B");
 }
 
+/// A concurrent note↔tag attach-vs-detach converges on `FsBackend` exactly as on `DbBackend`:
+/// both devices agree on the association's final presence, resolved through the shared version
+/// vectors rather than being order-dependent. This is the FS mirror of
+/// `sync::db_concurrent_note_tag_add_remove_converges`.
+#[tokio::test]
+async fn fs_concurrent_note_tag_add_remove_converges() {
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    let a = FsBackend::new(dir_a.path()).await.unwrap();
+    let b = FsBackend::new(dir_b.path()).await.unwrap();
+
+    // Baseline: note + tag + attached association on A, replicated to B.
+    let note = a.create_note(Note::new("n", "")).await.unwrap();
+    let tag = a.create_tag(Tag::new("t")).await.unwrap();
+    a.add_note_tag(NoteTag {
+        note_id: note.id,
+        tag_id: tag.id,
+    })
+    .await
+    .unwrap();
+    replicate_logs(dir_a.path(), dir_b.path()).await;
+    drain_sync(&b).await;
+    assert_eq!(b.list_note_tags(note.id, 0, None).await.unwrap().0.len(), 1);
+
+    // Concurrent: A detaches, B re-attaches (each from the shared baseline).
+    a.remove_note_tag(note.id, tag.id).await.unwrap();
+    b.add_note_tag(NoteTag {
+        note_id: note.id,
+        tag_id: tag.id,
+    })
+    .await
+    .unwrap();
+
+    // Exchange both ways through the replicated logs.
+    replicate_logs(dir_a.path(), dir_b.path()).await;
+    replicate_logs(dir_b.path(), dir_a.path()).await;
+    drain_sync(&a).await;
+    drain_sync(&b).await;
+
+    let present_a = !a
+        .list_note_tags(note.id, 0, None)
+        .await
+        .unwrap()
+        .0
+        .is_empty();
+    let present_b = !b
+        .list_note_tags(note.id, 0, None)
+        .await
+        .unwrap()
+        .0
+        .is_empty();
+    assert_eq!(
+        present_a, present_b,
+        "concurrent note↔tag add/remove must converge on FsBackend"
+    );
+}
+
 /// Count the entries in a note's single per-device log file (the `log.*.msgpack` in its dir).
 async fn note_log_len(root: &std::path::Path, id: uuid::Uuid) -> usize {
     use keeplin_core::storage::note_log::NoteLogEntry;

@@ -320,11 +320,13 @@ pub trait SyncBackend: Send + Sync + 'static {
     /// applying it once. This allows the sync engine to safely retry after a partial
     /// failure without risking data corruption.
     ///
-    /// The **conflict-resolution strategy is backend-specific**. `DbBackend` uses
-    /// last-write-wins by `updated_at` for every entity. `FsBackend` resolves notes with
-    /// per-note version vectors (true concurrent merge with deterministic convergence,
-    /// see [`crate::storage::note_log`]) and uses last-write-wins for the other entities.
-    /// See `SECURITY.md` ("Conflict resolution differs by backend") for the implications.
+    /// Conflict resolution is **unified on version vectors** across both backends: every entity
+    /// is resolved by [`crate::storage::note_log`]'s `resolve` (state-based, for `DbBackend`'s
+    /// rows and `FsBackend`'s sidecars) or `merge` (for `FsBackend`'s per-note logs), which share
+    /// the same domination test and `(timestamp, device_id)` tiebreak, so every device converges
+    /// on the same winner. The storage shape differs (current-state rows vs. append-only
+    /// per-device logs) but the decision does not. See `SECURITY.md`
+    /// ("Conflict resolution is unified on version vectors") for the implications.
     async fn apply_change(&self, change: Change) -> Result<(), StorageError>;
 
     /// Transmits the given list of local changes to the remote peer.

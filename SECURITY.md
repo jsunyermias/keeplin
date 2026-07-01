@@ -65,7 +65,7 @@ It does **not** protect against:
 
 ## Design decisions
 
-### Conflict resolution is being unified on version vectors
+### Conflict resolution is unified on version vectors
 
 Both backends resolve concurrent edits with **version vectors** and the same deterministic
 `(timestamp, device_id)` tiebreak (`note_log::merge` for `FsBackend`'s per-device logs,

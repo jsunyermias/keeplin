@@ -164,4 +164,4 @@ vector, so existing stores keep working. `list_resources` skips soft-deleted sid
 - `keeplin-core/src/models.rs` — all types stored by this backend.
 - `keeplin-core/tests/fs_backend.rs` — including the concurrent-write regression and
   two-device convergence tests.
-- `SECURITY.md` — "Conflict resolution differs by backend".
+- `SECURITY.md` — "Conflict resolution is unified on version vectors".

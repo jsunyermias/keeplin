@@ -1398,7 +1398,7 @@ impl FsBackend {
             None => Ok(None),
             Some(note) => {
                 if merged.conflict {
-                    tracing::warn!(%id, "Concurrent note edit resolved by last-write-wins");
+                    tracing::warn!(%id, "Concurrent note edit resolved by the (timestamp, device-id) tiebreak");
                 }
                 self.persist_note_projection(&note, &merged.vv).await?;
                 Ok(Some(note))

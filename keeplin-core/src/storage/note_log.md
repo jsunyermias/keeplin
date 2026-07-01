@@ -86,4 +86,4 @@ old bare-`updated_at` last-write-wins, which diverged permanently on equal times
 - `keeplin-core/src/storage/fs.rs` — reads the per-device logs, calls `merge`, and writes
   the `note.md` / `meta.msgpack` projection.
 - `keeplin-core/tests/fs_backend.rs` — two-device causal and concurrent-convergence tests.
-- `SECURITY.md` — "Conflict resolution differs by backend".
+- `SECURITY.md` — "Conflict resolution is unified on version vectors".

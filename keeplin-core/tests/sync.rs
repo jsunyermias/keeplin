@@ -10,10 +10,10 @@
 use chrono::{Duration, Utc};
 use keeplin_core::{
     error::StorageError,
-    models::{Change, Note, NoteTag, Resource, Tag},
+    models::{Change, Note, NoteTag, Notebook, Resource, Tag},
     storage::{
-        db::DbBackend, fs::FsBackend, NoteRepository, ResourceRepository, SyncBackend,
-        TagRepository,
+        db::DbBackend, fs::FsBackend, NoteRepository, NotebookRepository, ResourceRepository,
+        SyncBackend, TagRepository,
     },
 };
 use tempfile::tempdir;
@@ -184,6 +184,51 @@ async fn db_concurrent_equal_timestamp_edits_converge() {
         "concurrent equal-timestamp edits must converge"
     );
     assert!(body_a == "from A" || body_a == "from B");
+}
+
+/// Notebooks converge under the same version-vector `resolve` as notes: two devices editing the
+/// same notebook with the **identical** `updated_at` pick one deterministic winner instead of each
+/// keeping its own (which bare `updated_at` last-write-wins would do). This exercises the
+/// `DbBackend` notebook `apply_change` arm specifically.
+#[tokio::test]
+async fn db_concurrent_notebook_edits_converge() {
+    let epoch = chrono::DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+    let a = device().await;
+    let b = device().await;
+
+    // Shared baseline: create on A, replicate to B.
+    let base = a.create_notebook(Notebook::new("base")).await.unwrap();
+    let id = base.id;
+    for c in a.get_changes_since(epoch).await.unwrap() {
+        b.apply_change(c).await.unwrap();
+    }
+
+    // Concurrent edits sharing the SAME updated_at.
+    let t = Utc::now();
+    let mut ea = base.clone();
+    ea.title = "from A".to_string();
+    ea.updated_at = t;
+    a.update_notebook(ea).await.unwrap();
+
+    let mut eb = b.read_notebook(id).await.unwrap();
+    eb.title = "from B".to_string();
+    eb.updated_at = t;
+    b.update_notebook(eb).await.unwrap();
+
+    // Exchange the concurrent edits.
+    let a_changes = a.get_changes_since(epoch).await.unwrap();
+    let b_changes = b.get_changes_since(epoch).await.unwrap();
+    for c in b_changes {
+        a.apply_change(c).await.unwrap();
+    }
+    for c in a_changes {
+        b.apply_change(c).await.unwrap();
+    }
+
+    let title_a = a.read_notebook(id).await.unwrap().title;
+    let title_b = b.read_notebook(id).await.unwrap().title;
+    assert_eq!(title_a, title_b, "concurrent notebook edits must converge");
+    assert!(title_a == "from A" || title_a == "from B");
 }
 
 /// Tombstone semantics must hold on `FsBackend` too: a stale delete is ignored and a
