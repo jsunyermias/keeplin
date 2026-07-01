@@ -81,9 +81,13 @@ so the receiving device can store the file without a separate gRPC call.
 ### `DbBackend::new(db_path, server_url, auth_token) -> Result<Self, StorageError>`
 **What it does:** Opens (or creates) a LibSQL database at `db_path`, runs all migrations,
 reads or generates the device ID, and attempts to open a WebSocket connection to
-`server_url`. If `server_url` is empty or the connection fails, the backend starts in
-offline mode (all local CRUD operations still work; sync operations are no-ops or return
-empty results).  
+`server_url`. If `server_url` is empty or the connection fails, the backend starts
+disconnected: all local CRUD operations still work. The two cases then differ for sync:
+with an **empty `server_url`** (no relay configured) `send_changes` is a deliberate no-op
+and `receive_changes` returns empty; with a **configured but unreachable relay**,
+`send_changes` of a non-empty batch returns `StorageError::WebSocket` so the sync cycle
+fails and its watermark does not advance — the changes are re-sent once the relay is
+reachable (see "Sending changes" below).  
 **Parameters:**
 - `db_path` — filesystem path to the `.db` file
 - `server_url` — WebSocket URL such as `ws://host:port/sync`; empty string = offline
@@ -134,13 +138,25 @@ can use it to ignore duplicate batches from a retrying client.
 
 Retry strategy: up to three retries with exponential backoff (2 s, 4 s, 8 s). Before
 each retry, `ensure_ws()` is called to re-establish the WebSocket connection if it
-dropped. If all retries fail, `StorageError::WebSocket` is returned.
+dropped. If all retries fail — or the connection cannot be (re-)established at all, which
+fails fast without sleeping through the backoff — `StorageError::WebSocket` is returned.
+
+**An undeliverable batch must error, never silently succeed.** `run_sync` only advances
+the last-sync watermark after `send_changes` returns `Ok`; if the send were a no-op while
+disconnected, the watermark would move past changes the relay never received and
+`get_changes_since` would skip them on every future cycle — a permanent, silent sync gap.
+By erroring instead, the failed cycle leaves the watermark unchanged and the same batch is
+re-collected and re-sent on the next cycle (covered end-to-end by
+`failed_send_keeps_watermark_and_changes_are_resent_after_recovery` in
+`tests/ws_sync.rs`). The one exception is an **empty `server_url`**: no relay is
+configured, the backend is deliberately local-only, and skipping the send is correct.
 
 ### Receiving changes (`receive_changes`)
 The client reads all available WebSocket messages in a non-blocking loop, stopping
 after 100 ms of silence (`drain_timeout = 100 ms`). Each text message is deserialised
-as a `Vec<Change>` and appended to the result. Binary messages and errors are ignored
-(logged as warnings).
+as a `Vec<Change>` and appended to the result. Binary messages, errors, and malformed
+text frames are ignored (logged as warnings) — one bad frame from the relay must not
+abort the sync cycle or block the well-formed batches behind it.
 
 ## `apply_change` — all 13 variants
 

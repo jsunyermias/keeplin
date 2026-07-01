@@ -49,7 +49,10 @@ type WsStream =
 /// central server. If the WebSocket connection fails at any point, `ensure_ws` attempts
 /// a reconnect before the next operation; while disconnected, the local database
 /// continues to work normally and changes accumulate in `entity_changes` for the next
-/// successful push.
+/// successful push. A `send_changes` that cannot deliver its batch (no connection, or
+/// every retry failed) returns an **error** so the sync cycle aborts without advancing
+/// the last-sync watermark — the undelivered changes are re-collected and re-sent on
+/// the next cycle instead of being silently skipped forever.
 ///
 /// ## Conflict resolution
 ///
@@ -2313,6 +2316,14 @@ impl SyncBackend for DbBackend {
         if changes.is_empty() {
             return Ok(());
         }
+        if self.server_url.is_empty() {
+            // No relay is configured: this backend is deliberately local-only, so there
+            // is nowhere to send changes and skipping is not a failure. With a relay
+            // configured, an undeliverable batch must error instead (below), so the sync
+            // watermark does not advance past changes the relay never received.
+            tracing::debug!("No server_url configured; changes stay local");
+            return Ok(());
+        }
         let n = changes.len();
         let batch_id = new_id();
         let payload = serde_json::json!({
@@ -2324,22 +2335,25 @@ impl SyncBackend for DbBackend {
         .to_string();
 
         // Retry sending with exponential backoff to tolerate transient network
-        // disruptions. Delays are 2 s, 4 s, and 8 s. After four attempts the error
-        // is propagated to the caller so the `SyncEngine` can log it and leave the
-        // last-sync timestamp unchanged for a retry on the next cycle.
+        // disruptions. Delays are 2 s, 4 s, and 8 s. After four attempts — or as soon
+        // as the connection cannot be (re-)established at all — the error is propagated
+        // to the caller so `run_sync` aborts and leaves the last-sync watermark
+        // unchanged; the same changes are re-collected and re-sent on the next cycle.
+        // Returning `Ok` here instead would advance the watermark past changes the
+        // relay never saw, silently dropping them from every future sync.
         for attempt in 0u32..=3 {
             let mut guard = self.ws.lock().await;
             Self::ensure_ws(&mut guard, &self.server_url, &self.auth_token).await;
-            if guard.is_none() {
-                tracing::warn!("No WebSocket connection; changes not sent");
-                return Ok(());
-            }
-            let result = guard
-                .as_mut()
-                .unwrap()
-                .send(Message::Text(payload.clone()))
-                .await;
-            match result {
+            let Some(ws) = guard.as_mut() else {
+                // Reconnect failed. Fail fast rather than sleeping through the backoff:
+                // a refused connection rarely heals within seconds, and the next sync
+                // cycle retries the whole batch anyway.
+                return Err(StorageError::WebSocket(format!(
+                    "cannot send {n} change(s): no WebSocket connection to {}",
+                    self.server_url
+                )));
+            };
+            match ws.send(Message::Text(payload.clone())).await {
                 Ok(()) => {
                     tracing::info!(count = n, %batch_id, "Changes sent via WebSocket");
                     return Ok(());
@@ -2394,7 +2408,17 @@ impl SyncBackend for DbBackend {
                 match timeout(drain_timeout, ws.next()).await {
                     Ok(Some(Ok(Message::Text(text)))) => {
                         msg_count += 1;
-                        let v: serde_json::Value = serde_json::from_str(&text)?;
+                        // A malformed frame is logged and skipped rather than aborting the
+                        // whole receive (mirroring how the backends skip corrupt NDJSON log
+                        // lines): one bad frame from the relay must not block every
+                        // well-formed batch behind it, or fail the sync cycle outright.
+                        let v: serde_json::Value = match serde_json::from_str(&text) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::warn!("Skipping malformed WebSocket frame: {e}");
+                                continue;
+                            }
+                        };
                         if v["type"] == "changes" {
                             if let Ok(batch) =
                                 serde_json::from_value::<Vec<Change>>(v["changes"].clone())
