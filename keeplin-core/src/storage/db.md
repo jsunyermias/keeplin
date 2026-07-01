@@ -96,10 +96,23 @@ All other methods implement `StorageBackend` — see `storage/backend.md`.
 
 ## Change journal — `record_change`
 
-Every mutating method calls `record_change(entity_type, entity_id, operation, data)` after
-a successful database write. This inserts one row into `entity_changes` stamped with the
-current UTC timestamp. `get_changes_since(since)` then reads rows from this table with
-`changed_at > since`, converting each to a `Change` via `row_to_change`.
+Every **local-origin** mutating method (`create_note`, `update_note`, `delete_note`, and the
+equivalents for the other entities) calls `record_change(entity_type, entity_id, operation,
+data)` after a successful database write. This inserts one row into `entity_changes` stamped
+with the current UTC timestamp. `get_changes_since(since)` then reads rows from this table with
+`changed_at > since`, converting each to a `Change` via `row_to_change`, and `send_changes`
+pushes them to the relay.
+
+### `apply_change` does **not** journal — and that is deliberate
+
+`apply_change` (the path that ingests **remote** changes pulled from the relay) writes the row
+but does **not** call `record_change`. The invariant is: *the journal holds only changes that
+originated on this device.* The sync server is a broadcast relay — it already forwards each
+device's change to **every** other peer (see the relay in `tests/ws_sync.rs`, which forwards
+to all `sender != self`) — so a device never needs to re-propagate a change it merely received.
+Re-journaling applied changes would make every device re-send every change it saw, producing
+redundant echo traffic for no benefit. (This trades away multi-hop/mesh re-propagation, which
+the broadcast topology does not need.)
 
 ## WebSocket protocol
 
@@ -182,10 +195,14 @@ documented in `SECURITY.md` ("Conflict resolution differs by backend").
   access to the WebSocket.
 - `libsql` with `feature = "core"` uses an embedded SQLite library (no system libsql
   required). This keeps the binary self-contained.
-- Resources use soft-delete in `DbBackend` (setting `deleted_at`) rather than physical
-  row deletion, because the `ResourceDelete` change must survive in the journal long
-  enough to propagate to peers. However, the BLOB column is not cleared on soft-delete;
-  manual pruning of old data requires a separate maintenance call.
+- Resources use **hard delete** in `DbBackend`: the `resources` table has no `deleted_at`
+  column, and both `delete_resource` and the `ResourceDelete` arm of `apply_change` run a
+  physical `DELETE FROM resources`. This matches `FsBackend` (which removes the resource
+  directory) and the documented model-wide choice to hard-delete resources because their BLOB
+  payloads can be large (see `models.md`). Notes, notebooks, and tags, by contrast, use
+  soft-delete (a `deleted_at` tombstone) so a delete can win last-write-wins against a
+  concurrent edit. The `ResourceDelete` change still propagates normally through the journal;
+  it just isn't retained as a tombstone row afterwards.
 
 ## Related files
 
