@@ -21,7 +21,7 @@ message Note {
   optional string deleted_at     = 10; // RFC-3339
   // absent means the note has no alias
   optional string alias  = 11;
-  // bookmarks (in-note anchors) derived from `###text` tokens in the body
+  // bookmarks (in-note anchors) derived from `[text](### "alias")` links in the body
   repeated Bookmark bookmarks = 12;
   // links to other notes (content-derived and manually added)
   repeated NoteLink links     = 13;
@@ -38,8 +38,8 @@ message Notebook {
   optional string alias = 6;
 }
 
-// An in-note anchor. `number` is the 1-based position among the note's bookmarks;
-// `text` is the marked `###text` token; `alias` defaults to `text` and is editable.
+// An in-note anchor declared as `[text](### "alias")`. `number` is the 1-based position among
+// the note's bookmarks; `text` is the link text; `alias` is the link title (defaults to `text`).
 message Bookmark {
   uint32 number = 1;
   string text   = 2;
@@ -301,13 +301,6 @@ message SetNotebookAliasRequest {
 }
 message SetNotebookAliasResponse { Notebook notebook = 1; }
 
-message EditBookmarkAliasRequest {
-  string note_id = 1;
-  uint32 number  = 2;  // 1-based bookmark number
-  string alias   = 3;
-}
-message EditBookmarkAliasResponse { Note note = 1; }
-
 message AddNoteLinkRequest {
   string note_id = 1;
   string raw     = 2;  // a `#…` reference
@@ -388,7 +381,6 @@ service KeeplinService {
   // Bookmarks & links
   rpc SetNoteAlias      (SetNoteAliasRequest)      returns (SetNoteAliasResponse);
   rpc SetNotebookAlias  (SetNotebookAliasRequest)  returns (SetNotebookAliasResponse);
-  rpc EditBookmarkAlias (EditBookmarkAliasRequest) returns (EditBookmarkAliasResponse);
   rpc AddNoteLink       (AddNoteLinkRequest)       returns (AddNoteLinkResponse);
   rpc RemoveNoteLink    (RemoveNoteLinkRequest)    returns (RemoveNoteLinkResponse);
   rpc ListBacklinks     (ListBacklinksRequest)     returns (ListBacklinksResponse);

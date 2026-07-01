@@ -70,8 +70,8 @@ pub struct Note {
     /// `#<alias>` instead of `#<uuid>`. Encrypted at rest. Defaults to `None`.
     #[serde(default)]
     pub alias: Option<String>,
-    /// Bookmarks (in-note anchors) derived from `###text` tokens in the body, plus any alias
-    /// edits. Maintained by [`crate::linking::LinkingBackend`]. Defaults to empty.
+    /// Bookmarks (in-note anchors) derived from `[text](### "alias")` markdown links in the
+    /// body. Maintained by [`crate::linking::LinkingBackend`]. Defaults to empty.
     #[serde(default)]
     pub bookmarks: Vec<Bookmark>,
     /// Links to other notes: content-derived (markdown `#` links) and manually added.

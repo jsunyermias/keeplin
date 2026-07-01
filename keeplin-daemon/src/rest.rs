@@ -76,10 +76,6 @@ pub fn router(state: Shared) -> Router {
         )
         .route("/notes/:id/alias", put(set_note_alias))
         .route("/notes/:id/bookmarks", get(list_bookmarks))
-        .route(
-            "/notes/:id/bookmarks/:number/alias",
-            put(set_bookmark_alias),
-        )
         .route("/notes/:id/links", get(list_links).post(add_link))
         .route(
             "/notes/:id/links/:index",
@@ -323,22 +319,6 @@ async fn list_bookmarks(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<Bookmark>>, ApiError> {
     Ok(Json(read_live_note(&s, id).await?.bookmarks))
-}
-
-/// `{ "alias": "…" }` body for editing a bookmark's alias (the alias is required here).
-#[derive(Debug, Deserialize)]
-struct BookmarkAliasBody {
-    alias: String,
-}
-
-async fn set_bookmark_alias(
-    State(s): State<Shared>,
-    Path((id, number)): Path<(Uuid, u32)>,
-    Json(b): Json<BookmarkAliasBody>,
-) -> Result<Json<Note>, ApiError> {
-    Ok(Json(
-        linking::edit_bookmark_alias(s.backend.as_ref(), id, number, b.alias).await?,
-    ))
 }
 
 async fn list_links(
@@ -834,12 +814,12 @@ mod tests {
     async fn bookmarks_alias_and_links_endpoints() {
         let st = linking_state().await;
 
-        // Create a note whose body defines a bookmark and a content link.
+        // Create a note whose body declares a bookmark (with an inline alias) and a link.
         let (code, body) = call(
             &st,
             "POST",
             "/api/notes",
-            Some(r#"{"title":"T","body":"intro ###Marcador1 and [l](#other)"}"#),
+            Some(r#"{"title":"T","body":"intro [Marcador1](### \"Custom\") and [l](#other)"}"#),
             None,
         )
         .await;
@@ -847,7 +827,7 @@ mod tests {
         let note: Note = serde_json::from_slice(&body).unwrap();
         let id = note.id;
 
-        // Bookmarks were derived.
+        // The bookmark was derived, with its alias taken from the link title.
         let (code, body) = call(
             &st,
             "GET",
@@ -861,21 +841,7 @@ mod tests {
         assert_eq!(bms.len(), 1);
         assert_eq!(bms[0].number, 1);
         assert_eq!(bms[0].text, "Marcador1");
-
-        // Edit the bookmark alias.
-        let (code, body) = call(
-            &st,
-            "PUT",
-            &format!("/api/notes/{id}/bookmarks/1/alias"),
-            Some(r#"{"alias":"Custom"}"#),
-            None,
-        )
-        .await;
-        assert_eq!(code, StatusCode::OK);
-        assert_eq!(
-            serde_json::from_slice::<Note>(&body).unwrap().bookmarks[0].alias,
-            "Custom"
-        );
+        assert_eq!(bms[0].alias, "Custom");
 
         // Content link present; add a manual link and then remove it.
         let (code, body) = call(&st, "GET", &format!("/api/notes/{id}/links"), None, None).await;
@@ -922,7 +888,7 @@ mod tests {
             &st,
             "POST",
             "/api/notes",
-            Some("{\"title\":\"target\",\"body\":\"###Anchor here\"}"),
+            Some("{\"title\":\"target\",\"body\":\"[Anchor](###) here\"}"),
             None,
         )
         .await;

@@ -9,7 +9,7 @@
 //! - [`encryption`] — `EncryptedBackend<B>`: transparent AES-256-GCM at-rest encryption
 //!   decorator that wraps any [`storage::StorageBackend`].
 //! - [`error`] — `StorageError` and `SyncError`: all error types used across the crate.
-//! - [`links`] — bookmark/link types and the pure `#…` reference + `###` bookmark grammar.
+//! - [`links`] — bookmark/link types and the pure `#…` reference + `[t](###)` bookmark grammar.
 //! - [`linking`] — `LinkingBackend<B>`: decorator that derives bookmarks/links from each
 //!   note body, resolves references, and enforces alias uniqueness.
 //! - [`models`] — Domain types (`Note`, `Notebook`, `Tag`, `Resource`, `Change`, …).

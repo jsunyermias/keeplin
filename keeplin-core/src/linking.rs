@@ -14,9 +14,9 @@
 //!
 //! # What it does on write
 //!
-//! 1. **Bookmarks** — `###text` tokens in the body become numbered [`Bookmark`]s in order
-//!    of appearance; an edited `alias` on an incoming bookmark with matching `text` is
-//!    carried over (so alias edits survive later body edits).
+//! 1. **Bookmarks** — `[text](### "alias")` markdown links in the body become numbered
+//!    [`Bookmark`]s in order of appearance. The body is the single source of truth: the alias
+//!    is the link title (defaulting to the text), edited by editing the body.
 //! 2. **Links** — markdown `[t](#…)` destinations become `source = Content` [`NoteLink`]s;
 //!    existing `source = Manual` links (added via the API) are preserved.
 //! 3. **Resolution** — each link's `target_note_id` is filled best-effort by resolving its
@@ -28,7 +28,6 @@
 //! concurrent edits can still introduce duplicate aliases through sync (which cannot be
 //! rejected); resolution then picks the smallest-uuid match deterministically and warns.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -98,24 +97,20 @@ impl<B: StorageBackend> LinkingBackend<B> {
 
     /// Rewrite `note.bookmarks` and `note.links` from its body (pure, no I/O).
     fn refresh(note: &mut Note) {
-        // Bookmarks: re-derive from the body, carrying alias edits keyed by marked text.
-        let overrides: HashMap<String, String> = note
-            .bookmarks
-            .iter()
-            .filter(|b| b.alias != b.text)
-            .map(|b| (b.text.clone(), b.alias.clone()))
-            .collect();
+        // Bookmarks: the body is the single source of truth. Each `[text](### "alias")`
+        // declaration becomes a numbered bookmark; the alias is the link title, defaulting to
+        // the link text when the title is omitted or empty.
         note.bookmarks = links::parse_bookmarks(&note.body)
             .into_iter()
             .enumerate()
-            .map(|(i, text)| {
-                let alias = overrides
-                    .get(&text)
-                    .cloned()
-                    .unwrap_or_else(|| text.clone());
+            .map(|(i, b)| {
+                let alias = b
+                    .alias
+                    .filter(|a| !a.is_empty())
+                    .unwrap_or_else(|| b.text.clone());
                 Bookmark {
                     number: (i + 1) as u32,
-                    text,
+                    text: b.text,
                     alias,
                 }
             })
@@ -427,23 +422,6 @@ pub async fn set_notebook_alias(
     backend.update_notebook(notebook).await
 }
 
-/// Edit a bookmark's alias by its 1-based number and persist it. Returns the updated note.
-pub async fn edit_bookmark_alias(
-    backend: &dyn StorageBackend,
-    note_id: Uuid,
-    number: u32,
-    alias: String,
-) -> Result<Note, StorageError> {
-    let mut note = backend.read_note(note_id).await?;
-    let bookmark = note
-        .bookmarks
-        .iter_mut()
-        .find(|b| b.number == number)
-        .ok_or_else(|| StorageError::NotFound(format!("bookmark {number} in note {note_id}")))?;
-    bookmark.alias = alias;
-    backend.update_note(note).await
-}
-
 /// Add a manual (global) link from `note_id` to a raw `#…` reference. Returns the note.
 pub async fn add_manual_link(
     backend: &dyn StorageBackend,
@@ -692,14 +670,19 @@ mod tests {
     #[tokio::test]
     async fn derives_bookmarks_and_content_links() {
         let be = backend().await;
-        let body = "Intro ###Marcador1 y ###Otro y un [enlace](#libreta1#nota3#1)";
+        let body =
+            "Intro [Marcador1](###) y [Otro](### \"Alias2\") y un [enlace](#libreta1#nota3#1)";
         let stored = be.create_note(Note::new("t", body)).await.unwrap();
 
         assert_eq!(stored.bookmarks.len(), 2);
         assert_eq!(stored.bookmarks[0].number, 1);
         assert_eq!(stored.bookmarks[0].text, "Marcador1");
+        // No title → alias defaults to the link text.
         assert_eq!(stored.bookmarks[0].alias, "Marcador1");
         assert_eq!(stored.bookmarks[1].number, 2);
+        assert_eq!(stored.bookmarks[1].text, "Otro");
+        // Title present → alias is the title.
+        assert_eq!(stored.bookmarks[1].alias, "Alias2");
 
         assert_eq!(stored.links.len(), 1);
         assert_eq!(stored.links[0].source, LinkSource::Content);
@@ -707,29 +690,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bookmark_alias_edit_survives_body_edit() {
+    async fn bookmark_alias_comes_from_the_body_title() {
         let be = backend().await;
-        let mut note = be
-            .create_note(Note::new("t", "###Marcador1 hi"))
+        // The alias lives in the body (the link title); editing the body changes it.
+        let note = be
+            .create_note(Note::new("t", "[Marcador1](### \"Custom\") hi"))
             .await
             .unwrap();
-        // Edit the alias of bookmark 1.
-        note.bookmarks[0].alias = "Custom".to_string();
-        let note = be.update_note(note).await.unwrap();
-        assert_eq!(note.bookmarks[0].alias, "Custom");
-        // Edit the body (append text); the alias override must persist.
-        let mut note = note;
-        note.body = "###Marcador1 hi, edited".to_string();
-        let note = be.update_note(note).await.unwrap();
         assert_eq!(note.bookmarks[0].text, "Marcador1");
         assert_eq!(note.bookmarks[0].alias, "Custom");
+
+        let mut note = note;
+        note.body = "[Marcador1](### \"Renamed\") hi, edited".to_string();
+        let note = be.update_note(note).await.unwrap();
+        assert_eq!(note.bookmarks[0].alias, "Renamed");
     }
 
     #[tokio::test]
     async fn resolves_link_by_alias_and_uuid() {
         let be = backend().await;
         // Target note with alias "nota3".
-        let mut target = Note::new("target", "###Anchor body");
+        let mut target = Note::new("target", "[Anchor](###) body");
         target.alias = Some("nota3".to_string());
         let target = be.create_note(target).await.unwrap();
 
@@ -786,7 +767,7 @@ mod tests {
     #[tokio::test]
     async fn resolves_two_segment_note_bookmark_shorthand() {
         let be = backend().await;
-        let mut target = Note::new("target", "###Anchor body");
+        let mut target = Note::new("target", "[Anchor](###) body");
         target.alias = Some("nota3".to_string());
         let target = be.create_note(target).await.unwrap();
 
