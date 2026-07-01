@@ -702,3 +702,160 @@ async fn fs_note_log_compacts_and_still_converges() {
         "the delete must converge on the peer after compaction"
     );
 }
+
+/// Simulate Syncthing replicating one device's global NDJSON logs to another by copying every
+/// `logs/*.log` file (each is single-writer, so this never conflicts).
+async fn replicate_logs(from: &std::path::Path, to: &std::path::Path) {
+    let from_logs = from.join("logs");
+    let to_logs = to.join("logs");
+    tokio::fs::create_dir_all(&to_logs).await.unwrap();
+    let mut rd = tokio::fs::read_dir(&from_logs).await.unwrap();
+    while let Some(e) = rd.next_entry().await.unwrap() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".log") {
+            tokio::fs::copy(e.path(), to_logs.join(&name))
+                .await
+                .unwrap();
+        }
+    }
+}
+
+/// Pull and apply every change a device can currently see from its peers' replicated logs.
+async fn drain_sync(b: &FsBackend) {
+    for c in b.receive_changes().await.unwrap() {
+        b.apply_change(c).await.unwrap();
+    }
+}
+
+/// The generation epoch and change-entry count of a device's own global log (parsing the log
+/// text directly, without depending on `FsBackend` internals).
+async fn own_log_stats(root: &std::path::Path, backend: &FsBackend) -> (u64, usize) {
+    let device = backend.get_device_id().await.unwrap();
+    let path = root.join("logs").join(format!("{device}.log"));
+    let content = tokio::fs::read_to_string(&path).await.unwrap();
+    let mut epoch = 0u64;
+    let mut count = 0usize;
+    for line in content.lines() {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if t.contains("__keeplin_epoch__") {
+            epoch = t
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .unwrap_or(0);
+        } else {
+            count += 1;
+        }
+    }
+    (epoch, count)
+}
+
+/// The global NDJSON journal is bounded by generation-epoch snapshot compaction: churning one
+/// notebook far past the threshold rewrites the log as a small current-state snapshot behind a
+/// bumped epoch, and a peer that already synced the pre-compaction baseline detects the new
+/// generation, re-reads the snapshot, and converges — a live entity at its latest state and a
+/// deleted one tombstoned.
+#[tokio::test]
+async fn fs_global_log_compacts_and_peer_converges() {
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    let a = FsBackend::new(dir_a.path()).await.unwrap();
+    let b = FsBackend::new(dir_b.path()).await.unwrap();
+
+    // Baseline: two notebooks on A, synced to B before any compaction.
+    let x = a.create_notebook(Notebook::new("x0")).await.unwrap();
+    let y = a.create_notebook(Notebook::new("y0")).await.unwrap();
+    replicate_logs(dir_a.path(), dir_b.path()).await;
+    drain_sync(&b).await;
+    assert_eq!(b.read_notebook(x.id).await.unwrap().title, "x0");
+    assert_eq!(b.read_notebook(y.id).await.unwrap().title, "y0");
+
+    // Churn X well past the global-log threshold (512) to force at least one snapshot
+    // compaction, and delete Y so a tombstone must survive in the snapshot.
+    for i in 1..=600u64 {
+        let mut e = a.read_notebook(x.id).await.unwrap();
+        e.title = format!("x{i}");
+        a.update_notebook(e).await.unwrap();
+    }
+    a.delete_notebook(y.id).await.unwrap();
+
+    // A's own log was compacted: it carries a generation header (epoch >= 1) and far fewer
+    // entries than the ~601 mutations, because each notebook collapsed to one snapshot entry.
+    let (epoch, entry_count) = own_log_stats(dir_a.path(), &a).await;
+    assert!(
+        epoch >= 1,
+        "the global log must have compacted at least once"
+    );
+    assert!(
+        entry_count < 600,
+        "snapshot compaction must bound the log, had {entry_count} entries"
+    );
+
+    // B — which had synced only the baseline (epoch 0) — notices the new generation, re-reads
+    // the snapshot from the header, and converges on the latest state of both notebooks.
+    replicate_logs(dir_a.path(), dir_b.path()).await;
+    drain_sync(&b).await;
+    assert_eq!(
+        b.read_notebook(x.id).await.unwrap().title,
+        "x600",
+        "peer converges on the latest state through the snapshot"
+    );
+    assert!(
+        b.read_notebook(y.id).await.unwrap().deleted_at.is_some(),
+        "a tombstone carried in the snapshot must still delete on the peer"
+    );
+}
+
+/// The snapshot written on global-log compaction covers **every** globally-journalled entity
+/// type — notebooks, tags, resources, and note↔tag associations — so a fresh peer that only ever
+/// receives the post-compaction snapshot still reconstructs all of them.
+#[tokio::test]
+async fn fs_global_log_snapshot_covers_all_entity_types() {
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    let a = FsBackend::new(dir_a.path()).await.unwrap();
+    let b = FsBackend::new(dir_b.path()).await.unwrap();
+
+    let nb = a.create_notebook(Notebook::new("nb")).await.unwrap();
+    let tag = a.create_tag(Tag::new("tag")).await.unwrap();
+    let note = a.create_note(Note::new("n", "")).await.unwrap();
+    a.add_note_tag(NoteTag {
+        note_id: note.id,
+        tag_id: tag.id,
+    })
+    .await
+    .unwrap();
+    let res = Resource::new("f", "text/plain", "f.txt", 3);
+    let res_id = res.id;
+    a.create_resource(res, b"abc".to_vec()).await.unwrap();
+
+    // Force at least one global-log compaction by churning the notebook past the threshold.
+    for i in 1..=560u64 {
+        let mut e = a.read_notebook(nb.id).await.unwrap();
+        e.title = format!("nb{i}");
+        a.update_notebook(e).await.unwrap();
+    }
+    let (epoch, _) = own_log_stats(dir_a.path(), &a).await;
+    assert!(epoch >= 1, "the global log must have compacted");
+
+    // A brand-new peer receives only the compacted snapshot, yet reconstructs each entity type.
+    replicate_logs(dir_a.path(), dir_b.path()).await;
+    drain_sync(&b).await;
+
+    assert_eq!(b.read_notebook(nb.id).await.unwrap().title, "nb560");
+    assert_eq!(b.read_tag(tag.id).await.unwrap().title, "tag");
+    let (resources, _) = b.list_resources(0, None).await.unwrap();
+    assert!(
+        resources.iter().any(|r| r.id == res_id),
+        "the resource must be reconstructed from the snapshot"
+    );
+    let (tags, _) = b.list_note_tags(note.id, 0, None).await.unwrap();
+    assert!(
+        tags.iter().any(|t| t.id == tag.id),
+        "the note↔tag association must be reconstructed from the snapshot"
+    );
+}

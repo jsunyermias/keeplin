@@ -233,8 +233,8 @@ pub trait TagRepository: Send + Sync + 'static {
 ///
 /// Resources use a **soft-delete tombstone** (`deleted_at` + version vector), like every
 /// other entity, so a concurrent delete-vs-recreate converges. The binary payload is retained
-/// on disk / in the database after a soft delete; reclaiming that space is left to the
-/// `FsBackend` compaction phase.
+/// on disk / in the database after a soft delete (the tombstone must persist for convergence);
+/// reclaiming that space is left to out-of-band maintenance.
 #[async_trait]
 pub trait ResourceRepository: Send + Sync + 'static {
     /// Stores resource metadata alongside its binary payload and returns the metadata.

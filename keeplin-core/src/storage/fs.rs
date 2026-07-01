@@ -34,13 +34,15 @@
 //! content) via [`note_log::compact_own_log`]. This is lossless — `merge` yields the same
 //! result — and bounds each per-note per-device log regardless of edit churn.
 //!
-//! The global `logs/` NDJSON files are still append-only and **not yet pruned** by the
-//! backend (`prune_change_journal` is a deliberate no-op, because peers track their read
-//! position by byte offset and blindly removing entries would corrupt that cursor). They
-//! grow with entity *churn* rather than entity count; automatic snapshot-based pruning of
-//! these logs is a scheduled follow-up. Until then, operators running very large or
-//! long-lived stores can compact them out-of-band once every device is known to have synced
-//! past a given point.
+//! **The global `logs/` journal is compacted too.** Peers track their read position in a
+//! foreign log by byte offset, so entries cannot simply be deleted. Instead, once this device's
+//! own log passes [`FsBackend::GLOBAL_LOG_COMPACT_THRESHOLD`] entries, `append_log` rewrites it
+//! as a **current-state snapshot** (one entry per notebook/tag/resource/association) behind a
+//! bumped generation-epoch header (its first line). A peer notices the epoch changed and re-reads
+//! the snapshot from the start; because every entry is version-vector resolved and idempotent,
+//! replaying the snapshot converges rather than duplicating or resurrecting state. This bounds
+//! the log by entity count rather than by mutation count. `prune_change_journal` stays a no-op —
+//! compaction, not time-based deletion, does the bounding.
 
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
@@ -117,6 +119,25 @@ fn default_entity_type() -> String {
     "note".to_string()
 }
 
+/// The first line of a compacted global log: a generation marker written by
+/// [`FsBackend::compact_global_log_locked`]. Its epoch increments on every compaction, so a
+/// peer that reads by byte offset can notice the log was rewritten (epoch changed) and re-read
+/// the fresh snapshot from the start instead of seeking into stale byte positions.
+#[derive(Debug, Serialize, Deserialize)]
+struct EpochHeader {
+    #[serde(rename = "__keeplin_epoch__")]
+    epoch: u64,
+}
+
+/// Parse a global-log line as an [`EpochHeader`], returning its epoch. Returns `None` for a
+/// normal [`LogEntry`] line (which lacks the `__keeplin_epoch__` field), so callers can tell a
+/// generation header apart from a change entry.
+fn parse_epoch_header(line: &str) -> Option<u64> {
+    serde_json::from_str::<EpochHeader>(line)
+        .ok()
+        .map(|h| h.epoch)
+}
+
 /// Build the global-log `data` payload for a notebook/tag delete: the tombstone timestamp plus
 /// the deleting write's version vector and author, so `log_entry_to_change` can reconstruct a
 /// delete `Change` carrying everything `note_log::resolve` needs on the receiving device.
@@ -146,6 +167,64 @@ fn fs_assoc_value(
         "vv": vv,
         "last_writer": last_writer,
     })
+}
+
+/// Build a snapshot [`LogEntry`] for a notebook/tag/resource by deserialising its MessagePack
+/// sidecar into the concrete type `T` and re-serialising through `serde_json` — the same encoding
+/// `append_log` uses for a live entity, so the entry round-trips back through
+/// [`log_entry_to_change`] identically. Returns `None` if the sidecar cannot be decoded.
+fn snapshot_entry_from_sidecar<T: serde::Serialize + serde::de::DeserializeOwned>(
+    bytes: &[u8],
+    kind: &str,
+    id: Uuid,
+    ts: DateTime<Utc>,
+) -> Option<LogEntry> {
+    let concrete: T = rmp_serde::from_slice(bytes).ok()?;
+    let value = serde_json::to_value(&concrete).ok()?;
+    Some(snapshot_entry_from_value(kind, id, ts, value))
+}
+
+/// Build a snapshot [`LogEntry`] from an entity's JSON value (a `serde_json::to_value` of the
+/// concrete record). A live entity becomes a `create` carrying the full record; a soft-deleted
+/// one becomes a `delete` tombstone carrying `(deleted_at, vv, last_writer)` — exactly the shapes
+/// [`log_entry_to_change`] already reconstructs.
+fn snapshot_entry_from_value(
+    kind: &str,
+    id: Uuid,
+    ts: DateTime<Utc>,
+    value: serde_json::Value,
+) -> LogEntry {
+    let deleted_at = value
+        .get("deleted_at")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<DateTime<Utc>>().ok());
+    match deleted_at {
+        Some(del) => {
+            let vv = value
+                .get("vv")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let last_writer = value
+                .get("last_writer")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            LogEntry {
+                timestamp: ts,
+                entity_type: kind.to_string(),
+                entity_id: id,
+                operation: "delete".to_string(),
+                data: fs_tombstone_value(del, &vv, &last_writer),
+            }
+        }
+        None => LogEntry {
+            timestamp: ts,
+            entity_type: kind.to_string(),
+            entity_id: id,
+            operation: "create".to_string(),
+            data: value,
+        },
+    }
 }
 
 /// Reconstruct an association change's `(updated_at, vv, last_writer)` from a global-log `data`
@@ -341,11 +420,11 @@ struct SyncState {
 ///   note_tags/{note_uuid}/{tag_uuid}  — empty sentinel file for each association
 ///   resources/{uuid}/meta.msgpack     — resource metadata (title, MIME type, file name, size)
 ///   resources/{uuid}/data             — raw binary payload
-///   logs/{device_id}.log              — this device's global NDJSON change log
+///   logs/{device_id}.log              — this device's global NDJSON change log (optional epoch header line)
 ///   .keeplin/device_id                — persisted UUID that identifies this installation
 ///   .keeplin/format_version           — integer version stamp written on every startup
 ///   .keeplin/sync_state.json          — last-sync timestamp
-///   .keeplin/offsets/{device_id}      — byte-offset cursor for each foreign log file
+///   .keeplin/offsets/{device_id}      — "{epoch}:{offset}" cursor for each foreign log file
 /// ```
 ///
 /// Notes use per-device operation logs merged by version vector (see
@@ -374,6 +453,11 @@ pub struct FsBackend {
     /// note writes are infrequent enough in offline mode that the reduced parallelism is fine.
     /// Reads need no lock: the atomic rename gives them a consistent view of each log file.
     note_write_lock: Arc<Mutex<()>>,
+    /// Serialises this device's global-log (`logs/{device}.log`) mutations. `append_log` appends
+    /// under this lock and then may compact the log to a snapshot (a full read-then-rewrite);
+    /// without the lock a concurrent append could be lost when compaction replaces the file, or
+    /// two compactions could race. Peers only ever read foreign logs, so they need no lock.
+    global_log_lock: Arc<Mutex<()>>,
 }
 
 impl FsBackend {
@@ -411,6 +495,7 @@ impl FsBackend {
             root,
             device_id,
             note_write_lock: Arc::new(Mutex::new(())),
+            global_log_lock: Arc::new(Mutex::new(())),
         };
         backend.ensure_format_version().await?;
         Ok(backend)
@@ -424,13 +509,26 @@ impl FsBackend {
     /// JSON schemas is made that requires an explicit data-migration step. Minor
     /// additions that are handled transparently by serde (such as new optional fields
     /// or serde aliases) do not require a version bump.
-    const FORMAT_VERSION: u32 = 4;
+    const FORMAT_VERSION: u32 = 5;
 
     /// How many entries a single device's per-note log may reach before [`append_note_op`]
     /// compacts it back to its frontier via [`note_log::compact_own_log`]. Chosen well above
     /// the handful of entries a note accrues in normal editing, so compaction (a full log
     /// rewrite) is rare while still bounding pathological edit churn on one note.
     const NOTE_LOG_COMPACT_THRESHOLD: usize = 256;
+
+    /// How many entries this device's **global** NDJSON log (`logs/{device}.log`) may reach
+    /// before [`append_log`] rewrites it as a current-state snapshot (see
+    /// [`compact_global_log_locked`]). Notebooks/tags/resources/associations each collapse to
+    /// one snapshot entry regardless of how many times they were edited, so this bounds the log
+    /// by entity count rather than by mutation count.
+    const GLOBAL_LOG_COMPACT_THRESHOLD: usize = 512;
+
+    /// Only count the global log's entries (to decide whether to compact) once the file exceeds
+    /// this many bytes. A `metadata` size check is far cheaper than reading and counting lines,
+    /// and no store with fewer than [`GLOBAL_LOG_COMPACT_THRESHOLD`] entries can reach this size,
+    /// so the count (and any compaction) is skipped entirely for small logs.
+    const GLOBAL_LOG_SOFT_BYTES: u64 = 64 * 1024;
 
     /// Returns the path of the format-version stamp file: `.keeplin/format_version`.
     fn format_version_path(&self) -> PathBuf {
@@ -456,11 +554,15 @@ impl FsBackend {
         };
 
         if current < Self::FORMAT_VERSION {
-            // The v1 → v2 migration requires no data transformation because the
-            // `serde(alias = "note_id")` attribute on `LogEntry.entity_id` and the
-            // `serde(default = "default_entity_type")` attribute on `LogEntry.entity_type`
-            // together handle all v1 log files transparently at parse time. Only the
-            // version stamp itself needs to be updated.
+            // Every format bump so far is backward-compatible at parse time, so migration only
+            // updates the stamp:
+            // - v1 → v2: `serde(alias = "note_id")` and `serde(default)` on `LogEntry` make old
+            //   log files parseable without renaming fields.
+            // - v5 (global-log compaction): a compacted log gains an `EpochHeader` first line and
+            //   offset cursors gain an `epoch:offset` form, both of which the readers treat as
+            //   optional — a pre-v5 log (no header) is simply epoch 0, and a bare-integer cursor
+            //   is read as `(epoch 0, offset)`. Old logs keep working until this device first
+            //   compacts them.
             tracing::info!(
                 from = current,
                 to = Self::FORMAT_VERSION,
@@ -583,13 +685,12 @@ impl FsBackend {
 
     // ── Log helpers ───────────────────────────────────────────────────────────
 
-    /// Append a single [`LogEntry`] to this device's NDJSON log file.
+    /// Append a single [`LogEntry`] to this device's NDJSON log file, then compact the log to a
+    /// current-state snapshot if it has grown past [`GLOBAL_LOG_COMPACT_THRESHOLD`] entries.
     ///
-    /// The entry is serialised to a single JSON line and written with the file opened
-    /// in append mode, which means multiple concurrent writers on the same operating
-    /// system will not corrupt each other's entries as long as each `write_all` call
-    /// is atomic at the kernel level (guaranteed for writes smaller than `PIPE_BUF`
-    /// on POSIX systems, typically 4 KiB).
+    /// The append and the (occasional) compaction run under `global_log_lock` so a concurrent
+    /// append is never lost to a compaction that replaces the file, and two compactions cannot
+    /// race. The entry is one JSON line; the file is opened in append mode.
     ///
     /// # Parameters
     ///
@@ -607,6 +708,7 @@ impl FsBackend {
         operation: &str,
         data: serde_json::Value,
     ) -> Result<(), StorageError> {
+        let _guard = self.global_log_lock.lock().await;
         let entry = LogEntry {
             timestamp: now(),
             entity_type: entity_type.to_string(),
@@ -621,41 +723,256 @@ impl FsBackend {
             .open(self.device_log_path())
             .await?;
         file.write_all(line.as_bytes()).await?;
+        file.flush().await?;
+        drop(file);
+        self.maybe_compact_global_log_locked().await
+    }
+
+    /// Compact this device's global log to a current-state snapshot when it exceeds the entry
+    /// threshold. **The caller must hold `global_log_lock`.** A cheap `metadata` size gate skips
+    /// the line count entirely for small logs (see [`GLOBAL_LOG_SOFT_BYTES`]).
+    async fn maybe_compact_global_log_locked(&self) -> Result<(), StorageError> {
+        let path = self.device_log_path();
+        let size = match tokio::fs::metadata(&path).await {
+            Ok(m) => m.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        if size < Self::GLOBAL_LOG_SOFT_BYTES {
+            return Ok(());
+        }
+        if self.own_log_entry_count().await? <= Self::GLOBAL_LOG_COMPACT_THRESHOLD {
+            return Ok(());
+        }
+        self.compact_global_log_locked().await
+    }
+
+    /// Count the change entries (excluding any generation header and blank lines) in this
+    /// device's own global log.
+    async fn own_log_entry_count(&self) -> Result<usize, StorageError> {
+        let file = match tokio::fs::File::open(self.device_log_path()).await {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e.into()),
+        };
+        let mut reader = BufReader::new(file);
+        let mut line = String::new();
+        let mut count = 0usize;
+        loop {
+            line.clear();
+            if reader.read_line(&mut line).await? == 0 {
+                break;
+            }
+            let trimmed = line.trim();
+            if trimmed.is_empty() || parse_epoch_header(trimmed).is_some() {
+                continue;
+            }
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// Read the generation epoch stored in this device's own global-log header, or `0` when the
+    /// log has no header yet (never compacted).
+    async fn read_own_epoch(&self) -> Result<u64, StorageError> {
+        let (epoch, _len) = self.read_log_header(&self.device_log_path()).await?;
+        Ok(epoch)
+    }
+
+    /// Rewrite this device's global log as a snapshot of current entity state behind a bumped
+    /// generation header. **The caller must hold `global_log_lock`.**
+    ///
+    /// Notebooks, tags, resources, and note↔tag associations each collapse to a single entry
+    /// carrying their current (versioned) state — a `create`/`add` for a live entity or a
+    /// `delete`/`remove` tombstone for a soft-deleted one — so the rewritten log is bounded by
+    /// entity count rather than mutation count. Because every entry is version-vector resolved
+    /// and idempotent on apply, a peer re-reading the whole snapshot (it will, because the epoch
+    /// changed) converges: entities it already has newer are skipped, ones it is behind on are
+    /// advanced, and tombstones it never saw are harmless no-ops on absent records.
+    async fn compact_global_log_locked(&self) -> Result<(), StorageError> {
+        let new_epoch = self.read_own_epoch().await?.saturating_add(1);
+        let entries = self.build_global_snapshot().await?;
+
+        let mut buf = serde_json::to_string(&EpochHeader { epoch: new_epoch })?;
+        buf.push('\n');
+        for entry in &entries {
+            buf.push_str(&serde_json::to_string(entry)?);
+            buf.push('\n');
+        }
+
+        let path = self.device_log_path();
+        let tmp = path.with_extension("log.tmp");
+        tokio::fs::write(&tmp, buf).await?;
+        tokio::fs::rename(&tmp, &path).await?;
+        tracing::info!(
+            epoch = new_epoch,
+            entries = entries.len(),
+            "Compacted global change log to a snapshot"
+        );
         Ok(())
+    }
+
+    /// Build the snapshot entries for [`compact_global_log_locked`]: one [`LogEntry`] per
+    /// notebook, tag, resource, and note↔tag association currently on disk, reflecting its
+    /// present state (a `create`/`add`, or a `delete`/`remove` tombstone when soft-deleted).
+    /// Notes are excluded — they sync through their own per-note version-vector logs, not the
+    /// global journal.
+    async fn build_global_snapshot(&self) -> Result<Vec<LogEntry>, StorageError> {
+        let ts = now();
+        let mut out = Vec::new();
+
+        // Notebooks and tags: sidecar files under their directories.
+        for (dir, kind) in [("notebooks", "notebook"), ("tags", "tag")] {
+            let mut rd = match tokio::fs::read_dir(self.root.join(dir)).await {
+                Ok(rd) => rd,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            while let Some(e) = rd.next_entry().await? {
+                let fname = e.file_name().to_string_lossy().into_owned();
+                let Some(stem) = fname.strip_suffix(".msgpack") else {
+                    continue;
+                };
+                let Ok(id) = Uuid::parse_str(stem) else {
+                    continue;
+                };
+                let bytes = tokio::fs::read(e.path()).await?;
+                let entry = match kind {
+                    "notebook" => snapshot_entry_from_sidecar::<Notebook>(&bytes, kind, id, ts),
+                    _ => snapshot_entry_from_sidecar::<Tag>(&bytes, kind, id, ts),
+                };
+                match entry {
+                    Some(e) => out.push(e),
+                    None => {
+                        tracing::warn!("Skipping unreadable {kind} sidecar during compaction: {id}")
+                    }
+                }
+            }
+        }
+
+        // Resources: metadata sidecar inside each resource directory.
+        if let Ok(mut rd) = tokio::fs::read_dir(self.root.join("resources")).await {
+            while let Some(e) = rd.next_entry().await? {
+                let Ok(id) = Uuid::parse_str(&e.file_name().to_string_lossy()) else {
+                    continue;
+                };
+                let Ok(bytes) = tokio::fs::read(self.resource_meta_path(id)).await else {
+                    continue;
+                };
+                match snapshot_entry_from_sidecar::<Resource>(&bytes, "resource", id, ts) {
+                    Some(e) => out.push(e),
+                    None => {
+                        tracing::warn!(
+                            "Skipping unreadable resource sidecar during compaction: {id}"
+                        )
+                    }
+                }
+            }
+        }
+
+        // Note↔tag associations: one versioned state file per (note, tag).
+        if let Ok(mut notes_rd) = tokio::fs::read_dir(self.root.join("note_tags")).await {
+            while let Some(note_entry) = notes_rd.next_entry().await? {
+                let Ok(note_id) = Uuid::parse_str(&note_entry.file_name().to_string_lossy()) else {
+                    continue;
+                };
+                let mut tags_rd = tokio::fs::read_dir(note_entry.path()).await?;
+                while let Some(tag_entry) = tags_rd.next_entry().await? {
+                    let Ok(tag_id) = Uuid::parse_str(&tag_entry.file_name().to_string_lossy())
+                    else {
+                        continue;
+                    };
+                    let Some(state) = self.read_assoc_state(&tag_entry.path()).await? else {
+                        continue;
+                    };
+                    let op = if state.deleted_at.is_some() {
+                        "remove"
+                    } else {
+                        "add"
+                    };
+                    out.push(LogEntry {
+                        timestamp: ts,
+                        entity_type: "note_tag".to_string(),
+                        entity_id: note_id,
+                        operation: op.to_string(),
+                        data: fs_assoc_value(
+                            tag_id,
+                            state.updated_at,
+                            &state.vv,
+                            &state.last_writer,
+                        ),
+                    });
+                }
+            }
+        }
+
+        Ok(out)
     }
 
     /// Returns the path of the byte-offset cursor file for a foreign device:
     /// `.keeplin/offsets/{device_id}`.
     ///
-    /// The file stores a decimal integer representing the number of bytes already
-    /// consumed from the foreign device's log file. On the next call to
-    /// `receive_changes`, reading starts from this offset so each log entry is
-    /// delivered exactly once.
+    /// The file stores `"{epoch}:{offset}"` — the foreign log's generation epoch this cursor was
+    /// taken against, and the number of bytes consumed within it. When the foreign log is
+    /// compacted its epoch increments, so a stale cursor (older epoch) tells `receive_changes` to
+    /// re-read the fresh snapshot from the start instead of seeking into now-invalid byte
+    /// positions. A bare integer (pre-v5 cursor) is read as `(epoch 0, offset)`.
     fn log_offset_path(&self, device_id: &str) -> PathBuf {
         self.root.join(".keeplin").join("offsets").join(device_id)
     }
 
-    /// Read the stored byte offset for a foreign device log, or return `0` if no
-    /// offset has been recorded yet (i.e., the log has never been processed before).
-    async fn read_log_offset(&self, device_id: &str) -> u64 {
-        tokio::fs::read_to_string(self.log_offset_path(device_id))
-            .await
-            .ok()
-            .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0)
+    /// Read the stored `(epoch, byte offset)` cursor for a foreign device log, or `(0, 0)` if no
+    /// cursor has been recorded yet. A bare-integer file (pre-v5) is read as `(0, offset)`.
+    async fn read_log_offset(&self, device_id: &str) -> (u64, u64) {
+        let raw = match tokio::fs::read_to_string(self.log_offset_path(device_id)).await {
+            Ok(s) => s,
+            Err(_) => return (0, 0),
+        };
+        let raw = raw.trim();
+        match raw.split_once(':') {
+            Some((epoch, offset)) => (
+                epoch.trim().parse().unwrap_or(0),
+                offset.trim().parse().unwrap_or(0),
+            ),
+            None => (0, raw.parse().unwrap_or(0)),
+        }
     }
 
-    /// Persist the byte offset for a foreign device log using an atomic
-    /// write-then-rename so that a crash during the write cannot leave the cursor
-    /// file in a partially-written state. A torn cursor file would be interpreted
-    /// as offset `0` by `read_log_offset`, causing duplicate delivery of already-
-    /// processed log entries, which is safe but wasteful.
-    async fn write_log_offset(&self, device_id: &str, offset: u64) -> Result<(), StorageError> {
+    /// Persist the `(epoch, byte offset)` cursor for a foreign device log using an atomic
+    /// write-then-rename so that a crash during the write cannot leave the cursor file in a
+    /// partially-written state. A torn cursor file is interpreted as `(0, 0)` by
+    /// `read_log_offset`, causing re-delivery of already-processed entries, which is safe
+    /// (apply is idempotent and version-vector resolved) but wasteful.
+    async fn write_log_offset(
+        &self,
+        device_id: &str,
+        epoch: u64,
+        offset: u64,
+    ) -> Result<(), StorageError> {
         let path = self.log_offset_path(device_id);
         let tmp = path.with_extension("tmp");
-        tokio::fs::write(&tmp, offset.to_string()).await?;
+        tokio::fs::write(&tmp, format!("{epoch}:{offset}")).await?;
         tokio::fs::rename(&tmp, &path).await?;
         Ok(())
+    }
+
+    /// Read a global log's generation header: `(epoch, header_byte_len)`. A log with no header
+    /// (never compacted, or pre-v5) reports `(0, 0)`, so reading starts at byte 0. `header_byte_len`
+    /// is the length of the header line **including its newline**, i.e. exactly where the first
+    /// change entry begins.
+    async fn read_log_header(&self, path: &Path) -> Result<(u64, u64), StorageError> {
+        let file = match tokio::fs::File::open(path).await {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+            Err(e) => return Err(e.into()),
+        };
+        let mut reader = BufReader::new(file);
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).await?;
+        match parse_epoch_header(line.trim()) {
+            Some(epoch) => Ok((epoch, n as u64)),
+            None => Ok((0, 0)),
+        }
     }
 
     /// Scan all foreign device log files under `{root}/logs/` and return every
@@ -702,7 +1019,7 @@ impl FsBackend {
                     break;
                 }
                 let trimmed = line.trim();
-                if trimmed.is_empty() {
+                if trimmed.is_empty() || parse_epoch_header(trimmed).is_some() {
                     continue;
                 }
                 match serde_json::from_str::<LogEntry>(trimmed) {
@@ -726,11 +1043,17 @@ impl FsBackend {
     /// This means that on the next call only lines written after the current call
     /// will be returned.
     ///
+    /// **Generation epochs.** If the foreign log's generation epoch (its
+    /// [`EpochHeader`] first line) differs from the one this cursor was taken against, the log
+    /// was compacted (rewritten as a snapshot), so its old byte offset is meaningless. In that
+    /// case reading restarts just past the header and re-delivers the whole snapshot; because
+    /// every entry is idempotent and version-vector resolved, replaying it converges rather than
+    /// duplicating or resurrecting state.
+    ///
     /// If writing the offset file fails (for example due to a disk-full condition),
     /// the error is logged as a warning but does not propagate. The consequence is
-    /// that the same entries will be returned again on the next call — but since
-    /// `apply_change` is idempotent (it uses `INSERT OR REPLACE` or checks existence
-    /// before writing), duplicate delivery is safe.
+    /// that the same entries will be returned again on the next call — safe, since apply is
+    /// idempotent.
     async fn read_new_entries(&self) -> Result<Vec<LogEntry>, StorageError> {
         let mut entries = Vec::new();
         let mut dir = tokio::fs::read_dir(self.root.join("logs")).await?;
@@ -743,14 +1066,22 @@ impl FsBackend {
                 continue;
             }
             let device_id = fname.trim_end_matches(".log").to_owned();
-            let offset = self.read_log_offset(&device_id).await;
+            let (writer_epoch, header_len) = self.read_log_header(&dir_entry.path()).await?;
+            let (stored_epoch, stored_offset) = self.read_log_offset(&device_id).await;
+            // On a generation change, discard the stale offset and re-read from just past the
+            // (new) header; otherwise resume from where we left off within the same generation.
+            let start = if writer_epoch != stored_epoch {
+                header_len
+            } else {
+                stored_offset
+            };
 
             let mut file = tokio::fs::File::open(dir_entry.path()).await?;
-            file.seek(SeekFrom::Start(offset)).await?;
+            file.seek(SeekFrom::Start(start)).await?;
 
             let mut reader = BufReader::new(file);
             let mut line = String::new();
-            let mut new_offset = offset;
+            let mut new_offset = start;
             loop {
                 line.clear();
                 let n = reader.read_line(&mut line).await?;
@@ -759,7 +1090,7 @@ impl FsBackend {
                 }
                 new_offset += n as u64;
                 let trimmed = line.trim();
-                if trimmed.is_empty() {
+                if trimmed.is_empty() || parse_epoch_header(trimmed).is_some() {
                     continue;
                 }
                 match serde_json::from_str::<LogEntry>(trimmed) {
@@ -770,8 +1101,11 @@ impl FsBackend {
                 }
             }
 
-            if new_offset > offset {
-                if let Err(e) = self.write_log_offset(&device_id, new_offset).await {
+            if writer_epoch != stored_epoch || new_offset > stored_offset {
+                if let Err(e) = self
+                    .write_log_offset(&device_id, writer_epoch, new_offset)
+                    .await
+                {
                     tracing::warn!("Could not save log offset for {device_id}: {e}");
                 }
             }
@@ -1921,11 +2255,11 @@ impl SyncBackend for FsBackend {
     }
 
     async fn prune_change_journal(&self, _older_than: DateTime<Utc>) -> Result<u64, StorageError> {
-        // The filesystem backend stores changes as append-only NDJSON log files that are
-        // replicated to other devices by Syncthing. Removing entries from these files
-        // would cause any device that has not yet processed the removed entries to miss
-        // those changes permanently, potentially corrupting the sync state. This method
-        // therefore intentionally does nothing and always returns zero.
+        // Time-based pruning is not offered: a peer that has not yet consumed an entry tracks it
+        // by byte offset, so dropping entries older than a timestamp could make it miss changes.
+        // The global log is instead bounded automatically by generation-epoch snapshot compaction
+        // in `append_log` (see `compact_global_log_locked`), which rewrites current state rather
+        // than deleting history a peer still needs, so this method remains a no-op returning zero.
         Ok(0)
     }
 }

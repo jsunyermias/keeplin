@@ -36,8 +36,8 @@ Everything is one of a handful of plain structs, all deriving `Serialize`/`Deser
 
 Every entity — notes, notebooks, tags, note↔tag associations, and resources — uses **soft
 delete** (`deleted_at` is set, the record is kept as a versioned tombstone for sync). A resource's
-binary payload is retained after a soft delete; reclaiming that space is left to the `FsBackend`
-compaction phase.
+binary payload is retained after a soft delete (the tombstone must persist for convergence);
+reclaiming that space is left to out-of-band maintenance.
 
 ---
 
