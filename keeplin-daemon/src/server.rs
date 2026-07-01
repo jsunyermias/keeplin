@@ -29,17 +29,16 @@ use crate::proto::keeplin::{
     CreateResourceRequest, CreateResourceResponse, CreateTagRequest, CreateTagResponse,
     DeleteNoteRequest, DeleteNoteResponse, DeleteNotebookRequest, DeleteNotebookResponse,
     DeleteResourceRequest, DeleteResourceResponse, DeleteTagRequest, DeleteTagResponse,
-    EditBookmarkAliasRequest, EditBookmarkAliasResponse, GetNoteRequest, GetNoteResponse,
-    GetNotebookRequest, GetNotebookResponse, GetResourceRequest, GetResourceResponse,
-    GetTagRequest, GetTagResponse, ListAliasConflictsRequest, ListAliasConflictsResponse,
-    ListBacklinksRequest, ListBacklinksResponse, ListNoteTagsRequest, ListNoteTagsResponse,
-    ListNotebooksRequest, ListNotebooksResponse, ListNotesRequest, ListNotesResponse,
-    ListResourcesRequest, ListResourcesResponse, ListTagsRequest, ListTagsResponse, Note,
-    NoteAliasConflict, NoteLink as ProtoNoteLink, Notebook, NotebookAliasConflict,
-    RemoveNoteLinkRequest, RemoveNoteLinkResponse, RemoveNoteTagRequest, RemoveNoteTagResponse,
-    ResolveReferenceRequest, ResolveReferenceResponse, Resource, SetNoteAliasRequest,
-    SetNoteAliasResponse, SetNotebookAliasRequest, SetNotebookAliasResponse, SyncProgress,
-    SyncRequest, Tag, UpdateNoteRequest, UpdateNoteResponse, UpdateNotebookRequest,
+    GetNoteRequest, GetNoteResponse, GetNotebookRequest, GetNotebookResponse, GetResourceRequest,
+    GetResourceResponse, GetTagRequest, GetTagResponse, ListAliasConflictsRequest,
+    ListAliasConflictsResponse, ListBacklinksRequest, ListBacklinksResponse, ListNoteTagsRequest,
+    ListNoteTagsResponse, ListNotebooksRequest, ListNotebooksResponse, ListNotesRequest,
+    ListNotesResponse, ListResourcesRequest, ListResourcesResponse, ListTagsRequest,
+    ListTagsResponse, Note, NoteAliasConflict, NoteLink as ProtoNoteLink, Notebook,
+    NotebookAliasConflict, RemoveNoteLinkRequest, RemoveNoteLinkResponse, RemoveNoteTagRequest,
+    RemoveNoteTagResponse, ResolveReferenceRequest, ResolveReferenceResponse, Resource,
+    SetNoteAliasRequest, SetNoteAliasResponse, SetNotebookAliasRequest, SetNotebookAliasResponse,
+    SyncProgress, SyncRequest, Tag, UpdateNoteRequest, UpdateNoteResponse, UpdateNotebookRequest,
     UpdateNotebookResponse, UpdateTagRequest, UpdateTagResponse,
 };
 
@@ -654,20 +653,6 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .map_err(storage_err)?;
         Ok(Response::new(SetNotebookAliasResponse {
             notebook: Some(notebook_to_proto(notebook)),
-        }))
-    }
-
-    async fn edit_bookmark_alias(
-        &self,
-        req: Request<EditBookmarkAliasRequest>,
-    ) -> Result<Response<EditBookmarkAliasResponse>, Status> {
-        let r = req.into_inner();
-        let note_id = parse_uuid(&r.note_id, "note_id")?;
-        let note = linking::edit_bookmark_alias(self.backend.as_ref(), note_id, r.number, r.alias)
-            .await
-            .map_err(storage_err)?;
-        Ok(Response::new(EditBookmarkAliasResponse {
-            note: Some(note_to_proto(note)),
         }))
     }
 

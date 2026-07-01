@@ -9,12 +9,12 @@
 //!
 //! # Bookmarks
 //!
-//! A bookmark is an in-note anchor written as a **triple-hash token** in the body, e.g.
-//! `###Marcador1` (a hashtag with three `#`). Its `text` is the marked word (`Marcador1`),
-//! its `alias` defaults to that text but is editable, and its `number` is its 1-based
-//! position among the note's bookmarks. The token must sit at a word boundary, have exactly
-//! three `#`, and be followed by a non-space, non-`#` character — so it never collides with
-//! a markdown `### ` heading (space after the hashes) or a longer `####` run.
+//! A bookmark is an in-note anchor written as a **markdown link whose destination is exactly
+//! `###`** — a link that goes nowhere: `[Texto del marcador](### "Alias del marcador")`. The
+//! link **text** becomes the bookmark's `text`; the optional link **title** (in quotes) becomes
+//! its `alias`, defaulting to the text when omitted (`[Texto](###)`); its `number` is its
+//! 1-based position among the note's bookmarks. The body is the single source of truth — the
+//! alias is edited by editing the title in the body, not through a separate API.
 //!
 //! # Links
 //!
@@ -110,11 +110,21 @@ pub enum LinkSource {
 pub struct Bookmark {
     /// 1-based position among the note's bookmarks, in order of appearance in the body.
     pub number: u32,
-    /// The marked text from the `###text` token. Stable identity for carrying alias edits
-    /// across body changes.
+    /// The link text of the `[text](###)` declaration.
     pub text: String,
-    /// Display/reference alias. Defaults to `text`; editable via the API.
+    /// Display/reference alias — the link title (`[text](### "alias")`), defaulting to `text`.
     pub alias: String,
+}
+
+/// A bookmark parsed from a note body: its link text and the optional inline alias (the link
+/// title). The caller assigns the 1-based `number` by order of appearance and defaults the
+/// alias to `text` when none is given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DerivedBookmark {
+    /// The link text.
+    pub text: String,
+    /// The link title, when present.
+    pub alias: Option<String>,
 }
 
 /// A link from one note to a target note (optionally scoped by notebook and bookmark).
@@ -184,12 +194,12 @@ pub fn parse_link_ref(s: &str) -> Option<LinkTarget> {
     }
 }
 
-/// Compiled regex for `###text` bookmark tokens. Anchored at a word boundary (start or
-/// whitespace), exactly three `#`, then a first char that is neither whitespace nor `#`
-/// (so `### heading` and `####run` are excluded), then the rest of the non-whitespace run.
+/// Compiled regex for a bookmark declaration: a markdown link whose destination is exactly
+/// `###` (a link that goes nowhere) — `[text](### "alias")` or `[text](###)`. Group 1 is the
+/// link text, group 2 is the optional title (the alias).
 fn bookmark_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?:^|\s)###([^\s#]\S*)").unwrap())
+    RE.get_or_init(|| Regex::new(r#"\[([^\]]*)\]\(\s*###\s*(?:"([^"]*)")?\s*\)"#).unwrap())
 }
 
 /// Compiled regex for markdown links whose destination starts with `#`:
@@ -199,13 +209,16 @@ fn content_link_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"\[[^\]]*\]\(\s*(#[^)\s]+)\s*\)").unwrap())
 }
 
-/// Extract the marked texts of every `###text` bookmark token in `body`, in order of
-/// appearance. The 1-based number of each bookmark is its index in the returned vector
-/// plus one. Duplicate texts are kept (each occurrence is a distinct bookmark).
-pub fn parse_bookmarks(body: &str) -> Vec<String> {
+/// Extract every `[text](### "alias")` bookmark declaration in `body`, in order of appearance.
+/// The 1-based number of each bookmark is its index in the returned vector plus one. Duplicate
+/// texts are kept (each occurrence is a distinct bookmark).
+pub fn parse_bookmarks(body: &str) -> Vec<DerivedBookmark> {
     bookmark_re()
         .captures_iter(body)
-        .map(|c| c[1].to_string())
+        .map(|c| DerivedBookmark {
+            text: c[1].to_string(),
+            alias: c.get(2).map(|m| m.as_str().to_string()),
+        })
         .collect()
 }
 
@@ -215,6 +228,8 @@ pub fn parse_content_links(body: &str) -> Vec<String> {
     content_link_re()
         .captures_iter(body)
         .map(|c| c[1].to_string())
+        // `[text](###)` is a bookmark declaration, not a link destination.
+        .filter(|dest| dest != "###")
         .collect()
 }
 
@@ -264,15 +279,29 @@ mod tests {
     }
 
     #[test]
-    fn extracts_bookmarks_in_order_excluding_headings() {
-        let body = "Intro ###Marcador1 mid\n### Not a bookmark (heading)\nmore ###Otro y ####nope";
+    fn extracts_bookmarks_with_and_without_alias_in_order() {
+        let body =
+            "Intro [Marcador1](###) mid\n### not a bookmark (heading)\n[Otro](### \"Alias\") end";
         let marks = parse_bookmarks(body);
-        assert_eq!(marks, vec!["Marcador1".to_string(), "Otro".to_string()]);
+        assert_eq!(
+            marks,
+            vec![
+                DerivedBookmark {
+                    text: "Marcador1".to_string(),
+                    alias: None,
+                },
+                DerivedBookmark {
+                    text: "Otro".to_string(),
+                    alias: Some("Alias".to_string()),
+                },
+            ]
+        );
     }
 
     #[test]
-    fn extracts_content_links() {
-        let body = "see [a](#nota3) and [b](#libreta1#nota3#5) but not [c](http://x) or [d](#)";
+    fn extracts_content_links_excluding_bookmarks() {
+        let body =
+            "see [a](#nota3) and [b](#libreta1#nota3#5), a bookmark [c](###), but not [d](http://x) or [e](#)";
         let links = parse_content_links(body);
         assert_eq!(
             links,
