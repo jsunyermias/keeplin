@@ -141,6 +141,51 @@ async fn get_changes_since_returns_updated_notes() {
     assert!(matches!(changes[0], Change::NoteCreate { .. }));
 }
 
+#[tokio::test]
+async fn apply_change_is_not_re_journaled() {
+    use keeplin_core::models::Change;
+
+    // The `entity_changes` journal holds only changes that ORIGINATED on this device.
+    // A change ingested via `apply_change` (a remote change pulled from the broadcast relay)
+    // must be applied to the tables but must NOT enter the journal, so it is never re-sent
+    // to the relay. See the invariant documented on `DbBackend::apply_change`.
+    let backend = in_memory_backend().await;
+    let epoch = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap();
+
+    let remote = Note::new("remote", "from a peer");
+    let remote_id = remote.id;
+    backend
+        .apply_change(Change::NoteCreate { note: remote })
+        .await
+        .unwrap();
+    // It really was applied (readable from the tables)…
+    assert_eq!(backend.read_note(remote_id).await.unwrap().title, "remote");
+
+    // …and a locally created note DOES enter the journal, for contrast.
+    let local = Note::new("local", "mine");
+    let local_id = local.id;
+    backend.create_note(local).await.unwrap();
+
+    let journaled: Vec<_> = backend
+        .get_changes_since(epoch)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|c| match c {
+            Change::NoteCreate { note } | Change::NoteUpdate { note } => Some(note.id),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        journaled.contains(&local_id),
+        "a locally created note must be journaled"
+    );
+    assert!(
+        !journaled.contains(&remote_id),
+        "a change applied via apply_change must NOT be re-journaled"
+    );
+}
+
 // ── Error-path tests ──────────────────────────────────────────────────────────
 
 #[tokio::test]

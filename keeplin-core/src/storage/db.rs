@@ -1556,6 +1556,14 @@ impl SyncBackend for DbBackend {
     }
 
     async fn apply_change(&self, change: Change) -> Result<(), StorageError> {
+        // Applies a change pulled from the relay. Deliberately does NOT call `record_change`:
+        // the `entity_changes` journal holds only changes that ORIGINATED on this device, so
+        // `get_changes_since`/`send_changes` never re-send something we merely received. The
+        // sync server is a broadcast relay (it forwards each device's change to every other
+        // peer), so re-propagation is unnecessary; re-journaling applied changes would just
+        // echo every change back out on the next cycle. Do not add `record_change` here
+        // without also switching the relay away from broadcast — see `db.md`.
+        //
         // Hold the write lock for the whole apply so this write cannot interleave with
         // another task's open transaction on the shared connection.
         let _write_guard = self.lock.write().await;
