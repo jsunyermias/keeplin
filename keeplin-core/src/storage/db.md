@@ -21,14 +21,38 @@ All tables are created idempotently by `run_migrations` on first connection.
 
 | Table | Purpose |
 |-------|---------|
-| `notes` | Note rows with soft-delete column (`deleted_at`) |
-| `notebooks` | Notebook rows with soft-delete column |
+| `notes` | Note rows: soft-delete (`deleted_at`), plus `alias`, `bookmarks` (JSON), `links` (JSON) |
+| `notebooks` | Notebook rows with soft-delete column and `alias` |
 | `tags` | Tag rows with soft-delete column |
 | `note_tags` | Many-to-many association; composite primary key `(note_id, tag_id)` |
+| `note_links` | Projection of each note's resolved outgoing links (see below) — powers indexed backlinks |
 | `resources` | Resource metadata + BLOB (`data` column) |
 | `sync_state` | Key-value store for the last-sync timestamp |
 | `device` | Single-row table holding the stable device UUID |
 | `entity_changes` | Append-only change journal (see below) |
+
+The `alias`, `bookmarks`, and `links` columns are added by `add_column_if_missing` after the
+`CREATE TABLE IF NOT EXISTS` statements, so pre-existing databases gain them without a manual
+migration. There is deliberately **no `UNIQUE` index on `alias`**: under at-rest encryption the
+stored alias is per-write ciphertext (so an index could not detect duplicates anyway), and a
+hard constraint would reject a duplicate alias arriving through sync, breaking the sync cycle.
+Alias uniqueness is instead enforced in `LinkingBackend` against decrypted values.
+
+### `note_links` table — indexed backlinks
+
+```sql
+CREATE TABLE note_links (
+    source_note_id TEXT NOT NULL,   -- the note whose body contains the link
+    target_note_id TEXT NOT NULL,   -- the resolved destination note
+    PRIMARY KEY (source_note_id, target_note_id)
+);
+CREATE INDEX idx_note_links_target ON note_links(target_note_id);
+```
+
+`refresh_note_links(note)` rebuilds a note's rows on every note write (create/update **and**
+applied sync change): it deletes the note's existing `source_note_id` rows and re-inserts one
+row per link that has a resolved `target_note_id`. This lets `note_backlinks` answer "who links
+to note X?" with an indexed lookup + cursor `LIMIT` instead of the trait's default full scan.
 
 ### `entity_changes` table
 
@@ -127,6 +151,13 @@ All operations are idempotent by design. The create/update arms for notes, noteb
 and tags are additionally guarded by `should_apply`, which reads the stored `updated_at`
 and **skips** the write when the incoming change is not strictly newer — implementing
 last-write-wins so a stale remote edit cannot clobber a newer local record.
+
+The note create/update arm wraps `should_apply` + `INSERT OR REPLACE` + `refresh_note_links`
+in a single `BEGIN IMMEDIATE … COMMIT` transaction (with `rollback` on error), exactly like
+the interactive `create_note`/`update_note` paths. Without this, a crash between the row write
+and the projection refresh could leave the `note_links` table stale relative to `notes`, and
+backlinks would silently drift. The transaction keeps the row and its projection atomic while
+staying idempotent.
 
 This is last-write-wins for **every** entity, notes included. `DbBackend` does **not**
 implement the per-note version-vector merge that `FsBackend` uses (see

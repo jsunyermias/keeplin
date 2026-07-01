@@ -196,26 +196,34 @@ struct SyncState {
 
 /// Filesystem-backed implementation of [`StorageBackend`].
 ///
-/// Data is stored as JSON files under the following directory tree:
+/// Data is stored as files under the following directory tree:
 /// ```text
 /// {root}/
-///   notes/{uuid}/meta.json      — note metadata and body
-///   notebooks/{uuid}.json       — notebook metadata
-///   tags/{uuid}.json            — tag metadata
+///   notes/{uuid}/note.md              — materialized note body (ciphertext when encrypted)
+///   notes/{uuid}/meta.msgpack         — materialized metadata + merged version vector (cache)
+///   notes/{uuid}/log.{device_id}.msgpack — that device's append-only note op log (source of truth)
+///   notebooks/{uuid}.msgpack          — notebook metadata sidecar
+///   tags/{uuid}.msgpack               — tag metadata sidecar
 ///   note_tags/{note_uuid}/{tag_uuid}  — empty sentinel file for each association
-///   resources/{uuid}/meta.json  — resource metadata (title, MIME type, file name, size)
-///   resources/{uuid}/data       — raw binary payload
-///   logs/{device_id}.log        — this device's NDJSON change log
-///   .keeplin/device_id          — persisted UUID that identifies this installation
-///   .keeplin/format_version     — integer version stamp written on every startup
-///   .keeplin/sync_state.json    — last-sync timestamp
-///   .keeplin/offsets/{device_id} — byte-offset cursor for each foreign log file
+///   resources/{uuid}/meta.msgpack     — resource metadata (title, MIME type, file name, size)
+///   resources/{uuid}/data             — raw binary payload
+///   logs/{device_id}.log              — this device's global NDJSON change log
+///   .keeplin/device_id                — persisted UUID that identifies this installation
+///   .keeplin/format_version           — integer version stamp written on every startup
+///   .keeplin/sync_state.json          — last-sync timestamp
+///   .keeplin/offsets/{device_id}      — byte-offset cursor for each foreign log file
 /// ```
 ///
+/// Notes use per-device operation logs merged by version vector (see
+/// [`crate::storage::note_log`]); `note.md` / `meta.msgpack` are regenerated projections,
+/// never the source of truth. Notebooks, tags, and resources use one MessagePack sidecar
+/// each plus the global NDJSON `logs/` journal.
+///
 /// Syncthing (or any equivalent tool) replicates the entire `{root}` tree to other
-/// devices. When a foreign device's log file appears under `{root}/logs/`, the
-/// `receive_changes` method reads new entries starting from the stored byte-offset
-/// cursor and advances the cursor so each entry is processed exactly once.
+/// devices. Because every log file has a single writer it never produces conflict copies.
+/// When a foreign device's global log appears under `{root}/logs/`, `receive_changes` reads
+/// new entries starting from the stored byte-offset cursor and advances it so each entry is
+/// processed exactly once.
 pub struct FsBackend {
     /// The root directory of the storage tree.
     root: PathBuf,

@@ -4,8 +4,10 @@
 
 This is the binary entry point for `keeplin-daemon`. It parses the configuration file and
 environment variable overrides, constructs the appropriate storage backend (with optional
-encryption), wraps the backend in the gRPC service layer, optionally enables TLS, installs
-an HTTP Basic Auth interceptor on every RPC, and starts the gRPC server.
+encryption), wraps it in the rest of the **decorator stack** (`LinkingBackend` →
+`EventBackend`), builds the gRPC service layer, optionally enables TLS, installs an HTTP
+Basic Auth interceptor on every RPC, and serves gRPC — plus, when `http_addr` is set, the
+REST/JSON + WebSocket surface on a second listener, both sharing one backend `Arc`.
 
 ## Key types
 
@@ -33,13 +35,28 @@ main()
 
 ### `run_server`
 
-1. Creates a `KeeplinServiceServer` wrapping `KeeplinServer<B>`.
-2. Sets `max_decoding_message_size` and `max_encoding_message_size` from config.
-3. Wraps the service with `InterceptedService` using `validate_basic_auth` as the
-   interceptor. The interceptor runs on every RPC call before the handler.
-4. Optionally loads TLS certificate and key from the configured paths.
-5. Listens for `Ctrl-C` as the shutdown signal (graceful drain).
-6. Starts `builder.add_service(svc).serve_with_shutdown(addr, shutdown_signal)`.
+1. **Finishes the decorator stack.** The caller passes the storage backend (already wrapped
+   in `EncryptedBackend` if a password is set); `run_server` wraps it in
+   `LinkingBackend` (derives bookmarks/links from each plaintext body, resolves references,
+   enforces alias uniqueness) and then `EventBackend` (publishes every mutation to a
+   `broadcast` channel). Final stack, innermost → outermost:
+
+   ```
+   EventBackend( LinkingBackend( [EncryptedBackend]( Fs | Db ) ) )
+   ```
+
+   `LinkingBackend` sits **outside** encryption so it reads plaintext; `EventBackend` sits
+   outside it so the live feed carries the refreshed metadata. The result is one
+   `Arc<dyn StorageBackend>` shared by every surface.
+2. Creates a `KeeplinServiceServer` wrapping `KeeplinServer::from_shared(backend.clone(), …)`
+   and sets `max_decoding/encoding_message_size` from config.
+3. Wraps the service with `InterceptedService` using `validate_basic_auth` (runs on every RPC
+   before the handler; a no-op when no credentials are configured).
+4. Optionally loads the TLS certificate and key from the configured paths.
+5. If `http_addr` is set, builds the REST `AppState` (same backend `Arc`, a clone of the
+   `broadcast::Sender`, `max_body_bytes = max_message_size`, and the Basic-Auth credentials),
+   binds the axum router on that port, and runs **both** servers under `tokio::try_join!`.
+6. Both listeners share `shutdown_signal()` (`Ctrl-C`) for a graceful drain.
 
 ## Public functions
 
@@ -101,8 +118,11 @@ deliberate reminder that the server is exposed to the network without protection
 
 ## Related files
 
-- `keeplin-daemon/src/config.rs` — `Config` and `Mode` types
+- `keeplin-daemon/src/config.rs` — `Config` and `Mode` types (incl. `http_addr`)
 - `keeplin-daemon/src/server.rs` — `KeeplinServer` implementation
+- `keeplin-daemon/src/rest.rs` — the REST/WebSocket surface served on `http_addr`
+- `keeplin-daemon/src/event_backend.rs` — the outermost decorator + live-feed source
+- `keeplin-core/src/linking.rs` — the `LinkingBackend` decorator added here
 - `keeplin-core/src/storage/fs.rs` — used in offline mode
 - `keeplin-core/src/storage/db.rs` — used in server mode
 - `keeplin-core/src/encryption.rs` — wraps the backend when a password is configured

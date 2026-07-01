@@ -3,9 +3,9 @@
 ## Purpose
 
 This file is the crate root for `keeplin-core`, the library that all other Keeplin crates
-depend on. It declares the five public sub-modules that together form the complete Keeplin
-storage and synchronisation layer. It contains no logic of its own; its sole role is to
-make the sub-modules accessible to dependents.
+depend on. It declares the seven public sub-modules that together form the complete Keeplin
+storage, linking, and synchronisation layer. It contains no logic of its own; its sole role
+is to make the sub-modules accessible to dependents.
 
 ## Module map
 
@@ -13,8 +13,10 @@ make the sub-modules accessible to dependents.
 |--------|--------|-------------|
 | `encryption` | yes | AES-256-GCM transparent encryption decorator for any `StorageBackend` |
 | `error` | yes | All error types used across the crate (`StorageError`, `SyncError`) |
+| `links` | yes | Pure bookmark/link types and the `#…` reference grammar (I/O-free) |
+| `linking` | yes | `LinkingBackend` decorator + reference-resolution / alias helpers |
 | `models` | yes | Domain data types (`Note`, `Notebook`, `Tag`, `Resource`, `Change`, …) |
-| `storage` | yes | `StorageBackend` trait plus `FsBackend` and `DbBackend` implementations |
+| `storage` | yes | `StorageBackend` supertrait plus `FsBackend` and `DbBackend` implementations |
 | `sync` | yes | `SyncEngine` — orchestrates a full push/pull sync cycle |
 
 ## Dependency graph (intra-crate)
@@ -22,12 +24,15 @@ make the sub-modules accessible to dependents.
 ```
 lib
  ├── error          (no intra-crate deps)
- ├── models         (uses error — indirectly via StorageBackend)
+ ├── links          (uses models — pure types + grammar, no I/O)
+ ├── models         (uses error, links)
  ├── storage
  │    ├── backend   (uses error, models)
- │    ├── fs        (uses error, models, storage::backend)
+ │    ├── note_log  (pure version-vector merge for FS notes)
+ │    ├── fs        (uses error, models, storage::{backend, note_log})
  │    └── db        (uses error, models, storage::backend)
  ├── encryption     (uses error, models, storage::backend)
+ ├── linking        (uses error, models, links, storage::backend)
  └── sync
       └── engine    (uses error, models, storage::backend)
 ```
