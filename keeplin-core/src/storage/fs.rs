@@ -704,9 +704,19 @@ impl FsBackend {
         Ok(logs)
     }
 
+    /// Merge all of a note's per-device logs into its current state **without** touching
+    /// disk. Reads use this so that reading a note never rewrites `note.md`/`meta.msgpack`
+    /// (avoiding write amplification) and never advances the sync-detection cache — a read
+    /// must not consume a peer change that the next sync is supposed to report. Returns the
+    /// merged note, or `None` when the note has no log entries at all.
+    async fn merge_note(&self, id: Uuid) -> Result<Option<Note>, StorageError> {
+        let logs = self.read_note_logs(id).await?;
+        Ok(note_log::merge(&logs).note)
+    }
+
     /// Merge all of a note's per-device logs into its current state and refresh the
     /// `note.md` + `meta.msgpack` projection. Returns the merged note, or `None` when the
-    /// note has no log entries at all.
+    /// note has no log entries at all. Used by the write and sync paths (not by reads).
     async fn materialize(&self, id: Uuid) -> Result<Option<Note>, StorageError> {
         let logs = self.read_note_logs(id).await?;
         let merged = note_log::merge(&logs);
@@ -755,7 +765,11 @@ impl FsBackend {
         // writer cannot overwrite this entry (see `note_write_lock`).
         let _write_guard = self.note_write_lock.lock().await;
         tokio::fs::create_dir_all(self.note_dir(id)).await?;
-        let mut vv = self.note_vv(id).await?;
+        // Base the new entry's version vector on the merge of every log currently on disk
+        // (not on the `meta.msgpack` cache), so an edit causally follows all state present at
+        // write time even though reads no longer refresh that cache. This keeps the
+        // "read-then-edit dominates" behaviour without letting reads write to disk.
+        let mut vv = note_log::merge(&self.read_note_logs(id).await?).vv;
         note_log::increment(&mut vv, &self.device_id);
         let log_path = self.note_log_path(id, &self.device_id);
         let mut log: Vec<NoteLogEntry> = match self.read_sidecar(&log_path, id).await {
@@ -877,9 +891,10 @@ impl NoteRepository for FsBackend {
     }
 
     async fn read_note(&self, id: Uuid) -> Result<Note, StorageError> {
-        // Reads materialize live from the per-device logs, so they always reflect the
-        // latest merge — even immediately after Syncthing brings in a peer's log.
-        self.materialize(id)
+        // Reads merge live from the per-device logs, so they always reflect the latest state
+        // — even immediately after Syncthing brings in a peer's log — without writing the
+        // projection back (a read never mutates the store).
+        self.merge_note(id)
             .await?
             .ok_or_else(|| StorageError::NotFound(id.to_string()))
     }
@@ -924,10 +939,10 @@ impl NoteRepository for FsBackend {
         while let Some(entry) = dir.next_entry().await? {
             let id_str = entry.file_name().to_string_lossy().to_string();
             if let Ok(id) = Uuid::parse_str(&id_str) {
-                match self.materialize(id).await {
+                match self.merge_note(id).await {
                     Ok(Some(n)) if n.deleted_at.is_none() => notes.push(n),
                     Ok(_) => {}
-                    Err(e) => tracing::warn!("Could not materialize note {id}: {e}"),
+                    Err(e) => tracing::warn!("Could not merge note {id}: {e}"),
                 }
             }
         }
@@ -1458,5 +1473,25 @@ mod tests {
         let logs = backend.read_note_logs(id).await.unwrap();
         let total: usize = logs.iter().map(|l| l.len()).sum();
         assert_eq!(total, 1 + updates, "create + {updates} updates, none lost");
+    }
+
+    /// A read must merge live from the logs without rewriting the `note.md`/`meta.msgpack`
+    /// projection (reads are pure; the log is the source of truth).
+    #[tokio::test]
+    async fn read_does_not_rewrite_projection() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = FsBackend::new(dir.path()).await.unwrap();
+        let note = backend.create_note(Note::new("t", "body")).await.unwrap();
+        let meta = backend.note_meta_path(note.id);
+        let md = backend.note_md_path(note.id);
+
+        // Drop the projection; the read must still work from the log and not recreate it.
+        tokio::fs::remove_file(&meta).await.unwrap();
+        tokio::fs::remove_file(&md).await.unwrap();
+
+        let read = backend.read_note(note.id).await.unwrap();
+        assert_eq!(read.body, "body");
+        assert!(!meta.exists(), "read must not rewrite meta.msgpack");
+        assert!(!md.exists(), "read must not rewrite note.md");
     }
 }

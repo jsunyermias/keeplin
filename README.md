@@ -264,6 +264,13 @@ best‑effort `target_note_id`; `GET /api/links/resolve` (or the `ResolveReferen
 a reference on demand, and `GET /api/notes/:id/backlinks` lists the notes pointing at a note
 (answered by an indexed `note_links` projection in `DbBackend`, and a scan in `FsBackend`).
 
+> **Note on resolution cost.** Writing a note that *contains* links (or that sets an alias)
+> scans the note corpus to resolve alias references and enforce alias uniqueness; a plain note
+> with no alias and no links skips the scan. There is deliberately no alias→uuid index: alias
+> resolution runs above the encryption boundary on decrypted values, and under at‑rest
+> encryption the stored alias is per‑write ciphertext, so a database index could not answer an
+> alias lookup. For large corpora, prefer referencing notes by uuid.
+
 ---
 
 ## Development
