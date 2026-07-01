@@ -2,129 +2,135 @@
 
 ## Purpose
 
-`FsBackend` stores all Keeplin data as JSON files on the local filesystem and records
-every mutation in a per-device Newline-Delimited JSON (NDJSON) change log. Synchronisation
-across devices is handled by an external file-replication tool such as Syncthing: when
-Syncthing replicates the `logs/` directory, `get_changes_since` reads the log files
-written by other devices to discover what changed remotely.
+`FsBackend` stores all Keeplin data as files on the local filesystem and lets an external
+file-replication tool (typically **Syncthing**) carry those files between devices. There is
+no sync server: replication is "copy the files"; conflict resolution happens locally when a
+device reads the merged state. Every log file has a **single writer**, so Syncthing never
+produces conflict copies.
+
+There are two storage models under one root:
+
+1. **Notes** — per-device append-only operation logs, merged by **version vector**
+   (a small CRDT). This is the model that makes concurrent offline edits converge.
+2. **Notebooks, tags, resources** — one MessagePack sidecar per entity, with every mutation
+   also appended to a global per-device NDJSON journal used by sync.
 
 ## Key types
 
 | Type | Kind | Description |
 |------|------|-------------|
 | `FsBackend` | struct | Filesystem-backed `StorageBackend` implementation |
-| `LogEntry` | struct (private) | One line in a device's NDJSON change log |
-| `SyncState` | struct (private) | Wrapper holding the `last_sync` timestamp, persisted to JSON |
+| `NoteMeta` | struct (private) | The `meta.msgpack` projection: the merged note (body blanked) + merged version vector |
+| `LogEntry` | struct (private) | One line in the global NDJSON journal (notebooks/tags/resources/note-tags) |
+| `SyncState` | struct (private) | Holds the `last_sync` timestamp, persisted to `.keeplin/sync_state.json` |
+
+Note-log types (`NoteOp`, `NoteLogEntry`, `VersionVector`, `merge`) live in the sibling
+`note_log.rs` — see `note_log.md`.
 
 ## Directory layout
 
 ```
 {root}/
-├── notes/{uuid}/meta.json            ← Note metadata (JSON)
-├── notebooks/{uuid}.json             ← Notebook metadata (JSON)
-├── tags/{uuid}.json                  ← Tag metadata (JSON)
-├── note_tags/{note_uuid}/{tag_uuid}  ← Marker files (empty); existence = linked
-├── resources/{uuid}/meta.json        ← Resource metadata (JSON)
-├── resources/{uuid}/data             ← Resource binary payload
-├── logs/{device_id}.log              ← This device's NDJSON change log
-├── .keeplin/device_id                ← Stable identifier for this installation
-├── .keeplin/format_version           ← Storage format version number (currently "2")
-├── .keeplin/offsets/{device_id}      ← Byte offset into the corresponding log file
-└── .keeplin/sync_state.json          ← Last successful sync timestamp
+├── notes/{uuid}/note.md                    ← materialized body (ciphertext when encrypted)
+├── notes/{uuid}/meta.msgpack               ← materialized metadata + merged VV (a cache)
+├── notes/{uuid}/log.{device_id}.msgpack    ← that device's append-only note-op log (truth)
+├── notebooks/{uuid}.msgpack                ← notebook sidecar
+├── tags/{uuid}.msgpack                     ← tag sidecar
+├── note_tags/{note_uuid}/{tag_uuid}        ← empty marker file; existence = linked
+├── resources/{uuid}/meta.msgpack           ← resource metadata
+├── resources/{uuid}/data                   ← resource binary payload
+├── logs/{device_id}.log                    ← this device's global NDJSON journal
+├── .keeplin/device_id                      ← stable identifier for this installation
+├── .keeplin/format_version                 ← storage format version (currently 4)
+├── .keeplin/offsets/{device_id}            ← byte offset consumed in each foreign global log
+└── .keeplin/sync_state.json                ← last successful sync timestamp
 ```
 
-## Log entry format
+## The note model — per-device logs + version-vector merge
 
-Each NDJSON line is a `LogEntry`:
+Each note is a **directory** of logs, one per device that has ever edited it. A write:
 
-```json
-{"timestamp":"2024-01-01T12:00:00Z","entity_type":"note","entity_id":"<uuid>","operation":"create","data":{...}}
-```
+1. takes `note_write_lock` (see Concurrency), then reads **all** of the note's on-disk logs;
+2. `merge`s them (via `note_log::merge`) to learn the current merged version vector;
+3. `increment`s this device's component and appends a new `NoteOp::Upsert`/`Tombstone`
+   entry to **this device's** log only;
+4. re-materializes `note.md` + `meta.msgpack` from the merged result as a local projection.
 
-### Backward compatibility with v1 logs
+A **read** (`read_note` / `list_notes`) re-merges the logs live and returns the winner; it is
+**non-mutating** — it does not rewrite `note.md`/`meta.msgpack` (an earlier version did, which
+made reads look like writes to sync-change detection). The `.md`/`.msgpack` files are therefore
+a cache, never the source of truth.
 
-V1 log entries used `"note_id"` instead of `"entity_id"` and had no `"entity_type"`
-field. The struct handles these via:
-- `#[serde(default = "default_entity_type")]` — absent `entity_type` defaults to `"note"`
-- `#[serde(alias = "note_id")]` — `"note_id"` is accepted as an alias for `"entity_id"`
+Convergence (all devices agree regardless of replication order) comes from `note_log::merge`:
+a causal edit applies cleanly; a genuinely concurrent edit is resolved by a deterministic
+last-write-wins tiebreak. See `note_log.md` for the merge rules.
 
-## Format versioning
+## Global journal & format — `LogEntry`, `SyncState`
 
-On startup, `ensure_format_version()` reads `.keeplin/format_version`:
-- **Absent** — treated as version 1 (old installation)
-- **Version 1** — logged, then updated to the current version; no data migration is
-  required because v1 → v2 only adds new entity types and the log format is
-  backward-compatible via the serde aliases above
-- **Current version** — no action taken
+Notebook/tag/resource/note-tag mutations append a `LogEntry` (NDJSON) to
+`logs/{device_id}.log`. `get_changes_since` reads new foreign entries via the byte-offset
+cursors in `.keeplin/offsets/`, so each entry is processed exactly once, and also picks up
+this device's own new lines. Each line is decoded by `log_entry_to_change`; unrecognised
+`(entity_type, operation)` pairs are skipped (forward/backward compatibility). A `delete`
+line's own timestamp becomes the tombstone time, so replayed deletes compete in
+last-write-wins on the receiver.
 
-The version file is always (re-)written on startup so that new installations are stamped
-immediately.
+### Backward compatibility
 
-## Public API
+- `entity_type` defaults to `"note"` (v1 logs had no such field).
+- `entity_id` accepts the old `"note_id"` field name via a serde alias.
+- Both old (`"create"`) and new (`"note_create"`) operation strings are accepted.
 
-### `FsBackend::new(root: impl Into<PathBuf>) -> Result<Self, StorageError>`
-**What it does:** Creates the required directory tree under `root`, reads or generates a
-stable device ID, and checks/migrates the storage format version.  
-**Parameters:** `root` — path to the root data directory.  
-**Returns:** A ready-to-use backend.  
-**Errors:** `StorageError::Io` if any directory cannot be created.
+`FORMAT_VERSION = 4`. `ensure_format_version()` reads `.keeplin/format_version` on startup;
+older stamps are logged and re-stamped. Migrations to date need no data transformation (serde
+aliases/defaults handle old files at parse time); the stamp is always (re)written so brand-new
+and un-stamped stores are marked immediately.
 
-All other methods implement `StorageBackend` — see `storage/backend.md` for the full
-contract.
+## Concurrency — `note_write_lock`
+
+`FsBackend` holds one `Arc<Mutex<()>>` (`note_write_lock`) taken across the whole
+read-logs → append → materialize sequence of a note write. Without it, two concurrent writes
+to the same note read the same log and the second atomic rename overwrites the first, silently
+dropping an entry — which the single-writer-per-log version-vector model forbids. One **global**
+mutex (not per-note) keeps it simple; note writes are infrequent in offline FS use, so the
+reduced write parallelism is fine. **Reads take no lock** — the atomic temp-then-rename gives
+them a consistent view of every log file.
 
 ## Atomic write pattern
 
-All writes use a temp-file-then-rename pattern to avoid partial writes:
+All file writes use temp-then-rename so a reader always sees the old or the new file, never a
+half-written one:
 
 ```rust
-let tmp = final_path.with_extension("tmp");
 tokio::fs::write(&tmp, bytes).await?;
 tokio::fs::rename(&tmp, &final_path).await?;
 ```
 
-This guarantees that a reader always sees either the old file or the new file, never a
-partially-written state.
+## `apply_change`
 
-## Sync — `get_changes_since`
-
-`get_changes_since(since)` does two things:
-
-1. **Read changes from other devices** — scans all `.log` files in `logs/` except the
-   current device's own log (because local changes are already known). For each file,
-   it uses a byte-offset file in `.keeplin/offsets/` to avoid re-reading lines already
-   processed. The offset is updated atomically after each batch.
-2. **Read this device's own new changes** — reads new lines from the current device's
-   log using the same offset mechanism.
-
-Each log line is parsed via `log_entry_to_change()`. Unrecognised combinations of
-`entity_type` and `operation` are skipped silently (future compatibility).
-
-## Sync — `apply_change`
-
-`apply_change` handles all 13 `Change` variants:
-- Notes, notebooks, tags: write or overwrite the JSON metadata file
-- NoteTagAdd: create the marker file `note_tags/{note_id}/{tag_id}`
-- NoteTagRemove: remove the marker file (ignores `NotFound`)
-- ResourceCreate: write `resources/{id}/meta.json`; if `data: Some(bytes)`, also write
-  `resources/{id}/data` (useful when receiving from `DbBackend`; Syncthing handles the
-  normal case)
-- ResourceDelete: remove the entire `resources/{id}/` directory
+Applies all 13 `Change` variants: notes go through the version-vector log (an incoming
+`NoteCreate`/`NoteUpdate` is merged, not blindly overwritten); notebooks/tags write their
+sidecar; `NoteTagAdd`/`Remove` create/remove the marker file; `ResourceCreate` writes the
+metadata sidecar and, if `data: Some(bytes)`, the payload too (used when receiving from
+`DbBackend`; Syncthing handles the normal case); `ResourceDelete` removes the resource dir.
 
 ## Design notes
 
-- `send_changes` and `receive_changes` are no-ops in `FsBackend` because replication is
-  fully handled by the external Syncthing daemon. The sync cycle in `SyncEngine` still
-  calls them; they simply return immediately.
-- NoteTag associations are stored as empty marker files rather than in a list file,
-  so adding and removing a tag from a note are independent atomic operations.
-- The `FsBackend` is not suitable for high-concurrency workloads: concurrent writes from
-  two processes to the same entity directory can race. It is designed for single-user,
-  single-process desktop use.
+- `send_changes` / `receive_changes` push/pull is a no-op: replication is entirely
+  Syncthing's job. The sync engine still calls them; they return immediately.
+- Logs (both per-note and the global NDJSON journal) are append-only and **never pruned** by
+  the backend — dropping an entry a peer has not yet consumed would corrupt that peer's sync
+  cursor. They grow over the store's lifetime (fine for typical note volumes); safe compaction
+  needs every peer's consumed position, which lives outside this backend, so there is no
+  automatic mechanism.
+- FsBackend targets single-user, low-concurrency desktop use; cross-*process* writes to the
+  same store are still unsupported (the lock is per-process).
 
 ## Related files
 
-- `keeplin-core/src/storage/backend.rs` — trait that `FsBackend` implements
-- `keeplin-core/src/models.rs` — all types stored by this backend
-- `.cargo/config.toml` — workspace release profile; relevant for binary used alongside
-  Syncthing deployments
-- `scripts/build.sh` — cross-compilation script for packaging the daemon with `FsBackend`
+- `keeplin-core/src/storage/note_log.rs` — the pure version-vector merge this backend calls.
+- `keeplin-core/src/storage/backend.rs` — the trait (and default `note_backlinks` scan) it implements.
+- `keeplin-core/src/models.rs` — all types stored by this backend.
+- `keeplin-core/tests/fs_backend.rs` — including the concurrent-write regression and
+  two-device convergence tests.
+- `SECURITY.md` — "Conflict resolution differs by backend".

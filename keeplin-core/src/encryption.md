@@ -28,17 +28,25 @@ same `StorageBackend` trait as any plain backend — encryption is completely tr
 
 | Type | Encrypted fields |
 |------|-----------------|
-| `Note` | `title`, `body` |
-| `Notebook` | `title` |
+| `Note` | `title`, `body`, `alias`, each bookmark's `text` + `alias`, each link's `raw` |
+| `Notebook` | `title`, `alias` |
 | `Tag` | `title` |
 | `Resource` (metadata) | `title`, `mime_type`, `file_name` |
 | `Resource` (binary payload) | entire `data` bytes |
 
+The `alias`, `bookmark`, and `link` fields are all derived from or describe the (sensitive)
+body, so they are encrypted with the same key. Note that this is exactly why there is no
+database `UNIQUE` index or alias→uuid index for aliases: the stored alias is per-write
+ciphertext (a fresh random nonce each time), so equal plaintext aliases become **different**
+ciphertext. Alias uniqueness is enforced in `LinkingBackend`, which sits **above** this
+decorator and therefore compares decrypted values (see `linking.md`).
+
 ## Fields stored in plaintext (by design)
 
-`id`, `notebook_id`, `is_todo`, `size`, `created_at`, `updated_at`, `deleted_at`, and all
-NoteTag associations. These fields are required for database queries and sync logic and
-contain no user-supplied content that needs protecting.
+`id`, `notebook_id`, `is_todo`, `todo_due`, `todo_completed`, `size`, `created_at`,
+`updated_at`, `deleted_at`, each link's `target_note_id`/`source`, and all NoteTag
+associations. These are required for queries and sync logic and hold no user-supplied prose
+that needs protecting.
 
 ## Public API
 

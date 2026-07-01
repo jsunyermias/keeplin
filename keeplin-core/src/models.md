@@ -34,6 +34,12 @@ layer.
 | `created_at` | `DateTime<Utc>` | Set once at creation; never modified |
 | `updated_at` | `DateTime<Utc>` | Refreshed on every mutation |
 | `deleted_at` | `Option<DateTime<Utc>>` | Set on soft-delete; `None` means the note is active |
+| `alias` | `Option<String>` | Optional human-readable alias, unique among live notes; lets links target `#<alias>`. Encrypted at rest. |
+| `bookmarks` | `Vec<Bookmark>` | In-note anchors derived from `[text](### "alias")` links in the body (see `links.rs`) |
+| `links` | `Vec<NoteLink>` | Links to other notes: content-derived (`[t](#…)`) and manual |
+
+The three navigation fields are `#[serde(default)]` (older rows without them still parse) and are
+maintained by `LinkingBackend` — see `links.md` / `linking.md`.
 
 ### `Notebook`
 | Field | Type | Description |
@@ -43,6 +49,7 @@ layer.
 | `created_at` | `DateTime<Utc>` | Set once at creation |
 | `updated_at` | `DateTime<Utc>` | Refreshed on every mutation |
 | `deleted_at` | `Option<DateTime<Utc>>` | Set on soft-delete |
+| `alias` | `Option<String>` | Optional alias, unique among live notebooks; scopes `#<notebook>#<note>`. Encrypted at rest. |
 
 ### `Tag`
 
@@ -75,13 +82,13 @@ on the `NoteCreate`, `NoteUpdate`, and `NoteDelete` variants accept the old shor
 |---------|---------|-------------|
 | `NoteCreate` | `{ note: Note }` | A new note was created |
 | `NoteUpdate` | `{ note: Note }` | An existing note was updated |
-| `NoteDelete` | `{ id: Uuid }` | A note was soft-deleted |
+| `NoteDelete` | `{ id: Uuid, deleted_at }` | A note was soft-deleted (the tombstone timestamp drives last-write-wins) |
 | `NotebookCreate` | `{ notebook: Notebook }` | A new notebook was created |
 | `NotebookUpdate` | `{ notebook: Notebook }` | A notebook was renamed |
-| `NotebookDelete` | `{ id: Uuid }` | A notebook was soft-deleted |
+| `NotebookDelete` | `{ id: Uuid, deleted_at }` | A notebook was soft-deleted |
 | `TagCreate` | `{ tag: Tag }` | A new tag was created |
 | `TagUpdate` | `{ tag: Tag }` | A tag was renamed |
-| `TagDelete` | `{ id: Uuid }` | A tag was soft-deleted |
+| `TagDelete` | `{ id: Uuid, deleted_at }` | A tag was soft-deleted |
 | `NoteTagAdd` | `{ note_id, tag_id }` | A tag was attached to a note |
 | `NoteTagRemove` | `{ note_id, tag_id }` | A tag was detached from a note |
 | `ResourceCreate` | `{ resource, data? }` | A resource was added; `data` is `Some` in `DbBackend` and `None` in `FsBackend` |
@@ -116,7 +123,11 @@ engine when recording a sync timestamp.
 
 ## Related files
 
+- `keeplin-core/src/links.rs` — defines `Bookmark` and `NoteLink` (embedded in `Note`) plus
+  the reference grammar; see `links.md`
+- `keeplin-core/src/linking.rs` — the `LinkingBackend` decorator that maintains
+  `Note.alias`/`bookmarks`/`links`; see `linking.md`
 - `keeplin-core/src/storage/backend.rs` — every `StorageBackend` method takes or
   returns these types
-- `keeplin-core/src/encryption.rs` — encrypts/decrypts `title`, `body`, `mime_type`,
-  `file_name` fields before they touch disk
+- `keeplin-core/src/encryption.rs` — encrypts/decrypts the prose fields (`title`, `body`,
+  `alias`, bookmark text/alias, link `raw`, `mime_type`, `file_name`) before they touch disk

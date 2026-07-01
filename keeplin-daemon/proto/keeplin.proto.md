@@ -4,8 +4,11 @@
 
 `KeeplinService` is the single gRPC service that `keeplin-daemon` exposes. It provides
 CRUD operations for all five entity types (notes, notebooks, tags, note-tag associations,
-resources) and one server-streaming RPC for triggering a synchronisation cycle with the
-remote peer.
+resources), a set of **linking & reference** RPCs (aliases, manual links, backlinks,
+reference resolution, alias-collision listing), and one server-streaming RPC for triggering
+a synchronisation cycle with the remote peer. List RPCs (`ListNotes`, `ListNotebooks`,
+`ListTags`, `ListResources`, `ListNoteTags`, `ListBacklinks`) are cursor-paginated:
+requests carry `page_size` + `page_token`, responses carry a `next_page_token`.
 
 ## RPC methods
 
@@ -51,6 +54,21 @@ remote peer.
 | `GetResource` | `GetResourceRequest` | `GetResourceResponse` | Returns metadata and binary data for one resource |
 | `DeleteResource` | `DeleteResourceRequest` | `DeleteResourceResponse` | Permanently deletes a resource (hard delete) |
 
+### Linking & references
+
+| Method | Request | Response | Description |
+|--------|---------|----------|-------------|
+| `SetNoteAlias` | `SetNoteAliasRequest` | `SetNoteAliasResponse` | Set/clear a note's alias (rejected with `already_exists` if it duplicates a live alias) |
+| `SetNotebookAlias` | `SetNotebookAliasRequest` | `SetNotebookAliasResponse` | Set/clear a notebook's alias |
+| `AddNoteLink` | `AddNoteLinkRequest` | `AddNoteLinkResponse` | Add a manual link from one note to another |
+| `RemoveNoteLink` | `RemoveNoteLinkRequest` | `RemoveNoteLinkResponse` | Remove a link by index |
+| `ListBacklinks` | `ListBacklinksRequest` | `ListBacklinksResponse` | Paginated list of notes that link **to** a note |
+| `ResolveReference` | `ResolveReferenceRequest` | `ResolveReferenceResponse` | Resolve a `#…` reference → `{ note_id, bookmark_number? }` |
+| `ListAliasConflicts` | `ListAliasConflictsRequest` | `ListAliasConflictsResponse` | Aliases shared by 2+ live entities (post-sync collisions) |
+
+There is **no** RPC to set bookmarks: bookmarks are declared inline in the note body with
+`[text](### "alias")` markdown links and are returned inside each `Note` message.
+
 ### Sync
 
 | Method | Request | Response | Description |
@@ -71,7 +89,13 @@ remote peer.
 | `todo_completed` | 7 | `string` | RFC-3339 completion timestamp, or empty string |
 | `created_at` | 8 | `string` | RFC-3339 creation timestamp |
 | `updated_at` | 9 | `string` | RFC-3339 last-update timestamp |
-| `deleted_at` | 10 | `string` | RFC-3339 soft-delete timestamp, or empty string |
+| `deleted_at` | 10 | `optional string` | RFC-3339 soft-delete timestamp; absent = active |
+| `alias` | 11 | `optional string` | Human-readable alias; absent = none |
+| `bookmarks` | 12 | `repeated Bookmark` | In-note anchors derived from `[text](### "alias")` links in the body |
+| `links` | 13 | `repeated NoteLink` | Links to other notes (content-derived + manual) |
+
+`notebook_id` (4), `todo_due` (6), and `todo_completed` (7) are `optional string`; the
+proto3 `optional` presence bit distinguishes "unset" from "empty string".
 
 ### `Notebook`
 | Field | Field number | Type | Description |
@@ -80,11 +104,26 @@ remote peer.
 | `title` | 2 | `string` | User-visible name |
 | `created_at` | 3 | `string` | RFC-3339 |
 | `updated_at` | 4 | `string` | RFC-3339 |
-| `deleted_at` | 5 | `string` | RFC-3339 or empty |
+| `deleted_at` | 5 | `optional string` | RFC-3339; absent = active |
+| `alias` | 6 | `optional string` | Human-readable alias; absent = none |
 
 ### `Tag`
 
-Same fields as `Notebook`: `id`, `title`, `created_at`, `updated_at`, `deleted_at`.
+Same fields as `Notebook` minus `alias`: `id`, `title`, `created_at`, `updated_at`, `deleted_at`.
+
+### `Bookmark`
+| Field | Field number | Type | Description |
+|-------|-------------|------|-------------|
+| `number` | 1 | `uint32` | 1-based order of the bookmark within the body |
+| `text` | 2 | `string` | The link text (`[text]…`) |
+| `alias` | 3 | `string` | The optional link title, or `text` when no title was given |
+
+### `NoteLink`
+| Field | Field number | Type | Description |
+|-------|-------------|------|-------------|
+| `source` | 1 | `string` | `"content"` (derived from the body) or `"manual"` |
+| `raw` | 2 | `string` | The raw `#…` reference as written |
+| `target_note_id` | 3 | `optional string` | Resolved destination note UUID; absent = unresolved |
 
 ### `Resource`
 | Field | Field number | Type | Description |
@@ -122,8 +161,8 @@ Sent repeatedly during the server-streaming `Sync` RPC to report progress.
   default; missing fields receive zero values (empty string, `false`, `0`).
 - Field numbers must never be reused after a field is removed. Adding new fields with
   new numbers is backward-compatible.
-- Optional date fields (e.g. `todo_due`, `deleted_at`) use empty string as the absent
-  sentinel instead of a separate `bool` field, reducing message size for the common case.
+- Optional fields (e.g. `notebook_id`, `todo_due`, `deleted_at`, `alias`) use proto3
+  `optional`, whose presence bit distinguishes "unset" from an empty string.
 - `resource.size` uses `int64` (the only signed integer type in proto3) rather than
   `uint64` to maximise compatibility with client languages that do not support unsigned
   64-bit integers. The server validates that the value is non-negative.

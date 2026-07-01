@@ -25,7 +25,7 @@ These functions are stateless and have no error path other than parsing.
 | `notebook_to_proto(CoreNotebook) -> Notebook` | Same pattern for notebooks |
 | `resource_to_proto(CoreResource) -> Resource` | Same pattern for resources; `size: u64` becomes `size: i64` (proto3 has no unsigned integers) |
 | `tag_to_proto(CoreTag) -> Tag` | Same pattern for tags |
-| `storage_err(StorageError) -> Status` | Maps `StorageError::NotFound` to `Status::not_found` and everything else to `Status::internal` |
+| `storage_err(StorageError) -> Status` | Maps `NotFound → not_found`, `Conflict → already_exists`, `CorruptedData → data_loss`, everything else → `internal` |
 | `parse_uuid(&str, field_name) -> Result<Uuid, Status>` | Parses a UUID string from a proto field; returns `Status::invalid_argument` if malformed |
 | `parse_optional_dt(&str) -> Result<Option<DateTime<Utc>>, Status>` | Parses an RFC-3339 timestamp; returns `None` for empty strings |
 | `proto_to_note(Note) -> Result<CoreNote, Status>` | Full conversion from protobuf to domain `Note`; validates all timestamp and UUID fields |
@@ -40,14 +40,14 @@ gRPC handler tasks (tonic calls handlers from a thread pool).
 
 ### gRPC methods
 
-All 22 RPC methods are implemented. They follow this pattern:
+All 30 RPC methods are implemented. They follow this pattern:
 1. Extract the request payload from `tonic::Request<T>`.
 2. Parse and validate fields (UUIDs, timestamps) using the helper functions above.
-3. Call the corresponding `StorageBackend` method.
+3. Call the corresponding `StorageBackend` method (or a `linking::` free helper).
 4. Map the result to the protobuf response type.
 
 #### Notes RPCs
-`ListNotes`, `CreateNote`, `GetNote`, `UpdateNote`, `DeleteNote`
+`ListNotes`, `CreateNote`, `GetNote`, `UpdateNote`, `DeleteNote` (list is cursor-paginated)
 
 #### Notebooks RPCs
 `ListNotebooks`, `CreateNotebook`, `GetNotebook`, `UpdateNotebook`, `DeleteNotebook`
@@ -58,6 +58,16 @@ All 22 RPC methods are implemented. They follow this pattern:
 
 #### Resources RPCs
 `ListResources`, `CreateResource`, `GetResource`, `DeleteResource`
+
+#### Linking & references RPCs
+`SetNoteAlias`, `SetNotebookAlias`, `AddNoteLink`, `RemoveNoteLink`,
+`ListBacklinks` (cursor-paginated), `ResolveReference`, `ListAliasConflicts`.
+
+These delegate to the free helpers in `keeplin_core::linking` (`set_note_alias`, `resolve`,
+`backlinks`, `add_manual_link`, `remove_link`, `alias_conflicts`) rather than to a raw
+`StorageBackend` method. Bookmarks are **not** set via an RPC — they are declared inline in
+the note body as `[text](### "alias")` markdown links and are returned inside each `Note`
+message's repeated `bookmarks` field; there is no `EditBookmarkAlias` RPC.
 
 #### Sync RPC — server-streaming
 

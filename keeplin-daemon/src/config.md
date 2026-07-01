@@ -23,9 +23,10 @@ file (default: `keeplin.toml`) and may be partially overridden by environment va
 | `server_url` | `String` | `""` | WebSocket URL of the sync server (server mode only) |
 | `auth_token` | `String` | `""` | Bearer token sent on first WebSocket connection (server mode only) |
 | `grpc_addr` | `String` | `127.0.0.1:50051` | Address and port on which the gRPC server listens |
+| `http_addr` | `Option<String>` | `None` | Optional second listener for the REST/JSON + WebSocket API; when unset, only gRPC runs |
 | `tls_cert_path` | `Option<String>` | `None` | Filesystem path to the PEM-encoded TLS certificate |
 | `tls_key_path` | `Option<String>` | `None` | Filesystem path to the PEM-encoded TLS private key |
-| `max_message_size` | `usize` | 33,554,432 (32 MiB) | Maximum size of a single gRPC message (both inbound and outbound) |
+| `max_message_size` | `usize` | 33,554,432 (32 MiB) | Max size of a single gRPC message (inbound and outbound); also caps the REST request body (`DefaultBodyLimit`) so resource uploads have the same limit on both surfaces |
 | `journal_retention_days` | `u64` | `30` | Days of `entity_changes` history to keep; pruned after each successful sync (`0` disables; no-op for the filesystem backend) |
 | `encryption_password` | `Option<String>` | `None` | Passphrase for AES-256-GCM at-rest encryption; prefer env var (`KEEPLIN_ENCRYPTION_PASSWORD`) |
 | `key_salt` | `Option<String>` | `None` | Argon2id salt (≥ 8 bytes) for the encryption key; falls back to the device ID when unset. Set the **same** value on all synced devices for portable encryption; prefer env var (`KEEPLIN_KEY_SALT`) |
@@ -72,7 +73,11 @@ exposed to a network, TLS should always be enabled.
   `./keeplin-data` and listening on `127.0.0.1:50051`. This is the configuration used
   when no config file is present.
 - `max_message_size` defaults to 32 MiB because many PDF and image files that users
-  attach as resources fall within this limit, avoiding the need for manual tuning.
+  attach as resources fall within this limit, avoiding the need for manual tuning. The
+  same value bounds the REST body so a resource upload behaves identically over gRPC and HTTP.
+- `http_addr` is opt-in: leave it unset for a gRPC-only daemon; set it (e.g.
+  `"127.0.0.1:8080"`) to additionally expose the REST/JSON + WebSocket surface described in
+  `rest.md`. Both surfaces share one backend `Arc` and one auth model.
 
 ## Related files
 

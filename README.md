@@ -39,11 +39,18 @@ A Cargo workspace with two crates:
 
 | Crate | What it is |
 |-------|------------|
-| [`keeplin-core`](keeplin-core) | The library: domain models, the `StorageBackend` trait + two implementations (`FsBackend`, `DbBackend`), the `EncryptedBackend` decorator, and the `SyncEngine`. |
-| [`keeplin-daemon`](keeplin-daemon) | The binary: a [tonic](https://github.com/hyperium/tonic) gRPC server (`KeeplinService`) that wires a backend to the network, with auth and TLS. |
+| [`keeplin-core`](keeplin-core) | The library: domain models, the `StorageBackend` supertrait + two implementations (`FsBackend`, `DbBackend`), the `EncryptedBackend` and `LinkingBackend` decorators, the bookmark/link grammar, and the `SyncEngine`. |
+| [`keeplin-daemon`](keeplin-daemon) | The binary: a [tonic](https://github.com/hyperium/tonic) gRPC server (`KeeplinService`) plus an optional [axum](https://github.com/tokio-rs/axum) REST/WebSocket surface, both sharing one backend, with auth and TLS. It adds the outermost `EventBackend` (live‑change feed). |
 
-Every `.rs` source file has a companion `.md` describing it in depth (e.g.
-[`keeplin-core/src/storage/fs.md`](keeplin-core/src/storage/fs.md),
+Backends compose as a **decorator stack** — innermost storage outward:
+
+```
+EventBackend( LinkingBackend( [EncryptedBackend]( Fs | Db ) ) )
+```
+
+For a one‑page tour of how it all fits together, read
+[`ARCHITECTURE.md`](ARCHITECTURE.md). Every `.rs` source file also has a companion `.md`
+describing it in depth (e.g. [`keeplin-core/src/storage/fs.md`](keeplin-core/src/storage/fs.md),
 [`keeplin-core/src/storage/note_log.md`](keeplin-core/src/storage/note_log.md)).
 
 ### Storage models
