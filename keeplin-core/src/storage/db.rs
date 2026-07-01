@@ -219,8 +219,12 @@ impl DbBackend {
             );
 
             CREATE TABLE IF NOT EXISTS note_tags (
-                note_id TEXT NOT NULL,
-                tag_id  TEXT NOT NULL,
+                note_id     TEXT NOT NULL,
+                tag_id      TEXT NOT NULL,
+                updated_at  TEXT,
+                deleted_at  TEXT,
+                vv          TEXT NOT NULL DEFAULT '{}',
+                last_writer TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (note_id, tag_id)
             );
 
@@ -300,6 +304,13 @@ impl DbBackend {
             Self::add_column_if_missing(conn, table, "last_writer TEXT NOT NULL DEFAULT ''")
                 .await?;
         }
+        // Versioned note↔tag associations: an add is the present state, a remove sets the
+        // `deleted_at` tombstone; both resolve with the same version vectors as other entities.
+        Self::add_column_if_missing(conn, "note_tags", "updated_at TEXT").await?;
+        Self::add_column_if_missing(conn, "note_tags", "deleted_at TEXT").await?;
+        Self::add_column_if_missing(conn, "note_tags", "vv TEXT NOT NULL DEFAULT '{}'").await?;
+        Self::add_column_if_missing(conn, "note_tags", "last_writer TEXT NOT NULL DEFAULT ''")
+            .await?;
 
         // Alias uniqueness is enforced at the application layer by `LinkingBackend`, which
         // checks the *plaintext* alias before a local write. A database UNIQUE index is
@@ -603,16 +614,24 @@ impl DbBackend {
             }
             ("note_tag", "add") => {
                 let tag_id: Uuid = data["tag_id"].as_str()?.parse().ok()?;
+                let (updated_at, vv, last_writer) = assoc_from_data(data, changed_at);
                 Some(Change::NoteTagAdd {
                     note_id: id,
                     tag_id,
+                    updated_at,
+                    vv,
+                    last_writer,
                 })
             }
             ("note_tag", "remove") => {
                 let tag_id: Uuid = data["tag_id"].as_str()?.parse().ok()?;
+                let (updated_at, vv, last_writer) = assoc_from_data(data, changed_at);
                 Some(Change::NoteTagRemove {
                     note_id: id,
                     tag_id,
+                    updated_at,
+                    vv,
+                    last_writer,
                 })
             }
             ("resource", "create") => {
@@ -749,6 +768,109 @@ impl DbBackend {
         note_log::increment(&mut vv, &self.device_id);
         Ok(vv)
     }
+
+    // ── note↔tag association version helpers ──────────────────────────────────
+
+    /// Version metadata `(vv, updated_at, last_writer)` of a note↔tag association, or `None`
+    /// when the pair has never been written. A pre-version row (NULL `updated_at`) is reported
+    /// at the epoch so any real incoming write dominates it.
+    async fn assoc_meta(
+        &self,
+        note_id: &str,
+        tag_id: &str,
+    ) -> Result<Option<(VersionVector, DateTime<Utc>, String)>, StorageError> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT vv, updated_at, last_writer FROM note_tags WHERE note_id=?1 AND tag_id=?2",
+                [note_id.to_owned(), tag_id.to_owned()],
+            )
+            .await?;
+        match rows.next().await? {
+            Some(row) => {
+                let updated_at = match row.get::<Option<String>>(1)? {
+                    Some(s) => Self::parse_required_dt(s)?,
+                    None => DateTime::<Utc>::from_timestamp(0, 0).unwrap_or_default(),
+                };
+                Ok(Some((
+                    json_to_vv(&row.get::<String>(0)?),
+                    updated_at,
+                    row.get::<String>(2)?,
+                )))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Version vector for a **local** association write: current vector (empty if new) with this
+    /// device's component incremented.
+    async fn next_assoc_vv(
+        &self,
+        note_id: &str,
+        tag_id: &str,
+    ) -> Result<VersionVector, StorageError> {
+        let mut vv = self
+            .assoc_meta(note_id, tag_id)
+            .await?
+            .map(|(vv, _, _)| vv)
+            .unwrap_or_default();
+        note_log::increment(&mut vv, &self.device_id);
+        Ok(vv)
+    }
+
+    /// Whether an incoming association write (add or remove) should replace the local state,
+    /// via [`resolve`]. `true` when the pair has no local row.
+    async fn assoc_incoming_wins(
+        &self,
+        note_id: &str,
+        tag_id: &str,
+        incoming_vv: &VersionVector,
+        incoming_updated: DateTime<Utc>,
+        incoming_writer: &str,
+    ) -> Result<bool, StorageError> {
+        match self.assoc_meta(note_id, tag_id).await? {
+            None => Ok(true),
+            Some((lvv, lupd, lwriter)) => Ok(matches!(
+                resolve(
+                    &lvv,
+                    lupd,
+                    &lwriter,
+                    incoming_vv,
+                    incoming_updated,
+                    incoming_writer
+                ),
+                Winner::Incoming
+            )),
+        }
+    }
+
+    /// Upsert an association's versioned state: `deleted_at = None` for an add (present),
+    /// `Some(ts)` for a remove (tombstone).
+    async fn upsert_assoc(
+        &self,
+        note_id: &str,
+        tag_id: &str,
+        updated_at: DateTime<Utc>,
+        deleted_at: Option<DateTime<Utc>>,
+        vv: &VersionVector,
+        last_writer: &str,
+    ) -> Result<(), StorageError> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO note_tags (note_id,tag_id,updated_at,deleted_at,vv,last_writer)
+                 VALUES (?1,?2,?3,?4,?5,?6)",
+                libsql::params![
+                    note_id.to_owned(),
+                    tag_id.to_owned(),
+                    updated_at.to_rfc3339(),
+                    deleted_at.map(|d| d.to_rfc3339()),
+                    vv_to_json(vv),
+                    last_writer.to_owned(),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 // ── Pagination helpers ────────────────────────────────────────────────────────
@@ -830,6 +952,47 @@ fn tombstone_data(deleted_at: DateTime<Utc>, vv: &VersionVector, last_writer: &s
         "last_writer": last_writer,
     })
     .to_string()
+}
+
+/// Build the `entity_changes.data` JSON for a note↔tag add/remove: the other key plus the
+/// association's version metadata, so `row_to_change` reconstructs a versioned association change.
+fn assoc_data(
+    tag_id: Uuid,
+    updated_at: DateTime<Utc>,
+    vv: &VersionVector,
+    last_writer: &str,
+) -> String {
+    serde_json::json!({
+        "tag_id": tag_id,
+        "updated_at": updated_at,
+        "vv": vv,
+        "last_writer": last_writer,
+    })
+    .to_string()
+}
+
+/// Reconstruct an association change's `(updated_at, vv, last_writer)` from a journal `data`
+/// value. Falls back to `changed_at` and empty vv/writer for pre-version records.
+fn assoc_from_data(
+    data: &serde_json::Value,
+    changed_at: DateTime<Utc>,
+) -> (DateTime<Utc>, VersionVector, String) {
+    // Same shape as a tombstone minus the semantics; reuse the field extraction.
+    let updated_at = data
+        .get("updated_at")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+        .unwrap_or(changed_at);
+    let vv = data
+        .get("vv")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    let last_writer = data
+        .get("last_writer")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    (updated_at, vv, last_writer)
 }
 
 /// Reconstruct a delete's `(deleted_at, vv, last_writer)` from a journal `data` value.
@@ -1434,15 +1597,18 @@ impl TagRepository for DbBackend {
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
+        let note_id = note_tag.note_id.to_string();
+        let tag_id = note_tag.tag_id.to_string();
+        let vv = self.next_assoc_vv(&note_id, &tag_id).await?;
+        let writer = self.device_id.clone();
+        let ts = now();
         let r: Result<(), StorageError> = async {
-            self.conn
-                .execute(
-                    "INSERT OR IGNORE INTO note_tags (note_id,tag_id) VALUES (?1,?2)",
-                    [note_tag.note_id.to_string(), note_tag.tag_id.to_string()],
-                )
+            // An add is the association's *present* state (deleted_at = NULL), versioned so a
+            // concurrent add-vs-remove converges through `resolve`.
+            self.upsert_assoc(&note_id, &tag_id, ts, None, &vv, &writer)
                 .await?;
-            let data = serde_json::json!({ "tag_id": note_tag.tag_id }).to_string();
-            self.record_change("note_tag", &note_tag.note_id.to_string(), "add", Some(data))
+            let data = assoc_data(note_tag.tag_id, ts, &vv, &writer);
+            self.record_change("note_tag", &note_id, "add", Some(data))
                 .await
         }
         .await;
@@ -1461,15 +1627,17 @@ impl TagRepository for DbBackend {
     async fn remove_note_tag(&self, note_id: Uuid, tag_id: Uuid) -> Result<(), StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
+        let note_id_s = note_id.to_string();
+        let tag_id_s = tag_id.to_string();
+        let vv = self.next_assoc_vv(&note_id_s, &tag_id_s).await?;
+        let writer = self.device_id.clone();
+        let ts = now();
         let r: Result<(), StorageError> = async {
-            self.conn
-                .execute(
-                    "DELETE FROM note_tags WHERE note_id=?1 AND tag_id=?2",
-                    [note_id.to_string(), tag_id.to_string()],
-                )
+            // A remove is a *tombstone* (deleted_at set), kept so it can beat a concurrent add.
+            self.upsert_assoc(&note_id_s, &tag_id_s, ts, Some(ts), &vv, &writer)
                 .await?;
-            let data = serde_json::json!({ "tag_id": tag_id }).to_string();
-            self.record_change("note_tag", &note_id.to_string(), "remove", Some(data))
+            let data = assoc_data(tag_id, ts, &vv, &writer);
+            self.record_change("note_tag", &note_id_s, "remove", Some(data))
                 .await
         }
         .await;
@@ -1500,7 +1668,7 @@ impl TagRepository for DbBackend {
                 "SELECT t.id,t.title,t.created_at,t.updated_at,t.deleted_at,t.vv,t.last_writer
                  FROM tags t
                  JOIN note_tags nt ON t.id = nt.tag_id
-                 WHERE nt.note_id = ?1 AND t.deleted_at IS NULL
+                 WHERE nt.note_id = ?1 AND nt.deleted_at IS NULL AND t.deleted_at IS NULL
                    AND (
                      ?2 = '' OR t.created_at > ?3
                      OR (t.created_at = ?3 AND t.id > ?4)
@@ -1912,21 +2080,37 @@ impl SyncBackend for DbBackend {
                     .await?;
             }
             // NoteTag associations
-            Change::NoteTagAdd { note_id, tag_id } => {
-                self.conn
-                    .execute(
-                        "INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?1, ?2)",
-                        [note_id.to_string(), tag_id.to_string()],
-                    )
-                    .await?;
+            Change::NoteTagAdd {
+                note_id,
+                tag_id,
+                updated_at,
+                vv,
+                last_writer,
+            } => {
+                let (n, t) = (note_id.to_string(), tag_id.to_string());
+                if self
+                    .assoc_incoming_wins(&n, &t, &vv, updated_at, &last_writer)
+                    .await?
+                {
+                    self.upsert_assoc(&n, &t, updated_at, None, &vv, &last_writer)
+                        .await?;
+                }
             }
-            Change::NoteTagRemove { note_id, tag_id } => {
-                self.conn
-                    .execute(
-                        "DELETE FROM note_tags WHERE note_id = ?1 AND tag_id = ?2",
-                        [note_id.to_string(), tag_id.to_string()],
-                    )
-                    .await?;
+            Change::NoteTagRemove {
+                note_id,
+                tag_id,
+                updated_at,
+                vv,
+                last_writer,
+            } => {
+                let (n, t) = (note_id.to_string(), tag_id.to_string());
+                if self
+                    .assoc_incoming_wins(&n, &t, &vv, updated_at, &last_writer)
+                    .await?
+                {
+                    self.upsert_assoc(&n, &t, updated_at, Some(updated_at), &vv, &last_writer)
+                        .await?;
+                }
             }
             // Apply a remote resource-create change. When `data` is `Some` (the change
             // came from a peer that embedded the binary payload in the change record),

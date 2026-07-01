@@ -24,7 +24,7 @@ All tables are created idempotently by `run_migrations` on first connection.
 | `notes` | Note rows: soft-delete (`deleted_at`), `alias`, `bookmarks`/`links` (JSON), and the conflict-resolution `vv` (JSON version vector) + `last_writer` |
 | `notebooks` | Notebook rows with soft-delete column, `alias`, and `vv`/`last_writer` |
 | `tags` | Tag rows with soft-delete column and `vv`/`last_writer` |
-| `note_tags` | Many-to-many association; composite primary key `(note_id, tag_id)` |
+| `note_tags` | Many-to-many association (PK `(note_id, tag_id)`), **versioned**: `updated_at`, `deleted_at` (tombstone), `vv`, `last_writer` so add/remove converge like other entities |
 | `note_links` | Projection of each note's resolved outgoing links (see below) — powers indexed backlinks |
 | `resources` | Resource metadata + BLOB (`data` column) |
 | `sync_state` | Key-value store for the last-sync timestamp |
@@ -155,8 +155,8 @@ as a `Vec<Change>` and appended to the result. Binary messages and errors are ig
 | `TagCreate` | `INSERT OR REPLACE INTO tags …` |
 | `TagUpdate` | `INSERT OR REPLACE INTO tags …` |
 | `TagDelete` | `UPDATE tags SET deleted_at=?, updated_at=?, vv=?, last_writer=? WHERE id = ?` |
-| `NoteTagAdd` | `INSERT OR IGNORE INTO note_tags …` |
-| `NoteTagRemove` | `DELETE FROM note_tags WHERE note_id=? AND tag_id=?` |
+| `NoteTagAdd` | version-vector `resolve`, then `INSERT OR REPLACE` the present state (`deleted_at` NULL) |
+| `NoteTagRemove` | version-vector `resolve`, then `INSERT OR REPLACE` a tombstone (`deleted_at` set) |
 | `ResourceCreate` | `INSERT OR IGNORE INTO resources (…, data) VALUES (…, ?)` with `data = payload.unwrap_or_default()` |
 | `ResourceDelete` | `DELETE FROM resources WHERE id = ?` (resources use hard delete) |
 
