@@ -125,9 +125,12 @@ fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
         ("note", "update") | ("note", "note_update") => serde_json::from_value(entry.data)
             .ok()
             .map(|note| Change::NoteUpdate { note }),
-        ("note", "delete") | ("note", "note_delete") => {
-            Some(Change::NoteDelete { id, deleted_at: ts })
-        }
+        ("note", "delete") | ("note", "note_delete") => Some(Change::NoteDelete {
+            id,
+            deleted_at: ts,
+            vv: VersionVector::new(),
+            last_writer: String::new(),
+        }),
         // Notebooks
         ("notebook", "create") => serde_json::from_value(entry.data)
             .ok()
@@ -135,7 +138,12 @@ fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
         ("notebook", "update") => serde_json::from_value(entry.data)
             .ok()
             .map(|notebook| Change::NotebookUpdate { notebook }),
-        ("notebook", "delete") => Some(Change::NotebookDelete { id, deleted_at: ts }),
+        ("notebook", "delete") => Some(Change::NotebookDelete {
+            id,
+            deleted_at: ts,
+            vv: VersionVector::new(),
+            last_writer: String::new(),
+        }),
         // Tags
         ("tag", "create") => serde_json::from_value(entry.data)
             .ok()
@@ -143,7 +151,12 @@ fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
         ("tag", "update") => serde_json::from_value(entry.data)
             .ok()
             .map(|tag| Change::TagUpdate { tag }),
-        ("tag", "delete") => Some(Change::TagDelete { id, deleted_at: ts }),
+        ("tag", "delete") => Some(Change::TagDelete {
+            id,
+            deleted_at: ts,
+            vv: VersionVector::new(),
+            last_writer: String::new(),
+        }),
         // NoteTag associations store only the secondary key in the `data` field
         // because the primary key (note_id) is already captured by `entity_id`.
         ("note_tag", "add") => {
@@ -824,7 +837,12 @@ impl FsBackend {
                 if let Some(note) = merged.note {
                     self.persist_note_projection(&note, &merged.vv).await?;
                     match note.deleted_at {
-                        Some(deleted_at) => changes.push(Change::NoteDelete { id, deleted_at }),
+                        Some(deleted_at) => changes.push(Change::NoteDelete {
+                            id,
+                            deleted_at,
+                            vv: merged.vv.clone(),
+                            last_writer: String::new(),
+                        }),
                         None => changes.push(Change::NoteUpdate { note }),
                     }
                 }
@@ -1304,7 +1322,7 @@ impl SyncBackend for FsBackend {
                     tracing::debug!(id = %notebook.id, "Skipped stale remote notebook change");
                 }
             }
-            Change::NotebookDelete { id, deleted_at } => {
+            Change::NotebookDelete { id, deleted_at, .. } => {
                 let path = self.notebook_path(id);
                 if path.exists() {
                     let mut nb: Notebook = self.read_sidecar(&path, id).await?;
@@ -1333,7 +1351,7 @@ impl SyncBackend for FsBackend {
                     tracing::debug!(id = %tag.id, "Skipped stale remote tag change");
                 }
             }
-            Change::TagDelete { id, deleted_at } => {
+            Change::TagDelete { id, deleted_at, .. } => {
                 let path = self.tag_path(id);
                 if path.exists() {
                     let mut t: Tag = self.read_sidecar(&path, id).await?;

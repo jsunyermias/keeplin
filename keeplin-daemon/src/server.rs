@@ -195,6 +195,10 @@ fn proto_to_note(n: Note) -> Result<CoreNote, Status> {
         // the body and resolves targets on write.
         bookmarks: n.bookmarks.into_iter().map(proto_to_bookmark).collect(),
         links: n.links.into_iter().map(proto_to_notelink).collect(),
+        // Version-vector sync metadata is internal to the storage layer and not exposed over
+        // the gRPC API; the backend stamps it on write.
+        vv: Default::default(),
+        last_writer: String::new(),
     })
 }
 
@@ -406,6 +410,8 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                 .map_err(|_| Status::invalid_argument("updated_at is invalid"))?,
             deleted_at: parse_optional_dt(nb.deleted_at)?,
             alias: nb.alias,
+            vv: Default::default(),
+            last_writer: String::new(),
         };
         let updated = self
             .backend
@@ -524,6 +530,8 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                 .parse()
                 .map_err(|_| Status::invalid_argument("updated_at is invalid"))?,
             deleted_at: parse_optional_dt(t.deleted_at)?,
+            vv: Default::default(),
+            last_writer: String::new(),
         };
         let updated = self.backend.update_tag(tag).await.map_err(storage_err)?;
         Ok(Response::new(UpdateTagResponse {

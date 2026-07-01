@@ -65,27 +65,26 @@ It does **not** protect against:
 
 ## Design decisions
 
-### Conflict resolution differs by backend
+### Conflict resolution is being unified on version vectors
 
-The two storage backends resolve concurrent edits with **different strength**, and this
-is a deliberate, load-bearing distinction:
+Both backends resolve concurrent edits with **version vectors** and the same deterministic
+`(timestamp, device_id)` tiebreak (`note_log::merge` for `FsBackend`'s per-device logs,
+`note_log::resolve` for `DbBackend`'s current-state rows), so every device **converges** on the
+same winner. This is being rolled out in phases; the current state is:
 
 | | `FsBackend` (offline / Syncthing) | `DbBackend` (server mode) |
 |---|---|---|
-| Notes | **Per-note version vectors** — genuine concurrent edits are detected and resolved deterministically, and every device **converges** on the same winner | **Last-write-wins by `updated_at`** — no version vectors, no merge |
-| Notebooks / tags | Last-write-wins by `updated_at` | Last-write-wins by `updated_at` |
-| Resources | Last-write-wins (hard delete) | Last-write-wins (hard delete) |
+| Notes | **Version vectors** — converge | **Version vectors** — converge |
+| Notebooks / tags | Last-write-wins by `updated_at` (VV pending) | **Version vectors** — converge |
+| Resources | Last-write-wins (hard delete; VV/tombstone pending) | Last-write-wins (hard delete; pending) |
 
-Practical consequence: if two devices edit the **same note while both are offline** and
-then sync, `FsBackend` reconciles them (the causal edit wins, or a true conflict is broken
-deterministically so nothing silently diverges), whereas `DbBackend` keeps only the edit
-whose `updated_at` is later — the other edit is overwritten **without warning**.
+`DbBackend` no longer uses the old bare-`updated_at` last-write-wins, which **diverged
+permanently** when two edits shared a timestamp (each device kept its own). Its `apply_change`
+now runs `resolve` over the stored and incoming version vectors, matching `FsBackend`.
 
-Guidance: choose **offline mode** (`FsBackend` + Syncthing) when strong note-merge
-guarantees matter. **Server mode** (`DbBackend`) trades that merge fidelity for a central
-WebSocket relay and is best when edits rarely overlap or a single device is authoritative.
-Porting version vectors to `DbBackend` is a possible future change but is not implemented
-today.
+Remaining asymmetries (FS notebooks/tags, resources on both) are scheduled follow-up phases;
+until then, prefer editing those entity types from one device at a time. Cross-backend live
+sync remains unsupported — use the one-shot `migrate` command to move a store between backends.
 
 ### Multi-device encryption constraint
 
@@ -150,17 +149,17 @@ ensures the deletion propagates correctly to other synced devices.
   deterministically by last-write-wins (timestamp, then device id) so every device
   converges on the same winner. Note bodies live in `note.md` and metadata in
   `meta.msgpack` (MessagePack); both are local projections regenerated from the logs.
-- **All other conflict resolution is last-write-wins by `updated_at`.** When two devices
-  modify the same non-note entity (or sync notes through `DbBackend`) concurrently, the
-  version with the later `updated_at` timestamp wins:
-  `apply_change` compares timestamps and **ignores** an incoming change that is older
-  than the local copy, so a stale remote edit can never clobber a newer local one. No
-  three-way merge is attempted, and the losing version is discarded without warning.
-  Equal timestamps keep the existing local record.
-- **Deletes are tombstones that participate in last-write-wins.** A delete bumps
-  `updated_at` to the deletion time and the `Change::*Delete` records carry that
-  timestamp, so a delete competes against edits by time: a stale edit cannot resurrect a
-  newer delete, and a stale delete cannot override a newer edit. (Resources are an
+- **`DbBackend` resolves conflicts with version vectors too.** `apply_change` runs
+  `note_log::resolve` over the stored and incoming `(vv, updated_at, last_writer)` for notes,
+  notebooks, and tags: a strictly-dominating write wins, and a genuine concurrent conflict is
+  broken by the deterministic `(updated_at, device_id)` tiebreak — so, unlike the old bare
+  timestamp comparison, two edits sharing a timestamp converge instead of diverging. `FsBackend`
+  notebooks/tags and resources on both backends still use plain `updated_at` last-write-wins
+  pending later phases.
+- **Deletes are tombstones that participate in conflict resolution.** A delete bumps
+  `updated_at`/`vv` and the `Change::*Delete` records carry that version, so a delete competes
+  against edits through the same `resolve`/`merge`: a stale edit cannot resurrect a newer
+  delete, and a stale delete cannot override a newer edit. (Resources are an
   exception — they are hard-deleted, so there is nothing to resurrect.)
 
 ## Reporting vulnerabilities

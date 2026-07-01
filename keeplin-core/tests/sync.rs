@@ -4,7 +4,8 @@
 //! database file, and verify that changes recorded on one device can be collected
 //! with [`SyncBackend::get_changes_since`] and replayed on the other device with
 //! [`SyncBackend::apply_change`] to reach a convergent state. Conflict-resolution
-//! semantics (last-write-wins by `updated_at`) are also exercised here.
+//! semantics (version-vector `resolve`, including the concurrent equal-timestamp case that
+//! bare last-write-wins would diverge on) are also exercised here.
 
 use chrono::{Duration, Utc};
 use keeplin_core::{
@@ -91,6 +92,8 @@ async fn db_stale_delete_does_not_override_newer_edit() {
         .apply_change(Change::NoteDelete {
             id,
             deleted_at: Utc::now() - Duration::minutes(1),
+            vv: Default::default(),
+            last_writer: String::new(),
         })
         .await
         .unwrap();
@@ -129,6 +132,56 @@ async fn db_stale_update_does_not_resurrect_tombstone() {
     );
 }
 
+/// Two devices editing the same note concurrently with the **identical** `updated_at`
+/// converge on one deterministic winner. Under the old bare-`updated_at` last-write-wins
+/// (strict `>`), each device would keep its own edit → permanent divergence. The version
+/// vector's `(timestamp, device_id)` tiebreak makes both devices pick the same edit.
+#[tokio::test]
+async fn db_concurrent_equal_timestamp_edits_converge() {
+    let epoch = chrono::DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+    let a = device().await;
+    let b = device().await;
+
+    // Shared baseline: create on A, replicate to B (B now holds the note at vv {A:1}).
+    let base = a.create_note(Note::new("t", "base")).await.unwrap();
+    let id = base.id;
+    for c in a.get_changes_since(epoch).await.unwrap() {
+        b.apply_change(c).await.unwrap();
+    }
+
+    // Concurrent edits sharing the SAME updated_at — the case bare LWW diverges on.
+    let t = Utc::now();
+    let mut ea = base.clone();
+    ea.body = "from A".to_string();
+    ea.updated_at = t;
+    a.update_note(ea).await.unwrap();
+
+    let mut eb = b.read_note(id).await.unwrap();
+    eb.body = "from B".to_string();
+    eb.updated_at = t;
+    b.update_note(eb).await.unwrap();
+
+    // Exchange the concurrent edits (apply_change does not re-journal, so each side's journal
+    // holds only its own local edit).
+    let a_changes = a.get_changes_since(epoch).await.unwrap();
+    let b_changes = b.get_changes_since(epoch).await.unwrap();
+    for c in b_changes {
+        a.apply_change(c).await.unwrap();
+    }
+    for c in a_changes {
+        b.apply_change(c).await.unwrap();
+    }
+
+    // Both devices converge to the SAME body (whichever device id wins the tiebreak).
+    let body_a = a.read_note(id).await.unwrap().body;
+    let body_b = b.read_note(id).await.unwrap().body;
+    assert_eq!(
+        body_a, body_b,
+        "concurrent equal-timestamp edits must converge"
+    );
+    assert!(body_a == "from A" || body_a == "from B");
+}
+
 /// Tombstone semantics must hold on `FsBackend` too: a stale delete is ignored and a
 /// stale update cannot resurrect a newer delete.
 #[tokio::test]
@@ -145,6 +198,8 @@ async fn fs_tombstones_resolve_by_timestamp() {
         .apply_change(Change::NoteDelete {
             id: a_id,
             deleted_at: Utc::now() - Duration::minutes(1),
+            vv: Default::default(),
+            last_writer: String::new(),
         })
         .await
         .unwrap();

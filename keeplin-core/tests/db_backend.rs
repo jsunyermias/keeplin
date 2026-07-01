@@ -507,7 +507,22 @@ async fn note_alias_bookmarks_links_round_trip() {
         target_note_id: None,
     }];
     let created = backend.create_note(note.clone()).await.unwrap();
-    assert_eq!(created, note);
+    // Content is preserved verbatim; `create_note` additionally stamps the version vector
+    // and author for conflict resolution, so compare the content fields explicitly.
+    assert_eq!(created.id, note.id);
+    assert_eq!(created.title, note.title);
+    assert_eq!(created.body, note.body);
+    assert_eq!(created.alias, note.alias);
+    assert_eq!(created.bookmarks, note.bookmarks);
+    assert_eq!(created.links, note.links);
+    assert!(
+        !created.vv.is_empty(),
+        "create_note stamps a version vector"
+    );
+    assert!(
+        !created.last_writer.is_empty(),
+        "create_note records the author"
+    );
 
     // Read back: alias, bookmarks and links survive the SQLite columns.
     let read = backend.read_note(note.id).await.unwrap();

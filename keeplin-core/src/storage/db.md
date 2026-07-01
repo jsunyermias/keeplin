@@ -21,9 +21,9 @@ All tables are created idempotently by `run_migrations` on first connection.
 
 | Table | Purpose |
 |-------|---------|
-| `notes` | Note rows: soft-delete (`deleted_at`), plus `alias`, `bookmarks` (JSON), `links` (JSON) |
-| `notebooks` | Notebook rows with soft-delete column and `alias` |
-| `tags` | Tag rows with soft-delete column |
+| `notes` | Note rows: soft-delete (`deleted_at`), `alias`, `bookmarks`/`links` (JSON), and the conflict-resolution `vv` (JSON version vector) + `last_writer` |
+| `notebooks` | Notebook rows with soft-delete column, `alias`, and `vv`/`last_writer` |
+| `tags` | Tag rows with soft-delete column and `vv`/`last_writer` |
 | `note_tags` | Many-to-many association; composite primary key `(note_id, tag_id)` |
 | `note_links` | Projection of each note's resolved outgoing links (see below) — powers indexed backlinks |
 | `resources` | Resource metadata + BLOB (`data` column) |
@@ -148,35 +148,40 @@ as a `Vec<Change>` and appended to the result. Binary messages and errors are ig
 |---------|-----|
 | `NoteCreate` | `INSERT OR REPLACE INTO notes …` (shares the arm with `NoteUpdate`) |
 | `NoteUpdate` | `INSERT OR REPLACE INTO notes …` |
-| `NoteDelete` | `UPDATE notes SET deleted_at = ? WHERE id = ?` |
+| `NoteDelete` | `UPDATE notes SET deleted_at=?, updated_at=?, vv=?, last_writer=? WHERE id = ?` |
 | `NotebookCreate` | `INSERT OR REPLACE INTO notebooks …` |
 | `NotebookUpdate` | `INSERT OR REPLACE INTO notebooks …` |
-| `NotebookDelete` | `UPDATE notebooks SET deleted_at = ? WHERE id = ?` |
+| `NotebookDelete` | `UPDATE notebooks SET deleted_at=?, updated_at=?, vv=?, last_writer=? WHERE id = ?` |
 | `TagCreate` | `INSERT OR REPLACE INTO tags …` |
 | `TagUpdate` | `INSERT OR REPLACE INTO tags …` |
-| `TagDelete` | `UPDATE tags SET deleted_at = ? WHERE id = ?` |
+| `TagDelete` | `UPDATE tags SET deleted_at=?, updated_at=?, vv=?, last_writer=? WHERE id = ?` |
 | `NoteTagAdd` | `INSERT OR IGNORE INTO note_tags …` |
 | `NoteTagRemove` | `DELETE FROM note_tags WHERE note_id=? AND tag_id=?` |
 | `ResourceCreate` | `INSERT OR IGNORE INTO resources (…, data) VALUES (…, ?)` with `data = payload.unwrap_or_default()` |
 | `ResourceDelete` | `DELETE FROM resources WHERE id = ?` (resources use hard delete) |
 
-All operations are idempotent by design. The create/update arms for notes, notebooks,
-and tags are additionally guarded by `should_apply`, which reads the stored `updated_at`
-and **skips** the write when the incoming change is not strictly newer — implementing
-last-write-wins so a stale remote edit cannot clobber a newer local record.
+All operations are idempotent by design. The create/update/delete arms for notes, notebooks,
+and tags are guarded by **version-vector conflict resolution** (`incoming_wins` → `resolve`,
+see `note_log.md`): the write is skipped unless the incoming `(vv, updated_at, last_writer)`
+wins against the stored row's. `resolve` applies a strictly-dominating incoming write, keeps a
+strictly-dominating local one, and breaks a genuine *concurrent* conflict with a deterministic
+`(updated_at, device_id)` tiebreak. This replaced the old bare-`updated_at` last-write-wins,
+which **diverged permanently** when two edits shared a timestamp (each device kept its own).
 
-The note create/update arm wraps `should_apply` + `INSERT OR REPLACE` + `refresh_note_links`
+Each local write stamps the row's `vv`/`last_writer`: `next_local_vv` loads the current vector
+and increments this device's component. Deletes carry the tombstone's own `vv`/`last_writer` in
+the journal `data` (see `tombstone_data`), so a tombstone competes in `resolve` exactly like an
+edit — a stale delete never overrides a newer edit, and a causal edit after a delete revives.
+
+The note create/update arm wraps the resolve check + `INSERT OR REPLACE` + `refresh_note_links`
 in a single `BEGIN IMMEDIATE … COMMIT` transaction (with `rollback` on error), exactly like
-the interactive `create_note`/`update_note` paths. Without this, a crash between the row write
-and the projection refresh could leave the `note_links` table stale relative to `notes`, and
-backlinks would silently drift. The transaction keeps the row and its projection atomic while
-staying idempotent.
+the interactive `create_note`/`update_note` paths, so a crash cannot leave the `note_links`
+projection stale relative to `notes`.
 
-This is last-write-wins for **every** entity, notes included. `DbBackend` does **not**
-implement the per-note version-vector merge that `FsBackend` uses (see
-`storage/note_log.md`): two devices editing the same note offline and then syncing keep
-only the later-`updated_at` edit, with no merge. The difference between the backends is
-documented in `SECURITY.md` ("Conflict resolution differs by backend").
+`DbBackend`'s state-based `resolve` and `FsBackend`'s log `merge` share the **same** version
+vectors and tiebreak, so both backends now converge deterministically on the same winner — no
+more per-backend divergence. `FsBackend` keeps per-device logs (Syncthing needs single-writer
+files); `DbBackend` keeps the current row plus its `vv`. See `SECURITY.md`.
 
 ## Design notes
 
