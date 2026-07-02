@@ -19,6 +19,27 @@ pub use backend::{
     TagRepository,
 };
 
+/// Page size used when a list call passes `page_size = 0`.
+pub const DEFAULT_PAGE_SIZE: u32 = 100;
+
+/// Hard upper bound applied to every list call's `page_size`.
+///
+/// `page_size` arrives from the network (gRPC/REST) as an arbitrary `u32`; without a cap a
+/// single request for `u32::MAX` rows would make the server materialize the entire store in
+/// one response. Requests above the cap are silently clamped rather than rejected — the
+/// cursor in the reply lets a well-behaved client keep paging.
+pub const MAX_PAGE_SIZE: u32 = 1000;
+
+/// Resolve a caller-supplied `page_size` to the limit actually used: `0` means
+/// [`DEFAULT_PAGE_SIZE`], anything above [`MAX_PAGE_SIZE`] is clamped down to it.
+pub(crate) fn effective_page_size(page_size: u32) -> u32 {
+    if page_size == 0 {
+        DEFAULT_PAGE_SIZE
+    } else {
+        page_size.min(MAX_PAGE_SIZE)
+    }
+}
+
 /// Fixed-precision RFC 3339 for timestamps that are **compared as text**.
 ///
 /// The backends store timestamps as RFC 3339 TEXT and order them lexicographically —
@@ -52,6 +73,17 @@ impl SortableRfc3339 for chrono::DateTime<chrono::Utc> {
 mod tests {
     use super::SortableRfc3339;
     use chrono::{DateTime, TimeZone, Utc};
+
+    #[test]
+    fn effective_page_size_defaults_and_clamps() {
+        assert_eq!(super::effective_page_size(0), super::DEFAULT_PAGE_SIZE);
+        assert_eq!(super::effective_page_size(7), 7);
+        assert_eq!(
+            super::effective_page_size(super::MAX_PAGE_SIZE),
+            super::MAX_PAGE_SIZE
+        );
+        assert_eq!(super::effective_page_size(u32::MAX), super::MAX_PAGE_SIZE);
+    }
 
     #[test]
     fn sortable_rfc3339_has_fixed_shape() {
