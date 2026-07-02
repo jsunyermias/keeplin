@@ -133,7 +133,11 @@ attachment blobs. Reclaiming a deleted attachment's bytes is left to out-of-band
   authentication token is sent in the first WebSocket message. If the WebSocket URL
   uses `ws://` (unencrypted), the token is transmitted in plaintext on the network.
   Always use a `wss://` URL or place a TLS-terminating reverse proxy in front of the
-  WebSocket endpoint in production deployments.
+  WebSocket endpoint in production deployments. The daemon now **refuses to start** with a
+  plaintext `ws://` `server_url` to a non-loopback host (and with a network-reachable
+  listener that has no auth configured); set `insecure = true` to override when another layer
+  provides the protection. See `Config::security_issues` and the config reference in the
+  README.
 
 - **Mixed-backend sync is not supported.** It is not possible to mix `FsBackend`
   and `DbBackend` devices in the same sync topology. Each backend uses a different

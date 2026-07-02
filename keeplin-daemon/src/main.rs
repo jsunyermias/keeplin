@@ -112,27 +112,30 @@ fn load_config(path: &std::path::Path) -> anyhow::Result<Config> {
 /// shutdown.
 async fn serve(cfg: Config) -> anyhow::Result<()> {
     let addr: std::net::SocketAddr = cfg.grpc_addr.parse()?;
-
-    // Emit a warning when the gRPC port is bound to a non-loopback address but
-    // no authentication credentials are configured. Without auth, any process on
-    // the network can read, modify, or delete notes. The warning is loud by design.
     let auth_configured = cfg.auth_username.is_some() && cfg.auth_password.is_some();
-    if !addr.ip().is_loopback() && !auth_configured {
-        tracing::warn!(
-            %addr,
-            "gRPC is exposed to the network WITHOUT authentication. \
-             Set auth_username + auth_password in keeplin.toml or KEEPLIN_AUTH_PASSWORD env var."
-        );
-    }
-    // Same warning for the optional HTTP (REST/WebSocket) listener.
-    if let Some(http) = &cfg.http_addr {
-        if let Ok(http_addr) = http.parse::<std::net::SocketAddr>() {
-            if !http_addr.ip().is_loopback() && !auth_configured {
-                tracing::warn!(
-                    %http_addr,
-                    "HTTP (REST/WebSocket) is exposed to the network WITHOUT authentication."
-                );
+
+    // Refuse to start in a configuration that would expose data or credentials on an untrusted
+    // network (unauthenticated network listener, or a plaintext ws:// sync URL that leaks the
+    // token). `insecure = true` downgrades these to warnings for deployments where another
+    // layer provides the protection. Missing daemon-terminated TLS is intentionally not
+    // flagged — fronting TLS at a reverse proxy is a supported deployment.
+    let issues = cfg.security_issues();
+    if !issues.is_empty() {
+        if cfg.insecure {
+            for issue in &issues {
+                tracing::warn!("insecure = true, starting despite: {issue}");
             }
+        } else {
+            let list = issues
+                .iter()
+                .map(|i| format!("  - {i}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            anyhow::bail!(
+                "refusing to start — insecure configuration:\n{list}\n\
+                 Fix the above, or set `insecure = true` if another layer (isolated network, \
+                 mTLS, a proxy that also enforces auth) provides this protection."
+            );
         }
     }
 

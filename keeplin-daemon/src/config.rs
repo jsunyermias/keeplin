@@ -7,6 +7,7 @@
 //! never need to appear in the TOML file on disk.
 
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 /// The storage back-end mode that the daemon should use.
@@ -111,6 +112,17 @@ pub struct Config {
     /// password here to avoid committing credentials to version control.
     #[serde(default)]
     pub auth_password: Option<String>,
+
+    /// Escape hatch that downgrades the startup security checks from **errors** to warnings.
+    ///
+    /// By default the daemon **refuses to start** in a configuration that would expose data
+    /// or credentials without protection — a network-reachable API with no auth, or a
+    /// plaintext `ws://` sync URL to a remote host that would leak the bearer token (see
+    /// [`Config::security_issues`]). Set `insecure = true` only for deployments where another
+    /// layer provides that protection (an isolated network, an mTLS mesh, a fronting proxy that
+    /// also enforces auth); the daemon then logs each issue as a warning and starts anyway.
+    #[serde(default)]
+    pub insecure: bool,
 }
 
 /// Returns the default gRPC listen address: `127.0.0.1:50051`.
@@ -173,6 +185,189 @@ impl Default for Config {
             key_salt: None,
             auth_username: None,
             auth_password: None,
+            insecure: false,
         }
+    }
+}
+
+impl Config {
+    /// Enumerate the security problems in this configuration that would expose data or
+    /// credentials on an untrusted network. Empty means the config is safe to start.
+    ///
+    /// Pure and side-effect-free so it is easy to unit-test; the daemon calls it once at
+    /// startup and — unless [`insecure`](Self::insecure) is set — refuses to start when it
+    /// returns anything (see `main::serve`). Each string is a complete, human-readable line.
+    ///
+    /// It flags only unambiguous exposures that no fronting TLS proxy can fix, so the
+    /// documented "terminate TLS at a reverse proxy" deployment is never blocked:
+    /// - a **network-reachable** (non-loopback) gRPC or HTTP listener with **no auth**
+    ///   configured — a proxy cannot invent application credentials; and
+    /// - a **plaintext `ws://` sync URL to a non-loopback host** (server mode), which sends the
+    ///   `auth_token` in the clear on the daemon's *outbound* connection, where a proxy in
+    ///   front of the daemon does not help.
+    ///
+    /// Missing daemon-terminated TLS on the listeners is deliberately **not** flagged: fronting
+    /// TLS at a reverse proxy is a supported, documented deployment.
+    pub fn security_issues(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        let auth = self.auth_username.is_some() && self.auth_password.is_some();
+
+        if !auth {
+            if let Ok(addr) = self.grpc_addr.parse::<SocketAddr>() {
+                if !addr.ip().is_loopback() {
+                    issues.push(format!(
+                        "grpc_addr ({addr}) is reachable from the network but no auth is \
+                         configured — set auth_username + auth_password (or KEEPLIN_AUTH_*)"
+                    ));
+                }
+            }
+            if let Some(http) = &self.http_addr {
+                if let Ok(addr) = http.parse::<SocketAddr>() {
+                    if !addr.ip().is_loopback() {
+                        issues.push(format!(
+                            "http_addr ({addr}) is reachable from the network but no auth is \
+                             configured — set auth_username + auth_password (or KEEPLIN_AUTH_*)"
+                        ));
+                    }
+                }
+            }
+        }
+
+        if matches!(self.mode, Mode::Server) {
+            if let Some(host) = plaintext_ws_remote_host(&self.server_url) {
+                issues.push(format!(
+                    "server_url uses plaintext ws:// to a non-loopback host ({host}), leaking \
+                     the auth_token in transit — use wss:// (TLS)"
+                ));
+            }
+        }
+
+        issues
+    }
+}
+
+/// If `url` is a **plaintext** `ws://` URL pointing at a **non-loopback** host, return that
+/// host; otherwise `None`. `wss://` (TLS), an empty URL, and loopback targets are all safe and
+/// yield `None`. A host that cannot be confidently identified as loopback is treated as remote
+/// (fail safe: better a spurious warning than a silent token leak).
+fn plaintext_ws_remote_host(url: &str) -> Option<&str> {
+    // wss:// is TLS-protected; only bare ws:// leaks the token.
+    let rest = url.strip_prefix("ws://")?;
+    // Strip any path/query: `ws://host:port/path` → `host:port`.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    // Drop an optional `port`, tolerating an IPv6 literal in `[…]`.
+    let host = match authority.strip_prefix('[') {
+        // `[::1]:9000` → `::1`
+        Some(after) => after.split(']').next().unwrap_or(after),
+        None => authority.rsplit_once(':').map_or(authority, |(h, _)| h),
+    };
+    let is_loopback = matches!(host, "localhost" | "127.0.0.1" | "::1")
+        || host.starts_with("127.")
+        || host.eq_ignore_ascii_case("ip6-localhost");
+    if is_loopback {
+        None
+    } else {
+        Some(host)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal loopback config with the given tweaks applied by the caller.
+    fn base() -> Config {
+        Config::default()
+    }
+
+    fn with_auth(mut c: Config) -> Config {
+        c.auth_username = Some("alice".into());
+        c.auth_password = Some("s3cr3t".into());
+        c
+    }
+
+    #[test]
+    fn loopback_defaults_are_safe() {
+        assert!(base().security_issues().is_empty());
+    }
+
+    #[test]
+    fn network_grpc_without_auth_is_flagged() {
+        let mut c = base();
+        c.grpc_addr = "0.0.0.0:50051".into();
+        let issues = c.security_issues();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(issues[0].contains("grpc_addr"));
+
+        // Adding auth clears it.
+        assert!(with_auth(c).security_issues().is_empty());
+    }
+
+    #[test]
+    fn network_http_without_auth_is_flagged() {
+        let mut c = base();
+        c.http_addr = Some("0.0.0.0:50052".into());
+        let issues = c.security_issues();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(issues[0].contains("http_addr"));
+        assert!(with_auth(c).security_issues().is_empty());
+    }
+
+    #[test]
+    fn plaintext_ws_to_remote_is_flagged_in_server_mode() {
+        let mut c = with_auth(base()); // auth on, so only the ws:// issue can surface
+        c.mode = Mode::Server;
+        c.server_url = "ws://sync.example.com:9000/ws".into();
+        let issues = c.security_issues();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(issues[0].contains("server_url"));
+
+        // wss:// is safe.
+        c.server_url = "wss://sync.example.com:9000/ws".into();
+        assert!(c.security_issues().is_empty());
+
+        // A loopback ws:// relay (local testing) is safe.
+        c.server_url = "ws://127.0.0.1:9000/ws".into();
+        assert!(c.security_issues().is_empty());
+
+        // The same ws:// URL in offline mode is ignored (server_url is unused there).
+        c.mode = Mode::Offline;
+        c.server_url = "ws://sync.example.com:9000/ws".into();
+        assert!(c.security_issues().is_empty());
+    }
+
+    #[test]
+    fn plaintext_ws_remote_host_parsing() {
+        // Remote ws:// → Some(host).
+        assert_eq!(
+            plaintext_ws_remote_host("ws://example.com:9000/ws"),
+            Some("example.com")
+        );
+        assert_eq!(
+            plaintext_ws_remote_host("ws://example.com"),
+            Some("example.com")
+        );
+        // IPv6 literal, port stripped.
+        assert_eq!(
+            plaintext_ws_remote_host("ws://[2001:db8::1]:80/x"),
+            Some("2001:db8::1")
+        );
+        // Safe cases → None.
+        assert_eq!(plaintext_ws_remote_host("wss://example.com/ws"), None);
+        assert_eq!(plaintext_ws_remote_host(""), None);
+        assert_eq!(plaintext_ws_remote_host("ws://localhost:9000"), None);
+        assert_eq!(plaintext_ws_remote_host("ws://127.0.0.1:9000"), None);
+        assert_eq!(plaintext_ws_remote_host("ws://[::1]:9000"), None);
+    }
+
+    #[test]
+    fn multiple_issues_accumulate() {
+        let mut c = base();
+        c.grpc_addr = "0.0.0.0:50051".into();
+        c.http_addr = Some("0.0.0.0:50052".into());
+        c.mode = Mode::Server;
+        c.server_url = "ws://sync.example.com/ws".into();
+        // No auth → grpc + http + ws all flagged.
+        assert_eq!(c.security_issues().len(), 3, "{:?}", c.security_issues());
     }
 }
