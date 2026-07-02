@@ -17,7 +17,9 @@ WebSocket is used to push those changes to the server and pull changes from othe
 
 ## Database schema
 
-All tables are created idempotently by `run_migrations` on first connection.
+The schema is applied by a **versioned migration runner** keyed on SQLite's
+`PRAGMA user_version` (see "Migrations" below); `run_migrations` runs only the steps a
+database is behind on.
 
 | Table | Purpose |
 |-------|---------|
@@ -31,12 +33,30 @@ All tables are created idempotently by `run_migrations` on first connection.
 | `device` | Single-row table holding the stable device UUID |
 | `entity_changes` | Append-only change journal (see below) |
 
-The `alias`, `bookmarks`, and `links` columns are added by `add_column_if_missing` after the
-`CREATE TABLE IF NOT EXISTS` statements, so pre-existing databases gain them without a manual
-migration. There is deliberately **no `UNIQUE` index on `alias`**: under at-rest encryption the
+There is deliberately **no `UNIQUE` index on `alias`**: under at-rest encryption the
 stored alias is per-write ciphertext (so an index could not detect duplicates anyway), and a
 hard constraint would reject a duplicate alias arriving through sync, breaking the sync cycle.
 Alias uniqueness is instead enforced in `LinkingBackend` against decrypted values.
+
+### Migrations (`run_migrations`, `PRAGMA user_version`)
+
+`DbBackend::new` calls `run_migrations`, which advances the schema to `SCHEMA_VERSION` and
+records progress in SQLite's built-in `PRAGMA user_version`:
+
+- The stored version is read once. An **up-to-date** database does no schema work at all —
+  unlike the previous code, which re-ran the whole `CREATE TABLE IF NOT EXISTS` batch and every
+  `ALTER TABLE … ADD COLUMN` (swallowing "duplicate column") on every startup.
+- Only the **outstanding** steps run, each in its own `BEGIN IMMEDIATE … COMMIT`. SQLite DDL is
+  transactional and `PRAGMA user_version` set inside the transaction rolls back with it, so a
+  crash never leaves a step half-applied with the stamp advanced; the next startup retries it.
+- A database whose `user_version` is **newer** than this build is refused
+  (`StorageError::InvalidState`) rather than opened, so a downgrade cannot run against a schema
+  it does not understand.
+
+Version **1** is the baseline: the complete current schema. The pre-framework additive
+`ALTER`s live inside it as `add_column_if_missing` guards, so a database created by an older
+build (already carrying those columns, `user_version` still `0`) is stamped `1` untouched.
+A new step is a new arm in `apply_migration` plus a bump of `SCHEMA_VERSION`.
 
 ### `note_links` table — indexed backlinks
 
@@ -93,8 +113,9 @@ reachable (see "Sending changes" below).
 - `server_url` — WebSocket URL such as `ws://host:port/sync`; empty string = offline
 - `auth_token` — bearer token sent as the first WebSocket message after connecting  
 **Returns:** A ready-to-use backend.  
-**Errors:** `StorageError::Database` if migrations fail; `StorageError::Io` if the path
-is not writable.
+**Errors:** `StorageError::Database` if migrations fail; `StorageError::InvalidState` if the
+database's `user_version` is newer than this build supports (see "Migrations"); `StorageError::Io`
+if the path is not writable.
 
 All other methods implement `StorageBackend` — see `storage/backend.md`.
 

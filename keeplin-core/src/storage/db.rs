@@ -166,13 +166,90 @@ impl DbBackend {
 
     // ── Migrations ────────────────────────────────────────────────────────────
 
-    /// Create all required tables and indexes if they do not already exist.
+    /// The schema version this build understands. Bump it — and add a matching arm to
+    /// [`apply_migration`](Self::apply_migration) — for every new migration step.
     ///
-    /// All statements use `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`
-    /// so this method is safe to call on every startup without checking the current
-    /// schema version. Columns added after a table's first creation (the bookmark/link
-    /// fields) are applied via [`add_column_if_missing`](Self::add_column_if_missing),
-    /// which tolerates the column already existing.
+    /// Version `1` is the **baseline**: the complete current schema. The pre-framework
+    /// additive `ALTER TABLE`s are folded into it as idempotent guards, so a database created
+    /// by an older build (which already has those columns) is stamped `1` without change.
+    const SCHEMA_VERSION: u32 = 1;
+
+    /// Bring the database schema up to [`SCHEMA_VERSION`], recording progress in SQLite's
+    /// `PRAGMA user_version` so each step runs **exactly once** across restarts.
+    ///
+    /// Previously every startup re-ran the whole `CREATE TABLE IF NOT EXISTS` batch and every
+    /// `ALTER TABLE … ADD COLUMN` (swallowing "duplicate column" each time). Now the current
+    /// version is read once: an up-to-date database does no schema work at all, and only the
+    /// outstanding steps run — each in its own transaction, so a crash mid-migration leaves
+    /// the version stamp behind the half-applied step and the next startup retries it cleanly.
+    ///
+    /// A database whose `user_version` is **newer** than this build supports is rejected rather
+    /// than opened, so a downgrade cannot silently corrupt a schema it does not understand.
+    async fn run_migrations(conn: &libsql::Connection) -> Result<(), StorageError> {
+        let current = Self::schema_version(conn).await?;
+        if current > Self::SCHEMA_VERSION {
+            return Err(StorageError::InvalidState(format!(
+                "database schema version {current} is newer than this build supports \
+                 (max {}); upgrade keeplin to open it",
+                Self::SCHEMA_VERSION
+            )));
+        }
+        for version in (current + 1)..=Self::SCHEMA_VERSION {
+            // Each migration is atomic with its version bump: SQLite DDL is transactional, and
+            // `PRAGMA user_version` set inside the transaction rolls back with it, so a step
+            // never lands half-applied with the stamp advanced.
+            conn.execute("BEGIN IMMEDIATE", ()).await?;
+            let stepped = async {
+                Self::apply_migration(conn, version).await?;
+                // `PRAGMA user_version` takes no bound parameters; `version` is our own const,
+                // never caller input, so formatting it in is safe.
+                conn.execute(&format!("PRAGMA user_version = {version}"), ())
+                    .await?;
+                Ok::<(), StorageError>(())
+            }
+            .await;
+            match stepped {
+                Ok(()) => {
+                    conn.execute("COMMIT", ()).await?;
+                    tracing::info!(version, "Applied database schema migration");
+                }
+                Err(e) => {
+                    conn.execute("ROLLBACK", ()).await.ok();
+                    return Err(e);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Read the database's current schema version from `PRAGMA user_version` (`0` on a
+    /// database that predates the versioned-migration framework or was never stamped).
+    async fn schema_version(conn: &libsql::Connection) -> Result<u32, StorageError> {
+        let mut rows = conn.query("PRAGMA user_version", ()).await?;
+        match rows.next().await? {
+            Some(row) => Ok(row.get::<i64>(0)?.max(0) as u32),
+            None => Ok(0),
+        }
+    }
+
+    /// Apply the migration that advances the schema **to** `version`. The caller wraps this in
+    /// a transaction and bumps `user_version` on success.
+    async fn apply_migration(conn: &libsql::Connection, version: u32) -> Result<(), StorageError> {
+        match version {
+            1 => Self::migrate_v1_baseline(conn).await,
+            other => Err(StorageError::InvalidState(format!(
+                "no migration defined for schema version {other}"
+            ))),
+        }
+    }
+
+    /// Migration v1 — the baseline schema: every table and index in their current shape.
+    ///
+    /// Fresh databases get the complete schema in one step. Databases created by a
+    /// pre-framework build already have these tables (and, having run the old additive
+    /// `ALTER`s, these columns), so the `IF NOT EXISTS` creates and the
+    /// [`add_column_if_missing`](Self::add_column_if_missing) guards below are all no-ops that
+    /// simply carry such a database onto the version ladder at `1`.
     ///
     /// Tables created:
     /// - `notes` — note records with soft-deletion via `deleted_at`.
@@ -183,7 +260,7 @@ impl DbBackend {
     /// - `sync_state` — key/value store for the last-sync timestamp.
     /// - `device` — stores the single device-identifier UUID.
     /// - `entity_changes` — append-only change journal used by `get_changes_since`.
-    async fn run_migrations(conn: &libsql::Connection) -> Result<(), StorageError> {
+    async fn migrate_v1_baseline(conn: &libsql::Connection) -> Result<(), StorageError> {
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS notes (
@@ -2499,5 +2576,127 @@ impl SyncBackend for DbBackend {
 
     async fn get_device_id(&self) -> Result<String, StorageError> {
         Ok(self.device_id.clone())
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    /// Open a raw libsql connection to a fresh file database, bypassing `DbBackend::new` so a
+    /// test can plant a pre-framework schema before the migration runner sees it.
+    async fn raw_conn(path: &std::path::Path) -> libsql::Connection {
+        let db = libsql::Builder::new_local(path).build().await.unwrap();
+        db.connect().unwrap()
+    }
+
+    async fn user_version(conn: &libsql::Connection) -> u32 {
+        DbBackend::schema_version(conn).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn fresh_database_is_stamped_current_and_reopen_is_a_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fresh.db");
+
+        let be = DbBackend::new(&path, "", "").await.unwrap();
+        assert_eq!(
+            user_version(&be.conn).await,
+            DbBackend::SCHEMA_VERSION,
+            "a fresh database is stamped at the current schema version"
+        );
+        // A note round-trips, proving the baseline schema (incl. vv/last_writer) is present.
+        let note = be.create_note(Note::new("t", "b")).await.unwrap();
+        drop(be);
+
+        // Reopening runs no migrations (version already current) and preserves the data.
+        let reopened = DbBackend::new(&path, "", "").await.unwrap();
+        assert_eq!(
+            user_version(&reopened.conn).await,
+            DbBackend::SCHEMA_VERSION
+        );
+        assert_eq!(reopened.read_note(note.id).await.unwrap().title, "t");
+    }
+
+    #[tokio::test]
+    async fn migrates_a_pre_framework_database_without_losing_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+
+        // Simulate a database created by a build that predates both the versioned-migration
+        // framework (user_version stays 0) and the vv/last_writer columns: an old-shape
+        // `notes` table with a row already in it.
+        {
+            let conn = raw_conn(&path).await;
+            conn.execute_batch(
+                "CREATE TABLE notes (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    body TEXT NOT NULL DEFAULT '',
+                    notebook_id TEXT,
+                    is_todo INTEGER NOT NULL DEFAULT 0,
+                    todo_due TEXT,
+                    todo_completed TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    deleted_at TEXT
+                );",
+            )
+            .await
+            .unwrap();
+            conn.execute(
+                "INSERT INTO notes (id,title,body,created_at,updated_at)
+                 VALUES ('11111111-1111-4111-8111-111111111111','legacy','kept',
+                         '2020-01-01T00:00:00+00:00','2020-01-01T00:00:00+00:00')",
+                (),
+            )
+            .await
+            .unwrap();
+            assert_eq!(user_version(&conn).await, 0, "unstamped legacy database");
+        }
+
+        // Opening through DbBackend migrates it to the baseline in place.
+        let be = DbBackend::new(&path, "", "").await.unwrap();
+        assert_eq!(user_version(&be.conn).await, DbBackend::SCHEMA_VERSION);
+
+        // The pre-existing row survived and now reads back through the current schema (the
+        // added vv/last_writer columns default cleanly).
+        let id: Uuid = "11111111-1111-4111-8111-111111111111".parse().unwrap();
+        let migrated = be.read_note(id).await.unwrap();
+        assert_eq!(migrated.title, "legacy");
+        assert_eq!(migrated.body, "kept");
+        assert!(migrated.vv.is_empty());
+
+        // And new writes work against the migrated schema.
+        be.create_note(Note::new("after", "migration"))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn refuses_to_open_a_newer_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("future.db");
+
+        // A database written by a hypothetical future build stamps a higher user_version.
+        {
+            let conn = raw_conn(&path).await;
+            conn.execute(
+                &format!("PRAGMA user_version = {}", DbBackend::SCHEMA_VERSION + 1),
+                (),
+            )
+            .await
+            .unwrap();
+        }
+
+        // `DbBackend` has no `Debug`, so match instead of `unwrap_err`.
+        let err = match DbBackend::new(&path, "", "").await {
+            Ok(_) => panic!("opening a newer schema must be refused"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, StorageError::InvalidState(ref m) if m.contains("newer than this build")),
+            "a newer schema must be refused, got: {err:?}"
+        );
     }
 }
