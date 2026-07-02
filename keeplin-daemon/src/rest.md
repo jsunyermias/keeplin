@@ -16,16 +16,23 @@ coexist.
 |-------|---------|
 | `backend: Arc<dyn StorageBackend>` | shared with the gRPC server (top of the decorator stack) |
 | `events: broadcast::Sender<Change>` | the live-feed channel; each WS connection subscribes |
+| `metrics: Arc<crate::metrics::Metrics>` | operational counters, shared with the outermost `MetricsBackend` decorator; rendered by `GET /metrics` |
 | `max_body_bytes: usize` | request-body cap (from `max_message_size`), raising axum's 2 MiB default |
+| `journal_retention_days: u64` | days of change-journal history to keep; `POST /sync` prunes older rows |
 | `auth_username` / `auth_password` | Basic-Auth credentials (both `Some` → auth required) |
 
 ## Endpoints
 
-All under `/api`, all behind the auth middleware.
+The router is two sub-routers merged under `/api`: **operational** endpoints
+(`/health`, `/ready`, `/metrics`) sit *outside* the auth middleware and the HTTP-status
+counter (probes/scrapers cannot authenticate, and their traffic must not inflate the request
+metrics); every other route is behind auth and counted by `status_mw`.
 
-| Method & path | Purpose |
-|---------------|---------|
-| `GET /health` | liveness (`200 ok`) |
+| Method & path | Auth | Purpose |
+|---------------|------|---------|
+| `GET /health` | none | liveness (`200 ok`); does not touch storage |
+| `GET /ready` | none | readiness: one `list_notes(1)` probe → `200 ready` or `503` when storage is unreachable |
+| `GET /metrics` | none | Prometheus exposition (`text/plain; version=0.0.4`) — see `metrics.md` |
 | `GET/POST /notes`, `GET/PUT/DELETE /notes/:id` | note CRUD (cursor pagination on list) |
 | `GET /notes/:id/tags`, `PUT/DELETE /notes/:note_id/tags/:tag_id` | note↔tag associations |
 | `PUT /notes/:id/alias`, `PUT /notebooks/:id/alias` | set/clear an alias |
@@ -84,5 +91,6 @@ live **inline** (`#[cfg(test)] mod tests`) and drive the router in-process with
 
 - `keeplin-daemon/src/main.rs` — builds `AppState` and serves this router next to gRPC.
 - `keeplin-daemon/src/event_backend.rs` — the feed source.
+- `keeplin-daemon/src/metrics.rs` — the counter registry and `MetricsBackend` behind `/metrics`.
 - `keeplin-daemon/src/auth.rs` — the shared Basic-Auth check.
 - `keeplin-core/src/linking.rs` — the bookmark/link/alias helpers the routes call.

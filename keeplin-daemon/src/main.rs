@@ -10,6 +10,7 @@
 mod auth;
 mod config;
 mod event_backend;
+mod metrics;
 mod proto;
 mod rest;
 mod server;
@@ -286,12 +287,16 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
     // Decorator stack (innermost → outermost): the storage backend, then (optionally)
     // `EncryptedBackend` already applied by the caller, then `LinkingBackend` which derives
     // bookmarks/links from each plaintext note body and resolves references, then
-    // `EventBackend` which publishes every mutation to the live-change broadcast channel.
+    // `EventBackend` which publishes every mutation to the live-change broadcast channel, then
+    // `MetricsBackend` which records each operation for `/api/metrics`.
     // `LinkingBackend` sits outside encryption so it parses plaintext bodies; `EventBackend`
-    // sits outside it so the feed carries the refreshed metadata.
+    // sits outside it so the feed carries the refreshed metadata; `MetricsBackend` is outermost
+    // so it counts logical operations as a client issues them.
     let backend = keeplin_core::linking::LinkingBackend::new(backend);
     let (events, _rx) = tokio::sync::broadcast::channel::<keeplin_core::models::Change>(1024);
-    let backend = Arc::new(event_backend::EventBackend::new(backend, events.clone()));
+    let backend = event_backend::EventBackend::new(backend, events.clone());
+    let metrics = Arc::new(metrics::Metrics::new());
+    let backend = Arc::new(metrics::MetricsBackend::new(backend, metrics.clone()));
 
     // One shared backend instance behind every surface: the gRPC service and (optionally)
     // the REST/HTTP server both hold a clone of this `Arc`.
@@ -332,6 +337,7 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
         let state = Arc::new(rest::AppState {
             backend: backend.clone(),
             events: events.clone(),
+            metrics: metrics.clone(),
             max_body_bytes: cfg.max_message_size,
             journal_retention_days: cfg.journal_retention_days,
             auth_username: cfg.auth_username.clone(),

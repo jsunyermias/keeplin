@@ -8,6 +8,11 @@
 //! [`crate::auth`]. `GET /api/ws` upgrades to a WebSocket that streams every [`Change`]
 //! published by the daemon's `EventBackend`, and `POST /api/sync` runs one sync cycle.
 //!
+//! Three **operational** endpoints — `GET /api/health` (liveness), `/api/ready` (readiness),
+//! and `/api/metrics` (Prometheus, see [`crate::metrics`]) — sit outside the auth middleware
+//! and the HTTP-status counter so orchestrator probes and metric scrapers work without
+//! credentials and do not inflate the request metrics.
+//!
 //! The HTTP listener is plain HTTP — terminate TLS at a reverse proxy in production, as
 //! noted in `SECURITY.md`.
 
@@ -49,6 +54,9 @@ pub struct AppState {
     /// Sender for the live change feed. Each WebSocket connection subscribes to a fresh
     /// receiver; mutations published here by the daemon's `EventBackend` are streamed out.
     pub events: broadcast::Sender<Change>,
+    /// Operational counters, shared with the outermost `MetricsBackend` decorator so
+    /// `GET /api/metrics` exports the same registry the storage layer writes to.
+    pub metrics: Arc<crate::metrics::Metrics>,
     /// Maximum request body size in bytes. Mirrors the gRPC `max_message_size` so a large
     /// resource upload (`POST /api/resources`) is not silently capped at axum's 2 MiB default.
     pub max_body_bytes: usize,
@@ -64,10 +72,19 @@ pub struct AppState {
 /// Handler-facing shared state. `Arc` makes it cheaply cloneable for axum's `State`.
 pub type Shared = Arc<AppState>;
 
-/// Build the `/api` router (REST endpoints) with the auth middleware applied.
+/// Build the `/api` router: unauthenticated operational probes plus the auth-gated data API.
 pub fn router(state: Shared) -> Router {
-    let api = Router::new()
+    // Operational endpoints carry no user data and must be reachable by liveness/readiness
+    // probes and metrics scrapers that cannot present Basic-Auth credentials, so they sit
+    // **outside** the auth middleware — and outside the HTTP-status counter, so frequent
+    // probe/scrape traffic does not drown out the request metrics that matter.
+    let ops = Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
+        .route("/metrics", get(metrics))
+        .with_state(state.clone());
+
+    let api = Router::new()
         .route("/notes", get(list_notes).post(create_note))
         .route(
             "/notes/:id",
@@ -105,9 +122,13 @@ pub fn router(state: Shared) -> Router {
         // Raise the request-body cap from axum's 2 MiB default to the configured size so REST
         // resource uploads match what gRPC accepts.
         .layer(axum::extract::DefaultBodyLimit::max(state.max_body_bytes))
+        // Layers apply outermost-last: auth runs inside the status counter, so a rejected
+        // request is still counted (as a 4xx) by `status_mw`.
         .layer(middleware::from_fn_with_state(state.clone(), auth_mw))
+        .layer(middleware::from_fn_with_state(state.clone(), status_mw))
         .with_state(state);
-    Router::new().nest("/api", api)
+
+    Router::new().nest("/api", ops.merge(api))
 }
 
 // ── Auth middleware ─────────────────────────────────────────────────────────────
@@ -130,6 +151,15 @@ async fn auth_mw(State(state): State<Shared>, req: Request, next: Next) -> Respo
         }
     }
     next.run(req).await
+}
+
+/// Record every response's status class into the shared metrics registry
+/// (`keeplin_http_requests_total`). Applied only to the data API, not the operational
+/// probes, so scrape/probe traffic does not inflate the request counts.
+async fn status_mw(State(state): State<Shared>, req: Request, next: Next) -> Response {
+    let resp = next.run(req).await;
+    state.metrics.record_http_status(resp.status().as_u16());
+    resp
 }
 
 // ── Error mapping ───────────────────────────────────────────────────────────────
@@ -196,8 +226,38 @@ fn page<T>((items, next): (Vec<T>, Option<String>)) -> Json<Page<T>> {
 
 // ── Health ──────────────────────────────────────────────────────────────────────
 
+/// Liveness probe: the process is up and serving. Always `200 ok`; it does not touch the
+/// backend, so it stays green even if storage is momentarily unavailable (that is what
+/// `ready` is for).
 async fn health() -> &'static str {
     "ok"
+}
+
+/// Readiness probe: can the daemon actually serve requests? Issues one cheap backend read
+/// (`list_notes` with a page size of 1). `200 ready` when storage answers, `503` with the
+/// error otherwise — so an orchestrator stops routing traffic to an instance whose database
+/// is locked or unreachable. (This read flows through the metrics decorator, so a busy
+/// readiness schedule contributes to the `note`/`list` counter.)
+async fn ready(State(s): State<Shared>) -> Response {
+    match s.backend.list_notes(1, None).await {
+        Ok(_) => (StatusCode::OK, "ready").into_response(),
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+/// Prometheus metrics exposition (`text/plain; version=0.0.4`). Renders the shared registry
+/// the `MetricsBackend` decorator and the HTTP middleware write to. Unauthenticated: the
+/// counters carry only fixed-label aggregates, no user content.
+async fn metrics(State(s): State<Shared>) -> Response {
+    (
+        [(CONTENT_TYPE, "text/plain; version=0.0.4")],
+        s.metrics.render_prometheus(),
+    )
+        .into_response()
 }
 
 // ── Notes ───────────────────────────────────────────────────────────────────────
@@ -666,6 +726,7 @@ mod tests {
         Arc::new(AppState {
             backend: Arc::new(fs),
             events,
+            metrics: Arc::new(crate::metrics::Metrics::new()),
             max_body_bytes: 32 * 1024 * 1024,
             journal_retention_days: 30,
             auth_username: auth.map(|a| a.0.to_string()),
@@ -685,6 +746,7 @@ mod tests {
         Arc::new(AppState {
             backend: Arc::new(LinkingBackend::new(fs)),
             events,
+            metrics: Arc::new(crate::metrics::Metrics::new()),
             max_body_bytes: 32 * 1024 * 1024,
             journal_retention_days: 30,
             auth_username: None,
@@ -862,6 +924,7 @@ mod tests {
         let st: Shared = Arc::new(AppState {
             backend: Arc::new(db),
             events,
+            metrics: Arc::new(crate::metrics::Metrics::new()),
             max_body_bytes: 32 * 1024 * 1024,
             journal_retention_days: 30,
             auth_username: None,
@@ -887,6 +950,90 @@ mod tests {
         let epoch = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap();
         let journal = st.backend.get_changes_since(epoch).await.unwrap();
         assert_eq!(journal.len(), 1, "recent journal rows survive the prune");
+    }
+
+    #[tokio::test]
+    async fn operational_endpoints_bypass_auth() {
+        // With auth configured, the data API requires credentials but the operational
+        // probes must remain reachable without them (orchestrators cannot authenticate).
+        let st = state(Some(("alice", "s3cr3t"))).await;
+
+        for path in ["/api/health", "/api/ready", "/api/metrics"] {
+            let (code, _) = call(&st, "GET", path, None, None).await;
+            assert_eq!(
+                code,
+                StatusCode::OK,
+                "{path} must be reachable without auth"
+            );
+        }
+        let (code, _) = call(&st, "GET", "/api/notes", None, None).await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED, "data API still gated");
+    }
+
+    /// Build an `AppState` whose backend is a `MetricsBackend` over a fresh `FsBackend`
+    /// sharing the state's own `Arc<Metrics>` — mirroring how `main` wires the outermost
+    /// decorator — so storage operations issued through the router move the same counters
+    /// `GET /api/metrics` renders.
+    async fn metrics_state() -> Shared {
+        use crate::metrics::{Metrics, MetricsBackend};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let fs = FsBackend::new(&path).await.unwrap();
+        let metrics = Arc::new(Metrics::new());
+        let (events, _rx) = broadcast::channel(16);
+        Arc::new(AppState {
+            backend: Arc::new(MetricsBackend::new(fs, metrics.clone())),
+            events,
+            metrics,
+            max_body_bytes: 32 * 1024 * 1024,
+            journal_retention_days: 30,
+            auth_username: None,
+            auth_password: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn metrics_reflect_operations_and_http_status() {
+        let st = metrics_state().await;
+
+        // One successful create, then one 404 (GET a missing note).
+        let (code, _) = call(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(r#"{"title":"T","body":"B"}"#),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        let (code, _) = call(
+            &st,
+            "GET",
+            &format!("/api/notes/{}", uuid::Uuid::new_v4()),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+
+        let (code, body) = call(&st, "GET", "/api/metrics", None, None).await;
+        assert_eq!(code, StatusCode::OK);
+        let text = String::from_utf8(body).unwrap();
+        assert!(
+            text.contains("keeplin_storage_operations_total{entity=\"note\",op=\"create\"} 1"),
+            "create counted:\n{text}"
+        );
+        // The create was a 2xx and the missing-note GET a 4xx; the /metrics scrape itself is
+        // not counted (operational routes bypass the status middleware).
+        assert!(
+            text.contains("keeplin_http_requests_total{status=\"2xx\"} 1"),
+            "one 2xx:\n{text}"
+        );
+        assert!(
+            text.contains("keeplin_http_requests_total{status=\"4xx\"} 1"),
+            "one 4xx:\n{text}"
+        );
     }
 
     #[tokio::test]
@@ -1156,6 +1303,7 @@ mod tests {
         Arc::new(AppState {
             backend,
             events,
+            metrics: Arc::new(crate::metrics::Metrics::new()),
             max_body_bytes: 32 * 1024 * 1024,
             journal_retention_days: 30,
             auth_username: None,

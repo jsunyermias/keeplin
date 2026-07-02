@@ -66,7 +66,8 @@ Behaviour is layered as **decorators**, each of which is itself a `StorageBacken
 inner one. The daemon builds this stack at startup (innermost → outermost):
 
 ```
-        EventBackend            ← publishes every mutation to the WebSocket feed (daemon)
+    MetricsBackend              ← counts every operation for /api/metrics (daemon)
+      └ EventBackend            ← publishes every mutation to the WebSocket feed (daemon)
           └ LinkingBackend      ← derives bookmarks/links, resolves refs, enforces alias uniqueness (core)
               └ [EncryptedBackend]  ← optional AES-256-GCM at-rest encryption (core)
                   └ FsBackend | DbBackend   ← actual persistence (core)
@@ -78,6 +79,8 @@ Why this order:
   find bookmarks and links) and resolves aliases against **decrypted** reads.
 - **`EventBackend` is outside `LinkingBackend`** so the live feed carries the fully-refreshed
   note (with derived bookmarks/links).
+- **`MetricsBackend` is outermost** so it counts logical operations as a client issues them,
+  not the extra inner reads the layers below perform.
 - Both the gRPC server and the REST server share **one** `Arc` to the top of this stack, so a
   mutation from either surface flows through every layer once.
 
@@ -137,9 +140,12 @@ copies all live state between any two backends via the typed `create_*` methods 
 | **gRPC** | `proto/keeplin.proto` + `src/server.rs` | full CRUD + sync + bookmark/link RPCs; HTTP Basic-Auth metadata |
 | **REST/JSON** | `src/rest.rs` (axum) | same operations over JSON on an optional `http_addr`; body capped at `max_message_size` |
 | **WebSocket feed** | `src/rest.rs` + `src/event_backend.rs` | `GET /api/ws` streams every `Change` as JSON |
+| **Operational** | `src/rest.rs` + `src/metrics.rs` | `GET /api/health` (liveness), `/api/ready` (readiness), `/api/metrics` (Prometheus); unauthenticated |
 
-All three share one backend `Arc` and **one auth model**: a constant-time HTTP Basic check in
-`src/auth.rs`, used by both the gRPC interceptor and the axum middleware.
+The CRUD/sync/WebSocket surfaces share one backend `Arc` and **one auth model**: a
+constant-time HTTP Basic check in `src/auth.rs`, used by both the gRPC interceptor and the axum
+middleware. The operational endpoints sit outside that check so probes and scrapers work
+without credentials; they expose only aggregate counters and liveness, no user content.
 
 ---
 
