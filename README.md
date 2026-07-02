@@ -189,7 +189,9 @@ base64(user:password)` header (only required when `auth_username`/`auth_password
 
 | Method & path | Purpose |
 |---------------|---------|
-| `GET /api/health` | Liveness probe (`200 ok`). |
+| `GET /api/health` | Liveness probe (`200 ok`); no auth, does not touch storage. |
+| `GET /api/ready` | Readiness probe: one backend read → `200 ready` or `503` when storage is unreachable; no auth. |
+| `GET /api/metrics` | Prometheus metrics exposition (`text/plain`); no auth. |
 | `GET /api/notes?page_size=&page_token=` | List notes (cursor pagination → `{ items, next_page_token }`). |
 | `POST /api/notes` | Create a note. |
 | `GET/PUT/DELETE /api/notes/:id` | Read / update / soft‑delete a note. |
@@ -355,7 +357,8 @@ roughly in priority order:
 
 1. **No production sync server** ships in this repo — server mode needs a real relay
    (the WebSocket path is now covered end‑to‑end by a test‑only relay).
-2. Operability: metrics, health checks, and a schema/format **migration path**.
+2. Operability: liveness/readiness probes and Prometheus metrics ship (`GET /api/health`,
+   `/api/ready`, `/api/metrics`); a schema/format **migration path** is still outstanding.
 3. Performance at scale: `FsBackend` list reads re‑merge every note's per‑device logs
    on each call (the logs themselves are compacted automatically, but reads use no
    cached projection).
