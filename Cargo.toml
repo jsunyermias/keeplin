@@ -2,6 +2,7 @@
 members = [
     "keeplin-core",
     "keeplin-daemon",
+    "keeplin-relay",
 ]
 resolver = "2"
 

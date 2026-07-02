@@ -41,6 +41,9 @@ jobs:
       - name: cargo test (keeplin-daemon)
         run: cargo test -p keeplin-daemon
 
+      - name: cargo test (keeplin-relay)
+        run: cargo test -p keeplin-relay
+
       # --all-targets lints test and bench code too, matching the command the README
       # tells contributors to run locally. It also fully subsumes `cargo check`.
       - name: cargo clippy (workspace)
