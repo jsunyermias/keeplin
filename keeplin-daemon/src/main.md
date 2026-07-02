@@ -35,7 +35,7 @@ configured exactly like a running daemon.
 
 ```
 serve(cfg)
- 1. Warn if gRPC / HTTP is exposed to the network without authentication
+ 1. Refuse to start on an insecure config (Config::security_issues) unless insecure=true
  2. Construct backend according to (mode, encryption_password):
     ┌─────────────────────┬───────────────────────────────────┐
     │ (Offline, None)     │ FsBackend                         │
@@ -136,11 +136,15 @@ migrate:
 Environment variables take precedence over the config file so that secrets do not need
 to be stored in plaintext on disk.
 
-## Security warnings
+## Startup security enforcement
 
-At startup, if the gRPC address is not a loopback address (`127.*` or `::1`) and
-authentication is not configured, a `WARN`-level tracing message is emitted. This is a
-deliberate reminder that the server is exposed to the network without protection.
+`serve` calls `Config::security_issues` (see `config.md`) before constructing anything. If it
+reports any exposure — a non-loopback `grpc_addr`/`http_addr` without auth, or a plaintext
+`ws://` `server_url` to a remote host — the daemon **refuses to start** with an `anyhow` error
+listing them, unless `insecure = true`, in which case each is logged as a `WARN` and startup
+proceeds. The separate `encryption_password`-without-`key_salt` case remains a non-fatal
+`WARN`. Missing daemon-terminated TLS is not enforced: fronting TLS at a reverse proxy is a
+supported deployment.
 
 ## Design notes
 

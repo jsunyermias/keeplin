@@ -32,6 +32,27 @@ file (default: `keeplin.toml`) and may be partially overridden by environment va
 | `key_salt` | `Option<String>` | `None` | Argon2id salt (≥ 8 bytes) for the encryption key; falls back to the device ID when unset. Set the **same** value on all synced devices for portable encryption; prefer env var (`KEEPLIN_KEY_SALT`) |
 | `auth_username` | `Option<String>` | `None` | Username for HTTP Basic Auth on every gRPC call; prefer env var |
 | `auth_password` | `Option<String>` | `None` | Password for HTTP Basic Auth on every gRPC call; prefer env var |
+| `insecure` | `bool` | `false` | Downgrade the startup security checks from errors to warnings (see below) |
+
+## Startup security checks — `Config::security_issues`
+
+`security_issues(&self) -> Vec<String>` is a pure enumeration of configurations that would
+expose data or credentials on an untrusted network. `main::serve` calls it once at startup: if
+it returns anything and `insecure` is `false`, the daemon **refuses to start** (listing the
+issues); if `insecure` is `true`, each issue is logged as a warning and startup proceeds.
+
+It flags only unambiguous exposures a fronting TLS proxy cannot fix, so the documented
+"terminate TLS at a reverse proxy" deployment is never blocked:
+
+| Issue | Condition |
+|-------|-----------|
+| gRPC/HTTP listener open without auth | `grpc_addr` or `http_addr` binds a **non-loopback** address and neither `auth_username` nor `auth_password` is set |
+| Plaintext sync token | server mode with a `ws://` (not `wss://`) `server_url` whose host is **non-loopback** — the outbound handshake would send `auth_token` in the clear |
+
+Missing daemon-terminated TLS on the listeners is deliberately **not** flagged (proxy
+termination is supported). The `encryption_password`-without-`key_salt` warning is separate and
+always non-fatal. `plaintext_ws_remote_host` is the helper that classifies a `server_url`,
+tolerating IPv6 literals and treating any not-clearly-loopback host as remote (fail safe).
 
 ## `Mode` variants
 

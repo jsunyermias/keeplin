@@ -161,8 +161,15 @@ variables shown.
 | `encryption_password` | `none` | Enables at‑rest encryption. Env: `KEEPLIN_ENCRYPTION_PASSWORD`. |
 | `key_salt` | `none` (→ device ID) | Argon2id salt (≥ 8 bytes); set the **same** value on all synced devices for portable encryption. Env: `KEEPLIN_KEY_SALT`. |
 | `auth_username` / `auth_password` | `none` | gRPC Basic Auth; when both are set, every call must authenticate. Env: `KEEPLIN_AUTH_USERNAME` / `KEEPLIN_AUTH_PASSWORD`. |
+| `insecure` | `false` | Downgrade the startup security checks (below) from **errors** to warnings. Only for deployments where another layer provides the protection. |
 
-The daemon logs a loud warning if it binds a non‑loopback address without auth, or if
+**Secure by default.** The daemon **refuses to start** in a configuration that would expose
+data or credentials on an untrusted network — a non‑loopback `grpc_addr`/`http_addr` with no
+auth configured, or a plaintext `ws://` `server_url` to a remote host (which would leak
+`auth_token` in transit). Fix the config, or set `insecure = true` if an isolated network,
+mTLS, or a fronting proxy that also enforces auth already protects it. Terminating TLS at a
+reverse proxy is fully supported: the daemon does **not** require its own TLS on the listeners,
+so missing daemon TLS is never a start‑up error. It still logs a (non‑fatal) warning if
 encryption is on without `key_salt`.
 
 ---
