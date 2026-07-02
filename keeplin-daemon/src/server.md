@@ -102,6 +102,14 @@ gRPC client → CreateNoteRequest (proto)
   backend. This ensures the timestamp reflects when the gRPC call was received, not the
   value supplied by the client, which prevents clients from supplying arbitrary
   timestamps.
+- The `Update{Note,Notebook,Tag}` RPCs reject a soft-deleted target with `NOT_FOUND`
+  (`ensure_not_deleted`): the `Get*` RPCs intentionally serve tombstones for sync, but an
+  update on one would silently revive it (the client's proto carries `deleted_at: None`).
+  Revival is reserved for the sync path; the REST surface applies the same rule.
+- `prune_journal_after_sync(backend, retention_days)` trims `entity_changes` history
+  after a successful cycle (clamped to ~100 years; `0` disables; failures are non-fatal
+  warnings). It is shared with the REST `POST /api/sync` handler so both surfaces honour
+  `journal_retention_days` identically.
 - `parse_uuid` and `parse_optional_dt` return `tonic::Status` errors (not
   `StorageError`) because they validate client input at the RPC boundary; `StorageError`
   is reserved for backend-layer failures.

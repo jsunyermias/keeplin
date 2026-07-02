@@ -150,6 +150,26 @@ fn parse_uuid(s: &str, field: &str) -> Result<Uuid, Status> {
         .map_err(|_| Status::invalid_argument(format!("{field} is not a valid UUID")))
 }
 
+/// Rejects an update aimed at a soft-deleted entity with `NOT_FOUND`.
+///
+/// The `Get*` RPCs intentionally return tombstones (sync needs to read them), but an
+/// update on one would silently *revive* it (the client writes `deleted_at: None` back).
+/// Revival is reserved for the sync path (`apply_change` resolving a causal edit made
+/// after the delete), so the update RPCs answer `NOT_FOUND` instead — mirroring the REST
+/// surface, where a tombstone already reads and updates as `404`.
+#[allow(clippy::result_large_err)]
+fn ensure_not_deleted<T>(
+    read: Result<T, StorageError>,
+    id: Uuid,
+    deleted_at: impl Fn(&T) -> Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<(), Status> {
+    let entity = read.map_err(storage_err)?;
+    if deleted_at(&entity).is_some() {
+        return Err(Status::not_found(id.to_string()));
+    }
+    Ok(())
+}
+
 /// Parses an optional RFC-3339 timestamp from a proto3 `optional string` field.
 ///
 /// Returns `None` when the option is absent. Returns `Status::invalid_argument`
@@ -324,6 +344,9 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .note
             .ok_or_else(|| Status::invalid_argument("note is required"))?;
         let mut note = proto_to_note(note_proto)?;
+        ensure_not_deleted(self.backend.read_note(note.id).await, note.id, |n| {
+            n.deleted_at
+        })?;
         note.updated_at = now();
         let updated = self.backend.update_note(note).await.map_err(storage_err)?;
         Ok(Response::new(UpdateNoteResponse {
@@ -413,6 +436,11 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             vv: Default::default(),
             last_writer: String::new(),
         };
+        ensure_not_deleted(
+            self.backend.read_notebook(notebook.id).await,
+            notebook.id,
+            |nb| nb.deleted_at,
+        )?;
         let updated = self
             .backend
             .update_notebook(notebook)
@@ -533,6 +561,9 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             vv: Default::default(),
             last_writer: String::new(),
         };
+        ensure_not_deleted(self.backend.read_tag(tag.id).await, tag.id, |t| {
+            t.deleted_at
+        })?;
         let updated = self.backend.update_tag(tag).await.map_err(storage_err)?;
         Ok(Response::new(UpdateTagResponse {
             tag: Some(tag_to_proto(updated)),
@@ -786,19 +817,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             // daemon only adapts progress and error reporting to the gRPC stream.
             match run_sync(&*backend, report).await {
                 Ok(_) => {
-                    // Trim journal history that every peer has had ample time to pull, so
-                    // the `entity_changes` table cannot grow without bound. A failure here
-                    // is non-fatal — the sync itself already succeeded.
-                    if retention_days > 0 {
-                        // Clamp to ~100 years so an absurd config value cannot overflow
-                        // chrono's `Duration` (which would panic) or wrap to a negative
-                        // window that prunes the entire journal.
-                        let days = retention_days.min(36_500) as i64;
-                        let cutoff = now() - chrono::Duration::days(days);
-                        if let Err(e) = backend.prune_change_journal(cutoff).await {
-                            tracing::warn!("change-journal prune failed: {e}");
-                        }
-                    }
+                    prune_journal_after_sync(&*backend, retention_days).await;
                 }
                 Err(e) => {
                     let status = match e {
@@ -816,6 +835,28 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
     }
 }
 
+/// Trim change-journal history after a successful sync cycle, so the `entity_changes`
+/// table cannot grow without bound. Shared by the gRPC `Sync` RPC and the REST
+/// `POST /api/sync` handler, so both surfaces honour `journal_retention_days` the same
+/// way. `0` disables pruning; a failure is non-fatal (logged as a warning) because the
+/// sync itself already succeeded. No-op on `FsBackend`, whose `prune_change_journal`
+/// always returns `Ok(0)`.
+pub(crate) async fn prune_journal_after_sync<B>(backend: &B, retention_days: u64)
+where
+    B: StorageBackend + ?Sized,
+{
+    if retention_days == 0 {
+        return;
+    }
+    // Clamp to ~100 years so an absurd config value cannot overflow chrono's `Duration`
+    // (which would panic) or wrap to a negative window that prunes the entire journal.
+    let days = retention_days.min(36_500) as i64;
+    let cutoff = now() - chrono::Duration::days(days);
+    if let Err(e) = backend.prune_change_journal(cutoff).await {
+        tracing::warn!("change-journal prune failed: {e}");
+    }
+}
+
 /// Maps a core [`SyncStage`] to its protobuf [`Stage`] code and a human-readable
 /// progress message for the streaming `Sync` RPC.
 fn stage_to_proto(stage: SyncStage) -> (Stage, &'static str) {
@@ -825,5 +866,74 @@ fn stage_to_proto(stage: SyncStage) -> (Stage, &'static str) {
         SyncStage::Receiving => (Stage::Receiving, "Receiving remote changes"),
         SyncStage::Applying => (Stage::Applying, "Applying remote changes"),
         SyncStage::Done => (Stage::Done, "Sync complete"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use keeplin_core::storage::fs::FsBackend;
+    use keeplin_core::storage::{NoteRepository, NotebookRepository, TagRepository};
+
+    /// A `KeeplinServer` over a fresh `FsBackend` in a leaked temp dir (kept alive for
+    /// the test), plus a handle to the backend for seeding state directly.
+    async fn server() -> (KeeplinServer<FsBackend>, Arc<FsBackend>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let backend = Arc::new(FsBackend::new(&path).await.unwrap());
+        (KeeplinServer::from_shared(backend.clone(), 0), backend)
+    }
+
+    #[tokio::test]
+    async fn update_rpcs_reject_soft_deleted_entities() {
+        let (srv, backend) = server().await;
+
+        // Note: create → delete → UpdateNote must be NOT_FOUND, not a silent revival
+        // (the client's proto note carries deleted_at: None).
+        let note = backend.create_note(CoreNote::new("t", "b")).await.unwrap();
+        backend.delete_note(note.id).await.unwrap();
+        let mut proto = note_to_proto(note.clone());
+        proto.deleted_at = None;
+        let err = srv
+            .update_note(Request::new(UpdateNoteRequest { note: Some(proto) }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+        // GetNote still serves the tombstone (sync reads it) — unchanged by the rejection.
+        let got = srv
+            .get_note(Request::new(GetNoteRequest {
+                id: note.id.to_string(),
+            }))
+            .await
+            .unwrap();
+        assert!(got.into_inner().note.unwrap().deleted_at.is_some());
+
+        // Notebook.
+        let nb = backend
+            .create_notebook(CoreNotebook::new("nb"))
+            .await
+            .unwrap();
+        backend.delete_notebook(nb.id).await.unwrap();
+        let mut proto = notebook_to_proto(nb);
+        proto.deleted_at = None;
+        let err = srv
+            .update_notebook(Request::new(UpdateNotebookRequest {
+                notebook: Some(proto),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+
+        // Tag.
+        let tag = backend.create_tag(CoreTag::new("label")).await.unwrap();
+        backend.delete_tag(tag.id).await.unwrap();
+        let mut proto = tag_to_proto(tag);
+        proto.deleted_at = None;
+        let err = srv
+            .update_tag(Request::new(UpdateTagRequest { tag: Some(proto) }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
     }
 }

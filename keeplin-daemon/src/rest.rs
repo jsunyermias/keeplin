@@ -52,6 +52,10 @@ pub struct AppState {
     /// Maximum request body size in bytes. Mirrors the gRPC `max_message_size` so a large
     /// resource upload (`POST /api/resources`) is not silently capped at axum's 2 MiB default.
     pub max_body_bytes: usize,
+    /// How many days of change-journal history to retain; `POST /api/sync` prunes older
+    /// entries after a successful cycle, exactly like the gRPC `Sync` RPC (both call
+    /// [`crate::server::prune_journal_after_sync`]). `0` disables pruning.
+    pub journal_retention_days: u64,
     /// Basic-Auth credentials; when both are `Some`, every request must authenticate.
     pub auth_username: Option<String>,
     pub auth_password: Option<String>,
@@ -244,6 +248,10 @@ async fn update_note(
     Path(id): Path<Uuid>,
     Json(mut note): Json<Note>,
 ) -> Result<Json<Note>, ApiError> {
+    // A tombstoned note reads as 404 on this surface, so updating one is a 404 too —
+    // otherwise a PUT (whose body defaults `deleted_at` to null) would silently revive
+    // it. Revival is reserved for the sync path (`apply_change`).
+    read_live_note(&s, id).await?;
     note.id = id;
     note.updated_at = now();
     Ok(Json(s.backend.update_note(note).await?))
@@ -415,15 +423,20 @@ async fn create_notebook(
     ))
 }
 
-async fn get_notebook(
-    State(s): State<Shared>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<Notebook>, ApiError> {
+/// Read a live notebook or return 404 for a missing or soft-deleted one.
+async fn read_live_notebook(s: &Shared, id: Uuid) -> Result<Notebook, ApiError> {
     let nb = s.backend.read_notebook(id).await?;
     if nb.deleted_at.is_some() {
         return Err(StorageError::NotFound(id.to_string()).into());
     }
-    Ok(Json(nb))
+    Ok(nb)
+}
+
+async fn get_notebook(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Notebook>, ApiError> {
+    Ok(Json(read_live_notebook(&s, id).await?))
 }
 
 async fn update_notebook(
@@ -431,6 +444,8 @@ async fn update_notebook(
     Path(id): Path<Uuid>,
     Json(mut nb): Json<Notebook>,
 ) -> Result<Json<Notebook>, ApiError> {
+    // Updating a tombstoned notebook is a 404, like reading one (see `update_note`).
+    read_live_notebook(&s, id).await?;
     nb.id = id;
     nb.updated_at = now();
     Ok(Json(s.backend.update_notebook(nb).await?))
@@ -470,12 +485,17 @@ async fn create_tag(
     Ok(Json(s.backend.create_tag(Tag::new(req.title)).await?))
 }
 
-async fn get_tag(State(s): State<Shared>, Path(id): Path<Uuid>) -> Result<Json<Tag>, ApiError> {
+/// Read a live tag or return 404 for a missing or soft-deleted one.
+async fn read_live_tag(s: &Shared, id: Uuid) -> Result<Tag, ApiError> {
     let tag = s.backend.read_tag(id).await?;
     if tag.deleted_at.is_some() {
         return Err(StorageError::NotFound(id.to_string()).into());
     }
-    Ok(Json(tag))
+    Ok(tag)
+}
+
+async fn get_tag(State(s): State<Shared>, Path(id): Path<Uuid>) -> Result<Json<Tag>, ApiError> {
+    Ok(Json(read_live_tag(&s, id).await?))
 }
 
 async fn update_tag(
@@ -483,6 +503,8 @@ async fn update_tag(
     Path(id): Path<Uuid>,
     Json(mut tag): Json<Tag>,
 ) -> Result<Json<Tag>, ApiError> {
+    // Updating a tombstoned tag is a 404, like reading one (see `update_note`).
+    read_live_tag(&s, id).await?;
     tag.id = id;
     tag.updated_at = now();
     Ok(Json(s.backend.update_tag(tag).await?))
@@ -564,13 +586,16 @@ struct SyncSummary {
 }
 
 /// Run one synchronisation cycle on the shared backend and report how many remote
-/// changes were applied. Mirrors the gRPC `Sync` RPC, minus the streaming progress.
+/// changes were applied. Mirrors the gRPC `Sync` RPC, minus the streaming progress —
+/// including the post-sync journal prune, so `journal_retention_days` is honoured no
+/// matter which surface drives the sync.
 ///
 /// The backend is passed as `&dyn StorageBackend`; `run_sync` accepts it because
 /// `dyn StorageBackend` itself satisfies `StorageBackend` (see the `?Sized` blanket impl
 /// in `keeplin-core`).
 async fn sync(State(s): State<Shared>) -> Result<Json<SyncSummary>, ApiError> {
     let applied = run_sync(s.backend.as_ref(), |_stage, _count| {}).await?;
+    crate::server::prune_journal_after_sync(s.backend.as_ref(), s.journal_retention_days).await;
     Ok(Json(SyncSummary {
         applied: applied.len(),
     }))
@@ -642,6 +667,7 @@ mod tests {
             backend: Arc::new(fs),
             events,
             max_body_bytes: 32 * 1024 * 1024,
+            journal_retention_days: 30,
             auth_username: auth.map(|a| a.0.to_string()),
             auth_password: auth.map(|a| a.1.to_string()),
         })
@@ -660,6 +686,7 @@ mod tests {
             backend: Arc::new(LinkingBackend::new(fs)),
             events,
             max_body_bytes: 32 * 1024 * 1024,
+            journal_retention_days: 30,
             auth_username: None,
             auth_password: None,
         })
@@ -730,6 +757,136 @@ mod tests {
         assert_eq!(code, StatusCode::NO_CONTENT);
         let (code, _) = call(&st, "GET", &format!("/api/notes/{id}"), None, None).await;
         assert_eq!(code, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn updates_on_deleted_entities_are_404() {
+        let st = state(None).await;
+
+        // Note: create → delete → PUT must be a 404, not a silent revival.
+        let (_, body) = call(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(r#"{"title":"T","body":"B"}"#),
+            None,
+        )
+        .await;
+        let note: Note = serde_json::from_slice(&body).unwrap();
+        call(
+            &st,
+            "DELETE",
+            &format!("/api/notes/{}", note.id),
+            None,
+            None,
+        )
+        .await;
+
+        let update = serde_json::to_string(&note).unwrap(); // deleted_at: null
+        let (code, _) = call(
+            &st,
+            "PUT",
+            &format!("/api/notes/{}", note.id),
+            Some(&update),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND, "PUT on deleted note");
+        let (code, _) = call(
+            &st,
+            "PUT",
+            &format!("/api/notes/{}/alias", note.id),
+            Some(r#"{"alias":"ghost"}"#),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND, "alias PUT on deleted note");
+        // Still deleted afterwards.
+        let (code, _) = call(&st, "GET", &format!("/api/notes/{}", note.id), None, None).await;
+        assert_eq!(code, StatusCode::NOT_FOUND, "note must remain deleted");
+
+        // Notebook.
+        let (_, body) = call(
+            &st,
+            "POST",
+            "/api/notebooks",
+            Some(r#"{"title":"NB"}"#),
+            None,
+        )
+        .await;
+        let nb: Notebook = serde_json::from_slice(&body).unwrap();
+        call(
+            &st,
+            "DELETE",
+            &format!("/api/notebooks/{}", nb.id),
+            None,
+            None,
+        )
+        .await;
+        let (code, _) = call(
+            &st,
+            "PUT",
+            &format!("/api/notebooks/{}", nb.id),
+            Some(&serde_json::to_string(&nb).unwrap()),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND, "PUT on deleted notebook");
+
+        // Tag.
+        let (_, body) = call(&st, "POST", "/api/tags", Some(r#"{"title":"t"}"#), None).await;
+        let tag: Tag = serde_json::from_slice(&body).unwrap();
+        call(&st, "DELETE", &format!("/api/tags/{}", tag.id), None, None).await;
+        let (code, _) = call(
+            &st,
+            "PUT",
+            &format!("/api/tags/{}", tag.id),
+            Some(&serde_json::to_string(&tag).unwrap()),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND, "PUT on deleted tag");
+    }
+
+    #[tokio::test]
+    async fn sync_endpoint_prunes_journal_within_retention() {
+        // A DbBackend state (empty server_url → local-only sync) exercises the pruning
+        // path that FsBackend no-ops: after POST /api/sync, fresh journal rows must
+        // survive a 30-day retention window (the prune ran, and respected the window).
+        use keeplin_core::storage::db::DbBackend;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rest.db");
+        std::mem::forget(dir);
+        let db = DbBackend::new(path, "", "").await.unwrap();
+        let (events, _rx) = broadcast::channel(16);
+        let st: Shared = Arc::new(AppState {
+            backend: Arc::new(db),
+            events,
+            max_body_bytes: 32 * 1024 * 1024,
+            journal_retention_days: 30,
+            auth_username: None,
+            auth_password: None,
+        });
+
+        let (code, _) = call(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(r#"{"title":"kept","body":""}"#),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+
+        let (code, body) = call(&st, "POST", "/api/sync", None, None).await;
+        assert_eq!(code, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["applied"], 0, "no relay → nothing applied");
+
+        // The fresh create is younger than the retention cutoff, so it must survive.
+        let epoch = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap();
+        let journal = st.backend.get_changes_since(epoch).await.unwrap();
+        assert_eq!(journal.len(), 1, "recent journal rows survive the prune");
     }
 
     #[tokio::test]
@@ -1000,6 +1157,7 @@ mod tests {
             backend,
             events,
             max_body_bytes: 32 * 1024 * 1024,
+            journal_retention_days: 30,
             auth_username: None,
             auth_password: None,
         })

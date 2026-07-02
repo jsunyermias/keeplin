@@ -35,7 +35,7 @@ All under `/api`, all behind the auth middleware.
 | `GET /aliases/conflicts` | aliases shared by 2+ live entities (sync collisions) |
 | `GET/POST/PUT/DELETE /notebooks`, `/tags` | notebook / tag CRUD |
 | `GET/POST /resources`, `GET/PUT/DELETE /resources/:id`, `GET /resources/:id/data` | resource metadata CRUD + raw upload/download |
-| `POST /sync` | run one sync cycle → `{ "applied": n }` |
+| `POST /sync` | run one sync cycle → `{ "applied": n }`, then prune journal rows older than `journal_retention_days` (shared `server::prune_journal_after_sync`) |
 | `GET /ws` | upgrade to the WebSocket live-change feed |
 
 ## Auth middleware
@@ -54,8 +54,12 @@ valid `Authorization: Basic …` header (via `crate::auth::verify_basic`), retur
 | invalid UUID / body | `400` (axum extractor rejection) |
 | anything else | `500` |
 
-Reads of a soft-deleted note/notebook/tag return `404` (the gRPC `Get` RPCs still return the
-tombstone for sync — a deliberate REST-vs-gRPC divergence).
+Reads **and updates** of a soft-deleted note/notebook/tag return `404` (the gRPC `Get` RPCs
+still return the tombstone for sync — a deliberate divergence — but the `Update` RPCs reject
+it with `NOT_FOUND` too). Without the update guard, a `PUT` whose body defaults `deleted_at`
+to null would silently *revive* the entity; revival is reserved for the sync path
+(`apply_change` resolving a causal edit made after the delete). The alias/link endpoints
+inherit the same rule from the `linking` helpers.
 
 ## WebSocket feed (`GET /api/ws`)
 

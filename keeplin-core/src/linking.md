@@ -50,8 +50,8 @@ check-then-write race that could otherwise create a local duplicate alias.
 |----------|---------|
 | `resolve(backend, raw)` | resolve a `#…` reference → `ResolvedReference { note_id, bookmark_number? }` |
 | `backlinks(backend, target_id, page_size, page_token)` | paginated list of notes linking **to** a note (delegates to `note_backlinks`) |
-| `set_note_alias` / `set_notebook_alias` | read-modify-write the alias (one `NoteUpdate`/`NotebookUpdate`) |
-| `add_manual_link` / `remove_link` | add a `Manual` link / remove a link by index |
+| `set_note_alias` / `set_notebook_alias` | read-modify-write the alias (one `NoteUpdate`/`NotebookUpdate`); a soft-deleted target is `NotFound` (the edit must not revive it) |
+| `add_manual_link` / `remove_link` | add a `Manual` link / remove a link by index; a soft-deleted note is `NotFound` |
 | `alias_conflicts(backend)` | list aliases shared by 2+ live notes/notebooks (post-sync collisions) |
 | `collect_notes` / `collect_notebooks` | exhaust the paginated `list_*` into a `Vec` |
 
