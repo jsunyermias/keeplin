@@ -108,11 +108,48 @@ fn load_config(path: &std::path::Path) -> anyhow::Result<Config> {
     Ok(cfg)
 }
 
+/// Take the per-store daemon lock: an OS-level exclusive advisory lock on
+/// `{data_dir}/.keeplin/daemon.lock`.
+///
+/// The decorator stack keeps in-process state (write serialisation, the alias index, the
+/// live-change feed), so exactly **one daemon may serve a store at a time** — a second
+/// process would silently violate the single-writer assumptions. The lock is advisory and
+/// kernel-held: the returned handle must stay alive for the daemon's lifetime, and it is
+/// released automatically on process exit (crashes included), so no stale lock can ever
+/// block a restart. The lock file lives inside `.keeplin/` (per-device, excluded from
+/// replication), and file *contents* are irrelevant — Syncthing copying an empty file
+/// carries no lock.
+fn acquire_store_lock(data_dir: &std::path::Path) -> anyhow::Result<std::fs::File> {
+    let dir = data_dir.join(".keeplin");
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join("daemon.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => anyhow::bail!(
+            "another keeplin-daemon is already running against {} (held lock: {}). \
+             Run exactly one daemon per store; a second instance would corrupt \
+             in-process write serialisation.",
+            data_dir.display(),
+            path.display()
+        ),
+        Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+    }
+}
+
 /// Build the storage backend and run the gRPC (+ optional REST/WebSocket) server until
 /// shutdown.
 async fn serve(cfg: Config) -> anyhow::Result<()> {
     let addr: std::net::SocketAddr = cfg.grpc_addr.parse()?;
     let auth_configured = cfg.auth_username.is_some() && cfg.auth_password.is_some();
+
+    // One daemon per store, enforced before anything touches the data directory. Held
+    // for the whole lifetime of `serve` (released by the OS on exit or crash).
+    let _store_lock = acquire_store_lock(&cfg.data_dir)?;
 
     // Refuse to start in a configuration that would expose data or credentials on an untrusted
     // network (unauthenticated network listener, or a plaintext ws:// sync URL that leaks the
@@ -291,6 +328,11 @@ async fn run_migrate(from: &std::path::Path, to: &std::path::Path) -> anyhow::Re
         "Starting migration",
     );
 
+    // Migration must not race a live daemon on either side: take both store locks for
+    // the duration of the copy (a running daemon on either store makes this fail fast).
+    let _from_lock = acquire_store_lock(&from_cfg.data_dir)?;
+    let _to_lock = acquire_store_lock(&to_cfg.data_dir)?;
+
     let src = build_storage(&from_cfg).await?;
     let dst = build_storage(&to_cfg).await?;
 
@@ -466,6 +508,26 @@ mod tests {
     use super::*;
     use base64::{engine::general_purpose::STANDARD, Engine};
     use keeplin_core::storage::SyncBackend as _;
+
+    #[test]
+    fn store_lock_is_exclusive_per_store_and_released_on_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = acquire_store_lock(dir.path()).unwrap();
+
+        let err = acquire_store_lock(dir.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("already running"),
+            "second daemon on the same store must be refused: {err}"
+        );
+
+        // A different store is unaffected.
+        let other = tempfile::tempdir().unwrap();
+        let _other_lock = acquire_store_lock(other.path()).unwrap();
+
+        // Releasing the lock (daemon exit) lets the next daemon in.
+        drop(first);
+        let _second = acquire_store_lock(dir.path()).unwrap();
+    }
 
     /// A default (offline, unencrypted-config) `Config` rooted at `dir`.
     fn cfg_at(dir: &std::path::Path) -> Config {

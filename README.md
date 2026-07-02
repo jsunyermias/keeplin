@@ -141,6 +141,12 @@ export KEEPLIN_AUTH_PASSWORD="…"
 
 The daemon serves `KeeplinService` on `grpc_addr` and shuts down cleanly on `Ctrl‑C`.
 
+**One daemon per store.** The daemon takes an OS-level exclusive lock on
+`{data_dir}/.keeplin/daemon.lock`; a second daemon (or a `migrate` run) against the same
+`data_dir` refuses to start instead of silently corrupting in-process write
+serialisation. The lock is released automatically on exit — crashes included — so it can
+never go stale.
+
 ### Run a sync relay (server mode)
 
 Server‑mode devices sync through a central [`keeplin-relay`](keeplin-relay) — a WebSocket
