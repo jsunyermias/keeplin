@@ -82,10 +82,25 @@ compete through `note_log::resolve` on the receiver.
 - `entity_id` accepts the old `"note_id"` field name via a serde alias.
 - Both old (`"create"`) and new (`"note_create"`) operation strings are accepted.
 
-`FORMAT_VERSION = 4`. `ensure_format_version()` reads `.keeplin/format_version` on startup;
-older stamps are logged and re-stamped. Migrations to date need no data transformation (serde
-aliases/defaults handle old files at parse time); the stamp is always (re)written so brand-new
-and un-stamped stores are marked immediately.
+### Format migrations (`ensure_format_version`, `FORMAT_VERSION = 5`)
+
+`FsBackend::new` calls `ensure_format_version(fresh)`, a versioned ladder mirroring
+`DbBackend`'s `PRAGMA user_version` runner:
+
+- A **brand-new** store (`fresh` — the device-id file did not exist, so `.keeplin/device_id`
+  was just created) is stamped directly at `FORMAT_VERSION` and runs no migration step; there
+  is no prior data to transform, which matters once a future step does real work.
+- An existing store runs each outstanding step (`apply_format_migration`) in order, stamping
+  `.keeplin/format_version` **after each one**, so a crash mid-ladder resumes from the last
+  completed step. An existing store with no stamp file is treated as format `1`.
+- A stamp **newer** than this build is refused (`StorageError::InvalidState`) rather than
+  opened, matching `DbBackend`'s downgrade guard.
+
+Every historical step (v1→v5) is a no-op that only advances the stamp: the format changes so
+far — the `LogEntry` serde aliases/defaults, versioned associations, resource tombstones, and
+the optional global-log epoch header — are all parse-compatible with older files. A future
+breaking change gets a real body in `apply_format_migration`, guaranteed to run exactly once,
+in order, on the stores that need it.
 
 ## Concurrency — `note_write_lock`
 

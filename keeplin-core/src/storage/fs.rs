@@ -493,14 +493,14 @@ impl FsBackend {
             tokio::fs::create_dir_all(root.join(dir)).await?;
         }
 
-        let device_id = Self::read_or_create_device_id(&root).await?;
+        let (device_id, fresh) = Self::read_or_create_device_id(&root).await?;
         let backend = Self {
             root,
             device_id,
             note_write_lock: Arc::new(Mutex::new(())),
             global_log_lock: Arc::new(Mutex::new(())),
         };
-        backend.ensure_format_version().await?;
+        backend.ensure_format_version(fresh).await?;
         Ok(backend)
     }
 
@@ -538,14 +538,27 @@ impl FsBackend {
         self.root.join(".keeplin").join("format_version")
     }
 
-    /// Read the existing format version, perform any necessary migration steps, and
-    /// overwrite the stamp file with the current [`FORMAT_VERSION`].
+    /// Bring the on-disk store up to [`FORMAT_VERSION`], applying each outstanding migration
+    /// step in order and stamping `.keeplin/format_version` **after each one**, so a crash
+    /// mid-ladder resumes from the last completed step rather than re-running it.
     ///
-    /// If the stamp file does not exist, the directory is assumed to be a version-1
-    /// layout. The v1 → v2 migration is a no-op because the `serde(alias)` attributes
-    /// on [`LogEntry`] already make old log files parseable without renaming any fields.
-    async fn ensure_format_version(&self) -> Result<(), StorageError> {
+    /// `fresh` (from [`read_or_create_device_id`](Self::read_or_create_device_id)) is `true`
+    /// for a brand-new store: there is no prior data to migrate, so it is stamped directly at
+    /// the current version and no migration step runs — important once a future step does real
+    /// work that must not touch an empty store.
+    ///
+    /// An existing store with **no** stamp file is treated as format `1` (the layout predates
+    /// the stamp). A stamp **newer** than this build is rejected rather than opened, so a
+    /// downgrade cannot run against a layout it does not understand.
+    async fn ensure_format_version(&self, fresh: bool) -> Result<(), StorageError> {
         let path = self.format_version_path();
+
+        if fresh {
+            // Nothing to migrate — record the current version as the store's starting point.
+            tokio::fs::write(&path, Self::FORMAT_VERSION.to_string()).await?;
+            return Ok(());
+        }
+
         let current = if path.exists() {
             tokio::fs::read_to_string(&path)
                 .await?
@@ -556,28 +569,48 @@ impl FsBackend {
             1
         };
 
-        if current < Self::FORMAT_VERSION {
-            // Every format bump so far is backward-compatible at parse time, so migration only
-            // updates the stamp:
-            // - v1 → v2: `serde(alias = "note_id")` and `serde(default)` on `LogEntry` make old
-            //   log files parseable without renaming fields.
-            // - v5 (global-log compaction): a compacted log gains an `EpochHeader` first line and
-            //   offset cursors gain an `epoch:offset` form, both of which the readers treat as
-            //   optional — a pre-v5 log (no header) is simply epoch 0, and a bare-integer cursor
-            //   is read as `(epoch 0, offset)`. Old logs keep working until this device first
-            //   compacts them.
-            tracing::info!(
-                from = current,
-                to = Self::FORMAT_VERSION,
-                "Migrating FsBackend format"
-            );
+        if current > Self::FORMAT_VERSION {
+            return Err(StorageError::InvalidState(format!(
+                "on-disk format version {current} is newer than this build supports \
+                 (max {}); upgrade keeplin to open this store",
+                Self::FORMAT_VERSION
+            )));
         }
 
-        // Always (re)write the version stamp so that directories originally created
-        // without a stamp file are stamped on the very first startup that uses this
-        // version of the code.
+        for version in (current + 1)..=Self::FORMAT_VERSION {
+            self.apply_format_migration(version).await?;
+            // Stamp after each successful step so an interrupted run resumes correctly.
+            tokio::fs::write(&path, version.to_string()).await?;
+            tracing::info!(version, "Applied filesystem format migration");
+        }
+
+        // Stamp once more so a store already at the current version (empty loop above, e.g. a
+        // pre-stamp store that happened to be at `FORMAT_VERSION`) still records it.
         tokio::fs::write(&path, Self::FORMAT_VERSION.to_string()).await?;
         Ok(())
+    }
+
+    /// Apply the filesystem migration that advances the store **to** `version`.
+    ///
+    /// Every format bump so far is backward-compatible at parse time, so these steps are
+    /// no-ops that only advance the stamp:
+    /// - v1 → v2: `serde(alias = "note_id")` / `serde(default)` on [`LogEntry`] parse old logs
+    ///   without renaming fields.
+    /// - v3/v4: versioned note↔tag associations and resource tombstones are read through
+    ///   `serde(default)` fields on older records.
+    /// - v5: a compacted global log gains an [`EpochHeader`] first line and offset cursors gain
+    ///   an `epoch:offset` form, both treated as optional by the readers (a pre-v5 log is epoch
+    ///   `0`, a bare-integer cursor is `(epoch 0, offset)`).
+    ///
+    /// A future breaking change gets a real body here; the ladder guarantees it runs exactly
+    /// once, in order, on stores that need it.
+    async fn apply_format_migration(&self, version: u32) -> Result<(), StorageError> {
+        match version {
+            2..=5 => Ok(()),
+            other => Err(StorageError::InvalidState(format!(
+                "no filesystem migration defined for format version {other}"
+            ))),
+        }
     }
 
     // ── Path helpers — Notes ──────────────────────────────────────────────────
@@ -671,18 +704,24 @@ impl FsBackend {
     /// Read the device identifier from `.keeplin/device_id`, or generate and persist
     /// a new UUID v4 string if the file does not yet exist.
     ///
+    /// Returns `(device_id, fresh)` where `fresh` is `true` when the id was just created —
+    /// i.e. this is a brand-new store with no prior data. The device-id file is the first
+    /// thing written on init, so its absence is a reliable "never initialised" signal, which
+    /// [`ensure_format_version`](Self::ensure_format_version) uses to stamp a new store at the
+    /// current version rather than replaying the migration ladder over empty data.
+    ///
     /// The device identifier is used as the name of this device's log file
     /// (`{root}/logs/{device_id}.log`) and as the Argon2id salt for
     /// `EncryptedBackend`. It must remain stable across restarts.
-    async fn read_or_create_device_id(root: &Path) -> Result<String, StorageError> {
+    async fn read_or_create_device_id(root: &Path) -> Result<(String, bool), StorageError> {
         let path = root.join(".keeplin").join("device_id");
         if path.exists() {
             let id = tokio::fs::read_to_string(&path).await?;
-            Ok(id.trim().to_string())
+            Ok((id.trim().to_string(), false))
         } else {
             let id = new_id().to_string();
             tokio::fs::write(&path, &id).await?;
-            Ok(id)
+            Ok((id, true))
         }
     }
 
@@ -2331,5 +2370,68 @@ mod tests {
         assert_eq!(read.body, "body");
         assert!(!meta.exists(), "read must not rewrite meta.msgpack");
         assert!(!md.exists(), "read must not rewrite note.md");
+    }
+
+    #[tokio::test]
+    async fn fresh_store_is_stamped_current_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let be = FsBackend::new(dir.path()).await.unwrap();
+        let stamp = tokio::fs::read_to_string(be.format_version_path())
+            .await
+            .unwrap();
+        assert_eq!(
+            stamp.trim().parse::<u32>().unwrap(),
+            FsBackend::FORMAT_VERSION,
+            "a brand-new store starts stamped at the current format version"
+        );
+    }
+
+    #[tokio::test]
+    async fn migrates_a_legacy_stamp_and_preserves_data() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a store, write a note, then roll the format stamp back to 1 to simulate a
+        // layout produced by a build that predates the current format version.
+        let note_id = {
+            let be = FsBackend::new(dir.path()).await.unwrap();
+            let note = be.create_note(Note::new("legacy", "kept")).await.unwrap();
+            tokio::fs::write(be.format_version_path(), "1")
+                .await
+                .unwrap();
+            note.id
+        };
+
+        // Reopening runs the migration ladder up to the current version…
+        let be = FsBackend::new(dir.path()).await.unwrap();
+        let stamp = tokio::fs::read_to_string(be.format_version_path())
+            .await
+            .unwrap();
+        assert_eq!(
+            stamp.trim().parse::<u32>().unwrap(),
+            FsBackend::FORMAT_VERSION
+        );
+        // …without disturbing the data (every historical step is parse-compatible).
+        assert_eq!(be.read_note(note_id).await.unwrap().body, "kept");
+    }
+
+    #[tokio::test]
+    async fn refuses_to_open_a_newer_format() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let be = FsBackend::new(dir.path()).await.unwrap();
+            let future = (FsBackend::FORMAT_VERSION + 1).to_string();
+            tokio::fs::write(be.format_version_path(), future)
+                .await
+                .unwrap();
+        }
+        // FsBackend has no Debug, so match rather than unwrap_err.
+        let err = match FsBackend::new(dir.path()).await {
+            Ok(_) => panic!("opening a newer on-disk format must be refused"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, StorageError::InvalidState(ref m) if m.contains("newer than this build")),
+            "got: {err:?}"
+        );
     }
 }

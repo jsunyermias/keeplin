@@ -358,7 +358,9 @@ roughly in priority order:
 1. **No production sync server** ships in this repo — server mode needs a real relay
    (the WebSocket path is now covered end‑to‑end by a test‑only relay).
 2. Operability: liveness/readiness probes and Prometheus metrics ship (`GET /api/health`,
-   `/api/ready`, `/api/metrics`); a schema/format **migration path** is still outstanding.
+   `/api/ready`, `/api/metrics`), and both backends now carry a **versioned migration path**
+   (`DbBackend` via `PRAGMA user_version`, `FsBackend` via a stamped format ladder, each with
+   a downgrade guard).
 3. Performance at scale: `FsBackend` list reads re‑merge every note's per‑device logs
    on each call (the logs themselves are compacted automatically, but reads use no
    cached projection).
