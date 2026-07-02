@@ -333,7 +333,7 @@ cargo fmt --all --check
 The suite includes unit tests for the version‑vector merge, integration tests for both
 backends and the encryption layer, two‑device convergence tests, and an **end‑to‑end
 WebSocket sync test** (`keeplin-core/tests/ws_sync.rs`) that stands up an in‑process relay.
-CI (`.github/workflows/ci.yml`) runs check, test, clippy, and `cargo audit`.
+CI (`.github/workflows/ci.yml`) runs fmt, test, clippy (`--all-targets`), and `cargo audit`.
 
 ---
 
