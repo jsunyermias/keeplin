@@ -194,7 +194,7 @@ base64(user:password)` header (only required when `auth_username`/`auth_password
 | `POST /api/notes` | Create a note. |
 | `GET/PUT/DELETE /api/notes/:id` | Read / update / soft‑delete a note. |
 | `GET /api/notes/:id/tags` | List a note's tags. |
-| `PUT/DELETE /api/notes/:note_id/tags/:tag_id` | Add / remove a note↔tag association. |
+| `PUT/DELETE /api/notes/:note_id/tags/:tag_id` | Add / remove a note↔tag association. Adding returns `404` when the note or tag is missing or deleted (no dangling associations). |
 | `GET/POST /api/notebooks`, `GET/PUT/DELETE /api/notebooks/:id` | Notebook CRUD. |
 | `GET/POST /api/tags`, `GET/PUT/DELETE /api/tags/:id` | Tag CRUD. |
 | `GET/POST /api/resources`, `GET/PUT/DELETE /api/resources/:id` | Resource metadata CRUD. |

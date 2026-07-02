@@ -320,6 +320,79 @@ async fn add_and_list_note_tags() {
 }
 
 #[tokio::test]
+async fn add_note_tag_rejects_missing_or_deleted_ends() {
+    let backend = in_memory_backend().await;
+    let note = Note::new("N", "");
+    let tag = Tag::new("T");
+    let (note_id, tag_id) = (note.id, tag.id);
+    backend.create_note(note).await.unwrap();
+    backend.create_tag(tag).await.unwrap();
+
+    // Nonexistent note / tag: no dangling association may be created.
+    let err = backend
+        .add_note_tag(NoteTag {
+            note_id: uuid::Uuid::new_v4(),
+            tag_id,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)), "got: {err}");
+    let err = backend
+        .add_note_tag(NoteTag {
+            note_id,
+            tag_id: uuid::Uuid::new_v4(),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)), "got: {err}");
+
+    // Soft-deleted ends are rejected the same way.
+    backend.delete_note(note_id).await.unwrap();
+    let err = backend
+        .add_note_tag(NoteTag { note_id, tag_id })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)), "got: {err}");
+
+    // Nothing was attached by the failed calls.
+    let (tags, _) = backend.list_note_tags(note_id, 0, None).await.unwrap();
+    assert!(tags.is_empty());
+}
+
+#[tokio::test]
+async fn pagination_walks_notes_sharing_a_created_at() {
+    // Keyset pagination must visit every row exactly once even when several rows share
+    // one created_at — the case that relies on the cursor's `created_at = ?` equality
+    // branch, which in turn relies on the fixed-precision timestamp format.
+    let backend = in_memory_backend().await;
+    let shared_ts = chrono::Utc::now();
+    let mut expected = Vec::new();
+    for i in 0..3 {
+        let mut note = Note::new(format!("n{i}"), "");
+        note.created_at = shared_ts;
+        expected.push(note.id);
+        backend.create_note(note).await.unwrap();
+    }
+    expected.sort();
+
+    let mut seen = Vec::new();
+    let mut token = None;
+    loop {
+        let (page, next) = backend.list_notes(1, token).await.unwrap();
+        assert!(page.len() <= 1);
+        seen.extend(page.into_iter().map(|n| n.id));
+        match next {
+            Some(t) => token = Some(t),
+            None => break,
+        }
+    }
+    assert_eq!(
+        seen, expected,
+        "every note exactly once, in (created_at, id) order"
+    );
+}
+
+#[tokio::test]
 async fn remove_note_tag() {
     let backend = in_memory_backend().await;
 

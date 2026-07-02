@@ -20,6 +20,8 @@ use crate::{
     models::{Change, Note, NoteTag, Notebook, Resource, Tag},
 };
 
+use super::SortableRfc3339;
+
 // ── NoteRepository ────────────────────────────────────────────────────────────
 
 /// CRUD operations for [`Note`] entities.
@@ -121,7 +123,7 @@ fn paginate_notes(
             Some((ts, id_str)) => {
                 let cursor_id = Uuid::parse_str(id_str).ok();
                 items.partition_point(|n| {
-                    let item_ts = n.created_at.to_rfc3339();
+                    let item_ts = n.created_at.to_sortable_rfc3339();
                     item_ts.as_str() < ts
                         || (item_ts.as_str() == ts && cursor_id.is_some_and(|c| n.id <= c))
                 })
@@ -135,7 +137,7 @@ fn paginate_notes(
     let page: Vec<Note> = remaining.into_iter().take(limit).collect();
     let next = if has_more {
         page.last()
-            .map(|n| format!("{}|{}", n.created_at.to_rfc3339(), n.id))
+            .map(|n| format!("{}|{}", n.created_at.to_sortable_rfc3339(), n.id))
     } else {
         None
     };
@@ -209,6 +211,11 @@ pub trait TagRepository: Send + Sync + 'static {
     ///
     /// Must be idempotent: attaching a tag that is already attached must not
     /// return an error.
+    ///
+    /// Returns [`StorageError::NotFound`] when the note or the tag does not exist or is
+    /// soft-deleted — the API must not create dangling associations. (`apply_change`
+    /// deliberately skips this validation: sync delivery order is not guaranteed, so an
+    /// association may arrive before its note or tag.)
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError>;
 
     /// Detaches the tag identified by `tag_id` from the note identified by `note_id`.

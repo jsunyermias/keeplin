@@ -308,6 +308,48 @@ async fn add_and_list_note_tags() {
 }
 
 #[tokio::test]
+async fn add_note_tag_rejects_missing_or_deleted_ends() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    let note = Note::new("N", "");
+    let tag = Tag::new("T");
+    let (note_id, tag_id) = (note.id, tag.id);
+    backend.create_note(note).await.unwrap();
+    backend.create_tag(tag).await.unwrap();
+
+    // Nonexistent note / tag: no dangling association may be created.
+    let err = backend
+        .add_note_tag(NoteTag {
+            note_id: uuid::Uuid::new_v4(),
+            tag_id,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)), "got: {err}");
+    let err = backend
+        .add_note_tag(NoteTag {
+            note_id,
+            tag_id: uuid::Uuid::new_v4(),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)), "got: {err}");
+
+    // Soft-deleted ends are rejected the same way.
+    backend.delete_tag(tag_id).await.unwrap();
+    let err = backend
+        .add_note_tag(NoteTag { note_id, tag_id })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)), "got: {err}");
+
+    // Nothing was attached by the failed calls.
+    let (tags, _) = backend.list_note_tags(note_id, 0, None).await.unwrap();
+    assert!(tags.is_empty());
+}
+
+#[tokio::test]
 async fn remove_note_tag() {
     let dir = tempdir().unwrap();
     let backend = FsBackend::new(dir.path()).await.unwrap();
@@ -760,8 +802,10 @@ async fn fs_note_log_compacts_and_still_converges() {
     );
 }
 
-/// Simulate Syncthing replicating one device's global NDJSON logs to another by copying every
-/// `logs/*.log` file (each is single-writer, so this never conflicts).
+/// Simulate Syncthing replicating one device's single-writer log files to another: every
+/// global `logs/*.log` file plus every per-note `notes/{id}/log.*.msgpack` op log. Each has a
+/// single writer, so this never conflicts. Projections (`note.md`, `meta.msgpack`) are *not*
+/// copied — they are per-device caches the receiver regenerates from the logs on sync.
 async fn replicate_logs(from: &std::path::Path, to: &std::path::Path) {
     let from_logs = from.join("logs");
     let to_logs = to.join("logs");
@@ -773,6 +817,23 @@ async fn replicate_logs(from: &std::path::Path, to: &std::path::Path) {
             tokio::fs::copy(e.path(), to_logs.join(&name))
                 .await
                 .unwrap();
+        }
+    }
+
+    let from_notes = from.join("notes");
+    if let Ok(mut notes_rd) = tokio::fs::read_dir(&from_notes).await {
+        while let Some(note_dir) = notes_rd.next_entry().await.unwrap() {
+            let to_note_dir = to.join("notes").join(note_dir.file_name());
+            tokio::fs::create_dir_all(&to_note_dir).await.unwrap();
+            let mut files = tokio::fs::read_dir(note_dir.path()).await.unwrap();
+            while let Some(f) = files.next_entry().await.unwrap() {
+                let name = f.file_name().to_string_lossy().into_owned();
+                if name.starts_with("log.") && name.ends_with(".msgpack") {
+                    tokio::fs::copy(f.path(), to_note_dir.join(&name))
+                        .await
+                        .unwrap();
+                }
+            }
         }
     }
 }

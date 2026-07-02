@@ -26,7 +26,10 @@ use crate::{
 };
 
 use super::note_log::{self, resolve, VersionVector, Winner};
-use super::{NoteRepository, NotebookRepository, ResourceRepository, SyncBackend, TagRepository};
+use super::{
+    NoteRepository, NotebookRepository, ResourceRepository, SortableRfc3339, SyncBackend,
+    TagRepository,
+};
 
 /// A WebSocket stream over either a plain TCP connection or a TLS-wrapped TCP connection.
 ///
@@ -405,7 +408,13 @@ impl DbBackend {
             .execute(
                 "INSERT INTO entity_changes (entity_type, entity_id, operation, changed_at, data)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
-                libsql::params![entity_type, entity_id, operation, now().to_rfc3339(), data,],
+                libsql::params![
+                    entity_type,
+                    entity_id,
+                    operation,
+                    now().to_sortable_rfc3339(),
+                    data,
+                ],
             )
             .await?;
         Ok(())
@@ -805,6 +814,25 @@ impl DbBackend {
         Ok(vv)
     }
 
+    /// Whether a row exists in `table` and is live (`deleted_at IS NULL`). Used by
+    /// `add_note_tag` to refuse dangling associations.
+    ///
+    /// `table` is always one of the hard-coded literals `"notes"` or `"tags"` — never
+    /// caller-supplied — so interpolating it into the query is safe.
+    async fn row_is_live(&self, table: &str, id: &str) -> Result<bool, StorageError> {
+        let mut rows = self
+            .conn
+            .query(
+                &format!("SELECT deleted_at FROM {table} WHERE id = ?1"),
+                [id.to_owned()],
+            )
+            .await?;
+        match rows.next().await? {
+            Some(row) => Ok(row.get::<Option<String>>(0)?.is_none()),
+            None => Ok(false),
+        }
+    }
+
     // ── note↔tag association version helpers ──────────────────────────────────
 
     /// Version metadata `(vv, updated_at, last_writer)` of a note↔tag association, or `None`
@@ -898,8 +926,8 @@ impl DbBackend {
                 libsql::params![
                     note_id.to_owned(),
                     tag_id.to_owned(),
-                    updated_at.to_rfc3339(),
-                    deleted_at.map(|d| d.to_rfc3339()),
+                    updated_at.to_sortable_rfc3339(),
+                    deleted_at.map(|d| d.to_sortable_rfc3339()),
                     vv_to_json(vv),
                     last_writer.to_owned(),
                 ],
@@ -1144,11 +1172,11 @@ impl NoteRepository for DbBackend {
                         note.body.clone(),
                         note.notebook_id.map(|u| u.to_string()),
                         note.is_todo as i64,
-                        note.todo_due.map(|d| d.to_rfc3339()),
-                        note.todo_completed.map(|d| d.to_rfc3339()),
-                        note.created_at.to_rfc3339(),
-                        note.updated_at.to_rfc3339(),
-                        note.deleted_at.map(|d| d.to_rfc3339()),
+                        note.todo_due.map(|d| d.to_sortable_rfc3339()),
+                        note.todo_completed.map(|d| d.to_sortable_rfc3339()),
+                        note.created_at.to_sortable_rfc3339(),
+                        note.updated_at.to_sortable_rfc3339(),
+                        note.deleted_at.map(|d| d.to_sortable_rfc3339()),
                         note.alias.clone(),
                         bookmarks_to_json(&note.bookmarks),
                         links_to_json(&note.links),
@@ -1212,10 +1240,10 @@ impl NoteRepository for DbBackend {
                         note.body.clone(),
                         note.notebook_id.map(|u| u.to_string()),
                         note.is_todo as i64,
-                        note.todo_due.map(|d| d.to_rfc3339()),
-                        note.todo_completed.map(|d| d.to_rfc3339()),
-                        note.updated_at.to_rfc3339(),
-                        note.deleted_at.map(|d| d.to_rfc3339()),
+                        note.todo_due.map(|d| d.to_sortable_rfc3339()),
+                        note.todo_completed.map(|d| d.to_sortable_rfc3339()),
+                        note.updated_at.to_sortable_rfc3339(),
+                        note.deleted_at.map(|d| d.to_sortable_rfc3339()),
                         note.alias.clone(),
                         bookmarks_to_json(&note.bookmarks),
                         links_to_json(&note.links),
@@ -1257,7 +1285,7 @@ impl NoteRepository for DbBackend {
                 .conn
                 .execute(
                     "UPDATE notes SET deleted_at = ?2, updated_at = ?2, vv = ?3, last_writer = ?4 WHERE id = ?1",
-                    libsql::params![id.to_string(), ts.to_rfc3339(), vv_to_json(&vv), writer.clone()],
+                    libsql::params![id.to_string(), ts.to_sortable_rfc3339(), vv_to_json(&vv), writer.clone()],
                 )
                 .await?;
             if affected == 0 {
@@ -1309,7 +1337,7 @@ impl NoteRepository for DbBackend {
             notes.push(Self::row_to_note(&row)?);
         }
         Ok(build_page(notes, limit as usize, |n| {
-            format!("{}|{}", n.created_at.to_rfc3339(), n.id)
+            format!("{}|{}", n.created_at.to_sortable_rfc3339(), n.id)
         }))
     }
 
@@ -1353,7 +1381,7 @@ impl NoteRepository for DbBackend {
             notes.push(Self::row_to_note(&row)?);
         }
         Ok(build_page(notes, limit as usize, |n| {
-            format!("{}|{}", n.created_at.to_rfc3339(), n.id)
+            format!("{}|{}", n.created_at.to_sortable_rfc3339(), n.id)
         }))
     }
 }
@@ -1377,9 +1405,9 @@ impl NotebookRepository for DbBackend {
                     libsql::params![
                         notebook.id.to_string(),
                         notebook.title.clone(),
-                        notebook.created_at.to_rfc3339(),
-                        notebook.updated_at.to_rfc3339(),
-                        notebook.deleted_at.map(|d| d.to_rfc3339()),
+                        notebook.created_at.to_sortable_rfc3339(),
+                        notebook.updated_at.to_sortable_rfc3339(),
+                        notebook.deleted_at.map(|d| d.to_sortable_rfc3339()),
                         notebook.alias.clone(),
                         vv_to_json(&notebook.vv),
                         notebook.last_writer.clone(),
@@ -1435,8 +1463,8 @@ impl NotebookRepository for DbBackend {
                     libsql::params![
                         notebook.id.to_string(),
                         notebook.title.clone(),
-                        notebook.updated_at.to_rfc3339(),
-                        notebook.deleted_at.map(|d| d.to_rfc3339()),
+                        notebook.updated_at.to_sortable_rfc3339(),
+                        notebook.deleted_at.map(|d| d.to_sortable_rfc3339()),
                         notebook.alias.clone(),
                         vv_to_json(&notebook.vv),
                         notebook.last_writer.clone(),
@@ -1475,7 +1503,7 @@ impl NotebookRepository for DbBackend {
                 .conn
                 .execute(
                     "UPDATE notebooks SET deleted_at=?2, updated_at=?2, vv=?3, last_writer=?4 WHERE id=?1",
-                    libsql::params![id.to_string(), ts.to_rfc3339(), vv_to_json(&vv), writer.clone()],
+                    libsql::params![id.to_string(), ts.to_sortable_rfc3339(), vv_to_json(&vv), writer.clone()],
                 )
                 .await?;
             if affected == 0 {
@@ -1526,7 +1554,7 @@ impl NotebookRepository for DbBackend {
             notebooks.push(Self::row_to_notebook(&row)?);
         }
         Ok(build_page(notebooks, limit as usize, |nb| {
-            format!("{}|{}", nb.created_at.to_rfc3339(), nb.id)
+            format!("{}|{}", nb.created_at.to_sortable_rfc3339(), nb.id)
         }))
     }
 }
@@ -1548,9 +1576,9 @@ impl TagRepository for DbBackend {
                     libsql::params![
                         tag.id.to_string(),
                         tag.title.clone(),
-                        tag.created_at.to_rfc3339(),
-                        tag.updated_at.to_rfc3339(),
-                        tag.deleted_at.map(|d| d.to_rfc3339()),
+                        tag.created_at.to_sortable_rfc3339(),
+                        tag.updated_at.to_sortable_rfc3339(),
+                        tag.deleted_at.map(|d| d.to_sortable_rfc3339()),
                         vv_to_json(&tag.vv),
                         tag.last_writer.clone(),
                     ],
@@ -1603,8 +1631,8 @@ impl TagRepository for DbBackend {
                     libsql::params![
                         tag.id.to_string(),
                         tag.title.clone(),
-                        tag.updated_at.to_rfc3339(),
-                        tag.deleted_at.map(|d| d.to_rfc3339()),
+                        tag.updated_at.to_sortable_rfc3339(),
+                        tag.deleted_at.map(|d| d.to_sortable_rfc3339()),
                         vv_to_json(&tag.vv),
                         tag.last_writer.clone(),
                     ],
@@ -1642,7 +1670,7 @@ impl TagRepository for DbBackend {
                 .conn
                 .execute(
                     "UPDATE tags SET deleted_at=?2, updated_at=?2, vv=?3, last_writer=?4 WHERE id=?1",
-                    libsql::params![id.to_string(), ts.to_rfc3339(), vv_to_json(&vv), writer.clone()],
+                    libsql::params![id.to_string(), ts.to_sortable_rfc3339(), vv_to_json(&vv), writer.clone()],
                 )
                 .await?;
             if affected == 0 {
@@ -1693,7 +1721,7 @@ impl TagRepository for DbBackend {
             tags.push(Self::row_to_tag(&row)?);
         }
         Ok(build_page(tags, limit as usize, |t| {
-            format!("{}|{}", t.created_at.to_rfc3339(), t.id)
+            format!("{}|{}", t.created_at.to_sortable_rfc3339(), t.id)
         }))
     }
 
@@ -1706,6 +1734,15 @@ impl TagRepository for DbBackend {
         let writer = self.device_id.clone();
         let ts = now();
         let r: Result<(), StorageError> = async {
+            // Both ends must exist and be live: the API must not create a dangling
+            // association. `apply_change` deliberately skips this check — sync delivery
+            // order is not guaranteed, so an association may arrive before its note/tag.
+            if !self.row_is_live("notes", &note_id).await? {
+                return Err(StorageError::NotFound(note_id.clone()));
+            }
+            if !self.row_is_live("tags", &tag_id).await? {
+                return Err(StorageError::NotFound(tag_id.clone()));
+            }
             // An add is the association's *present* state (deleted_at = NULL), versioned so a
             // concurrent add-vs-remove converges through `resolve`.
             self.upsert_assoc(&note_id, &tag_id, ts, None, &vv, &writer)
@@ -1792,7 +1829,7 @@ impl TagRepository for DbBackend {
             tags.push(Self::row_to_tag(&row)?);
         }
         Ok(build_page(tags, limit as usize, |t| {
-            format!("{}|{}", t.created_at.to_rfc3339(), t.id)
+            format!("{}|{}", t.created_at.to_sortable_rfc3339(), t.id)
         }))
     }
 }
@@ -1828,8 +1865,8 @@ impl ResourceRepository for DbBackend {
                         resource.file_name.clone(),
                         resource.size as i64,
                         data,
-                        resource.created_at.to_rfc3339(),
-                        resource.deleted_at.map(|d| d.to_rfc3339()),
+                        resource.created_at.to_sortable_rfc3339(),
+                        resource.deleted_at.map(|d| d.to_sortable_rfc3339()),
                         vv_to_json(&resource.vv),
                         resource.last_writer.clone(),
                     ],
@@ -1894,7 +1931,7 @@ impl ResourceRepository for DbBackend {
                     "UPDATE resources SET deleted_at=?2, vv=?3, last_writer=?4 WHERE id=?1",
                     libsql::params![
                         id.to_string(),
-                        ts.to_rfc3339(),
+                        ts.to_sortable_rfc3339(),
                         vv_to_json(&vv),
                         writer.clone()
                     ],
@@ -1950,7 +1987,7 @@ impl ResourceRepository for DbBackend {
             resources.push(Self::row_to_resource(&row)?);
         }
         Ok(build_page(resources, limit as usize, |r| {
-            format!("{}|{}", r.created_at.to_rfc3339(), r.id)
+            format!("{}|{}", r.created_at.to_sortable_rfc3339(), r.id)
         }))
     }
 }
@@ -1961,7 +1998,7 @@ impl ResourceRepository for DbBackend {
 impl SyncBackend for DbBackend {
     async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError> {
         let _read_guard = self.lock.read().await;
-        let since_str = since.to_rfc3339();
+        let since_str = since.to_sortable_rfc3339();
         let mut rows = self
             .conn
             .query(
@@ -2045,11 +2082,11 @@ impl SyncBackend for DbBackend {
                                 note.body,
                                 note.notebook_id.map(|u| u.to_string()),
                                 note.is_todo as i64,
-                                note.todo_due.map(|d| d.to_rfc3339()),
-                                note.todo_completed.map(|d| d.to_rfc3339()),
-                                note.created_at.to_rfc3339(),
-                                note.updated_at.to_rfc3339(),
-                                note.deleted_at.map(|d| d.to_rfc3339()),
+                                note.todo_due.map(|d| d.to_sortable_rfc3339()),
+                                note.todo_completed.map(|d| d.to_sortable_rfc3339()),
+                                note.created_at.to_sortable_rfc3339(),
+                                note.updated_at.to_sortable_rfc3339(),
+                                note.deleted_at.map(|d| d.to_sortable_rfc3339()),
                                 note.alias.clone(),
                                 bookmarks_to_json(&note.bookmarks),
                                 links_to_json(&note.links),
@@ -2088,7 +2125,7 @@ impl SyncBackend for DbBackend {
                         "UPDATE notes SET deleted_at = ?2, updated_at = ?2, vv = ?3, last_writer = ?4 WHERE id = ?1",
                         libsql::params![
                             id.to_string(),
-                            deleted_at.to_rfc3339(),
+                            deleted_at.to_sortable_rfc3339(),
                             vv_to_json(&vv),
                             last_writer,
                         ],
@@ -2116,9 +2153,9 @@ impl SyncBackend for DbBackend {
                         libsql::params![
                             notebook.id.to_string(),
                             notebook.title,
-                            notebook.created_at.to_rfc3339(),
-                            notebook.updated_at.to_rfc3339(),
-                            notebook.deleted_at.map(|d| d.to_rfc3339()),
+                            notebook.created_at.to_sortable_rfc3339(),
+                            notebook.updated_at.to_sortable_rfc3339(),
+                            notebook.deleted_at.map(|d| d.to_sortable_rfc3339()),
                             notebook.alias.clone(),
                             vv_to_json(&notebook.vv),
                             notebook.last_writer.clone(),
@@ -2141,7 +2178,7 @@ impl SyncBackend for DbBackend {
                 self.conn
                     .execute(
                         "UPDATE notebooks SET deleted_at = ?2, updated_at = ?2, vv = ?3, last_writer = ?4 WHERE id = ?1",
-                        libsql::params![id.to_string(), deleted_at.to_rfc3339(), vv_to_json(&vv), last_writer],
+                        libsql::params![id.to_string(), deleted_at.to_sortable_rfc3339(), vv_to_json(&vv), last_writer],
                     )
                     .await?;
             }
@@ -2166,9 +2203,9 @@ impl SyncBackend for DbBackend {
                         libsql::params![
                             tag.id.to_string(),
                             tag.title,
-                            tag.created_at.to_rfc3339(),
-                            tag.updated_at.to_rfc3339(),
-                            tag.deleted_at.map(|d| d.to_rfc3339()),
+                            tag.created_at.to_sortable_rfc3339(),
+                            tag.updated_at.to_sortable_rfc3339(),
+                            tag.deleted_at.map(|d| d.to_sortable_rfc3339()),
                             vv_to_json(&tag.vv),
                             tag.last_writer.clone(),
                         ],
@@ -2190,7 +2227,7 @@ impl SyncBackend for DbBackend {
                 self.conn
                     .execute(
                         "UPDATE tags SET deleted_at = ?2, updated_at = ?2, vv = ?3, last_writer = ?4 WHERE id = ?1",
-                        libsql::params![id.to_string(), deleted_at.to_rfc3339(), vv_to_json(&vv), last_writer],
+                        libsql::params![id.to_string(), deleted_at.to_sortable_rfc3339(), vv_to_json(&vv), last_writer],
                     )
                     .await?;
             }
@@ -2248,8 +2285,8 @@ impl SyncBackend for DbBackend {
                                 resource.file_name,
                                 resource.size as i64,
                                 blob,
-                                resource.created_at.to_rfc3339(),
-                                resource.deleted_at.map(|d| d.to_rfc3339()),
+                                resource.created_at.to_sortable_rfc3339(),
+                                resource.deleted_at.map(|d| d.to_sortable_rfc3339()),
                                 vv_to_json(&resource.vv),
                                 resource.last_writer,
                             ],
@@ -2274,7 +2311,7 @@ impl SyncBackend for DbBackend {
                             "UPDATE resources SET deleted_at=?2, vv=?3, last_writer=?4 WHERE id=?1",
                             libsql::params![
                                 id.to_string(),
-                                deleted_at.to_rfc3339(),
+                                deleted_at.to_sortable_rfc3339(),
                                 vv_to_json(&vv),
                                 last_writer,
                             ],
@@ -2307,7 +2344,7 @@ impl SyncBackend for DbBackend {
         self.conn
             .execute(
                 "INSERT OR REPLACE INTO sync_state (key, value) VALUES ('last_sync', ?1)",
-                [ts.to_rfc3339()],
+                [ts.to_sortable_rfc3339()],
             )
             .await?;
         Ok(())
@@ -2453,7 +2490,7 @@ impl SyncBackend for DbBackend {
             .conn
             .execute(
                 "DELETE FROM entity_changes WHERE changed_at < ?1",
-                [older_than.to_rfc3339()],
+                [older_than.to_sortable_rfc3339()],
             )
             .await?;
         tracing::info!(rows = affected, "Pruned entity_changes journal");
