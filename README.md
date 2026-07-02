@@ -353,10 +353,11 @@ roughly in priority order:
 
 1. **No production sync server** ships in this repo — server mode needs a real relay
    (the WebSocket path is now covered end‑to‑end by a test‑only relay).
-2. `DbBackend` resolves note conflicts by last‑write‑wins (no version‑vector merge).
-3. Operability: metrics, health checks, and a schema/format **migration path**.
-4. Performance at scale: filesystem reads materialize from logs (no compaction yet).
-5. Hardening: `wss://`/TLS by default, chunked upload for large attachments.
+2. Operability: metrics, health checks, and a schema/format **migration path**.
+3. Performance at scale: `FsBackend` list reads re‑merge every note's per‑device logs
+   on each call (the logs themselves are compacted automatically, but reads use no
+   cached projection).
+4. Hardening: `wss://`/TLS by default, chunked upload for large attachments.
 
 ---
 

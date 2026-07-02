@@ -42,12 +42,15 @@ pub enum StorageError {
     #[error("Not found: {0}")]
     NotFound(String),
 
-    /// A write conflict between two concurrent mutations.
+    /// A write was rejected because it conflicts with existing state. Today this means
+    /// a **duplicate alias**: [`crate::linking::LinkingBackend`] returns it when a local
+    /// create/update claims a note/notebook alias already held by another live entity of
+    /// the same type. The daemon maps it to HTTP `409 Conflict` (REST) and
+    /// `ALREADY_EXISTS` (gRPC).
     ///
-    /// Reserved: the built-in backends do not currently return this variant because
-    /// `apply_change` reconciles concurrent edits with last-write-wins by `updated_at`
-    /// rather than surfacing an error. It is retained for backends or future modes that
-    /// implement strict (error-on-conflict) reconciliation.
+    /// Concurrent *edits* to the same entity never surface this error: `apply_change`
+    /// reconciles them automatically with version vectors and a deterministic
+    /// `(timestamp, device_id)` tiebreak (see [`crate::storage::note_log::resolve`]).
     #[error("Conflict: {0}")]
     Conflict(String),
 
@@ -104,9 +107,11 @@ pub enum SyncError {
     /// `local_id` and `remote_id` identify the conflicting records for diagnostic
     /// purposes (they may be the same entity UUID with different content).
     ///
-    /// Reserved: the default sync cycle resolves conflicts automatically via
-    /// last-write-wins and does not return this variant. It exists for callers that
-    /// layer strict conflict detection on top of [`crate::sync::run_sync`].
+    /// Reserved: the default sync cycle resolves conflicts automatically via version
+    /// vectors (with a deterministic `(timestamp, device_id)` tiebreak — see
+    /// [`crate::storage::note_log::resolve`]) and does not return this variant. It
+    /// exists for callers that layer strict conflict detection on top of
+    /// [`crate::sync::run_sync`].
     #[error("Conflict: local={local_id}, remote={remote_id}")]
     Conflict { local_id: String, remote_id: String },
 
