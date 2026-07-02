@@ -85,6 +85,53 @@ differs.
 > You **can** do a one‑shot copy of a store from one backend to the other — see
 > [Migrating between backends](#migrating-between-backends).
 
+### Multi‑device setup with Syncthing
+
+The whole model rests on one invariant: **every log file has exactly one writer**, and the
+writer's identity lives in `{data_dir}/.keeplin/device_id`. That directory is **per‑device
+state and must never be replicated**. If Syncthing copies `.keeplin/` to another device, the
+second device adopts (or fights over) the first one's identity, both devices append to the
+*same* log files, and Syncthing starts producing `*.sync-conflict-*` copies of files that
+were designed never to conflict — silently breaking convergence.
+
+On **every** device, add a [`.stignore`](https://docs.syncthing.net/users/ignoring.html)
+file at the root of the shared folder before the first sync:
+
+```
+// {data_dir}/.stignore — keep per-device state and scratch files local
+.keeplin
+*.tmp
+```
+
+- `.keeplin` holds this device's identity (`device_id`), its read cursors (`offsets/`),
+  its sync watermark, and (when encryption is on without a configured `key_salt`) its
+  persisted key salt. None of it is meaningful on another device.
+- `*.tmp` are the short‑lived halves of atomic writes; excluding them avoids pointless
+  replication churn (never exclude anything else — every other file is real data).
+- For **encrypted** multi‑device sync, do not rely on the per‑device persisted salt: set
+  the **same `key_salt`** explicitly in the config of every device (see
+  [`SECURITY.md`](SECURITY.md#multi-device-encryption-constraint)).
+
+The daemon checks for `*.sync-conflict-*` files at startup and logs a prominent error if
+any exist — that is the signature of a replicated `.keeplin/` or of two daemons sharing an
+identity, and it should be fixed before continuing to write.
+
+### Backups
+
+For a store you care about, back up:
+
+1. **The data directory** (`data_dir`) — notes, notebooks, tags, associations, resources,
+   and the per‑device logs. Any file‑level backup tool works; the on‑disk files are only
+   ever replaced atomically, so a snapshot is always internally consistent per file.
+2. **`.keeplin/key_salt`** (or your configured `key_salt` value) **and your encryption
+   password** — with encryption on, the data is unrecoverable without both. The salt is
+   not secret; keep a copy wherever you keep the password.
+
+A second Syncthing device is a live replica, which protects against device loss — but it
+is **not** a backup against accidental deletion (deletes replicate too). Syncthing's
+[file versioning](https://docs.syncthing.net/users/versioning.html) or a periodic snapshot
+of `data_dir` covers that case.
+
 ---
 
 ## Quick start

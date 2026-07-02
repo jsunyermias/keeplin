@@ -102,6 +102,12 @@ both inputs must match for two devices to derive the same key. Because encryptio
 happens before data is written or synced, a mismatch in either value means a peer
 receives ciphertext it cannot decrypt.
 
+Multi-device replication itself has one hard setup requirement: **exclude `.keeplin/`
+from Syncthing** (it holds each device's identity; replicating it makes two devices share
+a writer identity and breaks the single-writer invariant every log relies on). See the
+README's "Multi-device setup with Syncthing" section; the daemon logs a prominent error
+at startup when it finds `*.sync-conflict-*` files, the signature of this misconfiguration.
+
 If `key_salt` is left unset, the salt defaults to the device ID — which is unique per
 installation — so encrypted data is **not** portable to other devices. The effective
 salt is persisted to `{data_dir}/.keeplin/key_salt` (plaintext; the salt is not secret)

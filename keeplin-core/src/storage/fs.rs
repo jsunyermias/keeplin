@@ -532,6 +532,23 @@ impl FsBackend {
             );
         }
 
+        let conflicts = Self::scan_sync_conflicts(&root).await;
+        if !conflicts.is_empty() {
+            for path in &conflicts {
+                tracing::error!(path = %path.display(), "Syncthing conflict copy detected");
+            }
+            tracing::error!(
+                count = conflicts.len(),
+                "Syncthing '*.sync-conflict-*' files exist in this store. Every keeplin \
+                 file has a single writer, so conflict copies mean two devices are \
+                 fighting over the same files — almost always because `.keeplin/` (this \
+                 device's identity) was replicated instead of excluded via .stignore. \
+                 Fix the Syncthing ignore rules (see README, 'Multi-device setup with \
+                 Syncthing'), then reconcile each conflict copy manually before trusting \
+                 further writes."
+            );
+        }
+
         let (device_id, fresh) = Self::read_or_create_device_id(&root).await?;
         let backend = Self {
             root,
@@ -572,6 +589,55 @@ impl FsBackend {
             }
         }
         removed
+    }
+
+    /// Collect every `*.sync-conflict-*` file in the keeplin-managed directories (and the
+    /// store root). Such files are produced by Syncthing when two devices modify the same
+    /// file — which, in a store whose every file has a single writer, is the signature of
+    /// a replicated `.keeplin/` directory (two devices sharing one identity). The scan is
+    /// read-only and best-effort: nothing is deleted (the copies may hold the only good
+    /// version of the data) and errors are ignored; the caller logs the findings.
+    async fn scan_sync_conflicts(root: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        let mut dirs: Vec<PathBuf> = [
+            "",
+            "notebooks",
+            "tags",
+            "logs",
+            ".keeplin",
+            ".keeplin/offsets",
+        ]
+        .iter()
+        .map(|d| root.join(d))
+        .collect();
+        for nested in ["notes", "note_tags", "resources"] {
+            let Ok(mut rd) = tokio::fs::read_dir(root.join(nested)).await else {
+                continue;
+            };
+            while let Ok(Some(entry)) = rd.next_entry().await {
+                if entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+                    dirs.push(entry.path());
+                }
+            }
+        }
+        for dir in dirs {
+            let Ok(mut rd) = tokio::fs::read_dir(&dir).await else {
+                continue;
+            };
+            while let Ok(Some(entry)) = rd.next_entry().await {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.contains(".sync-conflict-")
+                    && entry
+                        .file_type()
+                        .await
+                        .map(|t| t.is_file())
+                        .unwrap_or(false)
+                {
+                    found.push(entry.path());
+                }
+            }
+        }
+        found
     }
 
     /// Remove every orphaned `*.tmp` regular file directly inside `dir` (non-recursive),
@@ -2785,6 +2851,51 @@ mod tests {
             snapshot.contains(&nb.id.to_string()),
             "the repaired notebook is present in the snapshot"
         );
+    }
+
+    /// Syncthing conflict copies — the signature of a replicated `.keeplin/` — must be
+    /// detected wherever they appear, without deleting them or blocking startup.
+    #[tokio::test]
+    async fn detects_syncthing_conflict_copies_without_removing_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let note_id = {
+            let be = FsBackend::new(dir.path()).await.unwrap();
+            be.create_note(Note::new("t", "b")).await.unwrap().id
+        };
+        let conflicts = [
+            dir.path()
+                .join(".keeplin")
+                .join("device_id.sync-conflict-20260702-120000-AAAAAAA"),
+            dir.path()
+                .join("notebooks")
+                .join("junk.sync-conflict-20260702-120000-BBBBBBB.msgpack"),
+            dir.path()
+                .join("notes")
+                .join(note_id.to_string())
+                .join("log.dev.sync-conflict-20260702-120000-CCCCCCC.msgpack"),
+        ];
+        for p in &conflicts {
+            std::fs::write(p, b"conflict copy").unwrap();
+        }
+
+        let found = FsBackend::scan_sync_conflicts(dir.path()).await;
+        assert_eq!(
+            found.len(),
+            conflicts.len(),
+            "all copies detected: {found:?}"
+        );
+
+        // Startup only reports — the copies may hold the sole good version of the data,
+        // so they are never deleted, and the store still opens.
+        let be = FsBackend::new(dir.path()).await.unwrap();
+        for p in &conflicts {
+            assert!(
+                p.exists(),
+                "conflict copy must be preserved: {}",
+                p.display()
+            );
+        }
+        assert_eq!(be.read_note(note_id).await.unwrap().body, "b");
     }
 
     #[tokio::test]
