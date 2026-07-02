@@ -18,6 +18,7 @@ coexist.
 | `events: broadcast::Sender<Change>` | the live-feed channel; each WS connection subscribes |
 | `metrics: Arc<crate::metrics::Metrics>` | operational counters, shared with the outermost `MetricsBackend` decorator; rendered by `GET /metrics` |
 | `max_body_bytes: usize` | request-body cap (from `max_message_size`), raising axum's 2 MiB default |
+| `max_upload_bytes: usize` | cap for the streamed `POST /resources/upload` route, which bypasses `max_body_bytes` |
 | `journal_retention_days: u64` | days of change-journal history to keep; `POST /sync` prunes older rows |
 | `auth_username` / `auth_password` | Basic-Auth credentials (both `Some` → auth required) |
 
@@ -41,7 +42,8 @@ metrics); every other route is behind auth and counted by `status_mw`.
 | `GET /links/resolve?ref=#…` | resolve a reference → `{ note_id, bookmark_number }` |
 | `GET /aliases/conflicts` | aliases shared by 2+ live entities (sync collisions) |
 | `GET/POST/PUT/DELETE /notebooks`, `/tags` | notebook / tag CRUD |
-| `GET/POST /resources`, `GET/PUT/DELETE /resources/:id`, `GET /resources/:id/data` | resource metadata CRUD + raw upload/download |
+| `GET/POST /resources`, `GET/PUT/DELETE /resources/:id`, `GET /resources/:id/data` | resource metadata CRUD + raw upload/download (create is capped at `max_body_bytes`) |
+| `POST /resources/upload` | **streaming upload** for large attachments: reads the body incrementally up to `max_upload_bytes` (this one route disables the router's body limit); over the cap → `413` |
 | `POST /sync` | run one sync cycle → `{ "applied": n }`, then prune journal rows older than `journal_retention_days` (shared `server::prune_journal_after_sync`) |
 | `GET /ws` | upgrade to the WebSocket live-change feed |
 
@@ -80,6 +82,13 @@ published.
 `POST /api/resources?title=&file_name=` with the raw file bytes as the body and `Content-Type`
 as the MIME type. The body is capped at `max_body_bytes` (= `max_message_size`, 32 MiB default)
 via `DefaultBodyLimit`, matching gRPC.
+
+For attachments larger than that, `POST /api/resources/upload` (`upload_resource`) reads the
+body incrementally via `axum::body::to_bytes` up to `max_upload_bytes`, returning `413` when it
+is exceeded. That route carries a per-route `DefaultBodyLimit::disable()` so the router-wide
+`max_body_bytes` cap does not apply to it. The gRPC equivalent is the client-streaming
+`UploadResource` RPC (see `server.md`). The assembled payload is still buffered in memory before
+`create_resource`; streaming it to storage is a later refinement.
 
 ## Tests
 

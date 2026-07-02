@@ -50,9 +50,10 @@ requests carry `page_size` + `page_token`, responses carry a `next_page_token`.
 | Method | Request | Response | Description |
 |--------|---------|----------|-------------|
 | `ListResources` | `ListResourcesRequest` | `ListResourcesResponse` | Lists resource metadata (no binary payload) |
-| `CreateResource` | `CreateResourceRequest` | `CreateResourceResponse` | Uploads resource metadata and binary data together |
+| `CreateResource` | `CreateResourceRequest` | `CreateResourceResponse` | Uploads resource metadata and binary data in one message (bounded by `max_message_size`) |
+| `UploadResource` | `stream UploadResourceRequest` | `UploadResourceResponse` | **Client-streaming** upload for large attachments: one `meta` frame, then payload `chunk` frames in order, so no single message holds the whole file. Assembled payload bounded by `max_upload_bytes` |
 | `GetResource` | `GetResourceRequest` | `GetResourceResponse` | Returns metadata and binary data for one resource |
-| `DeleteResource` | `DeleteResourceRequest` | `DeleteResourceResponse` | Permanently deletes a resource (hard delete) |
+| `DeleteResource` | `DeleteResourceRequest` | `DeleteResourceResponse` | Soft-deletes a resource (tombstone; blob retained) |
 
 ### Linking & references
 

@@ -22,6 +22,7 @@ use tokio_stream::{wrappers::UnboundedReceiverStream, Stream};
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
+use crate::proto::keeplin::upload_resource_request::Payload as UploadPayload;
 use crate::proto::keeplin::{
     keeplin_service_server::KeeplinService, sync_progress::Stage, AddNoteLinkRequest,
     AddNoteLinkResponse, AddNoteTagRequest, AddNoteTagResponse, Bookmark as ProtoBookmark,
@@ -39,7 +40,8 @@ use crate::proto::keeplin::{
     RemoveNoteTagResponse, ResolveReferenceRequest, ResolveReferenceResponse, Resource,
     SetNoteAliasRequest, SetNoteAliasResponse, SetNotebookAliasRequest, SetNotebookAliasResponse,
     SyncProgress, SyncRequest, Tag, UpdateNoteRequest, UpdateNoteResponse, UpdateNotebookRequest,
-    UpdateNotebookResponse, UpdateTagRequest, UpdateTagResponse,
+    UpdateNotebookResponse, UpdateTagRequest, UpdateTagResponse, UploadResourceRequest,
+    UploadResourceResponse,
 };
 
 // ── Conversion helpers ────────────────────────────────────────────────────────
@@ -258,20 +260,99 @@ pub struct KeeplinServer<B: StorageBackend> {
     /// How many days of change-journal history to retain. After each successful sync,
     /// journal rows older than this are pruned. `0` disables pruning.
     journal_retention_days: u64,
+    /// Maximum assembled size, in bytes, of a streamed `UploadResource` payload. `0` means no
+    /// limit. Bounds the memory a single upload can consume (the payload is buffered before it
+    /// is handed to `create_resource`).
+    max_upload_bytes: usize,
 }
 
 impl<B: StorageBackend> KeeplinServer<B> {
     /// Builds a server over a shared `Arc<B>` that prunes change-journal entries older
-    /// than `journal_retention_days` after each successful sync (`0` disables pruning).
+    /// than `journal_retention_days` after each successful sync (`0` disables pruning) and
+    /// caps a streamed `UploadResource` payload at `max_upload_bytes` (`0` disables the cap).
     /// Sharing the `Arc` lets the gRPC server and the REST server drive one backend.
     ///
     /// The resulting server should be passed to
     /// `KeeplinServiceServer::new(server)` before being registered with tonic.
-    pub fn from_shared(backend: Arc<B>, journal_retention_days: u64) -> Self {
+    pub fn from_shared(
+        backend: Arc<B>,
+        journal_retention_days: u64,
+        max_upload_bytes: usize,
+    ) -> Self {
         Self {
             backend,
             journal_retention_days,
+            max_upload_bytes,
         }
+    }
+
+    /// Assemble a streamed `UploadResource` call into a stored resource.
+    ///
+    /// The first frame must carry the metadata; every later frame carries a payload chunk in
+    /// order. Because each frame is a small gRPC message, an attachment larger than
+    /// `max_message_size` uploads without any single oversized frame; the assembled payload is
+    /// bounded by `max_upload_bytes` (`0` = unlimited) so a client cannot exhaust server memory.
+    ///
+    /// Generic over the frame stream (rather than taking `tonic::Streaming` directly) so the
+    /// assembly logic is unit-testable with an in-memory stream.
+    #[allow(clippy::result_large_err)]
+    async fn assemble_upload<S>(
+        &self,
+        mut stream: S,
+    ) -> Result<Response<UploadResourceResponse>, Status>
+    where
+        S: tokio_stream::Stream<Item = Result<UploadResourceRequest, Status>> + Unpin,
+    {
+        use tokio_stream::StreamExt;
+
+        let first = stream
+            .next()
+            .await
+            .transpose()?
+            .ok_or_else(|| Status::invalid_argument("upload stream was empty"))?;
+        let meta = match first.payload {
+            Some(UploadPayload::Meta(m)) => m,
+            _ => {
+                return Err(Status::invalid_argument(
+                    "the first UploadResource frame must be resource metadata",
+                ))
+            }
+        };
+
+        let mut data: Vec<u8> = Vec::new();
+        while let Some(frame) = stream.next().await.transpose()? {
+            match frame.payload {
+                Some(UploadPayload::Chunk(bytes)) => {
+                    if self.max_upload_bytes != 0
+                        && data.len().saturating_add(bytes.len()) > self.max_upload_bytes
+                    {
+                        return Err(Status::resource_exhausted(format!(
+                            "upload exceeds max_upload_bytes ({})",
+                            self.max_upload_bytes
+                        )));
+                    }
+                    data.extend_from_slice(&bytes);
+                }
+                // A second metadata frame is a protocol error; an empty frame is ignored.
+                Some(UploadPayload::Meta(_)) => {
+                    return Err(Status::invalid_argument(
+                        "unexpected metadata frame in the middle of an upload stream",
+                    ))
+                }
+                None => {}
+            }
+        }
+
+        let size = data.len() as u64;
+        let resource = CoreResource::new(meta.title, meta.mime_type, meta.file_name, size);
+        let created = self
+            .backend
+            .create_resource(resource, data)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(UploadResourceResponse {
+            resource: Some(resource_to_proto(created)),
+        }))
     }
 }
 
@@ -641,6 +722,13 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    async fn upload_resource(
+        &self,
+        req: Request<tonic::Streaming<UploadResourceRequest>>,
+    ) -> Result<Response<UploadResourceResponse>, Status> {
+        self.assemble_upload(req.into_inner()).await
+    }
+
     async fn get_resource(
         &self,
         req: Request<GetResourceRequest>,
@@ -872,17 +960,99 @@ fn stage_to_proto(stage: SyncStage) -> (Stage, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::keeplin::{ResourceMeta, UploadResourceRequest};
     use keeplin_core::storage::fs::FsBackend;
-    use keeplin_core::storage::{NoteRepository, NotebookRepository, TagRepository};
+    use keeplin_core::storage::{
+        NoteRepository, NotebookRepository, ResourceRepository, TagRepository,
+    };
 
     /// A `KeeplinServer` over a fresh `FsBackend` in a leaked temp dir (kept alive for
-    /// the test), plus a handle to the backend for seeding state directly.
+    /// the test), plus a handle to the backend for seeding state directly. `max_upload_bytes`
+    /// is generous so the upload tests exercise assembly, not the cap (a dedicated test sets a
+    /// tiny cap explicitly).
     async fn server() -> (KeeplinServer<FsBackend>, Arc<FsBackend>) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_path_buf();
         std::mem::forget(dir);
         let backend = Arc::new(FsBackend::new(&path).await.unwrap());
-        (KeeplinServer::from_shared(backend.clone(), 0), backend)
+        (
+            KeeplinServer::from_shared(backend.clone(), 0, 1024 * 1024 * 1024),
+            backend,
+        )
+    }
+
+    fn meta_frame(title: &str, mime: &str, file: &str) -> UploadResourceRequest {
+        UploadResourceRequest {
+            payload: Some(UploadPayload::Meta(ResourceMeta {
+                title: title.into(),
+                mime_type: mime.into(),
+                file_name: file.into(),
+            })),
+        }
+    }
+
+    fn chunk_frame(bytes: &[u8]) -> UploadResourceRequest {
+        UploadResourceRequest {
+            payload: Some(UploadPayload::Chunk(bytes.to_vec())),
+        }
+    }
+
+    #[tokio::test]
+    async fn upload_resource_assembles_chunks_in_order() {
+        let (srv, backend) = server().await;
+
+        // A payload split across three chunks must reassemble in order.
+        let frames = vec![
+            Ok(meta_frame("pic", "image/png", "p.png")),
+            Ok(chunk_frame(b"hello ")),
+            Ok(chunk_frame(b"streamed ")),
+            Ok(chunk_frame(b"world")),
+        ];
+        let resp = srv
+            .assemble_upload(tokio_stream::iter(frames))
+            .await
+            .unwrap()
+            .into_inner();
+        let meta = resp.resource.unwrap();
+        assert_eq!(meta.title, "pic");
+        assert_eq!(meta.file_name, "p.png");
+        assert_eq!(meta.size, "hello streamed world".len() as i64);
+
+        // The reassembled bytes round-trip through the backend.
+        let id = meta.id.parse().unwrap();
+        let (_, data) = backend.read_resource(id).await.unwrap();
+        assert_eq!(data, b"hello streamed world");
+    }
+
+    #[tokio::test]
+    async fn upload_resource_requires_metadata_first() {
+        let (srv, _backend) = server().await;
+        // A stream that starts with a chunk (no metadata frame) is rejected.
+        let frames = vec![Ok(chunk_frame(b"data"))];
+        let err = srv
+            .assemble_upload(tokio_stream::iter(frames))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn upload_resource_enforces_the_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let backend = Arc::new(FsBackend::new(&path).await.unwrap());
+        // A tiny 8-byte cap: a 10-byte payload must be refused with RESOURCE_EXHAUSTED.
+        let srv = KeeplinServer::from_shared(backend, 0, 8);
+        let frames = vec![
+            Ok(meta_frame("big", "application/octet-stream", "big.bin")),
+            Ok(chunk_frame(b"0123456789")),
+        ];
+        let err = srv
+            .assemble_upload(tokio_stream::iter(frames))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::ResourceExhausted);
     }
 
     #[tokio::test]
