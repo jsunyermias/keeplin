@@ -57,7 +57,7 @@ association methods:
 
 | Method | Description |
 |--------|-------------|
-| `add_note_tag(note_tag) -> ()` | Attach a tag to a note (idempotent) |
+| `add_note_tag(note_tag) -> ()` | Attach a tag to a note (idempotent); `NotFound` when the note or tag is missing or soft-deleted — no dangling associations via the API (`apply_change` skips this check: sync delivery order is unordered) |
 | `remove_note_tag(note_id, tag_id) -> ()` | Detach a tag |
 | `list_note_tags(note_id, page_size, page_token) -> (Vec<Tag>, Option<String>)` | Tags on a note, paginated |
 

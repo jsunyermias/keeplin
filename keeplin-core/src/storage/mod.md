@@ -25,6 +25,19 @@ pub use backend::{
 };
 ```
 
+## `SortableRfc3339` — fixed-precision timestamps for text comparison
+
+The backends store timestamps as RFC 3339 TEXT and order them lexicographically (SQLite
+`WHERE created_at > ?` / `ORDER BY`, and the `"<ts>|<id>"` keyset cursors). Plain
+`DateTime::to_rfc3339()` emits a *variable* number of fractional digits (3/6/9, whatever
+the instant needs — platform clock precision leaks into the format), so equal instants can
+be unequal strings and the cursor's `created_at = ?` equality branch silently fails across
+precisions. The crate-private `SortableRfc3339::to_sortable_rfc3339` extension pins the
+shape — always nine fractional digits, `+00:00` offset — and is what `db.rs`, `fs.rs`, and
+`backend.rs` use for every stored/compared timestamp. Rows written before this existed keep
+their variable-precision text; ordering against them remains chronologically consistent
+(proven by the `lexicographic_order_matches_chronological_even_mixed_with_old_format` test).
+
 ## Design notes
 
 - `backend` is declared `mod backend` (not `pub mod`) because its public surface is just the

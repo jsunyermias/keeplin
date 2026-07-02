@@ -61,7 +61,10 @@ use crate::{
 };
 
 use super::note_log::{self, resolve, NoteLogEntry, NoteOp, VersionVector, Winner};
-use super::{NoteRepository, NotebookRepository, ResourceRepository, SyncBackend, TagRepository};
+use super::{
+    NoteRepository, NotebookRepository, ResourceRepository, SortableRfc3339, SyncBackend,
+    TagRepository,
+};
 
 /// The materialized projection written to `notes/{id}/meta.msgpack`.
 ///
@@ -1633,7 +1636,7 @@ impl NoteRepository for FsBackend {
         }
         notes.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
         Ok(paginate(notes, limit, page_token.as_deref(), |n| {
-            (n.created_at.to_rfc3339(), n.id)
+            (n.created_at.to_sortable_rfc3339(), n.id)
         }))
     }
 }
@@ -1727,7 +1730,7 @@ impl NotebookRepository for FsBackend {
         }
         notebooks.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
         Ok(paginate(notebooks, limit, page_token.as_deref(), |nb| {
-            (nb.created_at.to_rfc3339(), nb.id)
+            (nb.created_at.to_sortable_rfc3339(), nb.id)
         }))
     }
 }
@@ -1811,11 +1814,24 @@ impl TagRepository for FsBackend {
         }
         tags.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
         Ok(paginate(tags, limit, page_token.as_deref(), |t| {
-            (t.created_at.to_rfc3339(), t.id)
+            (t.created_at.to_sortable_rfc3339(), t.id)
         }))
     }
 
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
+        // Both ends must exist and be live: the API must not create a dangling
+        // association. `apply_change` deliberately skips this check — sync delivery
+        // order is not guaranteed, so an association may arrive before its note or tag.
+        match self.merge_note(note_tag.note_id).await? {
+            Some(n) if n.deleted_at.is_none() => {}
+            _ => return Err(StorageError::NotFound(note_tag.note_id.to_string())),
+        }
+        let tag: Tag = self
+            .read_sidecar(&self.tag_path(note_tag.tag_id), note_tag.tag_id)
+            .await?;
+        if tag.deleted_at.is_some() {
+            return Err(StorageError::NotFound(note_tag.tag_id.to_string()));
+        }
         let path = self.note_tag_path(note_tag.note_id, note_tag.tag_id);
         let vv = self.next_assoc_vv(&path).await?;
         let ts = now();
@@ -1900,7 +1916,7 @@ impl TagRepository for FsBackend {
         }
         tags.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
         Ok(paginate(tags, limit, page_token.as_deref(), |t| {
-            (t.created_at.to_rfc3339(), t.id)
+            (t.created_at.to_sortable_rfc3339(), t.id)
         }))
     }
 }
@@ -1997,7 +2013,7 @@ impl ResourceRepository for FsBackend {
         }
         resources.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
         Ok(paginate(resources, limit, page_token.as_deref(), |r| {
-            (r.created_at.to_rfc3339(), r.id)
+            (r.created_at.to_sortable_rfc3339(), r.id)
         }))
     }
 }
