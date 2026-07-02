@@ -283,6 +283,14 @@ impl<B: ResourceRepository> ResourceRepository for EventBackend<B> {
     ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
         self.inner.list_resources(page_size, page_token).await
     }
+
+    async fn purge_deleted_resources(
+        &self,
+        older_than: DateTime<Utc>,
+    ) -> Result<u64, StorageError> {
+        // Maintenance only: the deletions themselves were published when they happened.
+        self.inner.purge_deleted_resources(older_than).await
+    }
 }
 
 // Synchronisation methods carry no user-visible mutation of their own — they move changes

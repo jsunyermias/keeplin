@@ -136,9 +136,13 @@ resource's metadata so the tombstone competes in `note_log::resolve` exactly lik
 delete. This makes concurrent delete-vs-recreate converge on every device instead of depending on
 apply order. Deleted resources are excluded from `list_resources` and read as `NotFound`, and the
 `ResourceDelete` change carries the tombstone's `vv`/`last_writer` so it propagates and resolves
-correctly. The binary payload is **retained on disk / in the database** after a soft delete: the
+correctly. The binary payload is **retained** after a soft delete by default: the
 tombstone must persist so the deletion converges, and log compaction rewrites change history, not
-attachment blobs. Reclaiming a deleted attachment's bytes is left to out-of-band maintenance.
+attachment blobs. Setting `resource_purge_days` reclaims the payloads of tombstones older than
+that many days after each successful sync — the tombstone metadata always survives (only the dead
+bytes are freed), so convergence is unaffected; choose a window comfortably longer than the
+longest any device stays offline, so a concurrent revive on a lagging peer can never need bytes
+that were already purged (and even then, a revive carries or replicates a fresh payload).
 
 ## Known limitations
 

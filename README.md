@@ -227,6 +227,7 @@ variables shown.
 | `max_message_size` | 32 MiB | Max gRPC message size (in/out); also the raw‑body cap for `POST /api/resources`. |
 | `max_upload_bytes` | 1 GiB | Max assembled size of a **streamed** upload (`UploadResource` RPC / `POST /api/resources/upload`); `0` disables the cap. |
 | `journal_retention_days` | `30` | Days of change‑journal history to keep; pruned after each sync (`0` disables; no‑op for the filesystem backend). |
+| `resource_purge_days` | `0` (keep forever) | After each sync, free the binary payloads of resources soft‑deleted more than this many days ago. Tombstone metadata is always kept (deletion keeps converging); only the dead bytes are reclaimed. Set comfortably above the longest a device stays offline. |
 | `encryption_password` | `none` | Enables at‑rest encryption. Env: `KEEPLIN_ENCRYPTION_PASSWORD`. |
 | `key_salt` | `none` (→ persisted per‑store salt, device‑ID fallback) | Argon2id salt (≥ 8 bytes); set the **same** value on all synced devices for portable encryption. When unset, the effective salt is persisted to `{data_dir}/.keeplin/key_salt` — **back that file up**; it is required (with the password) to recover encrypted data. Env: `KEEPLIN_KEY_SALT`. |
 | `auth_username` / `auth_password` | `none` | gRPC Basic Auth; when both are set, every call must authenticate. Env: `KEEPLIN_AUTH_USERNAME` / `KEEPLIN_AUTH_PASSWORD`. |
