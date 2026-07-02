@@ -5,9 +5,11 @@
 When `encryption_password` is set (or `KEEPLIN_ENCRYPTION_PASSWORD` env var), Keeplin
 derives a 32-byte AES-256-GCM key using Argon2id (65536 KiB, 3 iterations, 1 thread).
 The Argon2id salt comes from the `key_salt` config field (or `KEEPLIN_KEY_SALT` env var)
-when set; otherwise it falls back to this device's ID. The salt is not secret, but it
-must be **stable** and **identical on every device that needs to read the same data**
-(see the multi-device note below).
+when set; otherwise it is read from — or on first use derived from this device's ID and
+persisted to — `{data_dir}/.keeplin/key_salt`. The salt is not secret, but it must be
+**stable** and **identical on every device that needs to read the same data** (see the
+multi-device note below), and it is **required for recovery**: back up the salt file (or
+record your `key_salt`) together with your password.
 
 ### Encrypted at rest
 
@@ -101,10 +103,15 @@ happens before data is written or synced, a mismatch in either value means a pee
 receives ciphertext it cannot decrypt.
 
 If `key_salt` is left unset, the salt defaults to the device ID — which is unique per
-installation — so encrypted data is **not** portable to other devices. The daemon logs
-a loud warning at startup when `encryption_password` is set without `key_salt`. For
-encrypted multi-device sync, set the same `key_salt` (at least 8 bytes) on every device.
-Keeplin does not otherwise detect or prevent mismatched-key sync configurations.
+installation — so encrypted data is **not** portable to other devices. The effective
+salt is persisted to `{data_dir}/.keeplin/key_salt` (plaintext; the salt is not secret)
+and that file takes precedence over the device ID on later startups, so **backing up
+that one file plus the password is sufficient to recover the store** — restoring it into
+a fresh `data_dir` re-derives the same key even if `.keeplin/device_id` was lost or
+regenerated. The daemon logs a loud warning at startup when `encryption_password` is set
+without `key_salt`. For encrypted multi-device sync, set the same `key_salt` (at least
+8 bytes) on every device. Keeplin does not otherwise detect or prevent mismatched-key
+sync configurations.
 
 ### Sync delivery guarantee
 
