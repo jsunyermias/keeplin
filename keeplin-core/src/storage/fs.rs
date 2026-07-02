@@ -1399,6 +1399,13 @@ impl FsBackend {
     /// Read every per-device log (`log.*.msgpack`) for a note. Missing note directory or
     /// unreadable individual logs yield an empty / skipped result rather than an error,
     /// so one corrupt log never blocks the merge of the others.
+    ///
+    /// A skipped log means that device's entire history for this note is missing from the
+    /// merge — a silent-data-loss risk, not a routine condition — so it is reported at
+    /// **error** level with the note id and file path. The file itself is left in place
+    /// (never deleted or renamed: it belongs to another device and Syncthing would
+    /// replicate a local rename back to its writer), so a copy that recovers or is
+    /// restored from backup re-enters the merge on the next read.
     async fn read_note_logs(&self, id: Uuid) -> Result<Vec<Vec<NoteLogEntry>>, StorageError> {
         let dir = self.note_dir(id);
         let mut logs = Vec::new();
@@ -1413,7 +1420,13 @@ impl FsBackend {
                 let bytes = tokio::fs::read(entry.path()).await?;
                 match rmp_serde::from_slice::<Vec<NoteLogEntry>>(&bytes) {
                     Ok(v) => logs.push(v),
-                    Err(e) => tracing::warn!("Skipping unreadable note log {name}: {e}"),
+                    Err(e) => tracing::error!(
+                        note_id = %id,
+                        path = %entry.path().display(),
+                        "Unreadable note log excluded from merge — this device's history \
+                         for the note is not being applied; restore the file from a backup \
+                         or another device to recover it: {e}"
+                    ),
                 }
             }
         }
@@ -1553,6 +1566,95 @@ impl FsBackend {
     }
 }
 
+// ── Streaming pagination helper ───────────────────────────────────────────────
+
+/// An item tagged with its `(created_at_rfc3339, id)` pagination key, ordered by that key
+/// alone so [`PageCollector`]'s max-heap can evict the largest candidate.
+struct KeyedItem<T> {
+    key: (String, Uuid),
+    item: T,
+}
+
+impl<T> PartialEq for KeyedItem<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+impl<T> Eq for KeyedItem<T> {}
+impl<T> PartialOrd for KeyedItem<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl<T> Ord for KeyedItem<T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key.cmp(&other.key)
+    }
+}
+
+/// Streaming replacement for collect-everything-then-[`paginate`]: feed it every candidate
+/// item and it retains only the `limit + 1` smallest `(created_at, id)` keys past the
+/// cursor (a max-heap evicts the largest), so building one page holds O(page) items in
+/// memory instead of the whole store. The `+ 1` overflow slot is how it learns whether a
+/// next page exists. Cursor semantics and the produced token match [`paginate`] exactly.
+struct PageCollector<T> {
+    limit: usize,
+    cursor: Option<(String, Uuid)>,
+    heap: std::collections::BinaryHeap<KeyedItem<T>>,
+}
+
+impl<T> PageCollector<T> {
+    /// `token` is the `"<created_at_rfc3339>|<uuid>"` cursor of the previous page's last
+    /// item; `None`, empty, or unparseable tokens start from the first item (as
+    /// [`paginate`] does).
+    fn new(limit: usize, token: Option<&str>) -> Self {
+        let cursor = token
+            .filter(|t| !t.is_empty())
+            .and_then(|t| t.split_once('|'))
+            .and_then(|(ts, id)| Uuid::parse_str(id).ok().map(|id| (ts.to_string(), id)));
+        Self {
+            limit,
+            cursor,
+            heap: std::collections::BinaryHeap::with_capacity(limit + 2),
+        }
+    }
+
+    /// Offer one candidate. Items at or before the cursor are skipped; the rest compete
+    /// for the `limit + 1` retained slots.
+    fn push(&mut self, key: (String, Uuid), item: T) {
+        if let Some(cursor) = &self.cursor {
+            // Same predicate as `paginate`'s partition_point: skip keys <= the cursor pair.
+            if (key.0.as_str(), key.1) <= (cursor.0.as_str(), cursor.1) {
+                return;
+            }
+        }
+        if self.heap.len() <= self.limit {
+            self.heap.push(KeyedItem { key, item });
+        } else if let Some(top) = self.heap.peek() {
+            if key < top.key {
+                self.heap.pop();
+                self.heap.push(KeyedItem { key, item });
+            }
+        }
+    }
+
+    /// Produce `(page, next_token)`: the retained items in ascending key order, trimmed to
+    /// `limit`, with a cursor when the overflow slot proved more items exist.
+    fn into_page(self) -> (Vec<T>, Option<String>) {
+        let mut items = self.heap.into_sorted_vec();
+        let has_more = items.len() > self.limit;
+        items.truncate(self.limit);
+        let next_token = if has_more {
+            items
+                .last()
+                .map(|last| format!("{}|{}", last.key.0, last.key.1))
+        } else {
+            None
+        };
+        (items.into_iter().map(|k| k.item).collect(), next_token)
+    }
+}
+
 // ── Pagination helper ─────────────────────────────────────────────────────────
 
 /// Apply cursor-based pagination to an already-sorted `items` slice.
@@ -1650,12 +1752,12 @@ impl NoteRepository for FsBackend {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
-        let limit = if page_size == 0 {
-            100
-        } else {
-            page_size as usize
-        };
-        let mut notes = Vec::new();
+        let limit = super::effective_page_size(page_size) as usize;
+        // Merged notes (bodies included) are the heavyweight case, so collect the page in
+        // a bounded top-N pass: memory stays O(page) even when the store holds far more
+        // notes than one page. Each note's logs are still merged once per call (there is
+        // no index to consult), but never all retained at once.
+        let mut collector = PageCollector::new(limit, page_token.as_deref());
         let mut dir = match tokio::fs::read_dir(self.root.join("notes")).await {
             Ok(d) => d,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -1667,16 +1769,15 @@ impl NoteRepository for FsBackend {
             let id_str = entry.file_name().to_string_lossy().to_string();
             if let Ok(id) = Uuid::parse_str(&id_str) {
                 match self.merge_note(id).await {
-                    Ok(Some(n)) if n.deleted_at.is_none() => notes.push(n),
+                    Ok(Some(n)) if n.deleted_at.is_none() => {
+                        collector.push((n.created_at.to_sortable_rfc3339(), n.id), n);
+                    }
                     Ok(_) => {}
                     Err(e) => tracing::warn!("Could not merge note {id}: {e}"),
                 }
             }
         }
-        notes.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
-        Ok(paginate(notes, limit, page_token.as_deref(), |n| {
-            (n.created_at.to_sortable_rfc3339(), n.id)
-        }))
+        Ok(collector.into_page())
     }
 }
 
@@ -1748,11 +1849,7 @@ impl NotebookRepository for FsBackend {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Notebook>, Option<String>), StorageError> {
-        let limit = if page_size == 0 {
-            100
-        } else {
-            page_size as usize
-        };
+        let limit = super::effective_page_size(page_size) as usize;
         let mut notebooks = Vec::new();
         let mut dir = tokio::fs::read_dir(self.root.join("notebooks")).await?;
         while let Some(entry) = dir.next_entry().await? {
@@ -1832,11 +1929,7 @@ impl TagRepository for FsBackend {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
-        let limit = if page_size == 0 {
-            100
-        } else {
-            page_size as usize
-        };
+        let limit = super::effective_page_size(page_size) as usize;
         let mut tags = Vec::new();
         let mut dir = tokio::fs::read_dir(self.root.join("tags")).await?;
         while let Some(entry) = dir.next_entry().await? {
@@ -1922,11 +2015,7 @@ impl TagRepository for FsBackend {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
-        let limit = if page_size == 0 {
-            100
-        } else {
-            page_size as usize
-        };
+        let limit = super::effective_page_size(page_size) as usize;
         let dir_path = self.note_tag_dir(note_id);
         if !dir_path.exists() {
             return Ok((vec![], None));
@@ -2032,11 +2121,7 @@ impl ResourceRepository for FsBackend {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
-        let limit = if page_size == 0 {
-            100
-        } else {
-            page_size as usize
-        };
+        let limit = super::effective_page_size(page_size) as usize;
         let mut resources = Vec::new();
         let mut dir = tokio::fs::read_dir(self.root.join("resources")).await?;
         while let Some(entry) = dir.next_entry().await? {
@@ -2370,6 +2455,45 @@ mod tests {
         assert_eq!(read.body, "body");
         assert!(!meta.exists(), "read must not rewrite meta.msgpack");
         assert!(!md.exists(), "read must not rewrite note.md");
+    }
+
+    /// The heap-based `PageCollector` must paginate exactly like the sort-then-`paginate`
+    /// path it replaced: same page contents, same order, same cursors, across every page.
+    #[tokio::test]
+    async fn list_notes_pages_match_full_walk() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = FsBackend::new(dir.path()).await.unwrap();
+        let total = 23usize;
+        let mut created = Vec::new();
+        for i in 0..total {
+            created.push(
+                backend
+                    .create_note(Note::new(format!("t{i}"), "b"))
+                    .await
+                    .unwrap(),
+            );
+        }
+        // One deleted note must not appear in any page.
+        backend.delete_note(created[5].id).await.unwrap();
+        created.remove(5);
+        created.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+
+        let mut walked = Vec::new();
+        let mut token = None;
+        loop {
+            let (page, next) = backend.list_notes(7, token).await.unwrap();
+            assert!(page.len() <= 7);
+            walked.extend(page);
+            match next {
+                Some(t) => token = Some(t),
+                None => break,
+            }
+        }
+        assert_eq!(
+            walked.iter().map(|n| n.id).collect::<Vec<_>>(),
+            created.iter().map(|n| n.id).collect::<Vec<_>>(),
+            "paged walk must reproduce the full (created_at, id) order"
+        );
     }
 
     #[tokio::test]

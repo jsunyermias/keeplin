@@ -1391,7 +1391,7 @@ impl NoteRepository for DbBackend {
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
         let _read_guard = self.lock.read().await;
-        let limit = if page_size == 0 { 100u32 } else { page_size };
+        let limit = super::effective_page_size(page_size);
         let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
             .conn
@@ -1428,7 +1428,7 @@ impl NoteRepository for DbBackend {
         // of the default full scan. `idx_note_links_target` makes the `WHERE` an index seek,
         // and a keyset cursor on `(created_at, id)` plus `LIMIT` keeps the response bounded.
         let _read_guard = self.lock.read().await;
-        let limit = if page_size == 0 { 100u32 } else { page_size };
+        let limit = super::effective_page_size(page_size);
         let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
             .conn
@@ -1609,7 +1609,7 @@ impl NotebookRepository for DbBackend {
         page_token: Option<String>,
     ) -> Result<(Vec<Notebook>, Option<String>), StorageError> {
         let _read_guard = self.lock.read().await;
-        let limit = if page_size == 0 { 100u32 } else { page_size };
+        let limit = super::effective_page_size(page_size);
         let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
             .conn
@@ -1776,7 +1776,7 @@ impl TagRepository for DbBackend {
         page_token: Option<String>,
     ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
         let _read_guard = self.lock.read().await;
-        let limit = if page_size == 0 { 100u32 } else { page_size };
+        let limit = super::effective_page_size(page_size);
         let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
             .conn
@@ -1877,7 +1877,7 @@ impl TagRepository for DbBackend {
         page_token: Option<String>,
     ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
         let _read_guard = self.lock.read().await;
-        let limit = if page_size == 0 { 100u32 } else { page_size };
+        let limit = super::effective_page_size(page_size);
         let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
             .conn
@@ -2045,7 +2045,7 @@ impl ResourceRepository for DbBackend {
         page_token: Option<String>,
     ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
         let _read_guard = self.lock.read().await;
-        let limit = if page_size == 0 { 100u32 } else { page_size };
+        let limit = super::effective_page_size(page_size);
         let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
         let mut rows = self
             .conn

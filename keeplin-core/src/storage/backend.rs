@@ -57,7 +57,8 @@ pub trait NoteRepository: Send + Sync + 'static {
     /// Returns a page of notes that have not been soft-deleted, ordered by
     /// `(created_at ASC, id ASC)`.
     ///
-    /// `page_size = 0` uses the backend default of 100. `page_token = None` starts
+    /// `page_size = 0` uses [`super::DEFAULT_PAGE_SIZE`]; values above
+    /// [`super::MAX_PAGE_SIZE`] are clamped to it. `page_token = None` starts
     /// from the beginning. The returned `Option<String>` is the opaque cursor for the
     /// next page; `None` means there are no further pages.
     async fn list_notes(
@@ -113,11 +114,7 @@ fn paginate_notes(
     page_size: u32,
     token: Option<&str>,
 ) -> (Vec<Note>, Option<String>) {
-    let limit = if page_size == 0 {
-        100
-    } else {
-        page_size as usize
-    };
+    let limit = super::effective_page_size(page_size) as usize;
     let start = match token.filter(|t| !t.is_empty()) {
         Some(cursor) => match cursor.split_once('|') {
             Some((ts, id_str)) => {
