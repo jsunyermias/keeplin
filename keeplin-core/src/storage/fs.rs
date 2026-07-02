@@ -929,9 +929,26 @@ impl FsBackend {
     /// and idempotent on apply, a peer re-reading the whole snapshot (it will, because the epoch
     /// changed) converges: entities it already has newer are skipped, ones it is behind on are
     /// advanced, and tombstones it never saw are harmless no-ops on absent records.
+    ///
+    /// **Compaction declines to run while any sidecar is unreadable.** The rewrite destroys
+    /// the journal's history, so an entity whose sidecar cannot be decoded would silently
+    /// vanish from the snapshot — and a peer that had not yet consumed the old entries
+    /// would never learn it existed. Skipping compaction is always safe: the journal keeps
+    /// appending (it merely keeps growing) and compaction is retried on later writes, so
+    /// repairing or restoring the damaged sidecar re-enables it with nothing lost.
     async fn compact_global_log_locked(&self) -> Result<(), StorageError> {
         let new_epoch = self.read_own_epoch().await?.saturating_add(1);
-        let entries = self.build_global_snapshot().await?;
+        let (entries, unreadable) = self.build_global_snapshot().await?;
+        if unreadable > 0 {
+            tracing::error!(
+                unreadable,
+                "Global-log compaction skipped: unreadable sidecar file(s) would be \
+                 silently dropped from the snapshot (see the errors above for paths). \
+                 The journal keeps appending until they are repaired or restored from \
+                 a backup or another device."
+            );
+            return Ok(());
+        }
 
         let mut buf = serde_json::to_string(&EpochHeader { epoch: new_epoch })?;
         buf.push('\n');
@@ -954,9 +971,15 @@ impl FsBackend {
     /// present state (a `create`/`add`, or a `delete`/`remove` tombstone when soft-deleted).
     /// Notes are excluded — they sync through their own per-note version-vector logs, not the
     /// global journal.
-    async fn build_global_snapshot(&self) -> Result<Vec<LogEntry>, StorageError> {
+    ///
+    /// Returns `(entries, unreadable)`: `unreadable` counts sidecar files that exist but
+    /// cannot be decoded (each reported at error level with its path). The caller uses a
+    /// non-zero count to decline the compaction rather than emit a snapshot with entities
+    /// silently missing.
+    async fn build_global_snapshot(&self) -> Result<(Vec<LogEntry>, usize), StorageError> {
         let ts = now();
         let mut out = Vec::new();
+        let mut unreadable = 0usize;
 
         // Notebooks and tags: sidecar files under their directories.
         for (dir, kind) in [("notebooks", "notebook"), ("tags", "tag")] {
@@ -981,7 +1004,12 @@ impl FsBackend {
                 match entry {
                     Some(e) => out.push(e),
                     None => {
-                        tracing::warn!("Skipping unreadable {kind} sidecar during compaction: {id}")
+                        unreadable += 1;
+                        tracing::error!(
+                            path = %e.path().display(),
+                            "Unreadable {kind} sidecar; restore it from a backup or \
+                             another device (global-log compaction is paused until then)"
+                        );
                     }
                 }
             }
@@ -993,15 +1021,23 @@ impl FsBackend {
                 let Ok(id) = Uuid::parse_str(&e.file_name().to_string_lossy()) else {
                     continue;
                 };
-                let Ok(bytes) = tokio::fs::read(self.resource_meta_path(id)).await else {
-                    continue;
+                let meta_path = self.resource_meta_path(id);
+                let bytes = match tokio::fs::read(&meta_path).await {
+                    Ok(bytes) => bytes,
+                    // No metadata at all is an orphan of a crashed create (the data file
+                    // is written first) — nothing to snapshot, not corruption.
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e.into()),
                 };
                 match snapshot_entry_from_sidecar::<Resource>(&bytes, "resource", id, ts) {
                     Some(e) => out.push(e),
                     None => {
-                        tracing::warn!(
-                            "Skipping unreadable resource sidecar during compaction: {id}"
-                        )
+                        unreadable += 1;
+                        tracing::error!(
+                            path = %meta_path.display(),
+                            "Unreadable resource sidecar; restore it from a backup or \
+                             another device (global-log compaction is paused until then)"
+                        );
                     }
                 }
             }
@@ -1043,7 +1079,7 @@ impl FsBackend {
             }
         }
 
-        Ok(out)
+        Ok((out, unreadable))
     }
 
     /// Returns the path of the byte-offset cursor file for a foreign device:
@@ -2703,6 +2739,51 @@ mod tests {
         assert!(
             tags.is_empty(),
             "a versioned remove must supersede the corrupt marker"
+        );
+    }
+
+    /// Compaction must decline to rewrite the journal while a sidecar is unreadable —
+    /// the snapshot would silently omit that entity — and resume once it is repaired.
+    #[tokio::test]
+    async fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair() {
+        let dir = tempfile::tempdir().unwrap();
+        let be = FsBackend::new(dir.path()).await.unwrap();
+        let nb = be.create_notebook(Notebook::new("kept")).await.unwrap();
+        be.create_tag(Tag::new("t")).await.unwrap();
+        let log_path = be.device_log_path();
+        let before = tokio::fs::read_to_string(&log_path).await.unwrap();
+
+        // Corrupt the notebook sidecar, then try to compact: the journal must be intact.
+        let sidecar = be.notebook_path(nb.id);
+        std::fs::write(&sidecar, b"definitely not msgpack").unwrap();
+        {
+            let _guard = be.global_log_lock.lock().await;
+            be.compact_global_log_locked().await.unwrap();
+        }
+        let after = tokio::fs::read_to_string(&log_path).await.unwrap();
+        assert_eq!(before, after, "journal must not be rewritten while corrupt");
+        assert_eq!(
+            be.read_own_epoch().await.unwrap(),
+            0,
+            "no snapshot generation was produced"
+        );
+
+        // Repair the sidecar (as a restore from another device would) and retry.
+        let bytes = rmp_serde::to_vec_named(&nb).unwrap();
+        std::fs::write(&sidecar, bytes).unwrap();
+        {
+            let _guard = be.global_log_lock.lock().await;
+            be.compact_global_log_locked().await.unwrap();
+        }
+        assert_eq!(
+            be.read_own_epoch().await.unwrap(),
+            1,
+            "compaction resumes once the sidecar is readable"
+        );
+        let snapshot = tokio::fs::read_to_string(&log_path).await.unwrap();
+        assert!(
+            snapshot.contains(&nb.id.to_string()),
+            "the repaired notebook is present in the snapshot"
         );
     }
 
