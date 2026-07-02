@@ -400,29 +400,60 @@ pub async fn alias_conflicts(backend: &dyn StorageBackend) -> Result<AliasConfli
     })
 }
 
+/// Read a note for a user-facing read-modify-write, rejecting a tombstone as `NotFound`.
+///
+/// These helpers serve the API surfaces, which present soft-deleted entities as absent
+/// (`404`/`NOT_FOUND`). Without this check the read-modify-write would silently *revive*
+/// a deleted note (the update writes `deleted_at: None` back). Revival is reserved for
+/// the sync path (`apply_change` resolving a causal edit made after the delete), never a
+/// side effect of an alias or link edit.
+async fn read_live_note(backend: &dyn StorageBackend, id: Uuid) -> Result<Note, StorageError> {
+    let note = backend.read_note(id).await?;
+    if note.deleted_at.is_some() {
+        return Err(StorageError::NotFound(id.to_string()));
+    }
+    Ok(note)
+}
+
+/// Read a notebook for a user-facing read-modify-write, rejecting a tombstone as
+/// `NotFound` (see [`read_live_note`]).
+async fn read_live_notebook(
+    backend: &dyn StorageBackend,
+    id: Uuid,
+) -> Result<Notebook, StorageError> {
+    let notebook = backend.read_notebook(id).await?;
+    if notebook.deleted_at.is_some() {
+        return Err(StorageError::NotFound(id.to_string()));
+    }
+    Ok(notebook)
+}
+
 /// Set (or clear) a note's alias and persist it (read-modify-write → one `NoteUpdate`).
+/// A soft-deleted note is `NotFound` — the edit must not revive it.
 pub async fn set_note_alias(
     backend: &dyn StorageBackend,
     note_id: Uuid,
     alias: Option<String>,
 ) -> Result<Note, StorageError> {
-    let mut note = backend.read_note(note_id).await?;
+    let mut note = read_live_note(backend, note_id).await?;
     note.alias = alias;
     backend.update_note(note).await
 }
 
-/// Set (or clear) a notebook's alias and persist it.
+/// Set (or clear) a notebook's alias and persist it. A soft-deleted notebook is
+/// `NotFound` — the edit must not revive it.
 pub async fn set_notebook_alias(
     backend: &dyn StorageBackend,
     notebook_id: Uuid,
     alias: Option<String>,
 ) -> Result<Notebook, StorageError> {
-    let mut notebook = backend.read_notebook(notebook_id).await?;
+    let mut notebook = read_live_notebook(backend, notebook_id).await?;
     notebook.alias = alias;
     backend.update_notebook(notebook).await
 }
 
 /// Add a manual (global) link from `note_id` to a raw `#…` reference. Returns the note.
+/// A soft-deleted note is `NotFound` — the edit must not revive it.
 pub async fn add_manual_link(
     backend: &dyn StorageBackend,
     note_id: Uuid,
@@ -430,18 +461,19 @@ pub async fn add_manual_link(
 ) -> Result<Note, StorageError> {
     let link = NoteLink::from_raw(raw, LinkSource::Manual)
         .ok_or_else(|| StorageError::InvalidState(format!("invalid link reference '{raw}'")))?;
-    let mut note = backend.read_note(note_id).await?;
+    let mut note = read_live_note(backend, note_id).await?;
     note.links.push(link);
     backend.update_note(note).await
 }
 
 /// Remove the link at `index` (into the note's `links`) and persist. Returns the note.
+/// A soft-deleted note is `NotFound` — the edit must not revive it.
 pub async fn remove_link(
     backend: &dyn StorageBackend,
     note_id: Uuid,
     index: usize,
 ) -> Result<Note, StorageError> {
-    let mut note = backend.read_note(note_id).await?;
+    let mut note = read_live_note(backend, note_id).await?;
     if index >= note.links.len() {
         return Err(StorageError::NotFound(format!(
             "link {index} in note {note_id}"
@@ -747,6 +779,34 @@ mod tests {
         b.alias = Some("dup".to_string());
         let err = be.create_note(b).await.unwrap_err();
         assert!(matches!(err, StorageError::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn alias_and_link_edits_reject_deleted_entities() {
+        let be = backend().await;
+
+        let note = be.create_note(Note::new("n", "")).await.unwrap();
+        be.delete_note(note.id).await.unwrap();
+        // None of these read-modify-write edits may revive the tombstoned note.
+        for err in [
+            set_note_alias(&be, note.id, Some("ghost".into()))
+                .await
+                .unwrap_err(),
+            add_manual_link(&be, note.id, "#target").await.unwrap_err(),
+            remove_link(&be, note.id, 0).await.unwrap_err(),
+        ] {
+            assert!(matches!(err, StorageError::NotFound(_)), "got: {err}");
+        }
+        // Still deleted: the failed edits must not have written anything.
+        let read = be.read_note(note.id).await.unwrap();
+        assert!(read.deleted_at.is_some(), "note must remain tombstoned");
+
+        let nb = be.create_notebook(Notebook::new("nb")).await.unwrap();
+        be.delete_notebook(nb.id).await.unwrap();
+        let err = set_notebook_alias(&be, nb.id, Some("ghost".into()))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::NotFound(_)), "got: {err}");
     }
 
     #[tokio::test]

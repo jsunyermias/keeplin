@@ -72,7 +72,8 @@ pub struct Config {
 
     /// How many days of change-journal history to retain (default: 30).
     ///
-    /// After each successful sync the daemon prunes `entity_changes` rows older than
+    /// After each successful sync — driven by the gRPC `Sync` RPC or REST
+    /// `POST /api/sync` alike — the daemon prunes `entity_changes` rows older than
     /// this many days (no-op for the filesystem backend, whose logs are replicated by
     /// Syncthing). Keep this comfortably larger than the longest a peer device is
     /// expected to stay offline. Set to `0` to disable pruning entirely.

@@ -333,6 +333,7 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
             backend: backend.clone(),
             events: events.clone(),
             max_body_bytes: cfg.max_message_size,
+            journal_retention_days: cfg.journal_retention_days,
             auth_username: cfg.auth_username.clone(),
             auth_password: cfg.auth_password.clone(),
         });

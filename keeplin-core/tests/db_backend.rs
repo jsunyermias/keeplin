@@ -142,6 +142,27 @@ async fn get_changes_since_returns_updated_notes() {
 }
 
 #[tokio::test]
+async fn prune_change_journal_removes_rows_older_than_cutoff() {
+    let backend = in_memory_backend().await;
+    let epoch = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap();
+
+    backend.create_note(Note::new("a", "")).await.unwrap();
+    backend.create_note(Note::new("b", "")).await.unwrap();
+    assert_eq!(backend.get_changes_since(epoch).await.unwrap().len(), 2);
+
+    // A cutoff in the past removes nothing; the journal is untouched.
+    let removed = backend.prune_change_journal(epoch).await.unwrap();
+    assert_eq!(removed, 0);
+    assert_eq!(backend.get_changes_since(epoch).await.unwrap().len(), 2);
+
+    // A cutoff in the future removes every row and reports the count.
+    let future = chrono::Utc::now() + chrono::Duration::days(1);
+    let removed = backend.prune_change_journal(future).await.unwrap();
+    assert_eq!(removed, 2);
+    assert!(backend.get_changes_since(epoch).await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn apply_change_is_not_re_journaled() {
     use keeplin_core::models::Change;
 
