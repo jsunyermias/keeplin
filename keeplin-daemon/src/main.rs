@@ -141,15 +141,19 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
 
     let encrypted = cfg.encryption_password.is_some();
 
-    // When encryption is enabled without an explicit key_salt, the key is derived from
-    // this device's ID. That is safe for a single device but means another device cannot
-    // decrypt this device's data — encrypted multi-device sync would silently produce
-    // unreadable records. Warn so operators who sync set a shared key_salt on every device.
+    // When encryption is enabled without an explicit key_salt, the key is derived from a
+    // per-store salt persisted at `{data_dir}/.keeplin/key_salt` (device-id fallback on
+    // first use — see `resolve_key_salt`). That is safe for a single device but means
+    // another device cannot decrypt this device's data — encrypted multi-device sync
+    // would silently produce unreadable records. Warn so operators who sync set a shared
+    // key_salt on every device, and so everyone backs up the salt file.
     if encrypted && cfg.key_salt.is_none() {
         tracing::warn!(
+            path = %key_salt_path(&cfg).display(),
             "encryption is enabled but key_salt is not set: encrypted data is bound to \
-             this device and cannot be decrypted on other devices. Set the same key_salt \
-             on all devices to enable encrypted multi-device sync."
+             this store's persisted salt file and cannot be decrypted on other devices. \
+             Back up that file (it is required, with your password, to recover the data), \
+             or set the same key_salt on all devices for encrypted multi-device sync."
         );
     }
 
@@ -190,13 +194,53 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
 /// Resolves the Argon2id salt used to derive the at-rest encryption key.
 ///
 /// Returns the configured `key_salt` bytes when set (the value that must be shared
-/// across devices for portable encryption), otherwise falls back to this device's ID so
-/// that single-device encrypted stores keep working without any configuration.
+/// across devices for portable encryption). When unset, the salt is read from — or on
+/// first use derived from this device's ID and **persisted to** — the store's
+/// `{data_dir}/.keeplin/key_salt` file.
+///
+/// Persisting the fallback matters for recovery: the salt is required (together with the
+/// password) to derive the key, and before this file existed it lived only implicitly in
+/// `.keeplin/device_id`. Losing that one file made encrypted data unrecoverable even with
+/// the correct password. Now there is a single, explicitly named, plaintext-safe file the
+/// user can back up — and restoring it into a fresh store is all a recovery needs. The
+/// file also takes precedence over the device ID, so a store whose device-id file was
+/// regenerated (or adopted by another machine) still decrypts.
 async fn resolve_key_salt<B: StorageBackend>(cfg: &Config, backend: &B) -> anyhow::Result<Vec<u8>> {
-    match &cfg.key_salt {
-        Some(salt) => Ok(salt.as_bytes().to_vec()),
-        None => Ok(backend.get_device_id().await?.into_bytes()),
+    if let Some(salt) = &cfg.key_salt {
+        return Ok(salt.as_bytes().to_vec());
     }
+    let path = key_salt_path(cfg);
+    match tokio::fs::read_to_string(&path).await {
+        Ok(persisted) => {
+            let persisted = persisted.trim();
+            if !persisted.is_empty() {
+                return Ok(persisted.as_bytes().to_vec());
+            }
+            // An empty file cannot have been the salt of any real key; fall through and
+            // re-persist the device-id fallback.
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    let salt = backend.get_device_id().await?;
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(&path, &salt).await?;
+    tracing::warn!(
+        path = %path.display(),
+        "encryption key salt persisted (device-id fallback); BACK UP this file — without \
+         it (or its value in `key_salt`) and your password, the encrypted data cannot be \
+         recovered"
+    );
+    Ok(salt.into_bytes())
+}
+
+/// Where the effective encryption salt is persisted when `key_salt` is not configured:
+/// `{data_dir}/.keeplin/key_salt`. The salt is not secret (see SECURITY.md), so a plain
+/// file is fine; what matters is that it is explicit, stable, and easy to back up.
+fn key_salt_path(cfg: &Config) -> std::path::PathBuf {
+    cfg.data_dir.join(".keeplin").join("key_salt")
 }
 
 /// Build the **base** storage stack described by `cfg`, type-erased behind
@@ -421,6 +465,68 @@ fn validate_basic_auth(
 mod tests {
     use super::*;
     use base64::{engine::general_purpose::STANDARD, Engine};
+    use keeplin_core::storage::SyncBackend as _;
+
+    /// A default (offline, unencrypted-config) `Config` rooted at `dir`.
+    fn cfg_at(dir: &std::path::Path) -> Config {
+        Config {
+            data_dir: dir.to_path_buf(),
+            ..Config::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn key_salt_config_value_wins_and_persists_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = FsBackend::new(dir.path()).await.unwrap();
+        let mut cfg = cfg_at(dir.path());
+        cfg.key_salt = Some("shared-salt".into());
+
+        let salt = resolve_key_salt(&cfg, &backend).await.unwrap();
+        assert_eq!(salt, b"shared-salt");
+        assert!(
+            !key_salt_path(&cfg).exists(),
+            "a configured salt must not be shadowed by a persisted file"
+        );
+    }
+
+    #[tokio::test]
+    async fn key_salt_fallback_is_persisted_and_stable() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = FsBackend::new(dir.path()).await.unwrap();
+        let cfg = cfg_at(dir.path());
+
+        // First resolution: falls back to the device id and writes the salt file.
+        let first = resolve_key_salt(&cfg, &backend).await.unwrap();
+        let device_id = backend.get_device_id().await.unwrap();
+        assert_eq!(first, device_id.as_bytes());
+        let on_disk = std::fs::read_to_string(key_salt_path(&cfg)).unwrap();
+        assert_eq!(on_disk.trim().as_bytes(), first.as_slice());
+
+        // Second resolution reads the file — same salt, so the key stays derivable.
+        let second = resolve_key_salt(&cfg, &backend).await.unwrap();
+        assert_eq!(second, first);
+    }
+
+    #[tokio::test]
+    async fn key_salt_file_survives_a_regenerated_device_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = FsBackend::new(dir.path()).await.unwrap();
+        let cfg = cfg_at(dir.path());
+        let original = resolve_key_salt(&cfg, &backend).await.unwrap();
+
+        // Simulate the recovery scenario: the device-id file is lost and regenerated with
+        // a fresh uuid. The persisted salt file must still win, keeping data decryptable.
+        std::fs::remove_file(dir.path().join(".keeplin").join("device_id")).unwrap();
+        let reopened = FsBackend::new(dir.path()).await.unwrap();
+        assert_ne!(
+            reopened.get_device_id().await.unwrap().as_bytes(),
+            original.as_slice(),
+            "precondition: the regenerated device id differs"
+        );
+        let resolved = resolve_key_salt(&cfg, &reopened).await.unwrap();
+        assert_eq!(resolved, original, "salt must come from the persisted file");
+    }
 
     /// Build a bare tonic `Request<()>` and optionally attach an `authorization`
     /// metadata entry. The value string must already be in the correct wire format
