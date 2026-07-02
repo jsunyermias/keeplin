@@ -392,6 +392,37 @@ fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
     }
 }
 
+// ── Atomic file writes ────────────────────────────────────────────────────────
+
+/// Write `bytes` to `path` atomically: write a sibling `{path}.tmp`, fsync it, then rename
+/// it over the destination.
+///
+/// - The destination is only ever touched by the rename, so a reader can never observe a
+///   half-written file and a failed write (disk full, I/O error) leaves the previous
+///   contents intact.
+/// - The fsync before the rename closes the power-loss window in which the rename is
+///   persisted but the data is not — without it, a crash could replace a good file with
+///   an empty or truncated one.
+/// - On any failure the temp file is best-effort removed, so failed writes do not
+///   accumulate `*.tmp` litter (a crash can still orphan one; see
+///   [`FsBackend::sweep_orphan_tmp_files`]).
+async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
+    let tmp = path.with_extension("tmp");
+    let result = async {
+        let mut file = tokio::fs::File::create(&tmp).await?;
+        file.write_all(bytes).await?;
+        file.sync_all().await?;
+        drop(file);
+        tokio::fs::rename(&tmp, path).await?;
+        Ok(())
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    result
+}
+
 // ── Sync state ────────────────────────────────────────────────────────────────
 
 /// The contents of `.keeplin/sync_state.json`.
@@ -493,6 +524,14 @@ impl FsBackend {
             tokio::fs::create_dir_all(root.join(dir)).await?;
         }
 
+        let removed = Self::sweep_orphan_tmp_files(&root).await;
+        if removed > 0 {
+            tracing::info!(
+                removed,
+                "Removed orphaned .tmp files left by interrupted writes"
+            );
+        }
+
         let (device_id, fresh) = Self::read_or_create_device_id(&root).await?;
         let backend = Self {
             root,
@@ -502,6 +541,65 @@ impl FsBackend {
         };
         backend.ensure_format_version(fresh).await?;
         Ok(backend)
+    }
+
+    /// Best-effort startup sweep of orphaned `*.tmp` files left behind when an
+    /// [`atomic_write`] was interrupted between creating its temp file and renaming it
+    /// (crash, kill, disk-full on an older build without failure cleanup). Returns how
+    /// many files were removed.
+    ///
+    /// Only regular files ending in `.tmp` inside keeplin-managed directories are
+    /// touched, and Syncthing's own in-flight temporaries (`.syncthing.*.tmp` — an
+    /// unfinished transfer, not garbage) are explicitly left alone. Errors are ignored:
+    /// the sweep is hygiene, never a startup blocker, and anything it misses is retried
+    /// on the next start.
+    async fn sweep_orphan_tmp_files(root: &Path) -> usize {
+        let mut removed = 0usize;
+        // Directories whose files are written atomically. `notes/`, `note_tags/`, and
+        // `resources/` hold one subdirectory per entity, so their entries are swept one
+        // level down; the rest hold the target files directly.
+        for flat in ["notebooks", "tags", "logs", ".keeplin", ".keeplin/offsets"] {
+            removed += Self::sweep_tmp_in_dir(&root.join(flat)).await;
+        }
+        for nested in ["notes", "note_tags", "resources"] {
+            let Ok(mut rd) = tokio::fs::read_dir(root.join(nested)).await else {
+                continue;
+            };
+            while let Ok(Some(entry)) = rd.next_entry().await {
+                if entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+                    removed += Self::sweep_tmp_in_dir(&entry.path()).await;
+                }
+            }
+        }
+        removed
+    }
+
+    /// Remove every orphaned `*.tmp` regular file directly inside `dir` (non-recursive),
+    /// skipping Syncthing temporaries. Returns the number removed; all errors ignored.
+    async fn sweep_tmp_in_dir(dir: &Path) -> usize {
+        let mut removed = 0usize;
+        let Ok(mut rd) = tokio::fs::read_dir(dir).await else {
+            return 0;
+        };
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".tmp") || name.starts_with(".syncthing.") {
+                continue;
+            }
+            if !entry
+                .file_type()
+                .await
+                .map(|t| t.is_file())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            if tokio::fs::remove_file(entry.path()).await.is_ok() {
+                tracing::debug!(path = %entry.path().display(), "Removed orphaned temp file");
+                removed += 1;
+            }
+        }
+        removed
     }
 
     // ── Format version ────────────────────────────────────────────────────────
@@ -842,10 +940,7 @@ impl FsBackend {
             buf.push('\n');
         }
 
-        let path = self.device_log_path();
-        let tmp = path.with_extension("log.tmp");
-        tokio::fs::write(&tmp, buf).await?;
-        tokio::fs::rename(&tmp, &path).await?;
+        atomic_write(&self.device_log_path(), buf.as_bytes()).await?;
         tracing::info!(
             epoch = new_epoch,
             entries = entries.len(),
@@ -991,11 +1086,11 @@ impl FsBackend {
         epoch: u64,
         offset: u64,
     ) -> Result<(), StorageError> {
-        let path = self.log_offset_path(device_id);
-        let tmp = path.with_extension("tmp");
-        tokio::fs::write(&tmp, format!("{epoch}:{offset}")).await?;
-        tokio::fs::rename(&tmp, &path).await?;
-        Ok(())
+        atomic_write(
+            &self.log_offset_path(device_id),
+            format!("{epoch}:{offset}").as_bytes(),
+        )
+        .await
     }
 
     /// Read a global log's generation header: `(epoch, header_byte_len)`. A log with no header
@@ -1157,8 +1252,9 @@ impl FsBackend {
 
     // ── Generic single-file MessagePack sidecar helpers ───────────────────────
 
-    /// Serialise `value` to MessagePack and write it to `path` using an atomic
-    /// temp-file-then-rename, so a concurrent reader never sees a half-written file.
+    /// Serialise `value` to MessagePack and write it to `path` via [`atomic_write`], so a
+    /// concurrent reader never sees a half-written file and a failed write leaves the
+    /// previous contents (and no temp litter) behind.
     async fn write_sidecar<T: serde::Serialize>(
         &self,
         path: &Path,
@@ -1166,10 +1262,7 @@ impl FsBackend {
     ) -> Result<(), StorageError> {
         let bytes = rmp_serde::to_vec_named(value)
             .map_err(|e| StorageError::InvalidState(format!("msgpack encode: {e}")))?;
-        let tmp = path.with_extension("tmp");
-        tokio::fs::write(&tmp, bytes).await?;
-        tokio::fs::rename(&tmp, path).await?;
-        Ok(())
+        atomic_write(path, &bytes).await
     }
 
     /// Read `path` and deserialise its MessagePack contents into `T`.
@@ -1470,10 +1563,7 @@ impl FsBackend {
         vv: &VersionVector,
     ) -> Result<(), StorageError> {
         tokio::fs::create_dir_all(self.note_dir(note.id)).await?;
-        let md = self.note_md_path(note.id);
-        let md_tmp = md.with_extension("tmp");
-        tokio::fs::write(&md_tmp, note.body.as_bytes()).await?;
-        tokio::fs::rename(&md_tmp, &md).await?;
+        atomic_write(&self.note_md_path(note.id), note.body.as_bytes()).await?;
         let mut meta_note = note.clone();
         meta_note.body = String::new();
         self.write_sidecar(
@@ -2494,6 +2584,57 @@ mod tests {
             created.iter().map(|n| n.id).collect::<Vec<_>>(),
             "paged walk must reproduce the full (created_at, id) order"
         );
+    }
+
+    /// Startup must remove orphaned `*.tmp` files from interrupted atomic writes in every
+    /// managed directory, while leaving Syncthing's in-flight temporaries untouched.
+    #[tokio::test]
+    async fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let note_id = {
+            let be = FsBackend::new(dir.path()).await.unwrap();
+            be.create_note(Note::new("t", "b")).await.unwrap().id
+        };
+        let planted = [
+            dir.path()
+                .join("notes")
+                .join(note_id.to_string())
+                .join("meta.tmp"),
+            dir.path().join("notebooks").join("junk.tmp"),
+            dir.path().join(".keeplin").join("sync_state.tmp"),
+            dir.path().join(".keeplin").join("offsets").join("dev.tmp"),
+        ];
+        for p in &planted {
+            std::fs::write(p, b"junk").unwrap();
+        }
+        let syncthing = dir
+            .path()
+            .join("notebooks")
+            .join(".syncthing.abc.msgpack.tmp");
+        std::fs::write(&syncthing, b"in-flight transfer").unwrap();
+
+        let be = FsBackend::new(dir.path()).await.unwrap();
+        for p in &planted {
+            assert!(!p.exists(), "must be swept: {}", p.display());
+        }
+        assert!(syncthing.exists(), "Syncthing temp must be left alone");
+        assert_eq!(be.read_note(note_id).await.unwrap().body, "b");
+    }
+
+    /// A failed atomic write must leave no `*.tmp` litter and never touch the destination.
+    #[tokio::test]
+    async fn failed_atomic_write_cleans_up_its_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory as the destination makes the final rename fail deterministically.
+        let dest = dir.path().join("blocked");
+        std::fs::create_dir(&dest).unwrap();
+
+        assert!(atomic_write(&dest, b"payload").await.is_err());
+        assert!(
+            !dest.with_extension("tmp").exists(),
+            "temp file must be removed after a failed write"
+        );
+        assert!(dest.is_dir(), "destination must be untouched");
     }
 
     #[tokio::test]
