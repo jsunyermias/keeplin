@@ -38,12 +38,13 @@ content can be **encrypted at rest** with AES‑256‑GCM.
 
 ## Architecture
 
-A Cargo workspace with two crates:
+A Cargo workspace with three crates:
 
 | Crate | What it is |
 |-------|------------|
 | [`keeplin-core`](keeplin-core) | The library: domain models, the `StorageBackend` supertrait + two implementations (`FsBackend`, `DbBackend`), the `EncryptedBackend` and `LinkingBackend` decorators, the bookmark/link grammar, and the `SyncEngine`. |
-| [`keeplin-daemon`](keeplin-daemon) | The binary: a [tonic](https://github.com/hyperium/tonic) gRPC server (`KeeplinService`) plus an optional [axum](https://github.com/tokio-rs/axum) REST/WebSocket surface, both sharing one backend, with auth and TLS. It adds the outermost `EventBackend` (live‑change feed). |
+| [`keeplin-daemon`](keeplin-daemon) | The binary: a [tonic](https://github.com/hyperium/tonic) gRPC server (`KeeplinService`) plus an optional [axum](https://github.com/tokio-rs/axum) REST/WebSocket surface, both sharing one backend, with auth and TLS. It adds the outermost `MetricsBackend` and `EventBackend` (metrics + live‑change feed). |
+| [`keeplin-relay`](keeplin-relay) | The server‑mode sync hub: a WebSocket broadcast relay that authenticates devices and forwards each device's change batches to the others (server mode's central peer). |
 
 Backends compose as a **decorator stack** — innermost storage outward:
 
@@ -139,6 +140,20 @@ export KEEPLIN_AUTH_PASSWORD="…"
 ```
 
 The daemon serves `KeeplinService` on `grpc_addr` and shuts down cleanly on `Ctrl‑C`.
+
+### Run a sync relay (server mode)
+
+Server‑mode devices sync through a central [`keeplin-relay`](keeplin-relay) — a WebSocket
+broadcast hub that authenticates each device and forwards its change batches to the others:
+
+```bash
+KEEPLIN_RELAY_TOKEN="a-long-random-secret" \
+  ./target/release/keeplin-relay --listen 0.0.0.0:9000
+```
+
+Point each device's `auth_token` at the same secret and its `server_url` at the relay. The
+relay speaks plain `ws://`; terminate TLS at a reverse proxy and use `wss://` — the daemon
+refuses a non‑loopback `ws://` `server_url`. See [`keeplin-relay/README.md`](keeplin-relay/README.md).
 
 ---
 
@@ -371,8 +386,10 @@ filesystem note model is well‑tested and converges deterministically.
 **Not yet production‑ready** as a multi‑user, server‑backed service. Outstanding work,
 roughly in priority order:
 
-1. **No production sync server** ships in this repo — server mode needs a real relay
-   (the WebSocket path is now covered end‑to‑end by a test‑only relay).
+1. **Sync relay ships** as [`keeplin-relay`](keeplin-relay) — a WebSocket broadcast hub with
+   token auth that server‑mode devices sync through (covered end‑to‑end by tests driving real
+   `DbBackend`s). It keeps no durable per‑device buffer yet, so a long‑offline device catches
+   up only when it and a peer are online together; durable buffering is the next refinement.
 2. Operability: liveness/readiness probes and Prometheus metrics ship (`GET /api/health`,
    `/api/ready`, `/api/metrics`), and both backends now carry a **versioned migration path**
    (`DbBackend` via `PRAGMA user_version`, `FsBackend` via a stamped format ladder, each with

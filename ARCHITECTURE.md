@@ -13,12 +13,13 @@ user's own device and are replicated between the user's devices — either by co
 an external tool (Syncthing) or by talking to a sync server over WebSocket. Clients talk to the
 daemon through **gRPC**, a **REST/JSON** API, and a **WebSocket live-change feed**.
 
-Two crates:
+Three crates:
 
 | Crate | Kind | Contains |
 |-------|------|----------|
 | `keeplin-core` | library | domain models, the two storage backends, at-rest encryption, the bookmark/link layer, and the sync engine |
-| `keeplin-daemon` | binary | the gRPC + REST + WebSocket servers, auth, config, and the process wiring |
+| `keeplin-daemon` | binary | the gRPC + REST + WebSocket servers, auth, config, metrics, and the process wiring |
+| `keeplin-relay` | binary (+lib) | the server-mode sync hub: a WebSocket broadcast relay with token auth that forwards each device's change batches to the others |
 
 ---
 
@@ -123,8 +124,10 @@ Two navigation features layered on notes, both **stored on the note** (so they r
 `run_sync` drives one cycle: collect local `Change`s since the last sync watermark → send →
 receive remote `Change`s → apply each (`apply_change` is **idempotent**) → record the new
 watermark → optionally prune old journal entries. `FsBackend` "sends" passively (Syncthing
-copies its logs); `DbBackend` sends/receives over WebSocket with retry. The two backends'
-`Change` channels are **not** interchangeable for live sync, so they don't cross-sync directly.
+copies its logs); `DbBackend` sends/receives over WebSocket with retry, through the
+`keeplin-relay` broadcast hub (which authenticates each device and forwards its change batches
+to the other connected devices). The two backends' `Change` channels are **not** interchangeable
+for live sync, so they don't cross-sync directly.
 
 **Migration** (`keeplin-core/src/migrate.rs`) is the one-shot escape hatch: `migrate(src, dst)`
 copies all live state between any two backends via the typed `create_*` methods (not
