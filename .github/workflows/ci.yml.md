@@ -33,10 +33,11 @@ Runs on `ubuntu-latest`.
 | Cache | `Swatinem/rust-cache@v2` | Caches the Cargo registry, compiled dependencies, and build artifacts between runs to speed up subsequent builds |
 | Install protoc | `sudo apt-get install -y protobuf-compiler` | Installs the Protocol Buffers compiler required by `keeplin-daemon/build.rs` |
 | cargo fmt | `cargo fmt --check --all` | Verifies that all Rust source files in the workspace are formatted according to the project's `rustfmt` style. Fails the CI job if any file is not formatted. |
-| cargo check | `cargo check --workspace` | Type-checks all crates without producing binaries; catches type errors and missing dependencies faster than a full build |
 | cargo test (core) | `cargo test -p keeplin-core` | Runs all unit and integration tests in `keeplin-core`, including the `FsBackend`, `DbBackend`, and `EncryptedBackend` test suites |
 | cargo test (daemon) | `cargo test -p keeplin-daemon` | Runs all tests in `keeplin-daemon`, including the `validate_basic_auth` unit tests in `main.rs` |
-| cargo clippy | `cargo clippy --workspace -- -D warnings` | Runs the Clippy linter on the entire workspace and treats every lint warning as a build error |
+| cargo clippy | `cargo clippy --workspace --all-targets -- -D warnings` | Lints the entire workspace **including test and bench code** (matching the command the README tells contributors to run) and treats every warning as an error. Also fully subsumes the type-checking a separate `cargo check` step used to provide. |
+| Install cargo-audit | `taiki-e/install-action@v2` (`tool: cargo-audit`) | Downloads a prebuilt `cargo-audit` binary; compiling it from source with `cargo install` added minutes to every run for no additional coverage |
+| cargo audit | `cargo audit` | Checks `Cargo.lock` against the RustSec advisory database |
 
 ## Caching strategy
 
@@ -52,8 +53,9 @@ rebuilt from scratch.
 
 ## Notes
 
-- `protoc` must be installed before `cargo check` or `cargo build` because
-  `keeplin-daemon/build.rs` invokes `tonic-build`, which in turn calls `protoc`.
+- `protoc` must be installed before anything compiles the workspace (`cargo test`,
+  `cargo clippy`) because `keeplin-daemon/build.rs` invokes `tonic-build`, which in turn
+  calls `protoc`.
 - The workflow runs tests for each crate separately (`-p keeplin-core`, `-p keeplin-daemon`)
   rather than `--workspace` because the two test suites are logically independent and this
   makes it easier to identify which crate a failure belongs to.

@@ -35,19 +35,23 @@ jobs:
       - name: cargo fmt (workspace)
         run: cargo fmt --check --all
 
-      - name: cargo check (workspace)
-        run: cargo check --workspace
-
       - name: cargo test (keeplin-core)
         run: cargo test -p keeplin-core
 
       - name: cargo test (keeplin-daemon)
         run: cargo test -p keeplin-daemon
 
+      # --all-targets lints test and bench code too, matching the command the README
+      # tells contributors to run locally. It also fully subsumes `cargo check`.
       - name: cargo clippy (workspace)
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Prebuilt binary instead of `cargo install cargo-audit` — compiling the tool
+      # from source added minutes to every run for no additional coverage.
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
 
       - name: Audit dependencies
-        run: |
-          cargo install cargo-audit --locked
-          cargo audit
+        run: cargo audit
