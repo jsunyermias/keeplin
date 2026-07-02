@@ -262,6 +262,28 @@ message CreateResourceResponse {
   Resource resource = 1;
 }
 
+// Metadata for a streamed upload — the first frame of an UploadResource stream.
+message ResourceMeta {
+  string title     = 1;
+  string mime_type = 2;
+  string file_name = 3;
+}
+
+// One frame of a client-streaming UploadResource call. The client sends exactly one `meta`
+// frame first, then any number of `chunk` frames carrying the payload in order. Splitting the
+// payload across frames keeps each gRPC message small, so an attachment larger than
+// max_message_size can be uploaded without a single oversized frame.
+message UploadResourceRequest {
+  oneof payload {
+    ResourceMeta meta  = 1;  // first frame only
+    bytes        chunk = 2;  // subsequent frames, in order
+  }
+}
+
+message UploadResourceResponse {
+  Resource resource = 1;
+}
+
 message DeleteResourceRequest {
   string id = 1;
 }
@@ -375,6 +397,8 @@ service KeeplinService {
   // Resources
   rpc ListResources   (ListResourcesRequest)   returns (ListResourcesResponse);
   rpc CreateResource  (CreateResourceRequest)  returns (CreateResourceResponse);
+  // Client-streaming upload for large attachments: meta frame, then payload chunks.
+  rpc UploadResource  (stream UploadResourceRequest) returns (UploadResourceResponse);
   rpc GetResource     (GetResourceRequest)     returns (GetResourceResponse);
   rpc DeleteResource  (DeleteResourceRequest)  returns (DeleteResourceResponse);
 

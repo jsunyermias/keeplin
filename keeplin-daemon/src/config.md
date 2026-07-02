@@ -27,6 +27,7 @@ file (default: `keeplin.toml`) and may be partially overridden by environment va
 | `tls_cert_path` | `Option<String>` | `None` | Filesystem path to the PEM-encoded TLS certificate |
 | `tls_key_path` | `Option<String>` | `None` | Filesystem path to the PEM-encoded TLS private key |
 | `max_message_size` | `usize` | 33,554,432 (32 MiB) | Max size of a single gRPC message (inbound and outbound); also caps the REST request body (`DefaultBodyLimit`) so resource uploads have the same limit on both surfaces |
+| `max_upload_bytes` | `usize` | 1,073,741,824 (1 GiB) | Max assembled size of a **streamed** upload (gRPC `UploadResource` / `POST /api/resources/upload`), which is not bounded by `max_message_size`; `0` disables the cap |
 | `journal_retention_days` | `u64` | `30` | Days of `entity_changes` history to keep; pruned after each successful sync (`0` disables; no-op for the filesystem backend) |
 | `encryption_password` | `Option<String>` | `None` | Passphrase for AES-256-GCM at-rest encryption; prefer env var (`KEEPLIN_ENCRYPTION_PASSWORD`) |
 | `key_salt` | `Option<String>` | `None` | Argon2id salt (≥ 8 bytes) for the encryption key; falls back to the device ID when unset. Set the **same** value on all synced devices for portable encryption; prefer env var (`KEEPLIN_KEY_SALT`) |

@@ -156,7 +156,8 @@ variables shown.
 | `grpc_addr` | `127.0.0.1:50051` | gRPC listen address. |
 | `http_addr` | `none` | Optional HTTP listen address for the REST/JSON API + WebSocket feed (e.g. `127.0.0.1:50052`). Plain HTTP — front with a TLS proxy. Same Basic‑Auth credentials apply. |
 | `tls_cert_path` / `tls_key_path` | `none` | PEM cert/key; set both to enable TLS. |
-| `max_message_size` | 32 MiB | Max gRPC message size (in/out). |
+| `max_message_size` | 32 MiB | Max gRPC message size (in/out); also the raw‑body cap for `POST /api/resources`. |
+| `max_upload_bytes` | 1 GiB | Max assembled size of a **streamed** upload (`UploadResource` RPC / `POST /api/resources/upload`); `0` disables the cap. |
 | `journal_retention_days` | `30` | Days of change‑journal history to keep; pruned after each sync (`0` disables; no‑op for the filesystem backend). |
 | `encryption_password` | `none` | Enables at‑rest encryption. Env: `KEEPLIN_ENCRYPTION_PASSWORD`. |
 | `key_salt` | `none` (→ device ID) | Argon2id salt (≥ 8 bytes); set the **same** value on all synced devices for portable encryption. Env: `KEEPLIN_KEY_SALT`. |
@@ -178,7 +179,9 @@ encryption is on without `key_salt`.
 
 The service is defined in
 [`keeplin-daemon/proto/keeplin.proto`](keeplin-daemon/proto/keeplin.proto). `KeeplinService`
-provides CRUD + paginated list RPCs for **notes, notebooks, tags, and resources**, the
+provides CRUD + paginated list RPCs for **notes, notebooks, tags, and resources**, a
+**client‑streaming `UploadResource`** RPC for large attachments (a metadata frame followed by
+payload chunks, so no single message holds the whole file), the
 note↔tag association RPCs, the **alias/link** RPCs (`SetNoteAlias`, `SetNotebookAlias`,
 `AddNoteLink`, `RemoveNoteLink`, `ListBacklinks`, `ResolveReference`,
 `ListAliasConflicts` — see [Bookmarks & links](#bookmarks--links)), and a server‑streaming **`Sync`** RPC that
@@ -206,7 +209,8 @@ base64(user:password)` header (only required when `auth_username`/`auth_password
 | `PUT/DELETE /api/notes/:note_id/tags/:tag_id` | Add / remove a note↔tag association. Adding returns `404` when the note or tag is missing or deleted (no dangling associations). |
 | `GET/POST /api/notebooks`, `GET/PUT/DELETE /api/notebooks/:id` | Notebook CRUD. |
 | `GET/POST /api/tags`, `GET/PUT/DELETE /api/tags/:id` | Tag CRUD. |
-| `GET/POST /api/resources`, `GET/PUT/DELETE /api/resources/:id` | Resource metadata CRUD. |
+| `GET/POST /api/resources`, `GET/PUT/DELETE /api/resources/:id` | Resource metadata CRUD (create = raw-body upload, capped at `max_message_size`). |
+| `POST /api/resources/upload?title=&file_name=` | **Streaming upload** for large attachments: the body is read incrementally up to `max_upload_bytes` (not `max_message_size`); over the cap → `413`. |
 | `GET /api/resources/:id/data` | Download the raw resource bytes. |
 | `PUT /api/notes/:id/alias`, `PUT /api/notebooks/:id/alias` | Set/clear an alias (`{ "alias": "…" \| null }`). |
 | `GET/POST /api/notes/:id/links` | List / add a link (`POST {"raw":"#…"}`, manual link). |
@@ -219,7 +223,12 @@ base64(user:password)` header (only required when `auth_username`/`auth_password
 
 Resource upload is a raw request body: `POST /api/resources?title=&file_name=` with the
 file bytes as the body and the `Content-Type` header as the MIME type. The request body is
-capped at `max_message_size` (32 MiB by default), matching the gRPC limit. Reads **and
+capped at `max_message_size` (32 MiB by default), matching the gRPC limit. For attachments
+larger than that, `POST /api/resources/upload` streams the body incrementally up to
+`max_upload_bytes` (1 GiB by default) — the gRPC equivalent is the client‑streaming
+`UploadResource` RPC (a metadata frame, then payload chunks), so no single message needs to
+hold the whole file. (The assembled payload is still buffered in memory before it reaches
+storage; true end‑to‑end streaming to disk/DB is a later refinement.) Reads **and
 updates** of a soft‑deleted note, notebook, or tag return `404` (the gRPC `Get` RPCs still
 return the tombstone for sync, but the `Update` RPCs answer `NOT_FOUND` too) — an edit can
 never silently revive a deleted entity; revival happens only through sync, when a causal
@@ -371,7 +380,11 @@ roughly in priority order:
 3. Performance at scale: `FsBackend` list reads re‑merge every note's per‑device logs
    on each call (the logs themselves are compacted automatically, but reads use no
    cached projection).
-4. Hardening: `wss://`/TLS by default, chunked upload for large attachments.
+4. Hardening: the daemon is **secure by default** (refuses to start on an exposed config,
+   see [Configuration reference](#configuration-reference)) and supports **streamed uploads**
+   for large attachments (`UploadResource` RPC / `POST /api/resources/upload`); remaining work
+   is `wss://`/TLS terminated *by the daemon itself* (today it is fronted by a proxy) and true
+   end‑to‑end streaming of upload payloads to storage.
 
 ---
 

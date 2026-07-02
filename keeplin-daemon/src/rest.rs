@@ -19,10 +19,10 @@
 use std::sync::Arc;
 
 use axum::{
-    body::Bytes,
+    body::{Body, Bytes},
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path, Query, Request, State,
+        DefaultBodyLimit, Path, Query, Request, State,
     },
     http::{
         header::{AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE},
@@ -60,6 +60,10 @@ pub struct AppState {
     /// Maximum request body size in bytes. Mirrors the gRPC `max_message_size` so a large
     /// resource upload (`POST /api/resources`) is not silently capped at axum's 2 MiB default.
     pub max_body_bytes: usize,
+    /// Maximum assembled size, in bytes, of a **streamed** upload (`POST /api/resources/upload`).
+    /// That route bypasses `max_body_bytes` and streams the body incrementally up to this cap,
+    /// so attachments larger than `max_message_size` can be uploaded. `0` means no limit.
+    pub max_upload_bytes: usize,
     /// How many days of change-journal history to retain; `POST /api/sync` prunes older
     /// entries after a successful cycle, exactly like the gRPC `Sync` RPC (both call
     /// [`crate::server::prune_journal_after_sync`]). `0` disables pruning.
@@ -115,6 +119,13 @@ pub fn router(state: Shared) -> Router {
         .route("/tags", get(list_tags).post(create_tag))
         .route("/tags/:id", get(get_tag).put(update_tag).delete(delete_tag))
         .route("/resources", get(list_resources).post(create_resource))
+        // Streaming upload for large attachments: the request body is read incrementally up to
+        // `max_upload_bytes` instead of being capped at `max_body_bytes`, so this one route
+        // disables the router-wide body limit and enforces its own larger cap.
+        .route(
+            "/resources/upload",
+            post(upload_resource).layer(DefaultBodyLimit::disable()),
+        )
         .route("/resources/:id", get(get_resource).delete(delete_resource))
         .route("/resources/:id/data", get(get_resource_data))
         .route("/sync", post(sync))
@@ -612,6 +623,47 @@ async fn create_resource(
     Ok(Json(s.backend.create_resource(resource, data).await?))
 }
 
+/// Streaming upload: `POST /api/resources/upload?title=&file_name=` with the raw file bytes as
+/// the body and `Content-Type` as the MIME type. The body is read incrementally up to
+/// `max_upload_bytes` (this route bypasses the router's `max_body_bytes` cap), so an attachment
+/// larger than `max_message_size` can be uploaded. A body over the cap is rejected with `413`.
+async fn upload_resource(
+    State(s): State<Shared>,
+    Query(meta): Query<ResourceMeta>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let limit = if s.max_upload_bytes == 0 {
+        usize::MAX
+    } else {
+        s.max_upload_bytes
+    };
+    // `to_bytes` reads the body incrementally and errors once it passes `limit`, so an
+    // oversized upload never fully materialises in memory.
+    let data = match axum::body::to_bytes(body, limit).await {
+        Ok(bytes) => bytes.to_vec(),
+        Err(_) => {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(json!({
+                    "error": format!("upload exceeds max_upload_bytes ({})", s.max_upload_bytes)
+                })),
+            )
+                .into_response()
+        }
+    };
+    let mime = headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let resource = Resource::new(meta.title, mime, meta.file_name, data.len() as u64);
+    match s.backend.create_resource(resource, data).await {
+        Ok(r) => (StatusCode::OK, Json(r)).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
 async fn get_resource(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -728,6 +780,7 @@ mod tests {
             events,
             metrics: Arc::new(crate::metrics::Metrics::new()),
             max_body_bytes: 32 * 1024 * 1024,
+            max_upload_bytes: 1024 * 1024 * 1024,
             journal_retention_days: 30,
             auth_username: auth.map(|a| a.0.to_string()),
             auth_password: auth.map(|a| a.1.to_string()),
@@ -748,6 +801,7 @@ mod tests {
             events,
             metrics: Arc::new(crate::metrics::Metrics::new()),
             max_body_bytes: 32 * 1024 * 1024,
+            max_upload_bytes: 1024 * 1024 * 1024,
             journal_retention_days: 30,
             auth_username: None,
             auth_password: None,
@@ -926,6 +980,7 @@ mod tests {
             events,
             metrics: Arc::new(crate::metrics::Metrics::new()),
             max_body_bytes: 32 * 1024 * 1024,
+            max_upload_bytes: 1024 * 1024 * 1024,
             journal_retention_days: 30,
             auth_username: None,
             auth_password: None,
@@ -987,6 +1042,7 @@ mod tests {
             events,
             metrics,
             max_body_bytes: 32 * 1024 * 1024,
+            max_upload_bytes: 1024 * 1024 * 1024,
             journal_retention_days: 30,
             auth_username: None,
             auth_password: None,
@@ -1104,6 +1160,65 @@ mod tests {
         assert_eq!(code, StatusCode::OK);
         let res: Resource = serde_json::from_slice(&body).unwrap();
         assert_eq!(res.size, big.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn streaming_upload_round_trips() {
+        let st = state(None).await;
+        let payload = "some large attachment bytes";
+        let (code, body) = call(
+            &st,
+            "POST",
+            "/api/resources/upload?title=vid&file_name=v.bin",
+            Some(payload),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        let res: Resource = serde_json::from_slice(&body).unwrap();
+        assert_eq!(res.title, "vid");
+        assert_eq!(res.size, payload.len() as u64);
+
+        // The uploaded bytes download intact.
+        let (code, data) = call(
+            &st,
+            "GET",
+            &format!("/api/resources/{}/data", res.id),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(data, payload.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn streaming_upload_over_cap_is_413() {
+        // A state with a tiny 8-byte upload cap rejects a larger streamed body.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let fs = FsBackend::new(&path).await.unwrap();
+        let (events, _rx) = broadcast::channel(16);
+        let st: Shared = Arc::new(AppState {
+            backend: Arc::new(fs),
+            events,
+            metrics: Arc::new(crate::metrics::Metrics::new()),
+            max_body_bytes: 32 * 1024 * 1024,
+            max_upload_bytes: 8,
+            journal_retention_days: 30,
+            auth_username: None,
+            auth_password: None,
+        });
+        let (code, _) = call(
+            &st,
+            "POST",
+            "/api/resources/upload?title=big&file_name=big.bin",
+            Some("0123456789"),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]
@@ -1305,6 +1420,7 @@ mod tests {
             events,
             metrics: Arc::new(crate::metrics::Metrics::new()),
             max_body_bytes: 32 * 1024 * 1024,
+            max_upload_bytes: 1024 * 1024 * 1024,
             journal_retention_days: 30,
             auth_username: None,
             auth_password: None,

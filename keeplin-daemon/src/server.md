@@ -57,7 +57,17 @@ All 30 RPC methods are implemented. They follow this pattern:
 `AddNoteTag`, `RemoveNoteTag`, `ListNoteTags`
 
 #### Resources RPCs
-`ListResources`, `CreateResource`, `GetResource`, `DeleteResource`
+`ListResources`, `CreateResource`, `UploadResource`, `GetResource`, `DeleteResource`
+
+`UploadResource` is **client-streaming**: the first frame carries `ResourceMeta`, each later
+frame a payload `chunk` (in order), so an attachment larger than `max_message_size` uploads
+without any single oversized message. The assembly logic lives in the inherent
+`KeeplinServer::assemble_upload`, which is generic over the frame stream (`Stream<Item =
+Result<UploadResourceRequest, Status>>`) so it can be unit-tested with an in-memory
+`tokio_stream::iter` rather than a real `tonic::Streaming`. It rejects a stream that does not
+start with metadata (`INVALID_ARGUMENT`) and one whose assembled size exceeds `max_upload_bytes`
+(`RESOURCE_EXHAUSTED`), then calls `create_resource` with the assembled bytes. `from_shared`
+now takes `max_upload_bytes` alongside `journal_retention_days`.
 
 #### Linking & references RPCs
 `SetNoteAlias`, `SetNotebookAlias`, `AddNoteLink`, `RemoveNoteLink`,

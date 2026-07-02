@@ -71,6 +71,16 @@ pub struct Config {
     #[serde(default = "default_max_message_size")]
     pub max_message_size: usize,
 
+    /// Maximum total size, in bytes, of a **streamed** resource upload (default: 1 GiB).
+    ///
+    /// The streaming upload paths — the gRPC `UploadResource` client-streaming RPC and
+    /// `POST /api/resources/upload` — assemble the payload from many small frames/chunks, so
+    /// unlike a single `CreateResource` message they are not bounded by `max_message_size`.
+    /// This cap bounds the assembled payload instead, so a client cannot exhaust server memory
+    /// with an unbounded stream. `0` means no limit (not recommended on a shared deployment).
+    #[serde(default = "default_max_upload_bytes")]
+    pub max_upload_bytes: usize,
+
     /// How many days of change-journal history to retain (default: 30).
     ///
     /// After each successful sync — driven by the gRPC `Sync` RPC or REST
@@ -142,6 +152,15 @@ fn default_max_message_size() -> usize {
     32 * 1024 * 1024
 }
 
+/// Returns the default maximum streamed-upload size in bytes (1 GiB).
+///
+/// Generous enough for large attachments (video, disk images) while still bounding the memory
+/// a single streamed upload can consume, since the payload is assembled in memory before it is
+/// handed to the backend.
+fn default_max_upload_bytes() -> usize {
+    1024 * 1024 * 1024
+}
+
 /// Returns the default change-journal retention window in days (30).
 ///
 /// Thirty days comfortably exceeds the time a peer device is normally offline, so
@@ -180,6 +199,7 @@ impl Default for Config {
             tls_cert_path: None,
             tls_key_path: None,
             max_message_size: default_max_message_size(),
+            max_upload_bytes: default_max_upload_bytes(),
             journal_retention_days: default_journal_retention_days(),
             encryption_password: None,
             key_salt: None,
