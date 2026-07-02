@@ -1348,9 +1348,22 @@ impl FsBackend {
 
     // ── note↔tag association version helpers ──────────────────────────────────
 
-    /// Read the versioned state of a note↔tag association file, or `None` when absent. An empty
-    /// or unparseable file (a pre-version marker written before this feature) is reported as a
-    /// **present** association with an empty vector, preserving backward compatibility.
+    /// Read the versioned state of a note↔tag association file, or `None` when absent.
+    ///
+    /// Two degenerate shapes both fall back to a "present, minimum priority" marker
+    /// (epoch-0 timestamp, empty vector), but for different reasons:
+    ///
+    /// - An **empty** file is the pre-versioning marker format (its mere existence encoded
+    ///   the association). Reading it as attached-with-weakest-priority is the designed
+    ///   backward compatibility: any versioned write is causally newer and must win.
+    /// - A **non-empty but unparseable** file is corruption. Its true state (attached or
+    ///   tombstoned, and with what vector) is unrecoverable, so the same weakest-priority
+    ///   marker is deliberately the least-harm reading: the association stays visible
+    ///   locally instead of vanishing, and the next versioned state from any peer — the
+    ///   only surviving authoritative copy — supersedes it through `resolve`, which is the
+    ///   best available recovery. Unlike the marker case this is **reported at error
+    ///   level** (it means local data was damaged), while staying non-fatal so one bad
+    ///   association cannot block listing or sync.
     async fn read_assoc_state(&self, path: &Path) -> Result<Option<NoteTagState>, StorageError> {
         if !path.exists() {
             return Ok(None);
@@ -1365,9 +1378,18 @@ impl FsBackend {
         if bytes.is_empty() {
             return Ok(Some(marker()));
         }
-        Ok(Some(
-            rmp_serde::from_slice(&bytes).unwrap_or_else(|_| marker()),
-        ))
+        match rmp_serde::from_slice(&bytes) {
+            Ok(state) => Ok(Some(state)),
+            Err(e) => {
+                tracing::error!(
+                    path = %path.display(),
+                    "Unreadable note↔tag association state; treating it as attached with \
+                     minimum priority so the next versioned peer state supersedes it \
+                     (restore the file from a backup or another device to recover it): {e}"
+                );
+                Ok(Some(marker()))
+            }
+        }
     }
 
     /// Version vector for a **local** association write: current vector (empty if new) with this
@@ -2635,6 +2657,53 @@ mod tests {
             "temp file must be removed after a failed write"
         );
         assert!(dest.is_dir(), "destination must be untouched");
+    }
+
+    /// A corrupt association state file must read as "attached with minimum priority":
+    /// still visible locally, and superseded by the next versioned peer state — the only
+    /// surviving authoritative copy — instead of blocking listing or sync.
+    #[tokio::test]
+    async fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let be = FsBackend::new(dir.path()).await.unwrap();
+        let note = be.create_note(Note::new("n", "")).await.unwrap();
+        let tag = be.create_tag(Tag::new("t")).await.unwrap();
+        be.add_note_tag(NoteTag {
+            note_id: note.id,
+            tag_id: tag.id,
+        })
+        .await
+        .unwrap();
+
+        // Damage the association's versioned state file.
+        let path = dir
+            .path()
+            .join("note_tags")
+            .join(note.id.to_string())
+            .join(tag.id.to_string());
+        std::fs::write(&path, b"not msgpack at all").unwrap();
+
+        // Least-harm reading: the tag still lists as attached.
+        let (tags, _) = be.list_note_tags(note.id, 0, None).await.unwrap();
+        assert_eq!(tags.len(), 1, "corrupt state must not hide the association");
+
+        // Any versioned peer state must beat the epoch-0 fallback marker.
+        let mut vv = VersionVector::new();
+        note_log::increment(&mut vv, "peer");
+        be.apply_change(Change::NoteTagRemove {
+            note_id: note.id,
+            tag_id: tag.id,
+            updated_at: now(),
+            vv,
+            last_writer: "peer".to_string(),
+        })
+        .await
+        .unwrap();
+        let (tags, _) = be.list_note_tags(note.id, 0, None).await.unwrap();
+        assert!(
+            tags.is_empty(),
+            "a versioned remove must supersede the corrupt marker"
+        );
     }
 
     #[tokio::test]
