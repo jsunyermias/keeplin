@@ -26,7 +26,7 @@ requests carry `page_size` + `page_token`, responses carry a `next_page_token`.
 
 | Method | Request | Response | Description |
 |--------|---------|----------|-------------|
-| `ListNotesInNotebook` | `ListNotesInNotebookRequest` | `ListNotesInNotebookResponse` | One notebook's notes in manual order (pinned band first); nil UUID = the Inbox |
+| `ListNotesInNotebook` | `ListNotesInNotebookRequest` | `ListNotesInNotebookResponse` | One notebook's notes in manual order (pinned band first); nil UUID = the Inbox / `Pizarra` |
 | `ListStarredNotes` | `ListStarredNotesRequest` | `ListStarredNotesResponse` | Every starred note, across all notebooks |
 | `PinNote` / `UnpinNote` | `{Pin,Unpin}NoteRequest` | `{Pin,Unpin}NoteResponse` | Move a note into / out of the `1–999` pinned band (max 999) |
 | `StarNote` / `UnstarNote` | `{Star,Unstar}NoteRequest` | `{Star,Unstar}NoteResponse` | Toggle the global star (never moves the note) |

@@ -46,7 +46,7 @@ metrics); every other route is behind auth and counted by `status_mw`.
 | `GET /notebooks/:id/notes?page_size=&page_token=` | the notebook's notes in **manual order** (pinned band first); nil UUID = the Inbox |
 | `GET /links/resolve?ref=#…` | resolve a reference → `{ note_id, bookmark_number }` |
 | `GET /aliases/conflicts` | aliases shared by 2+ live entities (sync collisions) |
-| `GET/POST/PUT/DELETE /notebooks`, `/tags` | notebook / tag CRUD (deleting the Inbox → `400`) |
+| `GET/POST/PUT/DELETE /notebooks`, `/tags` | notebook / tag CRUD (deleting the Inbox / `Pizarra` → `400`) |
 | `GET/POST /resources`, `GET/PUT/DELETE /resources/:id`, `GET /resources/:id/data` | resource metadata CRUD + raw upload/download (create is capped at `max_body_bytes`) |
 | `POST /resources/upload` | **streaming upload** for large attachments: reads the body incrementally up to `max_upload_bytes` (this one route disables the router's body limit); over the cap → `413` |
 | `POST /sync` | run one sync cycle → `{ "applied": n }`, then prune journal rows older than `journal_retention_days` (shared `server::prune_journal_after_sync`) |

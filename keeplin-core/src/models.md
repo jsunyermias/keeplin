@@ -49,9 +49,10 @@ are also `#[serde(default)]` (empty ⇒ pre-VV record) and are stamped by the ba
 
 The ordering fields (`is_pinned`, `is_starred`, `sort_key`) are likewise `#[serde(default)]`, so
 old records and old peers parse without them; the placement rules that set them live in
-`ordering.rs`. `Note::effective_sort_key()` maps the `0` sentinel to `DEFAULT_SORT_KEY` (1000),
-so a never-positioned note orders at the start of the normal band without any data rewrite. See
-`ordering.md`.
+`ordering.rs` (`pin_note`, `unpin_note`, `star_note`, `unstar_note`, `reorder_note`,
+`place_new_note`, etc.). `Note::effective_sort_key()` maps the `0` sentinel to `DEFAULT_SORT_KEY`
+(1000), so a never-positioned note orders at the start of the normal band without any data
+rewrite. See `ordering.md`.
 
 ### `Notebook`
 | Field | Type | Description |
