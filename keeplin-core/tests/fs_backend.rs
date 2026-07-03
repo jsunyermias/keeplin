@@ -1101,3 +1101,98 @@ async fn note_index_reflects_changes_pulled_from_a_peer() {
     assert_eq!(starred.len(), 1);
     assert_eq!(starred[0].id, id);
 }
+
+/// #71: on `FsBackend`, a notebook/tag/resource delete for an entity unknown locally must
+/// write a minimal tombstone sidecar, so a later stale create/update loses against it in
+/// `resolve` instead of resurrecting the entity. (Note deletes converge through the
+/// Syncthing-replicated per-note logs, not through this apply path, so they are covered by
+/// the two-device convergence tests instead.)
+#[tokio::test]
+async fn delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_create() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+    let vv = |dev: &str, n: u64| std::collections::BTreeMap::from([(dev.to_string(), n)]);
+    let ts = Utc::now();
+
+    // ── Notebook ──────────────────────────────────────────────────────────────
+    let nb_id = uuid::Uuid::new_v4();
+    backend
+        .apply_change(Change::NotebookDelete {
+            id: nb_id,
+            deleted_at: ts,
+            vv: vv("peer", 2),
+            last_writer: "peer".into(),
+        })
+        .await
+        .unwrap();
+    let mut nb = Notebook::new("resurrected?");
+    nb.id = nb_id;
+    nb.vv = vv("peer", 1);
+    nb.last_writer = "peer".into();
+    backend
+        .apply_change(Change::NotebookCreate { notebook: nb })
+        .await
+        .unwrap();
+    let (nbs, _) = backend.list_notebooks(0, None).await.unwrap();
+    assert!(
+        !nbs.iter().any(|n| n.id == nb_id),
+        "a stale create must not resurrect a notebook deleted before it was known"
+    );
+
+    // ── Tag ───────────────────────────────────────────────────────────────────
+    let tag_id = uuid::Uuid::new_v4();
+    backend
+        .apply_change(Change::TagDelete {
+            id: tag_id,
+            deleted_at: ts,
+            vv: vv("peer", 2),
+            last_writer: "peer".into(),
+        })
+        .await
+        .unwrap();
+    let mut tag = Tag::new("resurrected?");
+    tag.id = tag_id;
+    tag.vv = vv("peer", 1);
+    tag.last_writer = "peer".into();
+    backend
+        .apply_change(Change::TagCreate { tag })
+        .await
+        .unwrap();
+    let (tags, _) = backend.list_tags(0, None).await.unwrap();
+    assert!(!tags.iter().any(|t| t.id == tag_id), "tag stays deleted");
+
+    // ── Resource ──────────────────────────────────────────────────────────────
+    let res_id = uuid::Uuid::new_v4();
+    backend
+        .apply_change(Change::ResourceDelete {
+            id: res_id,
+            deleted_at: ts,
+            vv: vv("peer", 2),
+            last_writer: "peer".into(),
+        })
+        .await
+        .unwrap();
+    let res = Resource {
+        id: res_id,
+        title: "resurrected?".into(),
+        mime_type: "text/plain".into(),
+        file_name: "f.txt".into(),
+        size: 3,
+        created_at: ts,
+        deleted_at: None,
+        vv: vv("peer", 1),
+        last_writer: "peer".into(),
+    };
+    backend
+        .apply_change(Change::ResourceCreate {
+            resource: res,
+            data: Some(b"abc".to_vec()),
+        })
+        .await
+        .unwrap();
+    let (resources, _) = backend.list_resources(0, None).await.unwrap();
+    assert!(
+        !resources.iter().any(|r| r.id == res_id),
+        "resource stays deleted"
+    );
+}

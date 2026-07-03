@@ -2369,17 +2369,35 @@ impl SyncBackend for DbBackend {
                 {
                     return Ok(());
                 }
-                self.conn
+                let affected = self
+                    .conn
                     .execute(
                         "UPDATE notes SET deleted_at = ?2, updated_at = ?2, vv = ?3, last_writer = ?4 WHERE id = ?1",
                         libsql::params![
                             id.to_string(),
                             deleted_at.to_sortable_rfc3339(),
                             vv_to_json(&vv),
-                            last_writer,
+                            last_writer.clone(),
                         ],
                     )
                     .await?;
+                if affected == 0 {
+                    // The note is unknown locally (out-of-order delivery, a device catching
+                    // up). Persist a minimal tombstone so a later stale create/update loses
+                    // against it in `resolve` instead of resurrecting the note (issue #71).
+                    self.conn
+                        .execute(
+                            "INSERT OR IGNORE INTO notes (id, title, created_at, updated_at, deleted_at, vv, last_writer)
+                             VALUES (?1, '', ?2, ?2, ?2, ?3, ?4)",
+                            libsql::params![
+                                id.to_string(),
+                                deleted_at.to_sortable_rfc3339(),
+                                vv_to_json(&vv),
+                                last_writer,
+                            ],
+                        )
+                        .await?;
+                }
             }
             // Notebooks
             Change::NotebookCreate { notebook } | Change::NotebookUpdate { notebook } => {
@@ -2424,12 +2442,24 @@ impl SyncBackend for DbBackend {
                 {
                     return Ok(());
                 }
-                self.conn
+                let affected = self
+                    .conn
                     .execute(
                         "UPDATE notebooks SET deleted_at = ?2, updated_at = ?2, vv = ?3, last_writer = ?4 WHERE id = ?1",
-                        libsql::params![id.to_string(), deleted_at.to_sortable_rfc3339(), vv_to_json(&vv), last_writer],
+                        libsql::params![id.to_string(), deleted_at.to_sortable_rfc3339(), vv_to_json(&vv), last_writer.clone()],
                     )
                     .await?;
+                if affected == 0 {
+                    // Unknown notebook: write a minimal tombstone so a later stale create/update
+                    // cannot resurrect it (issue #71).
+                    self.conn
+                        .execute(
+                            "INSERT OR IGNORE INTO notebooks (id, title, created_at, updated_at, deleted_at, vv, last_writer)
+                             VALUES (?1, '', ?2, ?2, ?2, ?3, ?4)",
+                            libsql::params![id.to_string(), deleted_at.to_sortable_rfc3339(), vv_to_json(&vv), last_writer],
+                        )
+                        .await?;
+                }
             }
             // Tags
             Change::TagCreate { tag } | Change::TagUpdate { tag } => {
@@ -2473,12 +2503,24 @@ impl SyncBackend for DbBackend {
                 {
                     return Ok(());
                 }
-                self.conn
+                let affected = self
+                    .conn
                     .execute(
                         "UPDATE tags SET deleted_at = ?2, updated_at = ?2, vv = ?3, last_writer = ?4 WHERE id = ?1",
-                        libsql::params![id.to_string(), deleted_at.to_sortable_rfc3339(), vv_to_json(&vv), last_writer],
+                        libsql::params![id.to_string(), deleted_at.to_sortable_rfc3339(), vv_to_json(&vv), last_writer.clone()],
                     )
                     .await?;
+                if affected == 0 {
+                    // Unknown tag: write a minimal tombstone so a later stale create/update
+                    // cannot resurrect it (issue #71).
+                    self.conn
+                        .execute(
+                            "INSERT OR IGNORE INTO tags (id, title, created_at, updated_at, deleted_at, vv, last_writer)
+                             VALUES (?1, '', ?2, ?2, ?2, ?3, ?4)",
+                            libsql::params![id.to_string(), deleted_at.to_sortable_rfc3339(), vv_to_json(&vv), last_writer],
+                        )
+                        .await?;
+                }
             }
             // NoteTag associations
             Change::NoteTagAdd {
@@ -2555,17 +2597,34 @@ impl SyncBackend for DbBackend {
                     .resource_incoming_wins(&id.to_string(), &vv, deleted_at, &last_writer)
                     .await?
                 {
-                    self.conn
+                    let affected = self
+                        .conn
                         .execute(
                             "UPDATE resources SET deleted_at=?2, vv=?3, last_writer=?4 WHERE id=?1",
                             libsql::params![
                                 id.to_string(),
                                 deleted_at.to_sortable_rfc3339(),
                                 vv_to_json(&vv),
-                                last_writer,
+                                last_writer.clone(),
                             ],
                         )
                         .await?;
+                    if affected == 0 {
+                        // Unknown resource: write a minimal metadata tombstone (no blob) so a
+                        // later stale create cannot resurrect it (issue #71).
+                        self.conn
+                            .execute(
+                                "INSERT OR IGNORE INTO resources (id, title, mime_type, file_name, size, created_at, deleted_at, vv, last_writer)
+                                 VALUES (?1, '', '', '', 0, ?2, ?2, ?3, ?4)",
+                                libsql::params![
+                                    id.to_string(),
+                                    deleted_at.to_sortable_rfc3339(),
+                                    vv_to_json(&vv),
+                                    last_writer,
+                                ],
+                            )
+                            .await?;
+                    }
                 }
             }
         }

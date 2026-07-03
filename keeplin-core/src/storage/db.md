@@ -193,17 +193,24 @@ abort the sync cycle or block the well-formed batches behind it.
 |---------|-----|
 | `NoteCreate` | `INSERT OR REPLACE INTO notes …` (shares the arm with `NoteUpdate`) |
 | `NoteUpdate` | `INSERT OR REPLACE INTO notes …` |
-| `NoteDelete` | `UPDATE notes SET deleted_at=?, updated_at=?, vv=?, last_writer=? WHERE id = ?` |
+| `NoteDelete` | `UPDATE notes SET deleted_at=?, updated_at=?, vv=?, last_writer=? WHERE id = ?`; if it hits **0 rows** (note unknown locally), `INSERT OR IGNORE` a minimal tombstone |
 | `NotebookCreate` | `INSERT OR REPLACE INTO notebooks …` |
 | `NotebookUpdate` | `INSERT OR REPLACE INTO notebooks …` |
-| `NotebookDelete` | `UPDATE notebooks SET deleted_at=?, updated_at=?, vv=?, last_writer=? WHERE id = ?` |
+| `NotebookDelete` | `UPDATE notebooks … WHERE id = ?`; 0 rows → `INSERT OR IGNORE` a minimal tombstone |
 | `TagCreate` | `INSERT OR REPLACE INTO tags …` |
 | `TagUpdate` | `INSERT OR REPLACE INTO tags …` |
-| `TagDelete` | `UPDATE tags SET deleted_at=?, updated_at=?, vv=?, last_writer=? WHERE id = ?` |
+| `TagDelete` | `UPDATE tags … WHERE id = ?`; 0 rows → `INSERT OR IGNORE` a minimal tombstone |
 | `NoteTagAdd` | version-vector `resolve`, then `INSERT OR REPLACE` the present state (`deleted_at` NULL) |
 | `NoteTagRemove` | version-vector `resolve`, then `INSERT OR REPLACE` a tombstone (`deleted_at` set) |
 | `ResourceCreate` | `INSERT OR IGNORE INTO resources (…, data) VALUES (…, ?)` with `data = payload.unwrap_or_default()` |
-| `ResourceDelete` | version-vector `resolve`, then `UPDATE resources SET deleted_at=?, vv=?, last_writer=? WHERE id = ?` (soft-delete tombstone; BLOB retained) |
+| `ResourceDelete` | version-vector `resolve`, then `UPDATE resources … WHERE id = ?` (BLOB retained); 0 rows → `INSERT OR IGNORE` a minimal metadata tombstone |
+
+The four `*Delete` arms insert a **minimal tombstone** when the `UPDATE` matches no row: a
+delete can arrive before the entity itself (out-of-order relay delivery, a device catching up).
+Without the stored tombstone a later stale `*Create`/`*Update` would see no local state and
+resurrect the entity; with it, that stale write loses in `resolve` against the tombstone's
+`(vv, last_writer)`. The insert holds the same per-apply write lock, so the `UPDATE`-hit-0
+check is race-free.
 
 All operations are idempotent by design. The create/update/delete arms for notes, notebooks,
 and tags are guarded by **version-vector conflict resolution** (`incoming_wins` → `resolve`,

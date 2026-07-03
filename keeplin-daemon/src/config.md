@@ -48,13 +48,27 @@ It flags only unambiguous exposures a fronting TLS proxy cannot fix, so the docu
 
 | Issue | Condition |
 |-------|-----------|
-| gRPC/HTTP listener open without auth | `grpc_addr` or `http_addr` binds a **non-loopback** address and neither `auth_username` nor `auth_password` is set |
+| gRPC/HTTP listener open without auth | `grpc_addr` or `http_addr` binds a **non-loopback** address and auth is not **enabled** (see below) |
 | Plaintext sync token | server mode with a `ws://` (not `wss://`) `server_url` whose host is **non-loopback** — the outbound handshake would send `auth_token` in the clear |
 
 Missing daemon-terminated TLS on the listeners is deliberately **not** flagged (proxy
 termination is supported). The `encryption_password`-without-`key_salt` warning is separate and
 always non-fatal. `plaintext_ws_remote_host` is the helper that classifies a `server_url`,
 tolerating IPv6 literals and treating any not-clearly-loopback host as remote (fail safe).
+
+### Auth is all-or-nothing (`auth_enabled` / `validate_auth`)
+
+Basic-Auth counts as **enabled** only when `auth_username` **and** `auth_password` are both set
+and non-empty (`Config::auth_enabled`). Anything in between is a misconfiguration that would
+silently leave the daemon unauthenticated, so `Config::validate_auth` — called by `main::serve`
+**before** the store is touched — makes the daemon **refuse to start** when:
+
+- exactly one of `auth_username` / `auth_password` is set (half-configured), or
+- either is set to an empty string (an empty pair would accept `Basic Og==`, base64 of `:`).
+
+This is independent of `insecure`: a half-configured credential is a mistake, not a deployment
+trade-off. Because the security scan keys off `auth_enabled`, a partial credential also still
+trips the "listener open without auth" issue above — defence in depth alongside the hard failure.
 
 ## `Mode` variants
 

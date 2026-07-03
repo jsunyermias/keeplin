@@ -240,7 +240,7 @@ impl Config {
     /// TLS at a reverse proxy is a supported, documented deployment.
     pub fn security_issues(&self) -> Vec<String> {
         let mut issues = Vec::new();
-        let auth = self.auth_username.is_some() && self.auth_password.is_some();
+        let auth = self.auth_enabled();
 
         if !auth {
             if let Ok(addr) = self.grpc_addr.parse::<SocketAddr>() {
@@ -273,6 +273,50 @@ impl Config {
         }
 
         issues
+    }
+
+    /// Whether Basic-Auth is actually **active**: both the username and password are set and
+    /// non-empty. A half-configured or empty-string pair is *not* active (and is rejected by
+    /// [`Config::validate_auth`] at startup), so this never reports a store as protected when
+    /// requests would in fact pass unauthenticated.
+    pub fn auth_enabled(&self) -> bool {
+        matches!(
+            (self.auth_username.as_deref(), self.auth_password.as_deref()),
+            (Some(u), Some(p)) if !u.is_empty() && !p.is_empty()
+        )
+    }
+
+    /// Reject credential configurations that would silently disable authentication: exactly
+    /// one of `auth_username`/`auth_password` set, or either one set to an empty string.
+    /// Returns a human-readable reason on error. Called at startup so an operator who
+    /// half-configures auth (e.g. sets only `KEEPLIN_AUTH_PASSWORD`) gets a hard failure
+    /// instead of a daemon that quietly accepts every request (issue #73).
+    pub fn validate_auth(&self) -> Result<(), String> {
+        match (self.auth_username.as_deref(), self.auth_password.as_deref()) {
+            // Auth intentionally off.
+            (None, None) => Ok(()),
+            (Some(_), None) => Err(
+                "auth_username is set but auth_password is not — set both (or neither); \
+                 prefer KEEPLIN_AUTH_USERNAME + KEEPLIN_AUTH_PASSWORD"
+                    .into(),
+            ),
+            (None, Some(_)) => Err(
+                "auth_password is set but auth_username is not — set both (or neither); \
+                 prefer KEEPLIN_AUTH_USERNAME + KEEPLIN_AUTH_PASSWORD"
+                    .into(),
+            ),
+            (Some(u), Some(p)) => {
+                if u.is_empty() || p.is_empty() {
+                    Err(
+                        "auth_username and auth_password must both be non-empty when \
+                         authentication is configured"
+                            .into(),
+                    )
+                } else {
+                    Ok(())
+                }
+            }
+        }
     }
 }
 
@@ -341,6 +385,54 @@ mod tests {
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert!(issues[0].contains("http_addr"));
         assert!(with_auth(c).security_issues().is_empty());
+    }
+
+    #[test]
+    fn validate_auth_rejects_partial_and_empty_credentials() {
+        // Both unset → auth intentionally off, valid.
+        let mut c = base();
+        assert!(c.validate_auth().is_ok());
+        assert!(!c.auth_enabled());
+
+        // Only one set → half-configured, rejected.
+        c.auth_username = Some("alice".into());
+        assert!(c.validate_auth().is_err());
+        assert!(!c.auth_enabled());
+
+        c.auth_username = None;
+        c.auth_password = Some("s3cr3t".into());
+        assert!(c.validate_auth().is_err());
+        assert!(!c.auth_enabled());
+
+        // Both set but empty → rejected (would accept `Basic Og==`).
+        c.auth_username = Some(String::new());
+        c.auth_password = Some(String::new());
+        assert!(c.validate_auth().is_err());
+        assert!(!c.auth_enabled());
+
+        // One empty → rejected.
+        c.auth_username = Some("alice".into());
+        c.auth_password = Some(String::new());
+        assert!(c.validate_auth().is_err());
+        assert!(!c.auth_enabled());
+
+        // Both set and non-empty → valid and enabled.
+        c.auth_password = Some("s3cr3t".into());
+        assert!(c.validate_auth().is_ok());
+        assert!(c.auth_enabled());
+    }
+
+    #[test]
+    fn partial_auth_still_flags_network_exposure() {
+        // A half-configured credential must NOT be treated as "auth enabled" by the security
+        // check, so a network listener is still flagged (defence in depth alongside
+        // validate_auth's hard failure).
+        let mut c = base();
+        c.grpc_addr = "0.0.0.0:50051".into();
+        c.auth_password = Some("s3cr3t".into()); // username missing
+        let issues = c.security_issues();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(issues[0].contains("grpc_addr"));
     }
 
     #[test]

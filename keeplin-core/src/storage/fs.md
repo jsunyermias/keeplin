@@ -169,6 +169,12 @@ runs `note_log::resolve` over the resource sidecar's `(vv, effective_ts, last_wr
 winning delete soft-deletes the metadata (`deleted_at` set, blob retained) rather than removing
 the resource dir, so a concurrent delete-vs-recreate converges.
 
+A winning notebook/tag/resource **delete for an entity this device has never seen writes a
+minimal tombstone sidecar** instead of doing nothing: a delete can arrive (from a `DbBackend`
+peer) before the entity's own create, and without a persisted tombstone a later stale create
+would resurrect it. (Note deletes need no such handling — their tombstone lives in the
+Syncthing-replicated per-note log, and `apply_change` merely re-materializes.)
+
 Local notebook/tag/resource writes stamp the sidecar's `vv`/`last_writer` (`next_sidecar_vv` /
 `next_resource_vv` load the current vector and increment this device's component), and note↔tag
 adds/removes stamp the association file's `vv`/`last_writer` the same way — matching notes and

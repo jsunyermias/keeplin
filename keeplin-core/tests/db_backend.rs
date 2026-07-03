@@ -851,3 +851,125 @@ async fn sync_applied_change_carries_ordering_fields() {
     let (stars, _) = backend.list_starred_notes(0, None).await.unwrap();
     assert_eq!(stars.len(), 1, "sync-applied stars are queryable");
 }
+
+/// #71: a delete that arrives for an entity this backend has never seen must leave a
+/// tombstone, so a later (stale) create for the same id cannot resurrect it. Covers all four
+/// versioned entity types, which each insert a minimal tombstone when the `UPDATE` hits no row.
+#[tokio::test]
+async fn delete_for_unknown_entity_leaves_a_tombstone_blocking_a_stale_create() {
+    let backend = in_memory_backend().await;
+    let vv = |dev: &str, n: u64| std::collections::BTreeMap::from([(dev.to_string(), n)]);
+    let ts = chrono::Utc::now();
+
+    // ── Note ──────────────────────────────────────────────────────────────────
+    // Peer created then deleted a note (vv {peer:1} → {peer:2}); the delete reaches us first.
+    let note_id = uuid::Uuid::new_v4();
+    backend
+        .apply_change(Change::NoteDelete {
+            id: note_id,
+            deleted_at: ts,
+            vv: vv("peer", 2),
+            last_writer: "peer".into(),
+        })
+        .await
+        .unwrap();
+    // The out-of-order (causally older) create must lose against the stored tombstone.
+    let mut stale = Note::new("resurrected?", "body");
+    stale.id = note_id;
+    stale.vv = vv("peer", 1);
+    stale.last_writer = "peer".into();
+    backend
+        .apply_change(Change::NoteCreate { note: stale })
+        .await
+        .unwrap();
+    let (notes, _) = backend.list_notes(0, None).await.unwrap();
+    assert!(
+        !notes.iter().any(|n| n.id == note_id),
+        "a stale create must not resurrect a note deleted before it was known"
+    );
+    assert!(backend
+        .read_note(note_id)
+        .await
+        .unwrap()
+        .deleted_at
+        .is_some());
+
+    // ── Notebook ──────────────────────────────────────────────────────────────
+    let nb_id = uuid::Uuid::new_v4();
+    backend
+        .apply_change(Change::NotebookDelete {
+            id: nb_id,
+            deleted_at: ts,
+            vv: vv("peer", 2),
+            last_writer: "peer".into(),
+        })
+        .await
+        .unwrap();
+    let mut nb = Notebook::new("resurrected?");
+    nb.id = nb_id;
+    nb.vv = vv("peer", 1);
+    nb.last_writer = "peer".into();
+    backend
+        .apply_change(Change::NotebookCreate { notebook: nb })
+        .await
+        .unwrap();
+    let (nbs, _) = backend.list_notebooks(0, None).await.unwrap();
+    assert!(!nbs.iter().any(|n| n.id == nb_id), "notebook stays deleted");
+
+    // ── Tag ───────────────────────────────────────────────────────────────────
+    let tag_id = uuid::Uuid::new_v4();
+    backend
+        .apply_change(Change::TagDelete {
+            id: tag_id,
+            deleted_at: ts,
+            vv: vv("peer", 2),
+            last_writer: "peer".into(),
+        })
+        .await
+        .unwrap();
+    let mut tag = Tag::new("resurrected?");
+    tag.id = tag_id;
+    tag.vv = vv("peer", 1);
+    tag.last_writer = "peer".into();
+    backend
+        .apply_change(Change::TagCreate { tag })
+        .await
+        .unwrap();
+    let (tags, _) = backend.list_tags(0, None).await.unwrap();
+    assert!(!tags.iter().any(|t| t.id == tag_id), "tag stays deleted");
+
+    // ── Resource ──────────────────────────────────────────────────────────────
+    let res_id = uuid::Uuid::new_v4();
+    backend
+        .apply_change(Change::ResourceDelete {
+            id: res_id,
+            deleted_at: ts,
+            vv: vv("peer", 2),
+            last_writer: "peer".into(),
+        })
+        .await
+        .unwrap();
+    let res = Resource {
+        id: res_id,
+        title: "resurrected?".into(),
+        mime_type: "text/plain".into(),
+        file_name: "f.txt".into(),
+        size: 3,
+        created_at: ts,
+        deleted_at: None,
+        vv: vv("peer", 1),
+        last_writer: "peer".into(),
+    };
+    backend
+        .apply_change(Change::ResourceCreate {
+            resource: res,
+            data: Some(b"abc".to_vec()),
+        })
+        .await
+        .unwrap();
+    let (resources, _) = backend.list_resources(0, None).await.unwrap();
+    assert!(
+        !resources.iter().any(|r| r.id == res_id),
+        "resource stays deleted"
+    );
+}
