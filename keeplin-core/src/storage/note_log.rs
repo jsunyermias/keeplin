@@ -91,6 +91,12 @@ pub struct Merged {
     pub vv: VersionVector,
     /// `true` when the merge had to break a real concurrent-edit conflict by timestamp.
     pub conflict: bool,
+    /// The version vector of the winning head — the entry that determined the result.
+    /// For a tombstone winner this is the tombstone's own vector, which must travel in
+    /// `Change::NoteDelete` so remote backends can resolve the delete correctly.
+    pub winner_vv: VersionVector,
+    /// The device that wrote the winning head.
+    pub winner_device: String,
 }
 
 /// Merge all per-device logs of one note into its current state.
@@ -117,6 +123,8 @@ pub fn merge(logs: &[Vec<NoteLogEntry>]) -> Merged {
             note: None,
             vv: VersionVector::new(),
             conflict: false,
+            winner_vv: VersionVector::new(),
+            winner_device: String::new(),
         };
     }
 
@@ -176,6 +184,8 @@ pub fn merge(logs: &[Vec<NoteLogEntry>]) -> Merged {
         note,
         vv: merged_vv,
         conflict,
+        winner_vv: winner.vv.clone(),
+        winner_device: winner.device_id.clone(),
     }
 }
 

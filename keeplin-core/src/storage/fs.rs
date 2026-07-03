@@ -1499,8 +1499,8 @@ impl FsBackend {
                         Some(deleted_at) => changes.push(Change::NoteDelete {
                             id,
                             deleted_at,
-                            vv: merged.vv.clone(),
-                            last_writer: String::new(),
+                            vv: merged.winner_vv.clone(),
+                            last_writer: merged.winner_device.clone(),
                         }),
                         None => changes.push(Change::NoteUpdate { note }),
                     }
