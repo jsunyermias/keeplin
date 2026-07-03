@@ -493,9 +493,12 @@ roughly in priority order:
    `/api/ready`, `/api/metrics`), and both backends now carry a **versioned migration path**
    (`DbBackend` via `PRAGMA user_version`, `FsBackend` via a stamped format ladder, each with
    a downgrade guard).
-3. Performance at scale: `FsBackend` list reads re‑merge every note's per‑device logs
-   on each call (the logs themselves are compacted automatically, but reads use no
-   cached projection).
+3. Performance at scale: `FsBackend` note listings are served from a lazily‑built
+   in‑memory metadata index (maintained on every write and sync cycle), so they no longer
+   re‑merge every note's logs — only the returned page is materialized. Listings reflect
+   the last‑materialized state (like `DbBackend`), so a peer edit appears after the next
+   sync cycle; single‑note `read_note` stays a live merge. Full‑text search and richer
+   queries are still absent.
 4. Hardening: the daemon is **secure by default** (refuses to start on an exposed config,
    see [Configuration reference](#configuration-reference)) and supports **streamed uploads**
    for large attachments (`UploadResource` RPC / `POST /api/resources/upload`); remaining work

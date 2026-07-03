@@ -451,9 +451,17 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .note
             .ok_or_else(|| Status::invalid_argument("note is required"))?;
         let mut note = proto_to_note(note_proto)?;
-        ensure_not_deleted(self.backend.read_note(note.id).await, note.id, |n| {
-            n.deleted_at
-        })?;
+        // A tombstoned note reads as absent on this surface, so updating one is NotFound —
+        // otherwise the update (whose body defaults `deleted_at` to none) would revive it.
+        let stored = self.backend.read_note(note.id).await.map_err(storage_err)?;
+        if stored.deleted_at.is_some() {
+            return Err(Status::not_found(note.id.to_string()));
+        }
+        // Moving the note to a different notebook re-places it (its old position and pinned
+        // state belonged to the source notebook); a plain edit keeps its position.
+        ordering::reconcile_notebook_move(self.backend.as_ref(), stored.notebook_id, &mut note)
+            .await
+            .map_err(storage_err)?;
         note.updated_at = now();
         let updated = self.backend.update_note(note).await.map_err(storage_err)?;
         Ok(Response::new(UpdateNoteResponse {
