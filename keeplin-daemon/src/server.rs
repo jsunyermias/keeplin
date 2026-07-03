@@ -648,10 +648,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                 .created_at
                 .parse()
                 .map_err(|_| Status::invalid_argument("created_at is invalid"))?,
-            updated_at: nb
-                .updated_at
-                .parse()
-                .map_err(|_| Status::invalid_argument("updated_at is invalid"))?,
+            updated_at: now(),
             deleted_at: parse_optional_dt(nb.deleted_at)?,
             alias: nb.alias,
             vv: Default::default(),
@@ -779,10 +776,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                 .created_at
                 .parse()
                 .map_err(|_| Status::invalid_argument("created_at is invalid"))?,
-            updated_at: t
-                .updated_at
-                .parse()
-                .map_err(|_| Status::invalid_argument("updated_at is invalid"))?,
+            updated_at: now(),
             deleted_at: parse_optional_dt(t.deleted_at)?,
             vv: Default::default(),
             last_writer: String::new(),
