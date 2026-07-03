@@ -31,6 +31,11 @@ content can be **encrypted at rest** with AES‑256‑GCM.
     stale edit can never resurrect a delete and a stale delete can never clobber a newer edit.
 - **At‑rest encryption:** AES‑256‑GCM with an Argon2id‑derived key (opt‑in).
 - **gRPC API** with HTTP Basic Auth (constant‑time check) and optional TLS.
+- **Pinning, manual ordering, starring, and the Inbox**: every note lives in exactly one
+  notebook (unfiled notes land in the **Inbox**, "Pizarra", auto‑created with the nil
+  UUID); notebooks order manually by `sort_key` with a pinned band (`1–999`, max 999) above
+  the normal band (`≥ 1000`), the Inbox is a flat top‑insert list, and a global star flag
+  is queryable across notebooks — see [Pinning, ordering & the Inbox](#pinning-ordering--the-inbox).
 - **Cursor pagination** on every list endpoint.
 - **Soft delete** (versioned tombstones) for every entity, resources included.
 
@@ -247,6 +252,33 @@ encryption is on without `key_salt`.
 
 ---
 
+## Pinning, ordering & the Inbox
+
+Every note belongs to exactly one notebook: a note created without choosing one lands in
+the **Inbox** — a system notebook titled **"Pizarra"** with the fixed nil UUID
+(`00000000-0000-0000-0000-000000000000`), auto‑created at startup and protected from
+deletion. Old data migrates transparently: notes stored without a notebook read as Inbox
+notes on every backend.
+
+Within a notebook, notes order by `(sort_key ASC, id ASC)`:
+
+- **Normal notebooks** have two bands: `1–999` is the **pinned** band (shown first, at
+  most 999 pinned notes; pinning picks the lowest free key, unpinning appends to the
+  normal band) and `≥ 1000` the **normal** band (new notes append at the end).
+- **The Inbox** is one flat, fully manual list with no pinning; new notes are inserted at
+  the **top**.
+- Reordering (`ReorderNotes` / `PUT /api/notes/:id/sort-key`) moves a note **within its
+  current band**; keys outside the band are rejected.
+- Notes written before this feature carry `sort_key 0` ("never positioned") and order at
+  the start of the normal band — no data rewrite needed.
+
+**Starring** is a global, orthogonal flag: it never moves the note, and
+`ListStarredNotes` / `GET /api/notes/starred` returns every starred note across all
+notebooks. All of it syncs as ordinary note fields (version‑vector resolved); old peers
+ignore the new fields safely.
+
+---
+
 ## gRPC API
 
 The service is defined in
@@ -256,8 +288,11 @@ provides CRUD + paginated list RPCs for **notes, notebooks, tags, and resources*
 payload chunks, so no single message holds the whole file), the
 note↔tag association RPCs, the **alias/link** RPCs (`SetNoteAlias`, `SetNotebookAlias`,
 `AddNoteLink`, `RemoveNoteLink`, `ListBacklinks`, `ResolveReference`,
-`ListAliasConflicts` — see [Bookmarks & links](#bookmarks--links)), and a server‑streaming **`Sync`** RPC that
-reports progress through one sync cycle. Authentication is HTTP Basic Auth via the
+`ListAliasConflicts` — see [Bookmarks & links](#bookmarks--links)), the **pinning /
+ordering / starring** RPCs (`ListNotesInNotebook`, `ListStarredNotes`, `PinNote`,
+`UnpinNote`, `StarNote`, `UnstarNote`, `ReorderNotes` — see
+[Pinning, ordering & the Inbox](#pinning-ordering--the-inbox)), and a server‑streaming
+**`Sync`** RPC that reports progress through one sync cycle. Authentication is HTTP Basic Auth via the
 `authorization` metadata header: `Basic base64(user:password)`.
 
 ---
@@ -288,6 +323,11 @@ base64(user:password)` header (only required when `auth_username`/`auth_password
 | `GET/POST /api/notes/:id/links` | List / add a link (`POST {"raw":"#…"}`, manual link). |
 | `DELETE /api/notes/:id/links/:index` | Remove the link at `index`. |
 | `GET /api/notes/:id/backlinks?page_size=&page_token=` | Notes that link **to** this note (cursor pagination). |
+| `GET /api/notebooks/:id/notes?page_size=&page_token=` | The notebook's notes in their **manual order** (pinned band first); use the nil UUID for the Inbox. |
+| `GET /api/notes/starred?page_size=&page_token=` | Every starred note, across all notebooks. |
+| `POST/DELETE /api/notes/:id/pin` | Pin (into the `1–999` band, max 999 per notebook) / unpin (to the end of the normal band). |
+| `POST/DELETE /api/notes/:id/star` | Star / unstar (global flag; never moves the note). |
+| `PUT /api/notes/:id/sort-key` | Reorder within the note's current band (`{ "sort_key": … }`). |
 | `GET /api/links/resolve?ref=#…` | Resolve a reference → `{ "note_id", "bookmark_number" }`. |
 | `GET /api/aliases/conflicts` | Aliases shared by 2+ live notes/notebooks (sync collisions). |
 | `POST /api/sync` | Run one sync cycle; returns `{ "applied": <n> }`. Prunes journal history older than `journal_retention_days` afterwards, like the gRPC `Sync` RPC. |

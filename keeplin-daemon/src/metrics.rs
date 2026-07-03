@@ -275,6 +275,36 @@ impl<B: NoteRepository> NoteRepository for MetricsBackend<B> {
             .await;
         self.record("note", "read", r)
     }
+
+    async fn list_notes_in_notebook(
+        &self,
+        notebook_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        let r = self
+            .inner
+            .list_notes_in_notebook(notebook_id, page_size, page_token)
+            .await;
+        self.record("note", "list", r)
+    }
+
+    async fn list_starred_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        let r = self.inner.list_starred_notes(page_size, page_token).await;
+        self.record("note", "list", r)
+    }
+
+    async fn notebook_sort_profile(
+        &self,
+        notebook_id: Uuid,
+    ) -> Result<keeplin_core::storage::NotebookSortProfile, StorageError> {
+        // Internal placement metadata, not a user-facing operation; delegate unrecorded.
+        self.inner.notebook_sort_profile(notebook_id).await
+    }
 }
 
 #[async_trait]

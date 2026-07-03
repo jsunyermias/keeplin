@@ -9,7 +9,7 @@
 
 use keeplin_core::{
     error::StorageError,
-    models::{Note, NoteTag, Notebook, Resource, Tag},
+    models::{Change, Note, NoteTag, Notebook, Resource, Tag},
     storage::{
         db::DbBackend, NoteRepository, NotebookRepository, ResourceRepository, SyncBackend,
         TagRepository,
@@ -761,4 +761,93 @@ async fn backlinks_are_paginated() {
     // The two pages cover all three distinct sources without overlap.
     let ids: std::collections::HashSet<_> = p1.iter().chain(&p2).map(|n| n.id).collect();
     assert_eq!(ids.len(), 3);
+}
+
+// ── Pinning / ordering / starring (issues #49–#52, #55) ──────────────────────
+
+#[tokio::test]
+async fn ordering_fields_round_trip_and_manual_order_query() {
+    let backend = in_memory_backend().await;
+    let nb = backend.create_notebook(Notebook::new("nb")).await.unwrap();
+
+    let mut pinned = Note::new("pinned", "");
+    pinned.notebook_id = nb.id;
+    pinned.is_pinned = true;
+    pinned.sort_key = 5;
+    let mut legacy = Note::new("legacy", "");
+    legacy.notebook_id = nb.id; // sort_key 0 sentinel → orders as 1000
+    let mut normal = Note::new("normal", "");
+    normal.notebook_id = nb.id;
+    normal.sort_key = 1500;
+    let mut starred = Note::new("starred", ""); // Inbox note
+    starred.is_starred = true;
+    for n in [&pinned, &legacy, &normal, &starred] {
+        backend.create_note(n.clone()).await.unwrap();
+    }
+
+    // Fields round-trip.
+    let read = backend.read_note(pinned.id).await.unwrap();
+    assert!(read.is_pinned);
+    assert_eq!(read.sort_key, 5);
+
+    // Manual order: pinned band first, then the 0-sentinel (effective 1000), then 1500.
+    let (page, next) = backend
+        .list_notes_in_notebook(nb.id, 0, None)
+        .await
+        .unwrap();
+    let titles: Vec<&str> = page.iter().map(|n| n.title.as_str()).collect();
+    assert_eq!(titles, ["pinned", "legacy", "normal"]);
+    assert!(next.is_none());
+
+    // Cursor pagination walks the same order one note at a time.
+    let mut walked = Vec::new();
+    let mut token = None;
+    loop {
+        let (page, next) = backend
+            .list_notes_in_notebook(nb.id, 1, token)
+            .await
+            .unwrap();
+        walked.extend(page.into_iter().map(|n| n.title));
+        match next {
+            Some(t) => token = Some(t),
+            None => break,
+        }
+    }
+    assert_eq!(walked, ["pinned", "legacy", "normal"]);
+
+    // Starred list spans notebooks and excludes everything unstarred.
+    let (stars, _) = backend.list_starred_notes(0, None).await.unwrap();
+    assert_eq!(stars.len(), 1);
+    assert_eq!(stars[0].title, "starred");
+
+    // The profile summarises the notebook for the placement rules.
+    let profile = backend.notebook_sort_profile(nb.id).await.unwrap();
+    assert_eq!(profile.pinned_keys, [5]);
+    assert_eq!(profile.min_key, Some(5));
+    assert_eq!(profile.max_normal_key, Some(1500));
+}
+
+/// #55: a sync-applied change carries the new fields, and the whole-note version-vector
+/// resolution treats them like any other field.
+#[tokio::test]
+async fn sync_applied_change_carries_ordering_fields() {
+    let backend = in_memory_backend().await;
+
+    let mut note = Note::new("from peer", "body");
+    note.is_pinned = true;
+    note.is_starred = true;
+    note.sort_key = 7;
+    note.vv.insert("peer".to_string(), 1);
+    note.last_writer = "peer".to_string();
+    backend
+        .apply_change(Change::NoteCreate { note: note.clone() })
+        .await
+        .unwrap();
+
+    let read = backend.read_note(note.id).await.unwrap();
+    assert!(read.is_pinned);
+    assert!(read.is_starred);
+    assert_eq!(read.sort_key, 7);
+    let (stars, _) = backend.list_starred_notes(0, None).await.unwrap();
+    assert_eq!(stars.len(), 1, "sync-applied stars are queryable");
 }

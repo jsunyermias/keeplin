@@ -387,6 +387,10 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
     let metrics = Arc::new(metrics::Metrics::new());
     let backend = Arc::new(metrics::MetricsBackend::new(backend, metrics.clone()));
 
+    // The Inbox system notebook ("Pizarra", nil UUID) must exist before any request: new
+    // notes without a notebook land in it. Idempotent on every startup.
+    keeplin_core::ordering::ensure_inbox(backend.as_ref()).await?;
+
     // One shared backend instance behind every surface: the gRPC service and (optionally)
     // the REST/HTTP server both hold a clone of this `Arc`.
     let (auth_user, auth_pass) = (cfg.auth_username.clone(), cfg.auth_password.clone());

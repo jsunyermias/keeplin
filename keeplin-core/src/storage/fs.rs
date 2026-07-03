@@ -62,8 +62,8 @@ use crate::{
 
 use super::note_log::{self, resolve, NoteLogEntry, NoteOp, VersionVector, Winner};
 use super::{
-    NoteRepository, NotebookRepository, ResourceRepository, SortableRfc3339, SyncBackend,
-    TagRepository,
+    NoteRepository, NotebookRepository, NotebookSortProfile, ResourceRepository, SortableRfc3339,
+    SyncBackend, TagRepository,
 };
 
 /// The materialized projection written to `notes/{id}/meta.msgpack`.
@@ -1738,6 +1738,29 @@ impl FsBackend {
             .ok_or_else(|| StorageError::NotFound(id.to_string()))
     }
 
+    /// Merge every note directory and hand each **live** (non-tombstoned) note to `f`.
+    /// The shared scan under `list_notes` / `list_notes_in_notebook` /
+    /// `list_starred_notes` / `notebook_sort_profile`: unreadable notes are skipped with
+    /// a warning so one bad directory never hides the rest.
+    async fn for_each_live_note(&self, mut f: impl FnMut(Note)) -> Result<(), StorageError> {
+        let mut dir = match tokio::fs::read_dir(self.root.join("notes")).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(entry) = dir.next_entry().await? {
+            let id_str = entry.file_name().to_string_lossy().to_string();
+            if let Ok(id) = Uuid::parse_str(&id_str) {
+                match self.merge_note(id).await {
+                    Ok(Some(n)) if n.deleted_at.is_none() => f(n),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("Could not merge note {id}: {e}"),
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Scan every note directory and re-materialize those whose per-device logs have
     /// advanced beyond the locally stored projection (for example because Syncthing just
     /// replicated a peer's log). Returns one [`Change`] per advanced note — a
@@ -1992,6 +2015,55 @@ impl NoteRepository for FsBackend {
             }
         }
         Ok(collector.into_page())
+    }
+
+    async fn list_notes_in_notebook(
+        &self,
+        notebook_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        let limit = super::effective_page_size(page_size) as usize;
+        // Same bounded top-N pass as `list_notes`, keyed by the notebook's manual order:
+        // the effective sort key, zero-padded so its lexicographic order is numeric.
+        let mut collector = PageCollector::new(limit, page_token.as_deref());
+        self.for_each_live_note(|n| {
+            if n.notebook_id == notebook_id {
+                collector.push((format!("{:010}", n.effective_sort_key()), n.id), n);
+            }
+        })
+        .await?;
+        Ok(collector.into_page())
+    }
+
+    async fn list_starred_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        let limit = super::effective_page_size(page_size) as usize;
+        let mut collector = PageCollector::new(limit, page_token.as_deref());
+        self.for_each_live_note(|n| {
+            if n.is_starred {
+                collector.push((n.created_at.to_sortable_rfc3339(), n.id), n);
+            }
+        })
+        .await?;
+        Ok(collector.into_page())
+    }
+
+    async fn notebook_sort_profile(
+        &self,
+        notebook_id: Uuid,
+    ) -> Result<NotebookSortProfile, StorageError> {
+        let mut keys = Vec::new();
+        self.for_each_live_note(|n| {
+            if n.notebook_id == notebook_id {
+                keys.push(n.effective_sort_key());
+            }
+        })
+        .await?;
+        Ok(NotebookSortProfile::from_effective_keys(keys))
     }
 }
 

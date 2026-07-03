@@ -15,6 +15,7 @@ use keeplin_core::{
         now, Note as CoreNote, NoteTag, Notebook as CoreNotebook, Resource as CoreResource,
         Tag as CoreTag,
     },
+    ordering,
     storage::StorageBackend,
     sync::{run_sync, SyncStage},
 };
@@ -33,15 +34,18 @@ use crate::proto::keeplin::{
     GetNoteRequest, GetNoteResponse, GetNotebookRequest, GetNotebookResponse, GetResourceRequest,
     GetResourceResponse, GetTagRequest, GetTagResponse, ListAliasConflictsRequest,
     ListAliasConflictsResponse, ListBacklinksRequest, ListBacklinksResponse, ListNoteTagsRequest,
-    ListNoteTagsResponse, ListNotebooksRequest, ListNotebooksResponse, ListNotesRequest,
-    ListNotesResponse, ListResourcesRequest, ListResourcesResponse, ListTagsRequest,
+    ListNoteTagsResponse, ListNotebooksRequest, ListNotebooksResponse, ListNotesInNotebookRequest,
+    ListNotesInNotebookResponse, ListNotesRequest, ListNotesResponse, ListResourcesRequest,
+    ListResourcesResponse, ListStarredNotesRequest, ListStarredNotesResponse, ListTagsRequest,
     ListTagsResponse, Note, NoteAliasConflict, NoteLink as ProtoNoteLink, Notebook,
-    NotebookAliasConflict, RemoveNoteLinkRequest, RemoveNoteLinkResponse, RemoveNoteTagRequest,
-    RemoveNoteTagResponse, ResolveReferenceRequest, ResolveReferenceResponse, Resource,
+    NotebookAliasConflict, PinNoteRequest, PinNoteResponse, RemoveNoteLinkRequest,
+    RemoveNoteLinkResponse, RemoveNoteTagRequest, RemoveNoteTagResponse, ReorderNotesRequest,
+    ReorderNotesResponse, ResolveReferenceRequest, ResolveReferenceResponse, Resource,
     SetNoteAliasRequest, SetNoteAliasResponse, SetNotebookAliasRequest, SetNotebookAliasResponse,
-    SyncProgress, SyncRequest, Tag, UpdateNoteRequest, UpdateNoteResponse, UpdateNotebookRequest,
-    UpdateNotebookResponse, UpdateTagRequest, UpdateTagResponse, UploadResourceRequest,
-    UploadResourceResponse,
+    StarNoteRequest, StarNoteResponse, SyncProgress, SyncRequest, Tag, UnpinNoteRequest,
+    UnpinNoteResponse, UnstarNoteRequest, UnstarNoteResponse, UpdateNoteRequest,
+    UpdateNoteResponse, UpdateNotebookRequest, UpdateNotebookResponse, UpdateTagRequest,
+    UpdateTagResponse, UploadResourceRequest, UploadResourceResponse,
 };
 
 // ── Conversion helpers ────────────────────────────────────────────────────────
@@ -79,7 +83,9 @@ fn note_to_proto(n: CoreNote) -> Note {
         id: n.id.to_string(),
         title: n.title,
         body: n.body,
-        notebook_id: n.notebook_id.map(|u| u.to_string()),
+        // On the wire the Inbox (nil UUID) stays *absent*, exactly what pre-Inbox
+        // clients always saw for an unfiled note.
+        notebook_id: (!n.notebook_id.is_nil()).then(|| n.notebook_id.to_string()),
         is_todo: n.is_todo,
         todo_due: n.todo_due.map(|d| d.to_rfc3339()),
         todo_completed: n.todo_completed.map(|d| d.to_rfc3339()),
@@ -89,6 +95,9 @@ fn note_to_proto(n: CoreNote) -> Note {
         alias: n.alias,
         bookmarks: n.bookmarks.into_iter().map(bookmark_to_proto).collect(),
         links: n.links.into_iter().map(notelink_to_proto).collect(),
+        is_pinned: n.is_pinned,
+        is_starred: n.is_starred,
+        sort_key: n.sort_key,
     }
 }
 
@@ -138,6 +147,8 @@ fn storage_err(e: StorageError) -> Status {
         StorageError::CorruptedData(_) => Status::data_loss(e.to_string()),
         // A duplicate alias (or similar uniqueness violation) maps to ALREADY_EXISTS.
         StorageError::Conflict(_) => Status::already_exists(e.to_string()),
+        // Domain-rule rejections (pin an Inbox note, out-of-band sort key, …).
+        StorageError::InvalidInput(_) => Status::invalid_argument(e.to_string()),
         _ => Status::internal(e.to_string()),
     }
 }
@@ -197,8 +208,10 @@ fn proto_to_note(n: Note) -> Result<CoreNote, Status> {
         body: n.body,
         notebook_id: n
             .notebook_id
+            .filter(|s| !s.is_empty())
             .map(|s| parse_uuid(&s, "notebook_id"))
-            .transpose()?,
+            .transpose()?
+            .unwrap_or_else(uuid::Uuid::nil),
         is_todo: n.is_todo,
         todo_due: parse_optional_dt(n.todo_due)?,
         todo_completed: parse_optional_dt(n.todo_completed)?,
@@ -221,6 +234,9 @@ fn proto_to_note(n: Note) -> Result<CoreNote, Status> {
         // the gRPC API; the backend stamps it on write.
         vv: Default::default(),
         last_writer: String::new(),
+        is_pinned: n.is_pinned,
+        is_starred: n.is_starred,
+        sort_key: n.sort_key,
     })
 }
 
@@ -402,8 +418,13 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             Some(r.todo_due)
         })?;
         if !r.notebook_id.is_empty() {
-            note.notebook_id = Some(parse_uuid(&r.notebook_id, "notebook_id")?);
+            note.notebook_id = parse_uuid(&r.notebook_id, "notebook_id")?;
         }
+        // Give the new note its initial manual position (top of the Inbox, or the end of
+        // a normal notebook's unpinned band).
+        ordering::place_new_note(self.backend.as_ref(), &mut note)
+            .await
+            .map_err(storage_err)?;
         let created = self.backend.create_note(note).await.map_err(storage_err)?;
         Ok(Response::new(CreateNoteResponse {
             note: Some(note_to_proto(created)),
@@ -447,6 +468,120 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         let id = parse_uuid(&req.into_inner().id, "id")?;
         self.backend.delete_note(id).await.map_err(storage_err)?;
         Ok(Response::new(DeleteNoteResponse {}))
+    }
+
+    // ── Pinning, manual ordering, starring ────────────────────────────────────
+
+    async fn list_notes_in_notebook(
+        &self,
+        req: Request<ListNotesInNotebookRequest>,
+    ) -> Result<Response<ListNotesInNotebookResponse>, Status> {
+        let r = req.into_inner();
+        let notebook_id = parse_uuid(&r.notebook_id, "notebook_id")?;
+        let token = if r.page_token.is_empty() {
+            None
+        } else {
+            Some(r.page_token)
+        };
+        let (notes, next) = self
+            .backend
+            .list_notes_in_notebook(notebook_id, r.page_size, token)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(ListNotesInNotebookResponse {
+            notes: notes.into_iter().map(note_to_proto).collect(),
+            next_page_token: next.unwrap_or_default(),
+        }))
+    }
+
+    async fn list_starred_notes(
+        &self,
+        req: Request<ListStarredNotesRequest>,
+    ) -> Result<Response<ListStarredNotesResponse>, Status> {
+        let r = req.into_inner();
+        let token = if r.page_token.is_empty() {
+            None
+        } else {
+            Some(r.page_token)
+        };
+        let (notes, next) = self
+            .backend
+            .list_starred_notes(r.page_size, token)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(ListStarredNotesResponse {
+            notes: notes.into_iter().map(note_to_proto).collect(),
+            next_page_token: next.unwrap_or_default(),
+        }))
+    }
+
+    async fn pin_note(
+        &self,
+        req: Request<PinNoteRequest>,
+    ) -> Result<Response<PinNoteResponse>, Status> {
+        let id = parse_uuid(&req.into_inner().id, "id")?;
+        let note = ordering::pin_note(self.backend.as_ref(), id)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(PinNoteResponse {
+            note: Some(note_to_proto(note)),
+        }))
+    }
+
+    async fn unpin_note(
+        &self,
+        req: Request<UnpinNoteRequest>,
+    ) -> Result<Response<UnpinNoteResponse>, Status> {
+        let id = parse_uuid(&req.into_inner().id, "id")?;
+        let note = ordering::unpin_note(self.backend.as_ref(), id)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(UnpinNoteResponse {
+            note: Some(note_to_proto(note)),
+        }))
+    }
+
+    async fn star_note(
+        &self,
+        req: Request<StarNoteRequest>,
+    ) -> Result<Response<StarNoteResponse>, Status> {
+        let id = parse_uuid(&req.into_inner().id, "id")?;
+        let note = ordering::star_note(self.backend.as_ref(), id)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(StarNoteResponse {
+            note: Some(note_to_proto(note)),
+        }))
+    }
+
+    async fn unstar_note(
+        &self,
+        req: Request<UnstarNoteRequest>,
+    ) -> Result<Response<UnstarNoteResponse>, Status> {
+        let id = parse_uuid(&req.into_inner().id, "id")?;
+        let note = ordering::unstar_note(self.backend.as_ref(), id)
+            .await
+            .map_err(storage_err)?;
+        Ok(Response::new(UnstarNoteResponse {
+            note: Some(note_to_proto(note)),
+        }))
+    }
+
+    async fn reorder_notes(
+        &self,
+        req: Request<ReorderNotesRequest>,
+    ) -> Result<Response<ReorderNotesResponse>, Status> {
+        // Applied in request order; the first failure aborts the rest. Every move already
+        // applied is durable, and re-sending the whole batch is idempotent.
+        let mut notes = Vec::new();
+        for order in req.into_inner().orders {
+            let id = parse_uuid(&order.note_id, "note_id")?;
+            let note = ordering::reorder_note(self.backend.as_ref(), id, order.sort_key)
+                .await
+                .map_err(storage_err)?;
+            notes.push(note_to_proto(note));
+        }
+        Ok(Response::new(ReorderNotesResponse { notes }))
     }
 
     // ── Notebooks ─────────────────────────────────────────────────────────────
@@ -542,6 +677,11 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         req: Request<DeleteNotebookRequest>,
     ) -> Result<Response<DeleteNotebookResponse>, Status> {
         let id = parse_uuid(&req.into_inner().id, "id")?;
+        if ordering::is_inbox(id) {
+            return Err(Status::invalid_argument(
+                "the Inbox system notebook cannot be deleted",
+            ));
+        }
         self.backend
             .delete_notebook(id)
             .await

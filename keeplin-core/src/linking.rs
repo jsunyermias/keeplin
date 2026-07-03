@@ -99,9 +99,9 @@ struct AliasIndex {
     /// alias → the live notes carrying it, as `(note_id, notebook_id)` so scoped resolution
     /// (`#notebook#note`) works without the full note. Ordered sets make the smallest-uuid
     /// tiebreak deterministic.
-    note_aliases: BTreeMap<String, BTreeSet<(Uuid, Option<Uuid>)>>,
+    note_aliases: BTreeMap<String, BTreeSet<(Uuid, Uuid)>>,
     /// note id → its indexed `(alias, notebook_id)`, so an edit can remove the old entry.
-    aliased_notes: HashMap<Uuid, (String, Option<Uuid>)>,
+    aliased_notes: HashMap<Uuid, (String, Uuid)>,
     /// alias → the live notebooks carrying it.
     notebook_aliases: BTreeMap<String, BTreeSet<Uuid>>,
     /// notebook id → its indexed alias.
@@ -211,12 +211,12 @@ impl AliasIndex {
         }
         let nb_id = notebook_seg.and_then(|ns| self.resolve_notebook_seg(ns));
         let set = self.note_aliases.get(seg)?;
-        let mut candidates: Vec<(Uuid, Option<Uuid>)> = set.iter().copied().collect();
+        let mut candidates: Vec<(Uuid, Uuid)> = set.iter().copied().collect();
         if let Some(nb) = nb_id {
-            let scoped: Vec<(Uuid, Option<Uuid>)> = candidates
+            let scoped: Vec<(Uuid, Uuid)> = candidates
                 .iter()
                 .copied()
-                .filter(|(_, notebook_id)| *notebook_id == Some(nb))
+                .filter(|(_, notebook_id)| *notebook_id == nb)
                 .collect();
             if !scoped.is_empty() {
                 candidates = scoped;
@@ -728,6 +728,32 @@ impl<B: StorageBackend> NoteRepository for LinkingBackend<B> {
             .note_backlinks(target_id, page_size, page_token)
             .await
     }
+
+    async fn list_notes_in_notebook(
+        &self,
+        notebook_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        self.inner
+            .list_notes_in_notebook(notebook_id, page_size, page_token)
+            .await
+    }
+
+    async fn list_starred_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        self.inner.list_starred_notes(page_size, page_token).await
+    }
+
+    async fn notebook_sort_profile(
+        &self,
+        notebook_id: Uuid,
+    ) -> Result<crate::storage::NotebookSortProfile, StorageError> {
+        self.inner.notebook_sort_profile(notebook_id).await
+    }
 }
 
 #[async_trait]
@@ -1072,7 +1098,7 @@ mod tests {
 
         let mut note = Note::new("n", "");
         note.alias = Some("nA".to_string());
-        note.notebook_id = Some(nb.id);
+        note.notebook_id = nb.id;
         let note = be.create_note(note).await.unwrap();
 
         // `#notebook#note` resolves to the note (not interpreted as note#bookmark).
