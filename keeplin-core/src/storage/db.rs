@@ -2369,17 +2369,36 @@ impl SyncBackend for DbBackend {
                 {
                     return Ok(());
                 }
-                self.conn
+                let rows = self
+                    .conn
                     .execute(
                         "UPDATE notes SET deleted_at = ?2, updated_at = ?2, vv = ?3, last_writer = ?4 WHERE id = ?1",
                         libsql::params![
                             id.to_string(),
                             deleted_at.to_sortable_rfc3339(),
                             vv_to_json(&vv),
-                            last_writer,
+                            last_writer.clone(),
                         ],
                     )
                     .await?;
+                if rows == 0 {
+                    // The note does not exist locally yet (or was already purged). Insert a
+                    // minimal tombstone so that a later stale create/update loses in resolve.
+                    self.conn
+                        .execute(
+                            "INSERT INTO notes
+                             (id,title,body,notebook_id,is_todo,todo_due,todo_completed,created_at,updated_at,deleted_at,alias,bookmarks,links,vv,last_writer,is_pinned,is_starred,sort_key)
+                             VALUES (?1,'','',?2,0,NULL,NULL,?3,?3,?3,NULL,'[]','[]',?4,?5,0,0,0)",
+                            libsql::params![
+                                id.to_string(),
+                                Uuid::nil().to_string(),
+                                deleted_at.to_sortable_rfc3339(),
+                                vv_to_json(&vv),
+                                last_writer.clone(),
+                            ],
+                        )
+                        .await?;
+                }
             }
             // Notebooks
             Change::NotebookCreate { notebook } | Change::NotebookUpdate { notebook } => {
@@ -2424,12 +2443,22 @@ impl SyncBackend for DbBackend {
                 {
                     return Ok(());
                 }
-                self.conn
+                let rows = self
+                    .conn
                     .execute(
                         "UPDATE notebooks SET deleted_at = ?2, updated_at = ?2, vv = ?3, last_writer = ?4 WHERE id = ?1",
-                        libsql::params![id.to_string(), deleted_at.to_sortable_rfc3339(), vv_to_json(&vv), last_writer],
+                        libsql::params![id.to_string(), deleted_at.to_sortable_rfc3339(), vv_to_json(&vv), last_writer.clone()],
                     )
                     .await?;
+                if rows == 0 {
+                    self.conn
+                        .execute(
+                            "INSERT INTO notebooks (id,title,created_at,updated_at,deleted_at,alias,vv,last_writer)
+                             VALUES (?1,'',?2,?2,?2,NULL,?3,?4)",
+                            libsql::params![id.to_string(), deleted_at.to_sortable_rfc3339(), vv_to_json(&vv), last_writer.clone()],
+                        )
+                        .await?;
+                }
             }
             // Tags
             Change::TagCreate { tag } | Change::TagUpdate { tag } => {
@@ -2473,12 +2502,22 @@ impl SyncBackend for DbBackend {
                 {
                     return Ok(());
                 }
-                self.conn
+                let rows = self
+                    .conn
                     .execute(
                         "UPDATE tags SET deleted_at = ?2, updated_at = ?2, vv = ?3, last_writer = ?4 WHERE id = ?1",
-                        libsql::params![id.to_string(), deleted_at.to_sortable_rfc3339(), vv_to_json(&vv), last_writer],
+                        libsql::params![id.to_string(), deleted_at.to_sortable_rfc3339(), vv_to_json(&vv), last_writer.clone()],
                     )
                     .await?;
+                if rows == 0 {
+                    self.conn
+                        .execute(
+                            "INSERT INTO tags (id,title,created_at,updated_at,deleted_at,vv,last_writer)
+                             VALUES (?1,'',?2,?2,?2,?3,?4)",
+                            libsql::params![id.to_string(), deleted_at.to_sortable_rfc3339(), vv_to_json(&vv), last_writer.clone()],
+                        )
+                        .await?;
+                }
             }
             // NoteTag associations
             Change::NoteTagAdd {
@@ -2555,17 +2594,32 @@ impl SyncBackend for DbBackend {
                     .resource_incoming_wins(&id.to_string(), &vv, deleted_at, &last_writer)
                     .await?
                 {
-                    self.conn
+                    let rows = self
+                        .conn
                         .execute(
                             "UPDATE resources SET deleted_at=?2, vv=?3, last_writer=?4 WHERE id=?1",
                             libsql::params![
                                 id.to_string(),
                                 deleted_at.to_sortable_rfc3339(),
                                 vv_to_json(&vv),
-                                last_writer,
+                                last_writer.clone(),
                             ],
                         )
                         .await?;
+                    if rows == 0 {
+                        self.conn
+                            .execute(
+                                "INSERT INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer)
+                                 VALUES (?1,'','','',0,NULL,?2,?2,?3,?4)",
+                                libsql::params![
+                                    id.to_string(),
+                                    deleted_at.to_sortable_rfc3339(),
+                                    vv_to_json(&vv),
+                                    last_writer.clone(),
+                                ],
+                            )
+                            .await?;
+                    }
                 }
             }
         }
