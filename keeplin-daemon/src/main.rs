@@ -105,6 +105,25 @@ fn load_config(path: &std::path::Path) -> anyhow::Result<Config> {
     if let Ok(user) = std::env::var("KEEPLIN_AUTH_USERNAME") {
         cfg.auth_username = Some(user);
     }
+
+    // Reject unusable auth configurations early so the daemon cannot start with a false
+    // sense of security.
+    match (&cfg.auth_username, &cfg.auth_password) {
+        (Some(user), Some(pass)) => {
+            if user.is_empty() || pass.is_empty() {
+                anyhow::bail!(
+                    "auth_username and auth_password cannot be empty when authentication is configured"
+                );
+            }
+        }
+        (None, None) => {}
+        _ => {
+            anyhow::bail!(
+                "both auth_username and auth_password must be configured together (or left unset)"
+            );
+        }
+    }
+
     Ok(cfg)
 }
 

@@ -17,6 +17,12 @@ use subtle::ConstantTimeEq;
 /// itself contain colons; only the **first** colon separates user from password
 /// (per RFC 7617).
 pub fn verify_basic(header: Option<&str>, expected_user: &str, expected_pass: &str) -> bool {
+    // Empty configured credentials are rejected at startup, but guard here as well in case
+    // the function is called directly (e.g. tests or future callers).
+    if expected_user.is_empty() || expected_pass.is_empty() {
+        return false;
+    }
+
     let Some(header) = header else {
         return false;
     };
