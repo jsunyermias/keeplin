@@ -55,9 +55,9 @@ position). On the wire the Inbox (nil UUID) stays **absent**, so pre-Inbox clien
 always did for an unfiled note.
 
 #### Pinning / ordering / starring RPCs
-`ListNotesInNotebook` (manual order), `ListStarredNotes`, `PinNote`, `UnpinNote`, `StarNote`,
-`UnstarNote`, `ReorderNotes` (a batch of `{note_id, sort_key}`, applied in order). These delegate
-to the free helpers in `keeplin_core::ordering`.
+`ListNotesInNotebook` (manual order; nil UUID = the Inbox / `Pizarra`), `ListStarredNotes`,
+`PinNote`, `UnpinNote`, `StarNote`, `UnstarNote`, `ReorderNotes` (a batch of `{note_id,
+sort_key}`, applied in order). These delegate to the free helpers in `keeplin_core::ordering`.
 
 #### Notebooks RPCs
 `ListNotebooks`, `CreateNotebook`, `GetNotebook`, `UpdateNotebook`, `DeleteNotebook`

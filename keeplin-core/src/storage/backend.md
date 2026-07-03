@@ -56,7 +56,8 @@ The listing/ordering methods (`list_notes_in_notebook`, `list_starred_notes`,
 `notebook_sort_profile`) back the pinning/ordering/starring feature; each backend implements
 them natively (`DbBackend` with the `(notebook_id, sort_key, id)` index, `FsBackend` from an
 in-memory metadata index). The placement rules that *decide* `sort_key`/`is_pinned` live in
-`keeplin-core/src/ordering.rs`, not here.
+`keeplin-core/src/ordering.rs` (`pin_note`, `unpin_note`, `reorder_note`, `place_new_note`,
+`reconcile_notebook_move`, etc.), not here.
 
 `NotebookSortProfile` (defined in this file) is a plaintext summary of one notebook's live
 sort keys — `pinned_keys` (the used `1..=999` slots), `min_key`, and `max_normal_key` — built
