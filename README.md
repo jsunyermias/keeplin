@@ -152,8 +152,11 @@ KEEPLIN_RELAY_TOKEN="a-long-random-secret" \
 ```
 
 Point each device's `auth_token` at the same secret and its `server_url` at the relay. The
-relay speaks plain `ws://`; terminate TLS at a reverse proxy and use `wss://` — the daemon
-refuses a non‑loopback `ws://` `server_url`. See [`keeplin-relay/README.md`](keeplin-relay/README.md).
+relay keeps a **durable buffer** (`--data-dir`, default `./keeplin-relay-data`): a device
+that was offline is caught up on reconnect with every change batch it missed, up to
+`--retention-days` (default 30). The relay speaks plain `ws://`; terminate TLS at a reverse
+proxy and use `wss://` — the daemon refuses a non‑loopback `ws://` `server_url`. See
+[`keeplin-relay/README.md`](keeplin-relay/README.md).
 
 ---
 
@@ -386,10 +389,12 @@ filesystem note model is well‑tested and converges deterministically.
 **Not yet production‑ready** as a multi‑user, server‑backed service. Outstanding work,
 roughly in priority order:
 
-1. **Sync relay ships** as [`keeplin-relay`](keeplin-relay) — a WebSocket broadcast hub with
-   token auth that server‑mode devices sync through (covered end‑to‑end by tests driving real
-   `DbBackend`s). It keeps no durable per‑device buffer yet, so a long‑offline device catches
-   up only when it and a peer are online together; durable buffering is the next refinement.
+1. **Sync relay ships** as [`keeplin-relay`](keeplin-relay) — a WebSocket hub with token
+   auth **and a durable per‑device buffer**: every change batch is journaled, and a device
+   that was offline is caught up on reconnect from its own delivery cursor (covered
+   end‑to‑end by tests driving real `DbBackend`s, plus buffer/restart/cursor tests). A
+   device offline longer than the relay's retention window (default 30 days) still needs a
+   peer online to converge.
 2. Operability: liveness/readiness probes and Prometheus metrics ship (`GET /api/health`,
    `/api/ready`, `/api/metrics`), and both backends now carry a **versioned migration path**
    (`DbBackend` via `PRAGMA user_version`, `FsBackend` via a stamped format ladder, each with

@@ -23,6 +23,25 @@ struct Args {
     /// disables authentication — development only.
     #[arg(long, env = "KEEPLIN_RELAY_TOKEN", default_value = "")]
     auth_token: String,
+
+    /// Directory for the durable frame buffer (the journal that lets an offline device
+    /// catch up on reconnect). Created if missing.
+    #[arg(
+        long,
+        env = "KEEPLIN_RELAY_DATA_DIR",
+        default_value = "./keeplin-relay-data"
+    )]
+    data_dir: std::path::PathBuf,
+
+    /// Days of buffered frames to keep before compaction drops them (0 = keep forever).
+    /// Size this above the longest a device is expected to stay offline.
+    #[arg(long, env = "KEEPLIN_RELAY_RETENTION_DAYS", default_value_t = 30)]
+    retention_days: u64,
+
+    /// Run without the durable buffer (pure in-memory broadcast): offline devices miss
+    /// whatever is sent while they are away. Only for throwaway setups.
+    #[arg(long)]
+    ephemeral: bool,
 }
 
 #[tokio::main]
@@ -53,10 +72,19 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "keeplin-relay listening");
 
+    if args.ephemeral {
+        tracing::warn!(
+            "running --ephemeral: no durable buffer, offline devices miss frames sent \
+             while they are away"
+        );
+    }
+
     serve(
         listener,
         RelayConfig {
             auth_token: args.auth_token,
+            data_dir: (!args.ephemeral).then_some(args.data_dir),
+            retention_days: args.retention_days,
         },
         shutdown_signal(),
     )
