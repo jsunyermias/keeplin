@@ -415,6 +415,51 @@ async fn remove_note_tag() {
 // ── Resource tests ────────────────────────────────────────────────────────────
 
 #[tokio::test]
+async fn purge_reclaims_old_tombstoned_payloads_only() {
+    let backend = in_memory_backend().await;
+
+    let dead = Resource::new("dead", "text/plain", "d.txt", 4);
+    let dead_id = dead.id;
+    backend
+        .create_resource(dead, b"dead".to_vec())
+        .await
+        .unwrap();
+    backend.delete_resource(dead_id).await.unwrap();
+
+    let live = Resource::new("live", "text/plain", "l.txt", 4);
+    let live_id = live.id;
+    backend
+        .create_resource(live, b"live".to_vec())
+        .await
+        .unwrap();
+
+    // A cutoff before the tombstone purges nothing; one after it frees the dead payload.
+    let epoch = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap();
+    assert_eq!(backend.purge_deleted_resources(epoch).await.unwrap(), 0);
+    assert_eq!(
+        backend
+            .purge_deleted_resources(chrono::Utc::now())
+            .await
+            .unwrap(),
+        1
+    );
+    // Idempotent, tombstone still resolves as deleted, live resource untouched.
+    assert_eq!(
+        backend
+            .purge_deleted_resources(chrono::Utc::now())
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(matches!(
+        backend.read_resource(dead_id).await,
+        Err(StorageError::NotFound(_))
+    ));
+    let (_, bytes) = backend.read_resource(live_id).await.unwrap();
+    assert_eq!(bytes, b"live");
+}
+
+#[tokio::test]
 async fn create_and_read_resource() {
     let backend = in_memory_backend().await;
 

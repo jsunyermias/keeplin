@@ -393,6 +393,14 @@ impl<B: ResourceRepository> ResourceRepository for MetricsBackend<B> {
         let r = self.inner.list_resources(page_size, page_token).await;
         self.record("resource", "list", r)
     }
+
+    async fn purge_deleted_resources(
+        &self,
+        older_than: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u64, StorageError> {
+        let r = self.inner.purge_deleted_resources(older_than).await;
+        self.record("resource", "purge", r)
+    }
 }
 
 // Sync methods delegate unchanged, except `apply_change` bumps the applied-changes counter so

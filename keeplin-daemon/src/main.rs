@@ -394,6 +394,7 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
     let svc_inner = KeeplinServiceServer::new(KeeplinServer::from_shared(
         backend.clone(),
         cfg.journal_retention_days,
+        cfg.resource_purge_days,
         cfg.max_upload_bytes,
     ))
     .max_decoding_message_size(cfg.max_message_size)
@@ -431,6 +432,7 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
             max_body_bytes: cfg.max_message_size,
             max_upload_bytes: cfg.max_upload_bytes,
             journal_retention_days: cfg.journal_retention_days,
+            resource_purge_days: cfg.resource_purge_days,
             auth_username: cfg.auth_username.clone(),
             auth_password: cfg.auth_password.clone(),
         });

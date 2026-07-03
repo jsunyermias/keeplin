@@ -91,6 +91,15 @@ pub struct Config {
     #[serde(default = "default_journal_retention_days")]
     pub journal_retention_days: u64,
 
+    /// After each successful sync, reclaim the binary payloads of resources whose
+    /// soft-delete tombstone is older than this many days (`0`, the default, disables
+    /// reclamation and keeps payloads forever). The tombstone metadata is always kept so
+    /// the deletion goes on converging; only the dead bytes are freed. Keep this
+    /// comfortably larger than the longest a peer device stays offline, so a concurrent
+    /// revive on a lagging peer can never need bytes that were already purged.
+    #[serde(default)]
+    pub resource_purge_days: u64,
+
     /// Optional password for at-rest AES-256-GCM encryption (Argon2id key derivation).
     /// Prefer the KEEPLIN_ENCRYPTION_PASSWORD environment variable over storing the
     /// password in this file to avoid accidentally committing it to version control.
@@ -201,6 +210,7 @@ impl Default for Config {
             max_message_size: default_max_message_size(),
             max_upload_bytes: default_max_upload_bytes(),
             journal_retention_days: default_journal_retention_days(),
+            resource_purge_days: 0,
             encryption_password: None,
             key_salt: None,
             auth_username: None,

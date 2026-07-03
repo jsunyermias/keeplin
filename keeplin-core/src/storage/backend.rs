@@ -271,6 +271,22 @@ pub trait ResourceRepository: Send + Sync + 'static {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Resource>, Option<String>), StorageError>;
+
+    /// Reclaim the binary payloads of resources whose soft-delete tombstone is older
+    /// than `older_than`, returning how many payloads were freed.
+    ///
+    /// The tombstone **metadata is always retained** — it must keep competing in conflict
+    /// resolution so the deletion converges — only the dead bytes are released. Reads of
+    /// a tombstoned resource were already `NotFound`, so no read path changes.
+    ///
+    /// The cutoff exists because a *concurrent* revive on a peer that has not synced yet
+    /// can still win resolution and legitimately need the payload; purging only
+    /// tombstones older than a generous window (the daemon uses days, mirroring journal
+    /// retention) makes that race practically closed, and a revive that does land after a
+    /// purge is made whole by the revive itself, which always carries (or replicates) a
+    /// fresh payload.
+    async fn purge_deleted_resources(&self, older_than: DateTime<Utc>)
+        -> Result<u64, StorageError>;
 }
 
 // ── SyncBackend ───────────────────────────────────────────────────────────────

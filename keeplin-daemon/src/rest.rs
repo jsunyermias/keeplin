@@ -68,6 +68,9 @@ pub struct AppState {
     /// entries after a successful cycle, exactly like the gRPC `Sync` RPC (both call
     /// [`crate::server::prune_journal_after_sync`]). `0` disables pruning.
     pub journal_retention_days: u64,
+    /// After each successful sync, reclaim payloads of resources tombstoned longer than
+    /// this many days ago (`0` disables; see `Config::resource_purge_days`).
+    pub resource_purge_days: u64,
     /// Basic-Auth credentials; when both are `Some`, every request must authenticate.
     pub auth_username: Option<String>,
     pub auth_password: Option<String>,
@@ -708,6 +711,7 @@ struct SyncSummary {
 async fn sync(State(s): State<Shared>) -> Result<Json<SyncSummary>, ApiError> {
     let applied = run_sync(s.backend.as_ref(), |_stage, _count| {}).await?;
     crate::server::prune_journal_after_sync(s.backend.as_ref(), s.journal_retention_days).await;
+    crate::server::purge_resources_after_sync(s.backend.as_ref(), s.resource_purge_days).await;
     Ok(Json(SyncSummary {
         applied: applied.len(),
     }))
@@ -782,6 +786,7 @@ mod tests {
             max_body_bytes: 32 * 1024 * 1024,
             max_upload_bytes: 1024 * 1024 * 1024,
             journal_retention_days: 30,
+            resource_purge_days: 0,
             auth_username: auth.map(|a| a.0.to_string()),
             auth_password: auth.map(|a| a.1.to_string()),
         })
@@ -803,6 +808,7 @@ mod tests {
             max_body_bytes: 32 * 1024 * 1024,
             max_upload_bytes: 1024 * 1024 * 1024,
             journal_retention_days: 30,
+            resource_purge_days: 0,
             auth_username: None,
             auth_password: None,
         })
@@ -982,6 +988,7 @@ mod tests {
             max_body_bytes: 32 * 1024 * 1024,
             max_upload_bytes: 1024 * 1024 * 1024,
             journal_retention_days: 30,
+            resource_purge_days: 0,
             auth_username: None,
             auth_password: None,
         });
@@ -1044,6 +1051,7 @@ mod tests {
             max_body_bytes: 32 * 1024 * 1024,
             max_upload_bytes: 1024 * 1024 * 1024,
             journal_retention_days: 30,
+            resource_purge_days: 0,
             auth_username: None,
             auth_password: None,
         })
@@ -1207,6 +1215,7 @@ mod tests {
             max_body_bytes: 32 * 1024 * 1024,
             max_upload_bytes: 8,
             journal_retention_days: 30,
+            resource_purge_days: 0,
             auth_username: None,
             auth_password: None,
         });
@@ -1422,6 +1431,7 @@ mod tests {
             max_body_bytes: 32 * 1024 * 1024,
             max_upload_bytes: 1024 * 1024 * 1024,
             journal_retention_days: 30,
+            resource_purge_days: 0,
             auth_username: None,
             auth_password: None,
         })

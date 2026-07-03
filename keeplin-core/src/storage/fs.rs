@@ -2354,6 +2354,52 @@ impl ResourceRepository for FsBackend {
             (r.created_at.to_sortable_rfc3339(), r.id)
         }))
     }
+
+    async fn purge_deleted_resources(
+        &self,
+        older_than: DateTime<Utc>,
+    ) -> Result<u64, StorageError> {
+        let mut purged = 0u64;
+        let mut dir = match tokio::fs::read_dir(self.root.join("resources")).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(entry) = dir.next_entry().await? {
+            let Ok(id) = Uuid::parse_str(&entry.file_name().to_string_lossy()) else {
+                continue;
+            };
+            // Only a readable tombstone older than the cutoff qualifies; a live resource,
+            // a missing meta (orphan of a crashed create), or an unreadable meta
+            // (conservatively skipped) all keep their payload.
+            let meta = match self.read_resource_meta(id).await {
+                Ok(Some(meta)) => meta,
+                Ok(None) => continue,
+                Err(e) => {
+                    tracing::warn!("Skipping resource {id} during purge (unreadable meta): {e}");
+                    continue;
+                }
+            };
+            let Some(deleted_at) = meta.deleted_at else {
+                continue;
+            };
+            if deleted_at >= older_than {
+                continue;
+            }
+            // Removing the data file replicates as a deletion through Syncthing — safe,
+            // because every peer converges on the same tombstone; a late concurrent
+            // revive rewrites the file (see the trait docs on the cutoff window).
+            match tokio::fs::remove_file(self.resource_data_path(id)).await {
+                Ok(()) => purged += 1,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if purged > 0 {
+            tracing::info!(purged, "Reclaimed payloads of soft-deleted resources");
+        }
+        Ok(purged)
+    }
 }
 
 // ── SyncBackend impl ──────────────────────────────────────────────────────────
@@ -2896,6 +2942,51 @@ mod tests {
             );
         }
         assert_eq!(be.read_note(note_id).await.unwrap().body, "b");
+    }
+
+    /// Purging must free only the payloads of tombstones older than the cutoff, keep the
+    /// tombstone metadata (so the delete keeps converging), and leave a later re-create
+    /// of the same id fully functional.
+    #[tokio::test]
+    async fn purge_reclaims_old_tombstoned_payloads_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let be = FsBackend::new(dir.path()).await.unwrap();
+
+        let dead = Resource::new("dead", "text/plain", "d.txt", 4);
+        let dead_id = dead.id;
+        be.create_resource(dead, b"dead".to_vec()).await.unwrap();
+        be.delete_resource(dead_id).await.unwrap();
+
+        let live = Resource::new("live", "text/plain", "l.txt", 4);
+        let live_id = live.id;
+        be.create_resource(live, b"live".to_vec()).await.unwrap();
+
+        // A cutoff before the tombstone purges nothing.
+        let epoch = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+        assert_eq!(be.purge_deleted_resources(epoch).await.unwrap(), 0);
+        assert!(be.resource_data_path(dead_id).exists());
+
+        // A cutoff after it frees exactly the dead payload.
+        assert_eq!(be.purge_deleted_resources(now()).await.unwrap(), 1);
+        assert!(!be.resource_data_path(dead_id).exists(), "dead bytes freed");
+        assert!(
+            be.resource_meta_path(dead_id).exists(),
+            "tombstone metadata must survive the purge"
+        );
+        assert!(matches!(
+            be.read_resource(dead_id).await,
+            Err(StorageError::NotFound(_))
+        ));
+        let (_, bytes) = be.read_resource(live_id).await.unwrap();
+        assert_eq!(bytes, b"live", "live resources are untouched");
+
+        // Purging is idempotent, and the id can be recreated afterwards.
+        assert_eq!(be.purge_deleted_resources(now()).await.unwrap(), 0);
+        let mut revived = Resource::new("revived", "text/plain", "r.txt", 3);
+        revived.id = dead_id;
+        be.create_resource(revived, b"new".to_vec()).await.unwrap();
+        let (_, bytes) = be.read_resource(dead_id).await.unwrap();
+        assert_eq!(bytes, b"new");
     }
 
     #[tokio::test]

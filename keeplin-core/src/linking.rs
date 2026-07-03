@@ -847,6 +847,13 @@ impl<B: StorageBackend> ResourceRepository for LinkingBackend<B> {
     ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
         self.inner.list_resources(page_size, page_token).await
     }
+
+    async fn purge_deleted_resources(
+        &self,
+        older_than: DateTime<Utc>,
+    ) -> Result<u64, StorageError> {
+        self.inner.purge_deleted_resources(older_than).await
+    }
 }
 
 // Sync delegates unchanged: a synced note already carries derived metadata from the origin

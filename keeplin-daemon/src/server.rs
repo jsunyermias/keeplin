@@ -260,6 +260,9 @@ pub struct KeeplinServer<B: StorageBackend> {
     /// How many days of change-journal history to retain. After each successful sync,
     /// journal rows older than this are pruned. `0` disables pruning.
     journal_retention_days: u64,
+    /// After each successful sync, reclaim payloads of resources tombstoned longer than
+    /// this many days ago (`0` disables; see `Config::resource_purge_days`).
+    resource_purge_days: u64,
     /// Maximum assembled size, in bytes, of a streamed `UploadResource` payload. `0` means no
     /// limit. Bounds the memory a single upload can consume (the payload is buffered before it
     /// is handed to `create_resource`).
@@ -277,11 +280,13 @@ impl<B: StorageBackend> KeeplinServer<B> {
     pub fn from_shared(
         backend: Arc<B>,
         journal_retention_days: u64,
+        resource_purge_days: u64,
         max_upload_bytes: usize,
     ) -> Self {
         Self {
             backend,
             journal_retention_days,
+            resource_purge_days,
             max_upload_bytes,
         }
     }
@@ -885,6 +890,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
     async fn sync(&self, _req: Request<SyncRequest>) -> Result<Response<Self::SyncStream>, Status> {
         let backend = Arc::clone(&self.backend);
         let retention_days = self.journal_retention_days;
+        let purge_days = self.resource_purge_days;
         // An unbounded channel lets the synchronous progress callback in `run_sync` emit
         // updates without awaiting; a sync cycle produces only a handful of messages.
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SyncStreamItem>();
@@ -906,6 +912,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             match run_sync(&*backend, report).await {
                 Ok(_) => {
                     prune_journal_after_sync(&*backend, retention_days).await;
+                    purge_resources_after_sync(&*backend, purge_days).await;
                 }
                 Err(e) => {
                     let status = match e {
@@ -945,6 +952,25 @@ where
     }
 }
 
+/// Reclaim payloads of long-tombstoned resources after a successful sync cycle. Shared by
+/// the gRPC `Sync` RPC and the REST `POST /api/sync` handler, so both surfaces honour
+/// `resource_purge_days` the same way. `0` disables; a failure is non-fatal (logged as a
+/// warning) because the sync itself already succeeded.
+pub(crate) async fn purge_resources_after_sync<B>(backend: &B, purge_days: u64)
+where
+    B: StorageBackend + ?Sized,
+{
+    if purge_days == 0 {
+        return;
+    }
+    // Same overflow clamp as the journal prune (see above).
+    let days = purge_days.min(36_500) as i64;
+    let cutoff = now() - chrono::Duration::days(days);
+    if let Err(e) = backend.purge_deleted_resources(cutoff).await {
+        tracing::warn!("resource payload purge failed: {e}");
+    }
+}
+
 /// Maps a core [`SyncStage`] to its protobuf [`Stage`] code and a human-readable
 /// progress message for the streaming `Sync` RPC.
 fn stage_to_proto(stage: SyncStage) -> (Stage, &'static str) {
@@ -976,7 +1002,7 @@ mod tests {
         std::mem::forget(dir);
         let backend = Arc::new(FsBackend::new(&path).await.unwrap());
         (
-            KeeplinServer::from_shared(backend.clone(), 0, 1024 * 1024 * 1024),
+            KeeplinServer::from_shared(backend.clone(), 0, 0, 1024 * 1024 * 1024),
             backend,
         )
     }
@@ -1043,7 +1069,7 @@ mod tests {
         std::mem::forget(dir);
         let backend = Arc::new(FsBackend::new(&path).await.unwrap());
         // A tiny 8-byte cap: a 10-byte payload must be refused with RESOURCE_EXHAUSTED.
-        let srv = KeeplinServer::from_shared(backend, 0, 8);
+        let srv = KeeplinServer::from_shared(backend, 0, 0, 8);
         let frames = vec![
             Ok(meta_frame("big", "application/octet-stream", "big.bin")),
             Ok(chunk_frame(b"0123456789")),

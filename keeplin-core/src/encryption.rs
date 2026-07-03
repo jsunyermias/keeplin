@@ -424,6 +424,14 @@ impl<B: StorageBackend> ResourceRepository for EncryptedBackend<B> {
             .collect();
         Ok((decrypted?, next))
     }
+
+    async fn purge_deleted_resources(
+        &self,
+        older_than: DateTime<Utc>,
+    ) -> Result<u64, StorageError> {
+        // Pure storage reclamation of (encrypted) dead bytes — nothing to decrypt.
+        self.inner.purge_deleted_resources(older_than).await
+    }
 }
 
 // Synchronisation methods pass through without any transformation. The data that

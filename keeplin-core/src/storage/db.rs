@@ -2067,6 +2067,28 @@ impl ResourceRepository for DbBackend {
             format!("{}|{}", r.created_at.to_sortable_rfc3339(), r.id)
         }))
     }
+
+    async fn purge_deleted_resources(
+        &self,
+        older_than: DateTime<Utc>,
+    ) -> Result<u64, StorageError> {
+        let _write_guard = self.lock.write().await;
+        // Free the dead bytes but keep the tombstone row (deleted_at, vv, last_writer)
+        // intact so the deletion keeps converging. `size` is left as a record of what the
+        // payload was; reads of a tombstoned resource are NotFound before touching data.
+        let purged = self
+            .conn
+            .execute(
+                "UPDATE resources SET data = NULL
+                 WHERE deleted_at IS NOT NULL AND deleted_at < ?1 AND data IS NOT NULL",
+                libsql::params![older_than.to_sortable_rfc3339()],
+            )
+            .await?;
+        if purged > 0 {
+            tracing::info!(purged, "Reclaimed payloads of soft-deleted resources");
+        }
+        Ok(purged)
+    }
 }
 
 // ── SyncBackend impl ──────────────────────────────────────────────────────────
