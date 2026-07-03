@@ -140,7 +140,7 @@ impl DbBackend {
         let device_id = Self::get_or_create_device_id(&conn).await?;
 
         let ws = if !server_url.is_empty() {
-            match Self::connect_ws(&server_url, &auth_token).await {
+            match Self::connect_ws(&server_url, &auth_token, &device_id).await {
                 Ok(stream) => {
                     tracing::info!(url = %server_url, "WebSocket connected");
                     Some(stream)
@@ -540,14 +540,20 @@ impl DbBackend {
     /// **Security note:** The token is sent in plaintext over the WebSocket. Always
     /// use a `wss://` (TLS) URL in production to prevent the token from being
     /// intercepted in transit.
-    async fn connect_ws(url: &str, token: &str) -> Result<WsStream, StorageError> {
+    ///
+    /// The `device_id` identifies this installation to the relay so it can keep a
+    /// per-device delivery cursor and replay, on reconnect, every change batch this
+    /// device missed while offline (see `keeplin-relay`'s durable buffer). A relay that
+    /// predates the field simply ignores it.
+    async fn connect_ws(url: &str, token: &str, device_id: &str) -> Result<WsStream, StorageError> {
         let (mut stream, _) = connect_async(url).await?;
         // Send the authentication token immediately after the WebSocket handshake
         // so the server can verify the caller's identity before processing any
         // further messages.
         stream
             .send(Message::Text(
-                serde_json::json!({ "type": "auth", "token": token }).to_string(),
+                serde_json::json!({ "type": "auth", "token": token, "device_id": device_id })
+                    .to_string(),
             ))
             .await?;
         Ok(stream)
@@ -809,9 +815,9 @@ impl DbBackend {
     /// a fresh connection is established and re-authenticated. If reconnection fails,
     /// the slot remains `None` and the caller silently skips the network operation
     /// (changes accumulate locally until the connection is restored).
-    async fn ensure_ws(guard: &mut Option<WsStream>, url: &str, token: &str) {
+    async fn ensure_ws(guard: &mut Option<WsStream>, url: &str, token: &str, device_id: &str) {
         if guard.is_none() && !url.is_empty() {
-            match Self::connect_ws(url, token).await {
+            match Self::connect_ws(url, token, device_id).await {
                 Ok(stream) => {
                     tracing::info!("WebSocket reconnected");
                     *guard = Some(stream);
@@ -2480,7 +2486,13 @@ impl SyncBackend for DbBackend {
         // relay never saw, silently dropping them from every future sync.
         for attempt in 0u32..=3 {
             let mut guard = self.ws.lock().await;
-            Self::ensure_ws(&mut guard, &self.server_url, &self.auth_token).await;
+            Self::ensure_ws(
+                &mut guard,
+                &self.server_url,
+                &self.auth_token,
+                &self.device_id,
+            )
+            .await;
             let Some(ws) = guard.as_mut() else {
                 // Reconnect failed. Fail fast rather than sleeping through the backoff:
                 // a refused connection rarely heals within seconds, and the next sync
@@ -2513,7 +2525,13 @@ impl SyncBackend for DbBackend {
 
     async fn receive_changes(&self) -> Result<Vec<Change>, StorageError> {
         let mut guard = self.ws.lock().await;
-        Self::ensure_ws(&mut guard, &self.server_url, &self.auth_token).await;
+        Self::ensure_ws(
+            &mut guard,
+            &self.server_url,
+            &self.auth_token,
+            &self.device_id,
+        )
+        .await;
         if guard.is_none() {
             tracing::warn!("No WebSocket connection; no changes received");
             return Ok(vec![]);

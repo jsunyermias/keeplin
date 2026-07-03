@@ -4,32 +4,37 @@ The **server-mode sync hub** for [Keeplin](../README.md). In server mode each de
 `DbBackend` opens a WebSocket to a relay, pushes its local changes, and receives the changes
 other devices pushed. `keeplin-relay` is that relay.
 
-It is a **broadcast hub**: it authenticates each connection, then forwards every change batch a
-device sends to **all other** connected devices, never echoing it back to the sender. It is the
-shippable counterpart to the in-process test relay in `keeplin-core/tests/ws_sync.rs` — same
-wire protocol, plus a real auth check, configuration, and graceful shutdown.
+It is a **broadcast hub with a durable buffer**: it authenticates each connection, forwards
+every change batch a device sends to **all other** connected devices (never echoing it back to
+the sender), and journals every frame so a device that was offline is **caught up on
+reconnect** with everything it missed.
 
 ## What it does (and does not)
 
 - **Does:** authenticate connections against a shared token (constant-time compare), fan out
-  `changes` frames between devices, run many concurrent connections, and shut down cleanly on
-  Ctrl-C.
-- **Does not:** persist anything. A device that is offline misses whatever was broadcast while
-  it was gone and catches up the next time both peers are online together. Because every change
-  is idempotent and version-vector resolved, replaying them converges — so no data is lost as
-  long as devices reconnect. **Durable per-device buffering** (re-delivering to a
-  long-offline device on its own schedule) is a deliberate non-goal of this relay; it would add
-  a store, retention, and per-device cursors, and can be layered on later.
+  `changes` frames between devices, journal every frame durably (`relay.log` + a per-device
+  delivery cursor under `cursors/`), replay missed frames to a reconnecting device, run many
+  concurrent connections, and shut down cleanly on Ctrl-C. The journal is compacted hourly,
+  dropping frames older than the retention window; sequence numbers stay monotonic across
+  compactions and restarts, so cursors never go backwards. Because every change is idempotent
+  and version-vector resolved, over-delivery is always safe.
+- **Does not:** parse, validate, or store the *content* of change batches (it moves opaque
+  bytes), or terminate TLS (see below). A device offline **longer than the retention window**
+  may miss dropped frames — size `--retention-days` above the longest expected offline period.
+  With `--ephemeral` the relay keeps no state at all (the old pure-broadcast behavior).
 
 ## Wire protocol
 
 Matches `DbBackend`'s client exactly:
 
 1. The client's **first** text frame is the auth handshake:
-   `{"type":"auth","token":"…"}`. The relay checks the token and closes the connection on
-   mismatch. An **empty** configured token disables the check (development only).
-2. Every **subsequent** text frame (a `{"type":"changes",…}` batch) is forwarded verbatim to
-   all other authenticated clients.
+   `{"type":"auth","token":"…","device_id":"…"}`. The relay checks the token and closes the
+   connection on mismatch. An **empty** configured token disables the check (development
+   only). `device_id` is optional: presenting one (as `DbBackend` does) enables catch-up
+   delivery — buffered frames from other devices past this device's cursor are replayed
+   before live forwarding starts. A client without one gets plain live broadcast.
+2. Every **subsequent** text frame (a `{"type":"changes",…}` batch) is journaled and
+   forwarded verbatim to all other authenticated clients.
 
 The relay never parses or trusts the `changes` payloads — it only moves bytes. Conflict
 resolution and at-rest encryption stay entirely in the clients.
@@ -54,6 +59,9 @@ auth_token = "a-long-random-secret"        # or the KEEPLIN_AUTH_* / env path
 |------|-----|---------|---------|
 | `--listen` | — | `127.0.0.1:9000` | Address to accept device WebSocket connections on |
 | `--auth-token` | `KEEPLIN_RELAY_TOKEN` | `""` | Shared secret every device must present; empty disables auth (dev only) |
+| `--data-dir` | `KEEPLIN_RELAY_DATA_DIR` | `./keeplin-relay-data` | Directory for the durable frame journal and per-device cursors |
+| `--retention-days` | `KEEPLIN_RELAY_RETENTION_DAYS` | `30` | Days of buffered frames to keep (`0` = forever); size above the longest expected device offline period |
+| `--ephemeral` | — | off | Disable the durable buffer entirely (offline devices miss frames) |
 
 ## TLS
 
@@ -66,7 +74,9 @@ is a possible follow-up.
 
 ## Tests
 
-`cargo test -p keeplin-relay` runs unit tests for the token check and auth-frame parsing, plus
-end-to-end integration tests (`tests/relay.rs`) that stand the real relay up on an ephemeral
-port and drive two genuine `DbBackend` instances through it: a note created on one device
-arrives on the other, and a device presenting the wrong token is rejected and receives nothing.
+`cargo test -p keeplin-relay` runs unit tests for the token check, auth-frame parsing, and
+device-id sanitisation, plus end-to-end integration tests (`tests/relay.rs`): two genuine
+`DbBackend` instances syncing a note through the relay, auth rejection, and the durable
+buffer — an offline device catching up on reconnect, no re-delivery once the cursor advanced,
+the journal surviving a relay restart, and a legacy (device-id-less) client getting live
+broadcast only.
