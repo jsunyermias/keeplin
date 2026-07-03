@@ -118,10 +118,12 @@ gRPC client → CreateNoteRequest (proto)
 
 ## Design notes
 
-- `UpdateNote` explicitly overwrites `note.updated_at = now()` before calling the
-  backend. This ensures the timestamp reflects when the gRPC call was received, not the
-  value supplied by the client, which prevents clients from supplying arbitrary
-  timestamps.
+- `UpdateNote`, `UpdateNotebook`, and `UpdateTag` all overwrite `updated_at = now()`
+  before calling the backend, ignoring any client-supplied value. This ensures the
+  timestamp reflects when the gRPC call was received, keeps ordering-by-`updated_at`
+  consistent across all three entity types, and prevents a client from back/post-dating an
+  edit (which would also confuse conflict resolution). This matches the REST surface, which
+  already refreshes the timestamp server-side.
 - The `Update{Note,Notebook,Tag}` RPCs reject a soft-deleted target with `NOT_FOUND`
   (`ensure_not_deleted`): the `Get*` RPCs intentionally serve tombstones for sync, but an
   update on one would silently revive it (the client's proto carries `deleted_at: None`).

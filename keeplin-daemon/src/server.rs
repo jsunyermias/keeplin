@@ -656,10 +656,10 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                 .created_at
                 .parse()
                 .map_err(|_| Status::invalid_argument("created_at is invalid"))?,
-            updated_at: nb
-                .updated_at
-                .parse()
-                .map_err(|_| Status::invalid_argument("updated_at is invalid"))?,
+            // Refresh server-side, ignoring any client-supplied value, so listings ordered by
+            // `updated_at` reflect the edit and a client cannot back/post-date it — matching
+            // `update_note` and the REST endpoints (issue #75).
+            updated_at: now(),
             deleted_at: parse_optional_dt(nb.deleted_at)?,
             alias: nb.alias,
             vv: Default::default(),
@@ -787,10 +787,9 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                 .created_at
                 .parse()
                 .map_err(|_| Status::invalid_argument("created_at is invalid"))?,
-            updated_at: t
-                .updated_at
-                .parse()
-                .map_err(|_| Status::invalid_argument("updated_at is invalid"))?,
+            // Refresh server-side (see `update_notebook`); ignore any client-supplied value
+            // so ordering by `updated_at` is consistent and unspoofable (issue #75).
+            updated_at: now(),
             deleted_at: parse_optional_dt(t.deleted_at)?,
             vv: Default::default(),
             last_writer: String::new(),
@@ -1279,5 +1278,61 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn update_notebook_and_tag_refresh_updated_at_server_side() {
+        // #75: UpdateNotebook/UpdateTag must set `updated_at = now()`, ignoring any
+        // client-supplied value, matching UpdateNote and the REST endpoints.
+        let (srv, backend) = server().await;
+        let stale = "2000-01-01T00:00:00Z"; // a value a client might try to (back)date to
+
+        // Notebook.
+        let nb = backend
+            .create_notebook(CoreNotebook::new("nb"))
+            .await
+            .unwrap();
+        let mut proto = notebook_to_proto(nb.clone());
+        proto.title = "renamed".into();
+        proto.updated_at = stale.into();
+        let out = srv
+            .update_notebook(Request::new(UpdateNotebookRequest {
+                notebook: Some(proto),
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .notebook
+            .unwrap();
+        assert_eq!(out.title, "renamed");
+        assert_ne!(out.updated_at, stale, "client updated_at must be ignored");
+        assert!(
+            out.updated_at
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap()
+                > nb.updated_at,
+            "updated_at must advance to server time"
+        );
+
+        // Tag.
+        let tag = backend.create_tag(CoreTag::new("label")).await.unwrap();
+        let mut proto = tag_to_proto(tag.clone());
+        proto.title = "renamed".into();
+        proto.updated_at = stale.into();
+        let out = srv
+            .update_tag(Request::new(UpdateTagRequest { tag: Some(proto) }))
+            .await
+            .unwrap()
+            .into_inner()
+            .tag
+            .unwrap();
+        assert_eq!(out.title, "renamed");
+        assert_ne!(out.updated_at, stale, "client updated_at must be ignored");
+        assert!(
+            out.updated_at
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap()
+                > tag.updated_at
+        );
     }
 }

@@ -145,7 +145,15 @@ fn acquire_store_lock(data_dir: &std::path::Path) -> anyhow::Result<std::fs::Fil
 /// shutdown.
 async fn serve(cfg: Config) -> anyhow::Result<()> {
     let addr: std::net::SocketAddr = cfg.grpc_addr.parse()?;
-    let auth_configured = cfg.auth_username.is_some() && cfg.auth_password.is_some();
+
+    // Refuse to start on a credential configuration that would silently disable auth (only one
+    // of username/password set, or an empty string) instead of leaving the daemon unexpectedly
+    // wide open (issue #73). A valid, fully-configured pair enables auth; both unset leaves it
+    // intentionally off.
+    if let Err(reason) = cfg.validate_auth() {
+        anyhow::bail!("invalid authentication configuration: {reason}");
+    }
+    let auth_configured = cfg.auth_enabled();
 
     // One daemon per store, enforced before anything touches the data directory. Held
     // for the whole lifetime of `serve` (released by the OS on exit or crash).

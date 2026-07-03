@@ -89,6 +89,16 @@ pub struct Merged {
     /// The merged version vector (join of every device's latest entry), to be stored as
     /// the new frontier and used as the base for the next local edit.
     pub vv: VersionVector,
+    /// The **winning head's own** version vector — the one that decided `note`. Unlike the
+    /// joined `vv` (which folds in every concurrent head), this is the vector that a
+    /// state-based backend such as `DbBackend` must carry on the emitted `Change` so its
+    /// `resolve` sees the same causal position this merge did. Empty when there are no
+    /// entries.
+    pub winner_vv: VersionVector,
+    /// The device id that authored the winning head — the `last_writer` for the emitted
+    /// `Change`, so a concurrent tiebreak on a peer breaks identically. Empty when there
+    /// are no entries.
+    pub winner_device: String,
     /// `true` when the merge had to break a real concurrent-edit conflict by timestamp.
     pub conflict: bool,
 }
@@ -116,6 +126,8 @@ pub fn merge(logs: &[Vec<NoteLogEntry>]) -> Merged {
         return Merged {
             note: None,
             vv: VersionVector::new(),
+            winner_vv: VersionVector::new(),
+            winner_device: String::new(),
             conflict: false,
         };
     }
@@ -175,6 +187,8 @@ pub fn merge(logs: &[Vec<NoteLogEntry>]) -> Merged {
     Merged {
         note,
         vv: merged_vv,
+        winner_vv: winner.vv.clone(),
+        winner_device: winner.device_id.clone(),
         conflict,
     }
 }
@@ -365,6 +379,45 @@ mod tests {
         assert!(!m.conflict);
         assert_eq!(m.note.unwrap().body, "v2");
         assert_eq!(m.vv.get("A"), Some(&2));
+    }
+
+    #[test]
+    fn merge_exposes_winning_heads_own_vv_and_device() {
+        // B causally follows A (vv {A:1,B:1}). The joined `vv` is {A:1,B:1}, but the winner
+        // (B's head) carries exactly its own {A:1,B:1} here; the important case is a delete
+        // winner, where the emitted Change must use the winner's vector, not the join.
+        let logs = vec![
+            vec![entry(&[("A", 1)], "A", 10, NoteOp::Upsert(note("from A")))],
+            vec![
+                entry(
+                    &[("A", 1), ("B", 1)],
+                    "B",
+                    20,
+                    NoteOp::Upsert(note("from B")),
+                ),
+                entry(
+                    &[("A", 1), ("B", 2)],
+                    "B",
+                    30,
+                    NoteOp::Tombstone {
+                        deleted_at: DateTime::<Utc>::from_timestamp(30, 0).unwrap(),
+                    },
+                ),
+            ],
+        ];
+        let m = merge(&logs);
+        assert_eq!(m.winner_device, "B");
+        // Winner's own vector — the delete head's {A:1,B:2}, distinct from a hypothetical join
+        // that folded in other concurrent heads.
+        assert_eq!(m.winner_vv, vv(&[("A", 1), ("B", 2)]));
+        assert!(m.note.unwrap().deleted_at.is_some());
+    }
+
+    #[test]
+    fn merge_empty_has_empty_winner_fields() {
+        let m = merge(&[]);
+        assert!(m.winner_vv.is_empty());
+        assert!(m.winner_device.is_empty());
     }
 
     #[test]

@@ -364,12 +364,19 @@ fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
         ("note", "update") | ("note", "note_update") => serde_json::from_value(entry.data)
             .ok()
             .map(|note| Change::NoteUpdate { note }),
-        ("note", "delete") | ("note", "note_delete") => Some(Change::NoteDelete {
-            id,
-            deleted_at: ts,
-            vv: VersionVector::new(),
-            last_writer: String::new(),
-        }),
+        ("note", "delete") | ("note", "note_delete") => {
+            // Parse the tombstone's vv/last_writer from the entry data when present (v1
+            // global-log records predate version vectors and fall back to an empty vector
+            // and the entry timestamp), so a replayed note delete keeps its causal metadata
+            // instead of an empty vector a peer would treat as stale (issue #70).
+            let (deleted_at, vv, last_writer) = fs_tombstone_from_data(&entry.data, ts);
+            Some(Change::NoteDelete {
+                id,
+                deleted_at,
+                vv,
+                last_writer,
+            })
+        }
         // Notebooks
         ("notebook", "create") => serde_json::from_value(entry.data)
             .ok()
@@ -1921,11 +1928,16 @@ impl FsBackend {
                 if let Some(note) = merged.note {
                     self.persist_note_projection(&note, &merged.vv).await?;
                     match note.deleted_at {
+                        // Carry the winning tombstone's *own* vv and author, not the joined
+                        // frontier vector with an empty writer. A state-based peer (DbBackend)
+                        // resolves this delete against its local row by version vector; an empty
+                        // vector is dominated by any non-empty local one and the delete would be
+                        // silently dropped (issue #70).
                         Some(deleted_at) => changes.push(Change::NoteDelete {
                             id,
                             deleted_at,
-                            vv: merged.vv.clone(),
-                            last_writer: String::new(),
+                            vv: merged.winner_vv.clone(),
+                            last_writer: merged.winner_device.clone(),
                         }),
                         None => changes.push(Change::NoteUpdate { note }),
                     }
@@ -2664,12 +2676,27 @@ impl SyncBackend for FsBackend {
                 last_writer,
             } => {
                 let path = self.notebook_path(id);
-                if path.exists()
-                    && self
-                        .sidecar_incoming_wins(&path, &vv, deleted_at, &last_writer)
-                        .await?
+                if self
+                    .sidecar_incoming_wins(&path, &vv, deleted_at, &last_writer)
+                    .await?
                 {
-                    let mut nb: Notebook = self.read_sidecar(&path, id).await?;
+                    // Tombstone the existing notebook, or — when it is unknown locally — write
+                    // a minimal tombstone so a later stale create/update loses against it in
+                    // `resolve` instead of resurrecting the notebook (issue #71).
+                    let mut nb: Notebook = match self.read_sidecar(&path, id).await {
+                        Ok(nb) => nb,
+                        Err(StorageError::NotFound(_)) => Notebook {
+                            id,
+                            title: String::new(),
+                            created_at: deleted_at,
+                            updated_at: deleted_at,
+                            deleted_at: None,
+                            alias: None,
+                            vv: VersionVector::new(),
+                            last_writer: String::new(),
+                        },
+                        Err(e) => return Err(e),
+                    };
                     nb.deleted_at = Some(deleted_at);
                     nb.updated_at = deleted_at;
                     nb.vv = vv;
@@ -2698,12 +2725,26 @@ impl SyncBackend for FsBackend {
                 last_writer,
             } => {
                 let path = self.tag_path(id);
-                if path.exists()
-                    && self
-                        .sidecar_incoming_wins(&path, &vv, deleted_at, &last_writer)
-                        .await?
+                if self
+                    .sidecar_incoming_wins(&path, &vv, deleted_at, &last_writer)
+                    .await?
                 {
-                    let mut t: Tag = self.read_sidecar(&path, id).await?;
+                    // Tombstone the existing tag, or write a minimal tombstone when it is
+                    // unknown locally, so a later stale create/update cannot resurrect it
+                    // (issue #71).
+                    let mut t: Tag = match self.read_sidecar(&path, id).await {
+                        Ok(t) => t,
+                        Err(StorageError::NotFound(_)) => Tag {
+                            id,
+                            title: String::new(),
+                            created_at: deleted_at,
+                            updated_at: deleted_at,
+                            deleted_at: None,
+                            vv: VersionVector::new(),
+                            last_writer: String::new(),
+                        },
+                        Err(e) => return Err(e),
+                    };
                     t.deleted_at = Some(deleted_at);
                     t.updated_at = deleted_at;
                     t.vv = vv;
@@ -2786,18 +2827,34 @@ impl SyncBackend for FsBackend {
                 last_writer,
             } => {
                 // Soft-delete: tombstone the metadata (keep the blob) only when the delete wins.
-                if let Some(mut resource) = self.read_resource_meta(id).await? {
-                    if self
-                        .resource_incoming_wins(id, &vv, deleted_at, &last_writer)
-                        .await?
-                    {
-                        resource.deleted_at = Some(deleted_at);
-                        resource.vv = vv;
-                        resource.last_writer = last_writer;
-                        self.write_sidecar(&self.resource_meta_path(id), &resource)
-                            .await?;
-                        tracing::debug!(%id, "Applied remote resource delete");
-                    }
+                if self
+                    .resource_incoming_wins(id, &vv, deleted_at, &last_writer)
+                    .await?
+                {
+                    // Tombstone the existing metadata, or write a minimal tombstone when the
+                    // resource is unknown locally, so a later stale create cannot resurrect it
+                    // (issue #71). The blob (if any arrives later) is retained.
+                    let mut resource = match self.read_resource_meta(id).await? {
+                        Some(r) => r,
+                        None => Resource {
+                            id,
+                            title: String::new(),
+                            mime_type: String::new(),
+                            file_name: String::new(),
+                            size: 0,
+                            created_at: deleted_at,
+                            deleted_at: None,
+                            vv: VersionVector::new(),
+                            last_writer: String::new(),
+                        },
+                    };
+                    resource.deleted_at = Some(deleted_at);
+                    resource.vv = vv;
+                    resource.last_writer = last_writer;
+                    tokio::fs::create_dir_all(self.resource_dir(id)).await?;
+                    self.write_sidecar(&self.resource_meta_path(id), &resource)
+                        .await?;
+                    tracing::debug!(%id, "Applied remote resource delete");
                 }
             }
         }
