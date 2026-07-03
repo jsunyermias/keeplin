@@ -977,3 +977,55 @@ async fn fs_global_log_snapshot_covers_all_entity_types() {
         "the note↔tag association must be reconstructed from the snapshot"
     );
 }
+
+// ── Pinning / ordering / starring (issues #49–#52) ────────────────────────────
+
+#[tokio::test]
+async fn ordering_fields_round_trip_and_manual_order_query() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+    let nb = backend.create_notebook(Notebook::new("nb")).await.unwrap();
+
+    let mut pinned = Note::new("pinned", "");
+    pinned.notebook_id = nb.id;
+    pinned.is_pinned = true;
+    pinned.sort_key = 5;
+    let mut legacy = Note::new("legacy", "");
+    legacy.notebook_id = nb.id; // sort_key 0 sentinel → orders as 1000
+    let mut normal = Note::new("normal", "");
+    normal.notebook_id = nb.id;
+    normal.sort_key = 1500;
+    let mut starred = Note::new("starred", ""); // Inbox note
+    starred.is_starred = true;
+    for n in [&pinned, &legacy, &normal, &starred] {
+        backend.create_note(n.clone()).await.unwrap();
+    }
+
+    let read = backend.read_note(pinned.id).await.unwrap();
+    assert!(read.is_pinned);
+    assert_eq!(read.sort_key, 5);
+
+    // Manual order with single-note pages: cursor semantics over the effective key.
+    let mut walked = Vec::new();
+    let mut token = None;
+    loop {
+        let (page, next) = backend
+            .list_notes_in_notebook(nb.id, 1, token)
+            .await
+            .unwrap();
+        walked.extend(page.into_iter().map(|n| n.title));
+        match next {
+            Some(t) => token = Some(t),
+            None => break,
+        }
+    }
+    assert_eq!(walked, ["pinned", "legacy", "normal"]);
+
+    let (stars, _) = backend.list_starred_notes(0, None).await.unwrap();
+    assert_eq!(stars.len(), 1);
+    assert_eq!(stars[0].title, "starred");
+
+    let profile = backend.notebook_sort_profile(nb.id).await.unwrap();
+    assert_eq!(profile.pinned_keys, [5]);
+    assert_eq!(profile.max_normal_key, Some(1500));
+}

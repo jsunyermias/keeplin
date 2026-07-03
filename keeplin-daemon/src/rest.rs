@@ -39,6 +39,7 @@ use keeplin_core::{
     linking,
     links::{parse_link_ref, NoteLink},
     models::{now, Change, Note, NoteTag, Notebook, Resource, Tag},
+    ordering,
     storage::StorageBackend,
     sync::run_sync,
 };
@@ -109,6 +110,10 @@ pub fn router(state: Shared) -> Router {
             axum::routing::delete(remove_link),
         )
         .route("/notes/:id/backlinks", get(list_backlinks))
+        .route("/notes/starred", get(list_starred_notes))
+        .route("/notes/:id/pin", post(pin_note).delete(unpin_note))
+        .route("/notes/:id/star", post(star_note).delete(unstar_note))
+        .route("/notes/:id/sort-key", put(reorder_note))
         .route("/links/resolve", get(resolve_reference))
         .route("/aliases/conflicts", get(list_alias_conflicts))
         .route("/notebooks", get(list_notebooks).post(create_notebook))
@@ -119,6 +124,7 @@ pub fn router(state: Shared) -> Router {
                 .delete(delete_notebook),
         )
         .route("/notebooks/:id/alias", put(set_notebook_alias))
+        .route("/notebooks/:id/notes", get(list_notes_in_notebook))
         .route("/tags", get(list_tags).post(create_tag))
         .route("/tags/:id", get(get_tag).put(update_tag).delete(delete_tag))
         .route("/resources", get(list_resources).post(create_resource))
@@ -206,6 +212,9 @@ impl IntoResponse for ApiError {
             StorageError::CorruptedData(_) => StatusCode::UNPROCESSABLE_ENTITY,
             // A duplicate alias (uniqueness violation) is a client conflict, not a server bug.
             StorageError::Conflict(_) => StatusCode::CONFLICT,
+            // Domain-rule rejections (pin an Inbox note, out-of-band sort key, delete the
+            // Inbox) are the caller's mistake.
+            StorageError::InvalidInput(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (code, Json(json!({ "error": self.0.to_string() }))).into_response()
@@ -301,9 +310,12 @@ async fn create_note(
     Json(req): Json<CreateNote>,
 ) -> Result<Json<Note>, ApiError> {
     let mut note = Note::new(req.title, req.body);
-    note.notebook_id = req.notebook_id;
+    note.notebook_id = req.notebook_id.unwrap_or_else(Uuid::nil);
     note.is_todo = req.is_todo;
     note.todo_due = req.todo_due;
+    // Initial manual position: top of the Inbox, or the end of a normal notebook's
+    // unpinned band.
+    ordering::place_new_note(s.backend.as_ref(), &mut note).await?;
     Ok(Json(s.backend.create_note(note).await?))
 }
 
@@ -443,6 +455,73 @@ async fn list_backlinks(
     ))
 }
 
+/// `GET /api/notebooks/:id/notes` — the notebook's notes in their manual order (pinned
+/// band first). Use the nil UUID for the Inbox.
+async fn list_notes_in_notebook(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+    Query(p): Query<Pagination>,
+) -> Result<Json<Page<Note>>, ApiError> {
+    Ok(page(
+        s.backend
+            .list_notes_in_notebook(id, p.page_size, p.page_token)
+            .await?,
+    ))
+}
+
+/// `GET /api/notes/starred` — every live starred note, across all notebooks.
+async fn list_starred_notes(
+    State(s): State<Shared>,
+    Query(p): Query<Pagination>,
+) -> Result<Json<Page<Note>>, ApiError> {
+    Ok(page(
+        s.backend
+            .list_starred_notes(p.page_size, p.page_token)
+            .await?,
+    ))
+}
+
+/// `POST /api/notes/:id/pin` — move the note into its notebook's pinned band.
+async fn pin_note(State(s): State<Shared>, Path(id): Path<Uuid>) -> Result<Json<Note>, ApiError> {
+    Ok(Json(ordering::pin_note(s.backend.as_ref(), id).await?))
+}
+
+/// `DELETE /api/notes/:id/pin` — move the note back to the end of the normal band.
+async fn unpin_note(State(s): State<Shared>, Path(id): Path<Uuid>) -> Result<Json<Note>, ApiError> {
+    Ok(Json(ordering::unpin_note(s.backend.as_ref(), id).await?))
+}
+
+/// `POST /api/notes/:id/star` — set the global star (never moves the note).
+async fn star_note(State(s): State<Shared>, Path(id): Path<Uuid>) -> Result<Json<Note>, ApiError> {
+    Ok(Json(ordering::star_note(s.backend.as_ref(), id).await?))
+}
+
+/// `DELETE /api/notes/:id/star` — clear the global star.
+async fn unstar_note(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Note>, ApiError> {
+    Ok(Json(ordering::unstar_note(s.backend.as_ref(), id).await?))
+}
+
+/// `{ "sort_key": … }` body for `PUT /api/notes/:id/sort-key`.
+#[derive(Deserialize)]
+struct ReorderBody {
+    sort_key: u32,
+}
+
+/// `PUT /api/notes/:id/sort-key` — give the note a new manual position within its
+/// current band (pinned `1..=999`, normal `>= 1000`, Inbox `>= 1`).
+async fn reorder_note(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+    Json(b): Json<ReorderBody>,
+) -> Result<Json<Note>, ApiError> {
+    Ok(Json(
+        ordering::reorder_note(s.backend.as_ref(), id, b.sort_key).await?,
+    ))
+}
+
 /// `?ref=#notebook1#note3#5` query for resolving a reference to a note (+ bookmark number).
 #[derive(Debug, Deserialize)]
 struct ResolveQuery {
@@ -529,6 +608,12 @@ async fn delete_notebook(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
+    if ordering::is_inbox(id) {
+        return Err(StorageError::InvalidInput(
+            "the Inbox system notebook cannot be deleted".to_string(),
+        )
+        .into());
+    }
     s.backend.delete_notebook(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

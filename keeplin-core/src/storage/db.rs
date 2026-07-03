@@ -172,7 +172,7 @@ impl DbBackend {
     /// Version `1` is the **baseline**: the complete current schema. The pre-framework
     /// additive `ALTER TABLE`s are folded into it as idempotent guards, so a database created
     /// by an older build (which already has those columns) is stamped `1` without change.
-    const SCHEMA_VERSION: u32 = 1;
+    const SCHEMA_VERSION: u32 = 2;
 
     /// Bring the database schema up to [`SCHEMA_VERSION`], recording progress in SQLite's
     /// `PRAGMA user_version` so each step runs **exactly once** across restarts.
@@ -237,6 +237,7 @@ impl DbBackend {
     async fn apply_migration(conn: &libsql::Connection, version: u32) -> Result<(), StorageError> {
         match version {
             1 => Self::migrate_v1_baseline(conn).await,
+            2 => Self::migrate_v2_ordering(conn).await,
             other => Err(StorageError::InvalidState(format!(
                 "no migration defined for schema version {other}"
             ))),
@@ -565,10 +566,11 @@ impl DbBackend {
         let id = Self::parse_uuid(row.get::<String>(0)?)?;
         let title: String = row.get(1)?;
         let body: String = row.get(2)?;
-        let notebook_id: Option<Uuid> = row
+        let notebook_id: Uuid = row
             .get::<Option<String>>(3)?
             .map(Self::parse_uuid)
-            .transpose()?;
+            .transpose()?
+            .unwrap_or_else(Uuid::nil);
         let is_todo: bool = row.get::<i64>(4)? != 0;
         let todo_due = Self::parse_optional_dt(row.get::<Option<String>>(5)?)?;
         let todo_completed = Self::parse_optional_dt(row.get::<Option<String>>(6)?)?;
@@ -580,6 +582,9 @@ impl DbBackend {
         let links = json_to_links(&row.get::<String>(12)?);
         let vv = json_to_vv(&row.get::<String>(13)?);
         let last_writer: String = row.get(14)?;
+        let is_pinned: bool = row.get::<i64>(15)? != 0;
+        let is_starred: bool = row.get::<i64>(16)? != 0;
+        let sort_key: u32 = row.get::<i64>(17)?.max(0) as u32;
 
         Ok(Note {
             id,
@@ -597,6 +602,9 @@ impl DbBackend {
             links,
             vv,
             last_writer,
+            is_pinned,
+            is_starred,
+            sort_key,
         })
     }
 
@@ -827,6 +835,30 @@ impl DbBackend {
                 }
             }
         }
+    }
+
+    /// Migration v2 — pinning, starring, and manual ordering:
+    /// - `is_pinned` / `is_starred` / `sort_key` columns (defaults keep old rows valid:
+    ///   `sort_key 0` is the "never positioned" sentinel, ordered as the start of the
+    ///   normal band — see `Note::effective_sort_key`).
+    /// - `notebook_id` becomes non-optional in the model; existing `NULL` rows are moved
+    ///   to the Inbox system notebook (the nil UUID) so queries never see `NULL` again.
+    /// - The `(notebook_id, sort_key, id)` index that backs `list_notes_in_notebook`.
+    async fn migrate_v2_ordering(conn: &libsql::Connection) -> Result<(), StorageError> {
+        Self::add_column_if_missing(conn, "notes", "is_pinned INTEGER NOT NULL DEFAULT 0").await?;
+        Self::add_column_if_missing(conn, "notes", "is_starred INTEGER NOT NULL DEFAULT 0").await?;
+        Self::add_column_if_missing(conn, "notes", "sort_key INTEGER NOT NULL DEFAULT 0").await?;
+        conn.execute_batch(
+            "
+            UPDATE notes SET notebook_id = '00000000-0000-0000-0000-000000000000'
+             WHERE notebook_id IS NULL;
+
+            CREATE INDEX IF NOT EXISTS idx_notes_notebook_sort
+                ON notes (notebook_id, sort_key, id);
+            ",
+        )
+        .await?;
+        Ok(())
     }
 
     /// Read the version-vector metadata `(vv, updated_at, last_writer)` of a row, or `None`
@@ -1247,13 +1279,13 @@ impl NoteRepository for DbBackend {
             self.conn
                 .execute(
                     "INSERT INTO notes
-                     (id, title, body, notebook_id, is_todo, todo_due, todo_completed, created_at, updated_at, deleted_at, alias, bookmarks, links, vv, last_writer)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                     (id, title, body, notebook_id, is_todo, todo_due, todo_completed, created_at, updated_at, deleted_at, alias, bookmarks, links, vv, last_writer, is_pinned, is_starred, sort_key)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
                     libsql::params![
                         note.id.to_string(),
                         note.title.clone(),
                         note.body.clone(),
-                        note.notebook_id.map(|u| u.to_string()),
+                        note.notebook_id.to_string(),
                         note.is_todo as i64,
                         note.todo_due.map(|d| d.to_sortable_rfc3339()),
                         note.todo_completed.map(|d| d.to_sortable_rfc3339()),
@@ -1265,6 +1297,9 @@ impl NoteRepository for DbBackend {
                         links_to_json(&note.links),
                         vv_to_json(&note.vv),
                         note.last_writer.clone(),
+                        note.is_pinned as i64,
+                        note.is_starred as i64,
+                        note.sort_key as i64,
                     ],
                 )
                 .await?;
@@ -1292,7 +1327,8 @@ impl NoteRepository for DbBackend {
             .conn
             .query(
                 "SELECT id,title,body,notebook_id,is_todo,todo_due,todo_completed,
-                        created_at,updated_at,deleted_at,alias,bookmarks,links,vv,last_writer
+                        created_at,updated_at,deleted_at,alias,bookmarks,links,vv,last_writer,
+                        is_pinned,is_starred,sort_key
                  FROM notes WHERE id = ?1",
                 [id.to_string()],
             )
@@ -1315,13 +1351,14 @@ impl NoteRepository for DbBackend {
                     "UPDATE notes SET
                      title=?2, body=?3, notebook_id=?4, is_todo=?5, todo_due=?6,
                      todo_completed=?7, updated_at=?8, deleted_at=?9,
-                     alias=?10, bookmarks=?11, links=?12, vv=?13, last_writer=?14
+                     alias=?10, bookmarks=?11, links=?12, vv=?13, last_writer=?14,
+                     is_pinned=?15, is_starred=?16, sort_key=?17
                      WHERE id = ?1",
                     libsql::params![
                         note.id.to_string(),
                         note.title.clone(),
                         note.body.clone(),
-                        note.notebook_id.map(|u| u.to_string()),
+                        note.notebook_id.to_string(),
                         note.is_todo as i64,
                         note.todo_due.map(|d| d.to_sortable_rfc3339()),
                         note.todo_completed.map(|d| d.to_sortable_rfc3339()),
@@ -1332,6 +1369,9 @@ impl NoteRepository for DbBackend {
                         links_to_json(&note.links),
                         vv_to_json(&note.vv),
                         note.last_writer.clone(),
+                        note.is_pinned as i64,
+                        note.is_starred as i64,
+                        note.sort_key as i64,
                     ],
                 )
                 .await?;
@@ -1403,7 +1443,8 @@ impl NoteRepository for DbBackend {
             .conn
             .query(
                 "SELECT id,title,body,notebook_id,is_todo,todo_due,todo_completed,
-                        created_at,updated_at,deleted_at,alias,bookmarks,links,vv,last_writer
+                        created_at,updated_at,deleted_at,alias,bookmarks,links,vv,last_writer,
+                        is_pinned,is_starred,sort_key
                  FROM notes
                  WHERE deleted_at IS NULL
                    AND (
@@ -1440,7 +1481,8 @@ impl NoteRepository for DbBackend {
             .conn
             .query(
                 "SELECT n.id,n.title,n.body,n.notebook_id,n.is_todo,n.todo_due,n.todo_completed,
-                        n.created_at,n.updated_at,n.deleted_at,n.alias,n.bookmarks,n.links,n.vv,n.last_writer
+                        n.created_at,n.updated_at,n.deleted_at,n.alias,n.bookmarks,n.links,n.vv,n.last_writer,
+                        n.is_pinned,n.is_starred,n.sort_key
                  FROM note_links nl
                  JOIN notes n ON n.id = nl.source_note_id
                  WHERE nl.target_note_id = ?1 AND n.deleted_at IS NULL
@@ -1466,6 +1508,105 @@ impl NoteRepository for DbBackend {
         Ok(build_page(notes, limit as usize, |n| {
             format!("{}|{}", n.created_at.to_sortable_rfc3339(), n.id)
         }))
+    }
+
+    async fn list_notes_in_notebook(
+        &self,
+        notebook_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        let _read_guard = self.lock.read().await;
+        let limit = super::effective_page_size(page_size);
+        let (cursor_key, cursor_id) = parse_cursor(page_token.as_deref());
+        // The legacy `sort_key 0` sentinel orders as the start of the normal band (see
+        // `Note::effective_sort_key`); the CASE mirrors that mapping in SQL. The keyset
+        // cursor carries the *effective* key, compared numerically.
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id,title,body,notebook_id,is_todo,todo_due,todo_completed,
+                        created_at,updated_at,deleted_at,alias,bookmarks,links,vv,last_writer,
+                        is_pinned,is_starred,sort_key
+                 FROM notes
+                 WHERE notebook_id = ?1 AND deleted_at IS NULL
+                   AND (
+                     ?2 = ''
+                     OR (CASE WHEN sort_key = 0 THEN 1000 ELSE sort_key END) > CAST(?2 AS INTEGER)
+                     OR ((CASE WHEN sort_key = 0 THEN 1000 ELSE sort_key END) = CAST(?2 AS INTEGER)
+                         AND id > ?3)
+                   )
+                 ORDER BY (CASE WHEN sort_key = 0 THEN 1000 ELSE sort_key END) ASC, id ASC
+                 LIMIT ?4",
+                libsql::params![notebook_id.to_string(), cursor_key, cursor_id, limit + 1],
+            )
+            .await?;
+        let mut notes = Vec::new();
+        while let Some(row) = rows.next().await? {
+            notes.push(Self::row_to_note(&row)?);
+        }
+        Ok(build_page(notes, limit as usize, |n| {
+            format!("{}|{}", n.effective_sort_key(), n.id)
+        }))
+    }
+
+    async fn list_starred_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        let _read_guard = self.lock.read().await;
+        let limit = super::effective_page_size(page_size);
+        let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id,title,body,notebook_id,is_todo,todo_due,todo_completed,
+                        created_at,updated_at,deleted_at,alias,bookmarks,links,vv,last_writer,
+                        is_pinned,is_starred,sort_key
+                 FROM notes
+                 WHERE is_starred = 1 AND deleted_at IS NULL
+                   AND (
+                     ?1 = '' OR created_at > ?2
+                     OR (created_at = ?2 AND id > ?3)
+                   )
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT ?4",
+                libsql::params![cursor_ts.clone(), cursor_ts, cursor_id, limit + 1],
+            )
+            .await?;
+        let mut notes = Vec::new();
+        while let Some(row) = rows.next().await? {
+            notes.push(Self::row_to_note(&row)?);
+        }
+        Ok(build_page(notes, limit as usize, |n| {
+            format!("{}|{}", n.created_at.to_sortable_rfc3339(), n.id)
+        }))
+    }
+
+    async fn notebook_sort_profile(
+        &self,
+        notebook_id: Uuid,
+    ) -> Result<super::NotebookSortProfile, StorageError> {
+        let _read_guard = self.lock.read().await;
+        // Keys only — `idx_notes_notebook_sort` makes this an index scan.
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT sort_key FROM notes WHERE notebook_id = ?1 AND deleted_at IS NULL",
+                [notebook_id.to_string()],
+            )
+            .await?;
+        let mut keys = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let raw = row.get::<i64>(0)?.max(0) as u32;
+            keys.push(if raw == 0 {
+                Note::DEFAULT_SORT_KEY
+            } else {
+                raw
+            });
+        }
+        Ok(super::NotebookSortProfile::from_effective_keys(keys))
     }
 }
 
@@ -2179,13 +2320,13 @@ impl SyncBackend for DbBackend {
                     self.conn
                         .execute(
                             "INSERT OR REPLACE INTO notes
-                             (id,title,body,notebook_id,is_todo,todo_due,todo_completed,created_at,updated_at,deleted_at,alias,bookmarks,links,vv,last_writer)
-                             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                             (id,title,body,notebook_id,is_todo,todo_due,todo_completed,created_at,updated_at,deleted_at,alias,bookmarks,links,vv,last_writer,is_pinned,is_starred,sort_key)
+                             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
                             libsql::params![
                                 note.id.to_string(),
                                 note.title,
                                 note.body,
-                                note.notebook_id.map(|u| u.to_string()),
+                                note.notebook_id.to_string(),
                                 note.is_todo as i64,
                                 note.todo_due.map(|d| d.to_sortable_rfc3339()),
                                 note.todo_completed.map(|d| d.to_sortable_rfc3339()),
@@ -2197,6 +2338,9 @@ impl SyncBackend for DbBackend {
                                 links_to_json(&note.links),
                                 vv_to_json(&note.vv),
                                 note.last_writer.clone(),
+                                note.is_pinned as i64,
+                                note.is_starred as i64,
+                                note.sort_key as i64,
                             ],
                         )
                         .await?;
@@ -2706,6 +2850,20 @@ mod migration_tests {
         assert_eq!(migrated.title, "legacy");
         assert_eq!(migrated.body, "kept");
         assert!(migrated.vv.is_empty());
+        // v2: the NULL notebook_id was moved to the Inbox (nil UUID) and the note carries
+        // the never-positioned sort-key sentinel, ordered at the start of the normal band.
+        assert_eq!(migrated.notebook_id, Uuid::nil());
+        assert_eq!(migrated.sort_key, 0);
+        assert!(!migrated.is_pinned);
+        assert!(!migrated.is_starred);
+        let (inbox, _) = be
+            .list_notes_in_notebook(Uuid::nil(), 0, None)
+            .await
+            .unwrap();
+        assert!(
+            inbox.iter().any(|n| n.id == id),
+            "the migrated note lists under the Inbox"
+        );
 
         // And new writes work against the migrated schema.
         be.create_note(Note::new("after", "migration"))

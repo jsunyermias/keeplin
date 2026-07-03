@@ -59,6 +59,13 @@ pub enum StorageError {
     #[error("Invalid state: {0}")]
     InvalidState(String),
 
+    /// The caller asked for something the domain rules forbid — pinning an Inbox note, a
+    /// sort key outside the note's band, deleting the Inbox. Purely a client mistake, so
+    /// the daemon maps it to HTTP `400 Bad Request` (REST) and `INVALID_ARGUMENT` (gRPC),
+    /// unlike [`InvalidState`](Self::InvalidState) which reports a server-side problem.
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
     /// Stored data could not be decrypted because it is corrupt or was encrypted with
     /// a different key. This is raised when the AES-GCM authentication tag verification
     /// fails, which happens when the wrong password is used or when the ciphertext has

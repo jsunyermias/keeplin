@@ -67,6 +67,36 @@ pub trait NoteRepository: Send + Sync + 'static {
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError>;
 
+    /// Returns a page of the live notes of one notebook, ordered by
+    /// `(`[`Note::effective_sort_key`]` ASC, id ASC)` — the notebook's manual order, with
+    /// pinned notes (`sort_key 1..=999`) first. Pagination semantics match
+    /// [`list_notes`](Self::list_notes); the cursor is `"<sort_key>|<uuid>"` over the
+    /// *effective* key.
+    async fn list_notes_in_notebook(
+        &self,
+        notebook_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError>;
+
+    /// Returns a page of every live **starred** note, across all notebooks (the Inbox
+    /// included), ordered by `(created_at ASC, id ASC)`. Pagination semantics match
+    /// [`list_notes`](Self::list_notes).
+    async fn list_starred_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError>;
+
+    /// A compact ordering summary of one notebook's live notes, consumed by the placement
+    /// rules in [`crate::ordering`] (new-note position, pin, unpin) so they never have to
+    /// materialize the notebook. All keys are *effective* keys (the legacy `0` sentinel
+    /// already mapped — see [`Note::effective_sort_key`]).
+    async fn notebook_sort_profile(
+        &self,
+        notebook_id: Uuid,
+    ) -> Result<NotebookSortProfile, StorageError>;
+
     /// Returns a page of the live notes that link **to** `target_id` (its backlinks), ordered
     /// by `(created_at ASC, id ASC)`. Pagination semantics match [`list_notes`](Self::list_notes):
     /// `page_size = 0` uses the backend default of 100, and the returned cursor (or `None`)
@@ -103,6 +133,39 @@ pub trait NoteRepository: Send + Sync + 'static {
         }
         // `matches` is already in (created_at, id) order because `list_notes` is.
         Ok(paginate_notes(matches, page_size, page_token.as_deref()))
+    }
+}
+
+/// A compact summary of one notebook's live-note ordering, computed natively by each
+/// backend (an indexed scan of sort keys — never the note bodies). All keys are
+/// *effective* keys: the legacy `0` sentinel is already mapped to
+/// [`Note::DEFAULT_SORT_KEY`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NotebookSortProfile {
+    /// The keys currently used in the pinned band (`1..=999`), sorted ascending.
+    pub pinned_keys: Vec<u32>,
+    /// The smallest effective key in the notebook, or `None` when it has no live notes.
+    pub min_key: Option<u32>,
+    /// The largest effective key in the normal band (`>= 1000`), or `None` when the
+    /// normal band is empty.
+    pub max_normal_key: Option<u32>,
+}
+
+impl NotebookSortProfile {
+    /// Build a profile from an iterator of the notebook's live effective sort keys.
+    pub fn from_effective_keys(keys: impl IntoIterator<Item = u32>) -> Self {
+        let mut profile = Self::default();
+        for key in keys {
+            profile.min_key = Some(profile.min_key.map_or(key, |min| min.min(key)));
+            if (1..1000).contains(&key) {
+                profile.pinned_keys.push(key);
+            } else {
+                profile.max_normal_key =
+                    Some(profile.max_normal_key.map_or(key, |max| max.max(key)));
+            }
+        }
+        profile.pinned_keys.sort_unstable();
+        profile
     }
 }
 

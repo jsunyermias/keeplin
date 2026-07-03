@@ -25,6 +25,12 @@ message Note {
   repeated Bookmark bookmarks = 12;
   // links to other notes (content-derived and manually added)
   repeated NoteLink links     = 13;
+  // pinned to the top of its notebook (sort_key 1..=999); the Inbox has no pinning
+  bool   is_pinned        = 14;
+  // globally starred; orthogonal to pinning and to the notebook
+  bool   is_starred       = 15;
+  // manual position within the notebook (ascending; 0 = never positioned)
+  uint32 sort_key         = 16;
 }
 
 message Notebook {
@@ -85,6 +91,57 @@ message ListNotesResponse {
   repeated Note notes          = 1;
   // empty string means there are no further pages
   string        next_page_token = 2;
+}
+
+// Notes of one notebook in its manual order (pinned band first). Use the nil UUID
+// (00000000-0000-0000-0000-000000000000) for the Inbox.
+message ListNotesInNotebookRequest {
+  string notebook_id = 1;
+  uint32 page_size   = 2;
+  string page_token  = 3;
+}
+
+message ListNotesInNotebookResponse {
+  repeated Note notes           = 1;
+  string        next_page_token = 2;
+}
+
+// Every starred note, across all notebooks (Inbox included).
+message ListStarredNotesRequest {
+  uint32 page_size  = 1;
+  string page_token = 2;
+}
+
+message ListStarredNotesResponse {
+  repeated Note notes           = 1;
+  string        next_page_token = 2;
+}
+
+message PinNoteRequest    { string id = 1; }
+message PinNoteResponse   { Note note = 1; }
+message UnpinNoteRequest  { string id = 1; }
+message UnpinNoteResponse { Note note = 1; }
+
+message StarNoteRequest    { string id = 1; }
+message StarNoteResponse   { Note note = 1; }
+message UnstarNoteRequest  { string id = 1; }
+message UnstarNoteResponse { Note note = 1; }
+
+// One manual-position assignment; the key must stay within the note's current band
+// (pinned 1..=999, normal >= 1000, Inbox >= 1).
+message NoteOrder {
+  string note_id  = 1;
+  uint32 sort_key = 2;
+}
+
+// Reorder one or more notes in a single call (applied in order; the first failure
+// aborts the rest — every applied move is already durable and idempotent to retry).
+message ReorderNotesRequest {
+  repeated NoteOrder orders = 1;
+}
+
+message ReorderNotesResponse {
+  repeated Note notes = 1;
 }
 
 message CreateNoteRequest {
@@ -376,6 +433,15 @@ service KeeplinService {
   rpc GetNote      (GetNoteRequest)      returns (GetNoteResponse);
   rpc UpdateNote   (UpdateNoteRequest)   returns (UpdateNoteResponse);
   rpc DeleteNote   (DeleteNoteRequest)   returns (DeleteNoteResponse);
+
+  // Pinning, manual ordering, and starring
+  rpc ListNotesInNotebook (ListNotesInNotebookRequest) returns (ListNotesInNotebookResponse);
+  rpc ListStarredNotes    (ListStarredNotesRequest)    returns (ListStarredNotesResponse);
+  rpc PinNote             (PinNoteRequest)             returns (PinNoteResponse);
+  rpc UnpinNote           (UnpinNoteRequest)           returns (UnpinNoteResponse);
+  rpc StarNote            (StarNoteRequest)            returns (StarNoteResponse);
+  rpc UnstarNote          (UnstarNoteRequest)          returns (UnstarNoteResponse);
+  rpc ReorderNotes        (ReorderNotesRequest)        returns (ReorderNotesResponse);
 
   // Notebooks
   rpc ListNotebooks   (ListNotebooksRequest)   returns (ListNotebooksResponse);
