@@ -20,9 +20,15 @@ pub fn verify_basic(header: Option<&str>, expected_user: &str, expected_pass: &s
     let Some(header) = header else {
         return false;
     };
-    let Some(encoded) = header.strip_prefix("Basic ") else {
+    // RFC 7617: the scheme is case-insensitive and arbitrary whitespace may separate
+    // the scheme from the token.
+    let mut parts = header.split_whitespace();
+    let (Some(scheme), Some(encoded)) = (parts.next(), parts.next()) else {
         return false;
     };
+    if !scheme.eq_ignore_ascii_case("basic") {
+        return false;
+    }
     let Ok(decoded) = STANDARD.decode(encoded) else {
         return false;
     };
@@ -76,5 +82,20 @@ mod tests {
     fn password_with_colons_works() {
         let pass = "p:a:s:s";
         assert!(verify_basic(Some(&basic("alice", pass)), "alice", pass));
+    }
+
+    #[test]
+    fn scheme_is_case_insensitive() {
+        let encoded = STANDARD.encode("alice:s3cr3t");
+        assert!(verify_basic(
+            Some(&format!("basic {encoded}")),
+            "alice",
+            "s3cr3t"
+        ));
+        assert!(verify_basic(
+            Some(&format!("BASIC  {encoded}")),
+            "alice",
+            "s3cr3t"
+        ));
     }
 }
