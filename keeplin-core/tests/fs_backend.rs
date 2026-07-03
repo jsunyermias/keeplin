@@ -1029,3 +1029,75 @@ async fn ordering_fields_round_trip_and_manual_order_query() {
     assert_eq!(profile.pinned_keys, [5]);
     assert_eq!(profile.max_normal_key, Some(1500));
 }
+
+// ── In-memory note index (listing scalability) ────────────────────────────────
+
+/// The index is built lazily on the first listing, then maintained in place: a create
+/// after the build appears, and a delete after the build disappears — without any listing
+/// re-reading every note's logs.
+#[tokio::test]
+async fn note_index_reflects_local_writes_after_it_is_built() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    let a = backend.create_note(Note::new("a", "")).await.unwrap();
+    // First listing builds the index (sees `a`).
+    let (page, _) = backend.list_notes(0, None).await.unwrap();
+    assert_eq!(page.len(), 1);
+
+    // A create after the build must appear (incremental insert).
+    let b = backend.create_note(Note::new("b", "")).await.unwrap();
+    let mut ids: Vec<_> = backend
+        .list_notes(0, None)
+        .await
+        .unwrap()
+        .0
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    ids.sort();
+    let mut want = vec![a.id, b.id];
+    want.sort();
+    assert_eq!(ids, want);
+
+    // A delete after the build must drop it (incremental remove).
+    backend.delete_note(a.id).await.unwrap();
+    let ids: Vec<_> = backend
+        .list_notes(0, None)
+        .await
+        .unwrap()
+        .0
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(ids, vec![b.id]);
+}
+
+/// A change pulled from a peer (its log replicated, then a sync cycle) flows through the
+/// same `persist_note_projection` choke point, so it shows up in the listings too.
+#[tokio::test]
+async fn note_index_reflects_changes_pulled_from_a_peer() {
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    let a = FsBackend::new(dir_a.path()).await.unwrap();
+    let b = FsBackend::new(dir_b.path()).await.unwrap();
+
+    // Warm B's index while it is empty.
+    assert!(b.list_notes(0, None).await.unwrap().0.is_empty());
+
+    // A creates a starred note; its per-device log replicates to B.
+    let mut note = Note::new("from A", "body");
+    note.is_starred = true;
+    let id = note.id;
+    a.create_note(note).await.unwrap();
+    replicate_logs(dir_a.path(), dir_b.path()).await;
+
+    // A sync cycle materializes the peer note and updates B's index.
+    drain_sync(&b).await;
+    let (page, _) = b.list_notes(0, None).await.unwrap();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].id, id);
+    let (starred, _) = b.list_starred_notes(0, None).await.unwrap();
+    assert_eq!(starred.len(), 1);
+    assert_eq!(starred[0].id, id);
+}

@@ -52,7 +52,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::{
@@ -76,6 +76,64 @@ use super::{
 struct NoteMeta {
     note: Note,
     vv: VersionVector,
+}
+
+/// The listing/ordering metadata of one **live** note, held by the in-memory
+/// [`NoteMetaIndex`]. Deliberately tiny — no title or body — so the whole index is bounded
+/// by the note count, not the corpus size.
+#[derive(Debug, Clone)]
+struct NoteMetaEntry {
+    notebook_id: Uuid,
+    created_at: DateTime<Utc>,
+    /// The note's [`Note::effective_sort_key`] (the legacy `0` sentinel already mapped).
+    effective_sort_key: u32,
+    is_starred: bool,
+}
+
+impl NoteMetaEntry {
+    fn from_note(note: &Note) -> Self {
+        Self {
+            notebook_id: note.notebook_id,
+            created_at: note.created_at,
+            effective_sort_key: note.effective_sort_key(),
+            is_starred: note.is_starred,
+        }
+    }
+}
+
+/// In-memory index of every **live** note's listing metadata, so `list_notes`,
+/// `list_notes_in_notebook`, `list_starred_notes`, and `notebook_sort_profile` can select,
+/// order, and paginate without re-merging every note's per-device logs on each call.
+///
+/// It maps `note_id -> `[`NoteMetaEntry`]. It is built lazily on the first listing (from the
+/// cheap `meta.msgpack` projections, falling back to a full merge only for a note that has
+/// no projection yet), then maintained incrementally: every write path funnels through
+/// [`FsBackend::persist_note_projection`], which updates the index right after it rewrites
+/// the projection, so a local edit is reflected immediately and a sync-applied change is
+/// reflected as soon as its cycle materializes it. A tombstoned note is dropped from the
+/// index (listings exclude soft-deleted notes).
+///
+/// **Freshness.** Listings therefore reflect the last *materialized* state — exactly what
+/// the on-disk projections hold — which is updated on every local write and every sync
+/// cycle. A peer edit that Syncthing has replicated but that no sync cycle has processed
+/// yet appears in listings only after the next cycle, matching `DbBackend` (whose rows also
+/// only change on `apply_change`). Single-note `read_note` stays a live log merge, so
+/// reading a specific note is always current.
+#[derive(Debug, Default)]
+struct NoteMetaIndex {
+    entries: std::collections::HashMap<Uuid, NoteMetaEntry>,
+}
+
+impl NoteMetaIndex {
+    /// Reflect a note's current state: a live note is (re-)inserted, a tombstoned one is
+    /// dropped (listings never include soft-deleted notes).
+    fn apply(&mut self, note: &Note) {
+        if note.deleted_at.is_some() {
+            self.entries.remove(&note.id);
+        } else {
+            self.entries.insert(note.id, NoteMetaEntry::from_note(note));
+        }
+    }
 }
 
 /// The versioned state of one note↔tag association, stored as the MessagePack contents of
@@ -492,6 +550,12 @@ pub struct FsBackend {
     /// without the lock a concurrent append could be lost when compaction replaces the file, or
     /// two compactions could race. Peers only ever read foreign logs, so they need no lock.
     global_log_lock: Arc<Mutex<()>>,
+    /// Lazily built [`NoteMetaIndex`] backing the note-listing queries. `None` until the
+    /// first listing builds it; thereafter maintained in place by
+    /// [`persist_note_projection`](Self::persist_note_projection). An `RwLock` so concurrent
+    /// listings share read access and only a write path (or the one-time build) takes it
+    /// exclusively.
+    note_index: Arc<RwLock<Option<NoteMetaIndex>>>,
 }
 
 impl FsBackend {
@@ -555,6 +619,7 @@ impl FsBackend {
             device_id,
             note_write_lock: Arc::new(Mutex::new(())),
             global_log_lock: Arc::new(Mutex::new(())),
+            note_index: Arc::new(RwLock::new(None)),
         };
         backend.ensure_format_version(fresh).await?;
         Ok(backend)
@@ -1681,6 +1746,13 @@ impl FsBackend {
     /// Write the projection: the body to `note.md` and the metadata (body blanked, since
     /// it lives in `note.md`) plus the version vector to `meta.msgpack`. Both writes are
     /// atomic temp-then-rename.
+    ///
+    /// This is the single choke point every note write (local edit or sync apply) passes
+    /// through, so it is also where the in-memory [`NoteMetaIndex`] is kept current: the
+    /// on-disk projection is written first, then the index entry is updated (only if the
+    /// index has already been built — otherwise the eventual build reads the fresh
+    /// projection). Doing it in that order means a crash between the two leaves the index
+    /// no staler than the projection, and a not-yet-built index misses nothing.
     async fn persist_note_projection(
         &self,
         note: &Note,
@@ -1697,7 +1769,91 @@ impl FsBackend {
                 vv: vv.clone(),
             },
         )
-        .await
+        .await?;
+        if let Some(idx) = self.note_index.write().await.as_mut() {
+            idx.apply(note);
+        }
+        Ok(())
+    }
+
+    /// Read the current on-disk projection of a note (metadata from `meta.msgpack`, body
+    /// from `note.md`), or `None` when it has no projection yet. Used only to build the
+    /// [`NoteMetaIndex`] cheaply — one small read instead of merging every per-device log.
+    async fn read_note_projection(&self, id: Uuid) -> Result<Option<Note>, StorageError> {
+        let meta: NoteMeta = match self.read_sidecar(&self.note_meta_path(id), id).await {
+            Ok(m) => m,
+            Err(StorageError::NotFound(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        Ok(Some(meta.note))
+    }
+
+    /// Run `f` against the note index, building it first (one directory scan) when it is
+    /// absent. The double-checked write lock means concurrent callers trigger at most one
+    /// build.
+    async fn with_note_index<R>(
+        &self,
+        f: impl FnOnce(&NoteMetaIndex) -> R,
+    ) -> Result<R, StorageError> {
+        {
+            let guard = self.note_index.read().await;
+            if let Some(idx) = guard.as_ref() {
+                return Ok(f(idx));
+            }
+        }
+        let mut guard = self.note_index.write().await;
+        if guard.is_none() {
+            *guard = Some(self.build_note_index().await?);
+        }
+        Ok(f(guard.as_ref().expect("index was just built")))
+    }
+
+    /// Build the note index by scanning every note directory. Each note's metadata comes
+    /// from its `meta.msgpack` projection; a note that has none yet (a peer note whose log
+    /// arrived but was never materialized here) falls back to a full merge, so nothing is
+    /// missed. Only **live** (non-tombstoned) notes are indexed.
+    async fn build_note_index(&self) -> Result<NoteMetaIndex, StorageError> {
+        let mut idx = NoteMetaIndex::default();
+        let mut dir = match tokio::fs::read_dir(self.root.join("notes")).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(idx),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(entry) = dir.next_entry().await? {
+            let Ok(id) = Uuid::parse_str(&entry.file_name().to_string_lossy()) else {
+                continue;
+            };
+            let note = match self.read_note_projection(id).await {
+                Ok(Some(note)) => Some(note),
+                // No projection (or an unreadable one): recover via a full log merge.
+                Ok(None) => self.merge_note(id).await?,
+                Err(e) => {
+                    tracing::warn!("Rebuilding note {id} from logs (projection unreadable): {e}");
+                    self.merge_note(id).await?
+                }
+            };
+            if let Some(note) = note {
+                if note.deleted_at.is_none() {
+                    idx.apply(&note);
+                }
+            }
+        }
+        Ok(idx)
+    }
+
+    /// Merge the given note ids into full notes for a listing page, skipping any that no
+    /// longer merge to a live note (a race with a concurrent delete/move). Page-bounded, so
+    /// the per-note merge cost is paid only for the returned page, never the whole store.
+    async fn materialize_page(&self, ids: Vec<Uuid>) -> Result<Vec<Note>, StorageError> {
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            match self.merge_note(id).await {
+                Ok(Some(n)) if n.deleted_at.is_none() => out.push(n),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("Could not merge note {id} for listing: {e}"),
+            }
+        }
+        Ok(out)
     }
 
     /// Append an operation to this device's note log, then re-materialize the note and
@@ -1736,29 +1892,6 @@ impl FsBackend {
         self.materialize(id)
             .await?
             .ok_or_else(|| StorageError::NotFound(id.to_string()))
-    }
-
-    /// Merge every note directory and hand each **live** (non-tombstoned) note to `f`.
-    /// The shared scan under `list_notes` / `list_notes_in_notebook` /
-    /// `list_starred_notes` / `notebook_sort_profile`: unreadable notes are skipped with
-    /// a warning so one bad directory never hides the rest.
-    async fn for_each_live_note(&self, mut f: impl FnMut(Note)) -> Result<(), StorageError> {
-        let mut dir = match tokio::fs::read_dir(self.root.join("notes")).await {
-            Ok(d) => d,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e.into()),
-        };
-        while let Some(entry) = dir.next_entry().await? {
-            let id_str = entry.file_name().to_string_lossy().to_string();
-            if let Ok(id) = Uuid::parse_str(&id_str) {
-                match self.merge_note(id).await {
-                    Ok(Some(n)) if n.deleted_at.is_none() => f(n),
-                    Ok(_) => {}
-                    Err(e) => tracing::warn!("Could not merge note {id}: {e}"),
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Scan every note directory and re-materialize those whose per-device logs have
@@ -1990,31 +2123,18 @@ impl NoteRepository for FsBackend {
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
         let limit = super::effective_page_size(page_size) as usize;
-        // Merged notes (bodies included) are the heavyweight case, so collect the page in
-        // a bounded top-N pass: memory stays O(page) even when the store holds far more
-        // notes than one page. Each note's logs are still merged once per call (there is
-        // no index to consult), but never all retained at once.
-        let mut collector = PageCollector::new(limit, page_token.as_deref());
-        let mut dir = match tokio::fs::read_dir(self.root.join("notes")).await {
-            Ok(d) => d,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok((vec![], None));
-            }
-            Err(e) => return Err(e.into()),
-        };
-        while let Some(entry) = dir.next_entry().await? {
-            let id_str = entry.file_name().to_string_lossy().to_string();
-            if let Ok(id) = Uuid::parse_str(&id_str) {
-                match self.merge_note(id).await {
-                    Ok(Some(n)) if n.deleted_at.is_none() => {
-                        collector.push((n.created_at.to_sortable_rfc3339(), n.id), n);
-                    }
-                    Ok(_) => {}
-                    Err(e) => tracing::warn!("Could not merge note {id}: {e}"),
+        // Select and paginate the page's ids from the in-memory index (no per-note log
+        // merge), then materialize only that page. Ordered by `(created_at, id)`.
+        let (ids, next) = self
+            .with_note_index(|idx| {
+                let mut collector = PageCollector::new(limit, page_token.as_deref());
+                for (id, entry) in &idx.entries {
+                    collector.push((entry.created_at.to_sortable_rfc3339(), *id), *id);
                 }
-            }
-        }
-        Ok(collector.into_page())
+                collector.into_page()
+            })
+            .await?;
+        Ok((self.materialize_page(ids).await?, next))
     }
 
     async fn list_notes_in_notebook(
@@ -2024,16 +2144,20 @@ impl NoteRepository for FsBackend {
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
         let limit = super::effective_page_size(page_size) as usize;
-        // Same bounded top-N pass as `list_notes`, keyed by the notebook's manual order:
-        // the effective sort key, zero-padded so its lexicographic order is numeric.
-        let mut collector = PageCollector::new(limit, page_token.as_deref());
-        self.for_each_live_note(|n| {
-            if n.notebook_id == notebook_id {
-                collector.push((format!("{:010}", n.effective_sort_key()), n.id), n);
-            }
-        })
-        .await?;
-        Ok(collector.into_page())
+        // Keyed by the notebook's manual order: the effective sort key, zero-padded so its
+        // lexicographic order (how `PageCollector` compares) is numeric.
+        let (ids, next) = self
+            .with_note_index(|idx| {
+                let mut collector = PageCollector::new(limit, page_token.as_deref());
+                for (id, entry) in &idx.entries {
+                    if entry.notebook_id == notebook_id {
+                        collector.push((format!("{:010}", entry.effective_sort_key), *id), *id);
+                    }
+                }
+                collector.into_page()
+            })
+            .await?;
+        Ok((self.materialize_page(ids).await?, next))
     }
 
     async fn list_starred_notes(
@@ -2042,27 +2166,33 @@ impl NoteRepository for FsBackend {
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
         let limit = super::effective_page_size(page_size) as usize;
-        let mut collector = PageCollector::new(limit, page_token.as_deref());
-        self.for_each_live_note(|n| {
-            if n.is_starred {
-                collector.push((n.created_at.to_sortable_rfc3339(), n.id), n);
-            }
-        })
-        .await?;
-        Ok(collector.into_page())
+        let (ids, next) = self
+            .with_note_index(|idx| {
+                let mut collector = PageCollector::new(limit, page_token.as_deref());
+                for (id, entry) in &idx.entries {
+                    if entry.is_starred {
+                        collector.push((entry.created_at.to_sortable_rfc3339(), *id), *id);
+                    }
+                }
+                collector.into_page()
+            })
+            .await?;
+        Ok((self.materialize_page(ids).await?, next))
     }
 
     async fn notebook_sort_profile(
         &self,
         notebook_id: Uuid,
     ) -> Result<NotebookSortProfile, StorageError> {
-        let mut keys = Vec::new();
-        self.for_each_live_note(|n| {
-            if n.notebook_id == notebook_id {
-                keys.push(n.effective_sort_key());
-            }
-        })
-        .await?;
+        let keys = self
+            .with_note_index(|idx| {
+                idx.entries
+                    .values()
+                    .filter(|e| e.notebook_id == notebook_id)
+                    .map(|e| e.effective_sort_key)
+                    .collect::<Vec<u32>>()
+            })
+            .await?;
         Ok(NotebookSortProfile::from_effective_keys(keys))
     }
 }

@@ -337,8 +337,11 @@ async fn update_note(
     // A tombstoned note reads as 404 on this surface, so updating one is a 404 too —
     // otherwise a PUT (whose body defaults `deleted_at` to null) would silently revive
     // it. Revival is reserved for the sync path (`apply_change`).
-    read_live_note(&s, id).await?;
+    let stored = read_live_note(&s, id).await?;
     note.id = id;
+    // Moving the note to a different notebook re-places it (its old position and pinned
+    // state belonged to the source notebook); a plain edit keeps its position.
+    ordering::reconcile_notebook_move(s.backend.as_ref(), stored.notebook_id, &mut note).await?;
     note.updated_at = now();
     Ok(Json(s.backend.update_note(note).await?))
 }

@@ -159,6 +159,33 @@ pub async fn unpin_note(backend: &dyn StorageBackend, id: Uuid) -> Result<Note, 
     backend.update_note(note).await
 }
 
+/// Reconcile a user-facing note update whose `notebook_id` differs from where the note
+/// currently lives. A note's position (`sort_key`) and pinned state belong to a specific
+/// notebook — the pinned band is per-notebook, and a sort key is only meaningful among the
+/// notebook's own notes — so on a move both are reset and the note is re-placed in the
+/// destination via [`place_new_note`] (the top of the Inbox, or the end of a normal
+/// notebook's normal band). Moving out of the Inbox into a normal notebook therefore
+/// converts the note to the pinned/normal band system, and moving into the Inbox clears any
+/// pinned state (the Inbox has no pinning).
+///
+/// A no-op when `note.notebook_id == current_notebook_id`, so a plain edit keeps the note's
+/// manual position. `current_notebook_id` is the notebook the stored note is in **now** (the
+/// caller has just read it). Call from the generic "user edits a note" update path only:
+/// the pin/unpin/reorder ops set `sort_key`/`is_pinned` deliberately and call `update_note`
+/// directly, so they must **not** go through here.
+pub async fn reconcile_notebook_move(
+    backend: &dyn StorageBackend,
+    current_notebook_id: Uuid,
+    note: &mut Note,
+) -> Result<(), StorageError> {
+    if note.notebook_id == current_notebook_id {
+        return Ok(());
+    }
+    note.is_pinned = false;
+    note.sort_key = 0;
+    place_new_note(backend, note).await
+}
+
 /// Star a note (a global flag; the note's position never changes). Idempotent.
 pub async fn star_note(backend: &dyn StorageBackend, id: Uuid) -> Result<Note, StorageError> {
     set_starred(backend, id, true).await
@@ -302,6 +329,18 @@ mod tests {
         be.create_note(note).await.unwrap()
     }
 
+    /// Move a note to `dest` through the daemon's generic-update path (read → reconcile →
+    /// update), the sequence both API surfaces run.
+    async fn move_note(be: &FsBackend, id: Uuid, dest: Uuid) -> Note {
+        let mut note = be.read_note(id).await.unwrap();
+        let current = note.notebook_id;
+        note.notebook_id = dest;
+        reconcile_notebook_move(be, current, &mut note)
+            .await
+            .unwrap();
+        be.update_note(note).await.unwrap()
+    }
+
     fn titles(page: &[Note]) -> Vec<&str> {
         page.iter().map(|n| n.title.as_str()).collect()
     }
@@ -436,6 +475,78 @@ mod tests {
         assert!(newcomer.sort_key >= 1, "never the 0 sentinel");
         let (page, _) = be.list_notes_in_notebook(INBOX_ID, 0, None).await.unwrap();
         assert_eq!(titles(&page), ["new-top", "old-top"]);
+    }
+
+    /// Moving a note to another notebook re-places it in the destination's normal band —
+    /// even when its old Inbox key (`999`, from top-insertion) fell inside the pinned
+    /// numeric range, which a naive move would leave sitting in the pinned zone.
+    #[tokio::test]
+    async fn moving_a_note_replaces_it_in_the_destination_band() {
+        let be = backend().await;
+        ensure_inbox(&be).await.unwrap();
+
+        let first = create_placed(&be, "first", INBOX_ID).await;
+        let second = create_placed(&be, "second", INBOX_ID).await;
+        assert_eq!(first.sort_key, NORMAL_START);
+        assert_eq!(second.sort_key, NORMAL_START - 1, "top-insert lands at 999");
+
+        let nb = be.create_notebook(Notebook::new("nb")).await.unwrap();
+        create_placed(&be, "existing", nb.id).await;
+
+        let moved = move_note(&be, second.id, nb.id).await;
+        assert_eq!(moved.notebook_id, nb.id);
+        assert!(!moved.is_pinned, "a moved note is never auto-pinned");
+        assert!(
+            moved.sort_key >= NORMAL_START,
+            "re-placed into the normal band, not the pinned range (got {})",
+            moved.sort_key
+        );
+
+        let (nb_page, _) = be.list_notes_in_notebook(nb.id, 0, None).await.unwrap();
+        assert_eq!(titles(&nb_page), ["existing", "second"]);
+        let (inbox_page, _) = be.list_notes_in_notebook(INBOX_ID, 0, None).await.unwrap();
+        assert_eq!(titles(&inbox_page), ["first"], "gone from the Inbox");
+    }
+
+    /// Moving a pinned note into the Inbox clears its pinned state (the Inbox has none).
+    #[tokio::test]
+    async fn moving_a_pinned_note_into_the_inbox_unpins_it() {
+        let be = backend().await;
+        ensure_inbox(&be).await.unwrap();
+        let nb = be.create_notebook(Notebook::new("nb")).await.unwrap();
+        let n = create_placed(&be, "n", nb.id).await;
+        assert!(pin_note(&be, n.id).await.unwrap().is_pinned);
+
+        let moved = move_note(&be, n.id, INBOX_ID).await;
+        assert!(!moved.is_pinned);
+        assert_eq!(moved.notebook_id, INBOX_ID);
+        let (inbox_page, _) = be.list_notes_in_notebook(INBOX_ID, 0, None).await.unwrap();
+        assert_eq!(titles(&inbox_page), ["n"]);
+    }
+
+    /// A same-notebook edit is a no-op for placement: the manual position is preserved.
+    #[tokio::test]
+    async fn a_same_notebook_edit_keeps_the_position() {
+        let be = backend().await;
+        ensure_inbox(&be).await.unwrap();
+        let nb = be.create_notebook(Notebook::new("nb")).await.unwrap();
+        let a = create_placed(&be, "a", nb.id).await;
+        create_placed(&be, "b", nb.id).await;
+
+        let mut edit = be.read_note(a.id).await.unwrap();
+        let key_before = edit.sort_key;
+        edit.title = "a-edited".into();
+        reconcile_notebook_move(&be, a.notebook_id, &mut edit)
+            .await
+            .unwrap();
+        let saved = be.update_note(edit).await.unwrap();
+        assert_eq!(
+            saved.sort_key, key_before,
+            "no re-placement on a plain edit"
+        );
+
+        let (page, _) = be.list_notes_in_notebook(nb.id, 0, None).await.unwrap();
+        assert_eq!(titles(&page), ["a-edited", "b"]);
     }
 
     #[test]
