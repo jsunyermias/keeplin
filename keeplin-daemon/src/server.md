@@ -25,7 +25,7 @@ These functions are stateless and have no error path other than parsing.
 | `notebook_to_proto(CoreNotebook) -> Notebook` | Same pattern for notebooks |
 | `resource_to_proto(CoreResource) -> Resource` | Same pattern for resources; `size: u64` becomes `size: i64` (proto3 has no unsigned integers) |
 | `tag_to_proto(CoreTag) -> Tag` | Same pattern for tags |
-| `storage_err(StorageError) -> Status` | Maps `NotFound → not_found`, `Conflict → already_exists`, `CorruptedData → data_loss`, everything else → `internal` |
+| `storage_err(StorageError) -> Status` | Maps `NotFound → not_found`, `Conflict → already_exists`, `InvalidInput → invalid_argument`, `CorruptedData → data_loss`, everything else → `internal` |
 | `parse_uuid(&str, field_name) -> Result<Uuid, Status>` | Parses a UUID string from a proto field; returns `Status::invalid_argument` if malformed |
 | `parse_optional_dt(&str) -> Result<Option<DateTime<Utc>>, Status>` | Parses an RFC-3339 timestamp; returns `None` for empty strings |
 | `proto_to_note(Note) -> Result<CoreNote, Status>` | Full conversion from protobuf to domain `Note`; validates all timestamp and UUID fields |
@@ -40,14 +40,24 @@ gRPC handler tasks (tonic calls handlers from a thread pool).
 
 ### gRPC methods
 
-All 30 RPC methods are implemented. They follow this pattern:
+All RPC methods are implemented. They follow this pattern:
 1. Extract the request payload from `tonic::Request<T>`.
 2. Parse and validate fields (UUIDs, timestamps) using the helper functions above.
-3. Call the corresponding `StorageBackend` method (or a `linking::` free helper).
+3. Call the corresponding `StorageBackend` method (or a `linking::`/`ordering::` free helper).
 4. Map the result to the protobuf response type.
 
 #### Notes RPCs
-`ListNotes`, `CreateNote`, `GetNote`, `UpdateNote`, `DeleteNote` (list is cursor-paginated)
+`ListNotes`, `CreateNote`, `GetNote`, `UpdateNote`, `DeleteNote` (list is cursor-paginated).
+`CreateNote` runs `ordering::place_new_note` before storing (top of the Inbox, or the end of a
+normal notebook's normal band); `UpdateNote` runs `ordering::reconcile_notebook_move`, so a
+`notebook_id` change re-places the note in the destination band (a same-notebook edit keeps its
+position). On the wire the Inbox (nil UUID) stays **absent**, so pre-Inbox clients see what they
+always did for an unfiled note.
+
+#### Pinning / ordering / starring RPCs
+`ListNotesInNotebook` (manual order), `ListStarredNotes`, `PinNote`, `UnpinNote`, `StarNote`,
+`UnstarNote`, `ReorderNotes` (a batch of `{note_id, sort_key}`, applied in order). These delegate
+to the free helpers in `keeplin_core::ordering`.
 
 #### Notebooks RPCs
 `ListNotebooks`, `CreateNotebook`, `GetNotebook`, `UpdateNotebook`, `DeleteNotebook`

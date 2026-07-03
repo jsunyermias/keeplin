@@ -3,8 +3,8 @@
 ## Purpose
 
 This file is the crate root for `keeplin-core`, the library that all other Keeplin crates
-depend on. It declares the seven public sub-modules that together form the complete Keeplin
-storage, linking, and synchronisation layer. It contains no logic of its own; its sole role
+depend on. It declares the public sub-modules that together form the complete Keeplin
+storage, linking, ordering, and synchronisation layer. It contains no logic of its own; its sole role
 is to make the sub-modules accessible to dependents.
 
 ## Module map
@@ -16,6 +16,7 @@ is to make the sub-modules accessible to dependents.
 | `links` | yes | Pure bookmark/link types and the `#…` reference grammar (I/O-free) |
 | `linking` | yes | `LinkingBackend` decorator + reference-resolution / alias helpers |
 | `models` | yes | Domain data types (`Note`, `Notebook`, `Tag`, `Resource`, `Change`, …) |
+| `ordering` | yes | The Inbox system notebook, pinning, manual `sort_key` ordering, and starring |
 | `storage` | yes | `StorageBackend` supertrait plus `FsBackend` and `DbBackend` implementations |
 | `sync` | yes | `SyncEngine` — orchestrates a full push/pull sync cycle |
 
@@ -26,6 +27,7 @@ lib
  ├── error          (no intra-crate deps)
  ├── links          (uses models — pure types + grammar, no I/O)
  ├── models         (uses error, links)
+ ├── ordering       (uses error, models, storage::backend)
  ├── storage
  │    ├── backend   (uses error, models)
  │    ├── note_log  (pure version-vector merge for FS notes)

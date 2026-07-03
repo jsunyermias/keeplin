@@ -21,9 +21,20 @@ together provide the complete storage layer and re-exports the `StorageBackend` 
 ```rust
 pub use backend::{
     StorageBackend, NoteRepository, NotebookRepository, TagRepository,
-    ResourceRepository, SyncBackend,
+    ResourceRepository, SyncBackend, NotebookSortProfile,
 };
 ```
+
+`NotebookSortProfile` is the compact per-notebook ordering summary (`pinned_keys`, `min_key`,
+`max_normal_key`) the `ordering` placement rules read; each backend builds it natively.
+
+## Page-size clamping — `effective_page_size`
+
+Every list method sizes its page through `effective_page_size(page_size)`: `0` means the
+`DEFAULT_PAGE_SIZE` (100), and any value above `MAX_PAGE_SIZE` (1000) is clamped down to it.
+`page_size` arrives from the network as an arbitrary `u32`, so the cap stops a single request
+for `u32::MAX` rows from making a backend materialize the whole store in one response (a
+memory-exhaustion DoS); the reply's cursor lets a well-behaved client keep paging.
 
 ## `SortableRfc3339` — fixed-precision timestamps for text comparison
 

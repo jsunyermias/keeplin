@@ -27,8 +27,10 @@ Three crates:
 
 Everything is one of a handful of plain structs, all deriving `Serialize`/`Deserialize`:
 
-- **`Note`** — `title`, `body`, optional `notebook_id`, to-do fields, timestamps, and the
-  navigation fields **`alias`**, **`bookmarks`**, **`links`** (see section 6).
+- **`Note`** — `title`, `body`, `notebook_id`, to-do fields, timestamps, the navigation fields
+  **`alias`**, **`bookmarks`**, **`links`** (see section 6), and the organisation fields
+  **`is_pinned`**, **`is_starred`**, **`sort_key`** (see section 6½). `notebook_id` is **never
+  "none"**: an unfiled note belongs to the **Inbox** (nil UUID).
 - **`Notebook`**, **`Tag`** — a title + timestamps; notebooks also have an **`alias`**.
 - **`NoteTag`** — a (note, tag) association.
 - **`Resource`** — metadata for a binary attachment (the bytes are stored separately).
@@ -38,7 +40,7 @@ Everything is one of a handful of plain structs, all deriving `Serialize`/`Deser
 Every entity — notes, notebooks, tags, note↔tag associations, and resources — uses **soft
 delete** (`deleted_at` is set, the record is kept as a versioned tombstone for sync). A resource's
 binary payload is retained after a soft delete (the tombstone must persist for convergence);
-reclaiming that space is left to out-of-band maintenance.
+`purge_deleted_resources` reclaims it out of band, driven by the daemon's `resource_purge_days`.
 
 ---
 
@@ -115,7 +117,30 @@ Two navigation features layered on notes, both **stored on the note** (so they r
   alias-or-number).
 
 `LinkingBackend` re-derives bookmarks/content-links on every note write, resolves each link's
-`target_note_id`, and enforces that note/notebook aliases are unique.
+`target_note_id`, and enforces that note/notebook aliases are unique — the last two backed by a
+lazily-built in-memory alias index (rebuilt on sync) so an alias/link write doesn't rescan the
+corpus.
+
+---
+
+## 6½. Organisation — the Inbox, pinning, ordering, starring (`keeplin-core/src/ordering.rs`)
+
+A note-organisation layer, all **stored on the note** (so it rides the normal `Change` sync
+path — no new `Change` variants):
+
+- **The Inbox** ("Pizarra") — a system notebook with the fixed **nil UUID**, auto-created at
+  startup and protected from deletion. A note created without choosing a notebook lands here.
+- **Manual order** — within a notebook, notes order by `(sort_key ASC, id ASC)`. Normal
+  notebooks have a **pinned band** (`1..=999`, max 999) above a **normal band** (`≥ 1000`); the
+  Inbox is one flat top-insert list. The legacy `sort_key 0` sentinel sorts at the start of the
+  normal band, so old notes need no rewrite.
+- **Stars** — a global flag, orthogonal to pinning and to the notebook; `list_starred_notes`
+  spans notebooks and never moves the note.
+
+`ordering.rs` holds the placement rules as free functions over the backend (read-modify-write
+through `update_note`, so encryption/links/sync all apply). Backends answer the queries
+natively — `DbBackend` via the `(notebook_id, sort_key, id)` index, `FsBackend` via an in-memory
+metadata index (built from the note projections, maintained on every write and sync).
 
 ---
 
@@ -123,11 +148,13 @@ Two navigation features layered on notes, both **stored on the note** (so they r
 
 `run_sync` drives one cycle: collect local `Change`s since the last sync watermark → send →
 receive remote `Change`s → apply each (`apply_change` is **idempotent**) → record the new
-watermark → optionally prune old journal entries. `FsBackend` "sends" passively (Syncthing
-copies its logs); `DbBackend` sends/receives over WebSocket with retry, through the
-`keeplin-relay` broadcast hub (which authenticates each device and forwards its change batches
-to the other connected devices). The two backends' `Change` channels are **not** interchangeable
-for live sync, so they don't cross-sync directly.
+watermark → optionally prune old journal entries (and, when `resource_purge_days` is set,
+reclaim old resource payloads). `FsBackend` "sends" passively (Syncthing copies its logs);
+`DbBackend` sends/receives over WebSocket with retry, through the `keeplin-relay` hub. The relay
+authenticates each device, forwards its change batches to the other connected devices, and
+**journals every frame** so a device that was offline is caught up on reconnect from its own
+per-device cursor. The two backends' `Change` channels are **not** interchangeable for live
+sync, so they don't cross-sync directly.
 
 **Migration** (`keeplin-core/src/migrate.rs`) is the one-shot escape hatch: `migrate(src, dst)`
 copies all live state between any two backends via the typed `create_*` methods (not
@@ -149,6 +176,12 @@ The CRUD/sync/WebSocket surfaces share one backend `Arc` and **one auth model**:
 constant-time HTTP Basic check in `src/auth.rs`, used by both the gRPC interceptor and the axum
 middleware. The operational endpoints sit outside that check so probes and scrapers work
 without credentials; they expose only aggregate counters and liveness, no user content.
+
+At startup the daemon takes an **exclusive OS lock** on `{data_dir}/.keeplin/daemon.lock`
+(released on exit, crashes included), so a second daemon on the same store fails fast instead
+of corrupting the in-process write serialisation and indexes. It is also **secure by default**:
+it refuses to start on an unauthenticated network listener or a plaintext `ws://` sync URL to a
+remote host unless `insecure = true`. See `keeplin-daemon/src/main.md` and `config.md`.
 
 ---
 

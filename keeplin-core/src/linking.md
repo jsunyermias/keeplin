@@ -38,10 +38,27 @@ EventBackend( LinkingBackend( [EncryptedBackend]( Fs | Db ) ) )
 
 Reads, sync (`apply_change`), and the other entity types delegate unchanged.
 
+## The alias index
+
+Uniqueness checks and link-target resolution need only the *alias → live-entity* mapping, so
+the decorator keeps an in-memory `AliasIndex` instead of re-scanning the whole corpus on every
+alias- or link-bearing write (on `FsBackend` a scan re-materialises every note). It is:
+
+- **built lazily** by one full scan on the first write that needs it;
+- **maintained incrementally** by every write flowing through the decorator (create/update/delete
+  of a note or notebook updates the entry);
+- **invalidated** (rebuilt on next use) whenever a sync `apply_change`/`receive_changes` touches a
+  note or notebook — what actually got stored then depends on conflict resolution inside the inner
+  backend, so reflecting it incrementally could drift.
+
+Write-time link resolution only needs each link's target **note id**, so it runs entirely on the
+index — no note bodies are fetched. The read-side `resolve()` still snapshots the corpus because
+it additionally maps a bookmark segment to a number.
+
 ## Concurrency
 
-An `alias_write_lock` (`Mutex`) is held across the "scan for a duplicate → write" sequence,
-but **only when the entity carries an alias**, so plain notes never serialise. This closes the
+An `alias_write_lock` (`Mutex`) is held across the "check the index → write" sequence, but
+**only when the entity carries an alias**, so plain notes never serialise. This closes the
 check-then-write race that could otherwise create a local duplicate alias.
 
 ## Free helper functions (called by the surfaces)

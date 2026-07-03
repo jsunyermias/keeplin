@@ -33,9 +33,11 @@ pub fn now() -> DateTime<Utc> {
 
 /// A user-created note.
 ///
-/// Notes are the primary content unit in Keeplin. They may optionally belong to a
-/// [`Notebook`] (via `notebook_id`) and may be flagged as to-do items with an optional
-/// due date and completion timestamp.
+/// Notes are the primary content unit in Keeplin. Every note belongs to exactly one
+/// [`Notebook`] (via `notebook_id`) — an unfiled note belongs to the Inbox (the nil UUID,
+/// [`crate::ordering::INBOX_ID`]) — and may be flagged as a to-do item with an optional due
+/// date and completion timestamp. Its position within the notebook is the `sort_key` /
+/// `is_pinned` pair; `is_starred` is a global flag (see [`crate::ordering`]).
 ///
 /// Soft deletion is used: instead of removing the row, `deleted_at` is set to the
 /// current UTC time. The note is then excluded from `list_notes` results but remains

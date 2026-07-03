@@ -59,23 +59,45 @@ function returns. Tests run against the real filesystem — there is no mocking.
 | `list_resources_excludes_data` | Create three resources, call `list_resources` | Returns three metadata records (no binary data in the list) |
 | `delete_resource` | Create a resource, delete it, attempt to read | `StorageError::NotFound` |
 
+### Durability, hygiene & multi-device safety
+
+| Test function | Scenario | Expected outcome |
+|---------------|----------|------------------|
+| `concurrent_same_note_updates_keep_every_log_entry` | Many concurrent updates to one note | Every entry lands in the single device log; none dropped by a racing rename |
+| `failed_atomic_write_cleans_up_its_temp_file` | An `atomic_write` whose rename fails | No `*.tmp` litter; destination untouched |
+| `startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones` | Plant orphan `*.tmp` + a `.syncthing.*.tmp` | The orphans are swept at startup; the Syncthing temp is preserved |
+| `detects_syncthing_conflict_copies_without_removing_them` | Plant `*.sync-conflict-*` files | All detected and reported; none deleted; startup not blocked |
+| format-version tests | Legacy stamp / newer-than-build stamp | Migration ladder runs; a newer on-disk format is refused |
+
+### Ordering, starring & the note index
+
+| Test function | Scenario | Expected outcome |
+|---------------|----------|------------------|
+| `ordering_fields_round_trip_and_manual_order_query` | Notes with pinned/normal/starred fields | Fields round-trip; `list_notes_in_notebook` returns pinned-first manual order; starred list spans notebooks; `notebook_sort_profile` summarises |
+| `note_index_reflects_local_writes_after_it_is_built` | List (build index), then create/delete | Incremental insert/remove reflected without re-scanning |
+| `note_index_reflects_changes_pulled_from_a_peer` | A peer's log replicated, then a sync cycle | The synced note appears in the listings |
+
+Two-device convergence (`fs_two_device_*`), per-note and global-log **compaction**, and
+resource **purge** are also exercised in this file; see the source for the full matrix.
+
 ## Fixtures and helpers
 
-This test file uses no shared helper functions. Each test creates its own `FsBackend`
-instance inside the test function body.
+Most tests create their own `FsBackend` on a fresh temp dir. Two-device and index tests share:
 
 | Utility | Source | Purpose |
 |---------|--------|---------|
-| `tempdir()` | `tempfile` crate | Creates a unique temporary directory that is deleted when the `TempDir` guard is dropped |
-| `Note::new`, `Notebook::new`, etc. | `keeplin_core::models` | Constructs domain objects with a fresh UUID and current timestamps |
+| `tempdir()` | `tempfile` crate | A unique temporary directory, deleted when the guard drops |
+| `Note::new`, `Notebook::new`, … | `keeplin_core::models` | Domain objects with a fresh UUID and current timestamps |
+| `replicate_logs(from, to)` | in-file | Copy one device's global + per-note logs to another (simulate Syncthing) |
+| `drain_sync(backend)` | in-file | `receive_changes` + `apply_change` — one pull-and-apply cycle |
 
 ## Coverage gaps
 
-- Concurrent access from two `FsBackend` instances to the same directory is not tested.
-  `FsBackend` is not designed for concurrent access, so this is intentional.
-- The `apply_change` method is tested indirectly through `get_changes_since_scans_other_device_logs`
-  but only for the `NoteCreate` variant. All other variants are covered in the
-  `db_backend.rs` tests via `DbBackend::apply_change`.
+- Cross-**process** access to one store is not tested here; it is prevented at runtime by the
+  daemon's per-store OS lock (`keeplin-daemon/src/main.rs`), not by `FsBackend`.
+- The FS note-listing index reflects a peer edit only after a sync cycle materializes it (by
+  design); single-note `read_note` freshness is covered by `read_does_not_rewrite_projection`
+  and the two-device tests.
 
 ## Related files
 

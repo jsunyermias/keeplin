@@ -23,7 +23,7 @@ database is behind on.
 
 | Table | Purpose |
 |-------|---------|
-| `notes` | Note rows: soft-delete (`deleted_at`), `alias`, `bookmarks`/`links` (JSON), and the conflict-resolution `vv` (JSON version vector) + `last_writer` |
+| `notes` | Note rows: soft-delete (`deleted_at`), `alias`, `bookmarks`/`links` (JSON), the conflict-resolution `vv` (JSON version vector) + `last_writer`, and the ordering columns `is_pinned`/`is_starred`/`sort_key` with the `(notebook_id, sort_key, id)` index |
 | `notebooks` | Notebook rows with soft-delete column, `alias`, and `vv`/`last_writer` |
 | `tags` | Tag rows with soft-delete column and `vv`/`last_writer` |
 | `note_tags` | Many-to-many association (PK `(note_id, tag_id)`), **versioned**: `updated_at`, `deleted_at` (tombstone), `vv`, `last_writer` so add/remove converge like other entities |
@@ -57,6 +57,14 @@ Version **1** is the baseline: the complete current schema. The pre-framework ad
 `ALTER`s live inside it as `add_column_if_missing` guards, so a database created by an older
 build (already carrying those columns, `user_version` still `0`) is stamped `1` untouched.
 A new step is a new arm in `apply_migration` plus a bump of `SCHEMA_VERSION`.
+
+Version **2** (`migrate_v2_ordering`) adds the pinning/ordering/starring columns: it
+`add_column_if_missing`s `is_pinned`/`is_starred`/`sort_key`, rewrites any `NULL notebook_id`
+to the nil-UUID Inbox (so `notebook_id` is never null again, matching the non-optional model
+field), and creates the `(notebook_id, sort_key, id)` index that backs `list_notes_in_notebook`
+and `notebook_sort_profile`. `list_notes_in_notebook` orders by
+`CASE WHEN sort_key = 0 THEN 1000 ELSE sort_key END` so the legacy `0` sentinel sorts at the
+start of the normal band without a data rewrite.
 
 ### `note_links` table — indexed backlinks
 
@@ -243,8 +251,10 @@ files); `DbBackend` keeps the current row plus its `vv`. See `SECURITY.md`.
   (resolved through `note_log::resolve`) rather than running a physical `DELETE`, so a concurrent
   delete-vs-recreate converges. `list_resources` filters `deleted_at IS NULL` and `read_resource`
   returns `NotFound` for a tombstoned row. The BLOB in the `data` column is **retained** after a
-  soft delete (the tombstone must persist for convergence); reclaiming that space is left to
-  out-of-band maintenance.
+  soft delete (the tombstone must persist for convergence). `purge_deleted_resources(older_than)`
+  reclaims it out of band — it `UPDATE`s `data = NULL` for tombstones older than the cutoff
+  while keeping the row (and its `vv`/`last_writer`), so the deletion goes on converging; the
+  daemon runs it after a successful sync when `resource_purge_days` is set.
 
 ## Related files
 
