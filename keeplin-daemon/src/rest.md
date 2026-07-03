@@ -39,9 +39,14 @@ metrics); every other route is behind auth and counted by `status_mw`.
 | `PUT /notes/:id/alias`, `PUT /notebooks/:id/alias` | set/clear an alias |
 | `GET/POST /notes/:id/links`, `DELETE /notes/:id/links/:index` | list / add-manual / remove links |
 | `GET /notes/:id/backlinks?page_size=&page_token=` | notes linking **to** this note (paginated) |
+| `GET /notes/starred?page_size=&page_token=` | every starred note, across all notebooks |
+| `POST/DELETE /notes/:id/pin` | pin (into the `1–999` band, max 999) / unpin (to the end of the normal band) |
+| `POST/DELETE /notes/:id/star` | star / unstar (global flag; never moves the note) |
+| `PUT /notes/:id/sort-key` | reorder within the note's current band (`{ "sort_key": … }`) |
+| `GET /notebooks/:id/notes?page_size=&page_token=` | the notebook's notes in **manual order** (pinned band first); nil UUID = the Inbox |
 | `GET /links/resolve?ref=#…` | resolve a reference → `{ note_id, bookmark_number }` |
 | `GET /aliases/conflicts` | aliases shared by 2+ live entities (sync collisions) |
-| `GET/POST/PUT/DELETE /notebooks`, `/tags` | notebook / tag CRUD |
+| `GET/POST/PUT/DELETE /notebooks`, `/tags` | notebook / tag CRUD (deleting the Inbox → `400`) |
 | `GET/POST /resources`, `GET/PUT/DELETE /resources/:id`, `GET /resources/:id/data` | resource metadata CRUD + raw upload/download (create is capped at `max_body_bytes`) |
 | `POST /resources/upload` | **streaming upload** for large attachments: reads the body incrementally up to `max_upload_bytes` (this one route disables the router's body limit); over the cap → `413` |
 | `POST /sync` | run one sync cycle → `{ "applied": n }`, then prune journal rows older than `journal_retention_days` (shared `server::prune_journal_after_sync`) |
@@ -58,7 +63,8 @@ valid `Authorization: Basic …` header (via `crate::auth::verify_basic`), retur
 | `StorageError` | HTTP status |
 |----------------|-------------|
 | `NotFound` | `404` |
-| `Conflict` (duplicate alias) | `409` |
+| `Conflict` (duplicate alias, or the 999-pin limit) | `409` |
+| `InvalidInput` (pin an Inbox note, out-of-band sort key, delete the Inbox) | `400` |
 | `CorruptedData` / invalid link ref | `422` |
 | invalid UUID / body | `400` (axum extractor rejection) |
 | anything else | `500` |
@@ -69,6 +75,11 @@ it with `NOT_FOUND` too). Without the update guard, a `PUT` whose body defaults 
 to null would silently *revive* the entity; revival is reserved for the sync path
 (`apply_change` resolving a causal edit made after the delete). The alias/link endpoints
 inherit the same rule from the `linking` helpers.
+
+The generic note `PUT` also **re-places the note when its `notebook_id` changes**
+(`ordering::reconcile_notebook_move`): position and pinned state belong to the source notebook,
+so a move resets them and re-places the note in the destination band. A same-notebook edit keeps
+its position. The pin/unpin/reorder routes set those fields deliberately and bypass this.
 
 ## WebSocket feed (`GET /api/ws`)
 

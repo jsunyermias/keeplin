@@ -22,6 +22,16 @@ requests carry `page_size` + `page_token`, responses carry a `next_page_token`.
 | `UpdateNote` | `UpdateNoteRequest` | `UpdateNoteResponse` | Overwrites a note's fields; `updated_at` is set server-side |
 | `DeleteNote` | `DeleteNoteRequest` | `DeleteNoteResponse` | Soft-deletes a note |
 
+### Pinning, ordering & starring
+
+| Method | Request | Response | Description |
+|--------|---------|----------|-------------|
+| `ListNotesInNotebook` | `ListNotesInNotebookRequest` | `ListNotesInNotebookResponse` | One notebook's notes in manual order (pinned band first); nil UUID = the Inbox |
+| `ListStarredNotes` | `ListStarredNotesRequest` | `ListStarredNotesResponse` | Every starred note, across all notebooks |
+| `PinNote` / `UnpinNote` | `{Pin,Unpin}NoteRequest` | `{Pin,Unpin}NoteResponse` | Move a note into / out of the `1–999` pinned band (max 999) |
+| `StarNote` / `UnstarNote` | `{Star,Unstar}NoteRequest` | `{Star,Unstar}NoteResponse` | Toggle the global star (never moves the note) |
+| `ReorderNotes` | `ReorderNotesRequest` | `ReorderNotesResponse` | Batch of `NoteOrder {note_id, sort_key}`, applied in order within each note's band |
+
 ### Notebooks
 
 | Method | Request | Response | Description |
@@ -84,7 +94,7 @@ There is **no** RPC to set bookmarks: bookmarks are declared inline in the note 
 | `id` | 1 | `string` | UUID v4, generated at creation |
 | `title` | 2 | `string` | User-visible title |
 | `body` | 3 | `string` | Full text content |
-| `notebook_id` | 4 | `string` | UUID of the parent notebook, or empty string if none |
+| `notebook_id` | 4 | `optional string` | UUID of the parent notebook; **absent = the Inbox** (nil UUID), so pre-Inbox clients see an unfiled note exactly as before |
 | `is_todo` | 5 | `bool` | Whether this note is a to-do item |
 | `todo_due` | 6 | `string` | RFC-3339 deadline, or empty string |
 | `todo_completed` | 7 | `string` | RFC-3339 completion timestamp, or empty string |
@@ -94,9 +104,14 @@ There is **no** RPC to set bookmarks: bookmarks are declared inline in the note 
 | `alias` | 11 | `optional string` | Human-readable alias; absent = none |
 | `bookmarks` | 12 | `repeated Bookmark` | In-note anchors derived from `[text](### "alias")` links in the body |
 | `links` | 13 | `repeated NoteLink` | Links to other notes (content-derived + manual) |
+| `is_pinned` | 14 | `bool` | Pinned to the top of its notebook (`sort_key` in `1–999`) |
+| `is_starred` | 15 | `bool` | Globally starred; orthogonal to pinning and to the notebook |
+| `sort_key` | 16 | `uint32` | Manual position within the notebook (ascending; `0` = never positioned) |
 
 `notebook_id` (4), `todo_due` (6), and `todo_completed` (7) are `optional string`; the
-proto3 `optional` presence bit distinguishes "unset" from "empty string".
+proto3 `optional` presence bit distinguishes "unset" from "empty string". Fields 14–16 were
+added after the initial release: old peers ignore unknown fields, and a note they write comes
+back with the defaults (`false`/`false`/`0`), which order at the start of the normal band.
 
 ### `Notebook`
 | Field | Field number | Type | Description |

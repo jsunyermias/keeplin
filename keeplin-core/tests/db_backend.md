@@ -63,6 +63,20 @@ because the `TempDir` guard is intentionally leaked via `std::mem::forget`.
 | `create_and_read_resource` | Create a resource with binary data, read it back | Both metadata and binary bytes match |
 | `list_resources_excludes_data` | Create three resources, list | Returns three metadata records without binary payloads |
 | `delete_resource` | Create, delete, then read | `StorageError::NotFound` |
+| `purge_reclaims_old_tombstoned_payloads_only` | Delete a resource, purge before/after the cutoff | Only tombstones past the cutoff lose their payload; metadata survives; idempotent |
+
+### Pinning, ordering & starring
+
+| Test function | Scenario | Expected outcome |
+|---------------|----------|------------------|
+| `ordering_fields_round_trip_and_manual_order_query` | Notes with pinned/normal/legacy/starred fields | Fields round-trip; `list_notes_in_notebook` returns manual order (pinned first, `0` sentinel as 1000); cursor pages match; starred list spans notebooks; `notebook_sort_profile` summarises |
+| `sync_applied_change_carries_ordering_fields` | `apply_change` a note carrying the new fields | Stored and queryable; resolves under whole-note version vectors (#55) |
+
+### Schema migration
+
+The in-source `#[cfg(test)]` module in `db.rs` covers the migration ladder: a fresh DB stamps
+the current `user_version`; a pre-framework DB is carried onto the ladder without data loss and
+**v2 moves a `NULL notebook_id` to the Inbox**; a newer-than-build stamp is refused.
 
 ## Coverage gaps
 

@@ -29,8 +29,9 @@ file (default: `keeplin.toml`) and may be partially overridden by environment va
 | `max_message_size` | `usize` | 33,554,432 (32 MiB) | Max size of a single gRPC message (inbound and outbound); also caps the REST request body (`DefaultBodyLimit`) so resource uploads have the same limit on both surfaces |
 | `max_upload_bytes` | `usize` | 1,073,741,824 (1 GiB) | Max assembled size of a **streamed** upload (gRPC `UploadResource` / `POST /api/resources/upload`), which is not bounded by `max_message_size`; `0` disables the cap |
 | `journal_retention_days` | `u64` | `30` | Days of `entity_changes` history to keep; pruned after each successful sync (`0` disables; no-op for the filesystem backend) |
+| `resource_purge_days` | `u64` | `0` (keep forever) | After each successful sync, free the binary payloads of resources soft-deleted more than this many days ago (`purge_deleted_resources`); the tombstone metadata is always kept, so convergence is unaffected |
 | `encryption_password` | `Option<String>` | `None` | Passphrase for AES-256-GCM at-rest encryption; prefer env var (`KEEPLIN_ENCRYPTION_PASSWORD`) |
-| `key_salt` | `Option<String>` | `None` | Argon2id salt (≥ 8 bytes) for the encryption key; falls back to the device ID when unset. Set the **same** value on all synced devices for portable encryption; prefer env var (`KEEPLIN_KEY_SALT`) |
+| `key_salt` | `Option<String>` | `None` | Argon2id salt (≥ 8 bytes) for the encryption key. When unset, the effective salt is derived from the device ID and **persisted** to `{data_dir}/.keeplin/key_salt` (which then takes precedence) — back that file up. Set the **same** value on all synced devices for portable encryption; prefer env var (`KEEPLIN_KEY_SALT`) |
 | `auth_username` | `Option<String>` | `None` | Username for HTTP Basic Auth on every gRPC call; prefer env var |
 | `auth_password` | `Option<String>` | `None` | Password for HTTP Basic Auth on every gRPC call; prefer env var |
 | `insecure` | `bool` | `false` | Downgrade the startup security checks from errors to warnings (see below) |

@@ -1,0 +1,49 @@
+# Documentation templates
+
+Keeplin keeps its prose documentation **next to the code it describes**, in Markdown, so a
+reader can open any file and find a companion that explains the *why* the source comments
+cannot. This directory holds the templates for each kind of document, plus the conventions
+that keep them consistent.
+
+## The convention in one sentence
+
+**Every source file `foo.rs` has a companion `foo.md` in the same directory**, and every
+top-level concern (architecture, security) has a document at the repository root.
+
+When you add a source file, add its companion. When you change what a file *does* (not just
+how), update its companion in the same change — a stale companion is worse than none.
+
+## Which template to use
+
+| You are documenting… | Template | Lives at |
+|----------------------|----------|----------|
+| A library/daemon source module (`.rs` with logic) | [`source-module.md`](source-module.md) | next to the `.rs`, same basename |
+| A crate root (`lib.rs` / `main.rs` that mostly wires modules) | [`crate-root.md`](crate-root.md) | next to the root `.rs` |
+| An integration/unit test file (`tests/*.rs`, or a big `#[cfg(test)]` module) | [`test-file.md`](test-file.md) | next to the `.rs` |
+| A build script, config, or schema (`build.rs`, `*.toml`, `*.proto`, `*.yml`, `*.sh`) | [`config-file.md`](config-file.md) | `<file>.md` next to it |
+| A cross-cutting design or policy doc (architecture, security, threat model) | [`design-doc.md`](design-doc.md) | repository root |
+
+## House style
+
+- **Explain the *why*, not the *what*.** The source already says what the code does; the
+  companion says why it is shaped that way, what alternatives were rejected, and which
+  invariants must not break.
+- **Lead with a one-line title** matching the file: `` # `path/to/file.rs` — short purpose ``.
+- **Open with `## Purpose`** (source/config) or `## What is tested` (tests): a short
+  paragraph a newcomer can read in ten seconds.
+- **Use tables** for method/field/variant inventories and test-case matrices — they scan far
+  better than prose lists.
+- **Fence real snippets** (`rust`, `sql`, `toml`, …) when a signature or SQL statement makes
+  the point faster than a sentence. Keep them short and copied faithfully from the source.
+- **Close with `## Related files`**: the handful of files a reader will jump to next, each
+  with a one-line reason.
+- **Keep it current.** Prefer describing behaviour and invariants (which age slowly) over
+  line numbers or exact code (which age fast).
+- **Cross-reference, don't duplicate.** Link to `ARCHITECTURE.md` / `SECURITY.md` for shared
+  concepts (version-vector convergence, the decorator stack) instead of re-deriving them.
+
+## Placeholders in the templates
+
+Text in `{{double braces}}` is a fill-in. Lines in `<!-- HTML comments -->` are guidance for
+the author and must be deleted before committing. Delete any section that does not apply
+rather than leaving it empty.
