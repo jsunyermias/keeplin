@@ -13,21 +13,17 @@ The underlying note fields (`is_pinned`, `is_starred`, `sort_key`, and the now-n
 `list_starred_notes`, `notebook_sort_profile`) live on `StorageBackend`. This module holds
 only the **placement rules** that decide what those fields should be.
 
-## Structure
+## Key constants
 
-| Item | Description |
-|------|-------------|
-| `INBOX_ID` / `INBOX_TITLE` | The Inbox's fixed identity: the **nil UUID** and the title `"Pizarra"`, identical on every device |
-| `PIN_MAX` (999) / `MAX_PINNED` | Highest pinned key = maximum pinned notes per notebook |
-| `NORMAL_START` (1000) | First key of the normal (unpinned) band |
-| `ensure_inbox` | Create the Inbox notebook if absent; idempotent, called at daemon startup |
-| `is_inbox` | Whether an id is the Inbox (the surfaces use it to refuse deleting it) |
-| `place_new_note` | Assign a brand-new note its initial `sort_key` before `create_note` |
-| `pin_note` / `unpin_note` | Move a note into / out of the pinned band |
-| `star_note` / `unstar_note` | Toggle the global star (never moves the note) |
-| `reorder_note` | Change a note's key **within its current band** |
-| `reconcile_notebook_move` | On a generic update that changes `notebook_id`, re-place the note in the destination band |
-| `resequence_inbox` | Renumber the Inbox to `1000, 2000, …` when top-insertion runs out of room |
+The module defines no types — only free functions (see [Public API](#public-api)) and the
+constants that fix the band layout and the Inbox's identity:
+
+| Constant | Value | Description |
+|----------|-------|-------------|
+| `INBOX_ID` | nil UUID | The Inbox's fixed id, identical on every device |
+| `INBOX_TITLE` | `"Pizarra"` | The Inbox notebook's title |
+| `PIN_MAX` / `MAX_PINNED` | `999` | Highest pinned key = maximum pinned notes per notebook |
+| `NORMAL_START` | `1000` | First key of the normal (unpinned) band |
 
 ## Public API
 
@@ -66,9 +62,9 @@ across all notebooks in `(created_at, id)` order. This is a backend method (not 
 `ordering.rs`) because it is a read-only query; both `DbBackend` and `FsBackend` implement it
 natively. See `storage/backend.md`.
 
-## How it works
+## The band model & placement rules
 
-**The band model.** Within a notebook, notes order by `(effective sort_key ASC, id ASC)`:
+Within a notebook, notes order by `(effective sort_key ASC, id ASC)`:
 
 - `1..=999` is the **pinned** band (at most 999 notes; rendered as `0.001–0.999`), shown at
   the top. `pin_note` picks the lowest free key via `lowest_free_pinned_key`; `unpin_note`
@@ -88,7 +84,7 @@ renumbers everything to `1000, 2000, …` first, buying room for many more top-i
 natively (an indexed scan of sort keys, never the note bodies), so pinning or creating a note
 never materialises the whole notebook.
 
-## Invariants & edge cases
+### Invariants & edge cases
 
 - **A note is never "unfiled".** `notebook_id` is a `Uuid`, never `Option`; a note with no
   chosen notebook has `notebook_id == INBOX_ID` (nil). Old records with `null`/missing
@@ -104,7 +100,7 @@ never materialises the whole notebook.
 - **Duplicate keys are allowed.** Two notes may share a key; `id` breaks the tie
   deterministically, so ordering is always well-defined.
 
-## Concurrency & sync
+## How ordering syncs
 
 The operations are plain read-modify-write through `update_note`, so version vectors,
 encryption, link derivation, and the live-change feed all apply unchanged, and every move
