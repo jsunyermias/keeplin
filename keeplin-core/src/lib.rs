@@ -19,6 +19,7 @@
 //! - [`storage`] — `StorageBackend` trait plus `FsBackend` and `DbBackend` implementations.
 //! - [`sync`] — `SyncEngine`: orchestrates a full push-then-pull sync cycle.
 
+pub mod collab;
 pub mod encryption;
 pub mod error;
 pub mod linking;

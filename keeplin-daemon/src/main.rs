@@ -18,6 +18,7 @@ mod server;
 use std::sync::Arc;
 
 use clap::Parser;
+use keeplin_core::collab::CollabBackend;
 use keeplin_core::{
     encryption::EncryptedBackend,
     storage::{db::DbBackend, fs::FsBackend, StorageBackend},
@@ -221,7 +222,14 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
             let db_path = cfg.data_dir.join("keeplin.db");
             let backend = DbBackend::new(&db_path, &cfg.server_url, &cfg.auth_token).await?;
             tracing::info!(db = %db_path.display(), server = %cfg.server_url, "Server mode");
-            run_server(&cfg, addr, backend).await?;
+            match collab_config(&cfg) {
+                Some(collab_cfg) => {
+                    let collab = CollabBackend::new(backend, collab_cfg)?;
+                    let starter = collab_starter(&collab);
+                    run_server_with(&cfg, addr, collab, Some(starter)).await?;
+                }
+                None => run_server(&cfg, addr, backend).await?,
+            }
         }
         (Mode::Server, Some(pw)) => {
             let db_path = cfg.data_dir.join("keeplin.db");
@@ -229,7 +237,16 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
             let salt = resolve_key_salt(&cfg, &backend).await?;
             let enc = EncryptedBackend::new(backend, &pw, &salt).await?;
             tracing::info!(db = %db_path.display(), server = %cfg.server_url, "Server mode (encrypted)");
-            run_server(&cfg, addr, enc).await?;
+            match collab_config(&cfg) {
+                // Collab wraps the *decrypted* view: the line protocol needs
+                // plaintext bodies (the collaborative server merges by line).
+                Some(collab_cfg) => {
+                    let collab = CollabBackend::new(enc, collab_cfg)?;
+                    let starter = collab_starter(&collab);
+                    run_server_with(&cfg, addr, collab, Some(starter)).await?;
+                }
+                None => run_server(&cfg, addr, enc).await?,
+            }
         }
     }
 
@@ -375,11 +392,53 @@ async fn run_migrate(from: &std::path::Path, to: &std::path::Path) -> anyhow::Re
 /// The `#[allow(clippy::result_large_err)]` attribute suppresses a Clippy warning that
 /// arises because tonic's `tls_config` returns a large `Err` variant; the error is only
 /// returned once during startup so heap allocation is not a concern here.
+/// Callback invoked with the fully-built decorator stack, used to hand the
+/// collaborative client its top-of-stack handle (remote writes must flow
+/// through linking + eventing exactly like local ones).
+type StackHook = Box<dyn FnOnce(Arc<dyn keeplin_core::storage::StorageBackend>) + Send>;
+
+/// Derive the collaborative channel settings from the daemon config.
+fn collab_config(cfg: &Config) -> Option<keeplin_core::collab::CollabConfig> {
+    let api_url = cfg.collab_api_url.clone()?;
+    let ws_url = format!(
+        "{}/api/ws",
+        api_url
+            .replacen("https://", "wss://", 1)
+            .replacen("http://", "ws://", 1)
+    );
+    Some(keeplin_core::collab::CollabConfig {
+        api_url,
+        ws_url,
+        token: cfg.auth_token.clone(),
+    })
+}
+
+/// Build the hook that starts the collab connection task once the stack Arc
+/// exists.
+fn collab_starter<B: keeplin_core::storage::StorageBackend>(
+    collab: &CollabBackend<B>,
+) -> StackHook {
+    let collab = collab.clone();
+    Box::new(move |top| {
+        tokio::spawn(async move { collab.start(top).await });
+    })
+}
+
 #[allow(clippy::result_large_err)]
 async fn run_server<B: keeplin_core::storage::StorageBackend>(
     cfg: &Config,
     addr: std::net::SocketAddr,
     backend: B,
+) -> anyhow::Result<()> {
+    run_server_with(cfg, addr, backend, None).await
+}
+
+#[allow(clippy::result_large_err)]
+async fn run_server_with<B: keeplin_core::storage::StorageBackend>(
+    cfg: &Config,
+    addr: std::net::SocketAddr,
+    backend: B,
+    stack_hook: Option<StackHook>,
 ) -> anyhow::Result<()> {
     // Decorator stack (innermost → outermost): the storage backend, then (optionally)
     // `EncryptedBackend` already applied by the caller, then `LinkingBackend` which derives
@@ -398,6 +457,12 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
     // The Inbox system notebook ("Pizarra", nil UUID) must exist before any request: new
     // notes without a notebook land in it. Idempotent on every startup.
     keeplin_core::ordering::ensure_inbox(backend.as_ref()).await?;
+
+    // Hand the collaborative client the finished stack: remote writes flow
+    // through linking/eventing/metrics exactly like local ones.
+    if let Some(hook) = stack_hook {
+        hook(backend.clone());
+    }
 
     // One shared backend instance behind every surface: the gRPC service and (optionally)
     // the REST/HTTP server both hold a clone of this `Arc`.
