@@ -45,6 +45,14 @@ pub struct Config {
     #[serde(default)]
     pub auth_token: String,
 
+    /// HTTP base URL of the keeplin-srv collaborative server (e.g.
+    /// `http://host:3000`). When set in server mode, note bodies are edited
+    /// collaboratively through the line protocol (`/api/ws`) and note changes
+    /// stop flowing through the relay; notebooks/tags/resources still sync
+    /// over `server_url`. Uses the same `auth_token` (one login per device).
+    #[serde(default)]
+    pub collab_api_url: Option<String>,
+
     /// gRPC listen address. Defaults to 127.0.0.1:50051.
     #[serde(default = "default_grpc_addr")]
     pub grpc_addr: String,
@@ -162,6 +170,7 @@ impl Default for Config {
             data_dir: PathBuf::from("./keeplin-data"),
             server_url: String::new(),
             auth_token: String::new(),
+            collab_api_url: None,
             grpc_addr: default_grpc_addr(),
             http_addr: None,
             tls_cert_path: None,

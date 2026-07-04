@@ -1,0 +1,556 @@
+//! Client side of the keeplin-srv collaborative channel.
+//!
+//! Architecture: frontends talk to this daemon (gRPC/REST/feed); the daemon —
+//! through [`CollabBackend`] — talks to keeplin-srv. The server stores every
+//! note (lines + versioned order + metadata) and is the durable source of
+//! truth; this client keeps the user's notes (own and shared) in the local
+//! database and mirrors line state in memory, rebuilt from each `Welcome`
+//! snapshot on (re)connect.
+//!
+//! - Local note writes are diffed into [`protocol::LineOp`]s (signed with this
+//!   *device*'s id, the vv actor) and pushed over the WebSocket; title and
+//!   metadata changes go over REST.
+//! - Remote ops and snapshots are applied through the daemon's full decorator
+//!   stack (so links are re-derived and the live feed fires), with an
+//!   in-flight suppression set preventing those writes from echoing back.
+//! - Note discovery (own + shared) is a REST `GET /api/notes` at connect.
+//! - Note `Change`s are filtered out of the relay sync path: the collab
+//!   channel owns notes; notebooks/tags/resources keep syncing via the relay.
+
+pub mod protocol;
+pub mod state;
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::{mpsc, Mutex};
+use tokio_tungstenite::tungstenite::Message;
+use uuid::Uuid;
+
+use crate::error::StorageError;
+use crate::models::{Change, Note, NoteTag, Notebook, Resource, Tag};
+use crate::storage::{
+    NoteRepository, NotebookRepository, ResourceRepository, StorageBackend, SyncBackend,
+    TagRepository,
+};
+use protocol::{CollabClientMsg, CollabServerMsg};
+use state::NoteLines;
+
+/// Connection settings for the collaborative channel.
+#[derive(Debug, Clone)]
+pub struct CollabConfig {
+    /// HTTP base of keeplin-srv, e.g. `http://host:3000`.
+    pub api_url: String,
+    /// WebSocket endpoint, e.g. `ws://host:3000/api/ws`.
+    pub ws_url: String,
+    /// Device token from `POST /api/login` (one per device).
+    pub token: String,
+}
+
+/// Extract the `device_id` claim from a JWT without verifying it (the server
+/// verifies; the client only needs to know its own identity to sign ops).
+pub fn device_id_from_token(token: &str) -> Option<String> {
+    use base64::Engine;
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    Some(claims.get("device_id")?.as_str()?.to_string())
+}
+
+struct Shared {
+    cfg: CollabConfig,
+    device_id: String,
+    http: reqwest::Client,
+    /// Per-note in-memory mirror of the server's line entities.
+    notes: Mutex<HashMap<Uuid, NoteLines>>,
+    /// Note ids currently being written *from* the server, so the decorator
+    /// does not diff them back into ops (no echo).
+    suppress: Mutex<HashSet<Uuid>>,
+    /// Outbound queue drained by the connection task.
+    out: mpsc::UnboundedSender<CollabClientMsg>,
+    /// Top of the daemon's decorator stack, set once after construction, used
+    /// to apply remote state so linking/eventing run on those writes too.
+    top: OnceLock<Arc<dyn StorageBackend>>,
+}
+
+impl Shared {
+    fn auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        req.bearer_auth(&self.cfg.token)
+    }
+
+    async fn suppressed(&self, id: Uuid) -> bool {
+        self.suppress.lock().await.contains(&id)
+    }
+
+    /// Write `note` through the top of the stack with echo suppression.
+    async fn apply_from_server(&self, note: Note, create: bool) -> Result<(), StorageError> {
+        let Some(top) = self.top.get() else {
+            return Ok(());
+        };
+        self.suppress.lock().await.insert(note.id);
+        let result = if create {
+            top.create_note(note.clone()).await.map(|_| ())
+        } else {
+            top.update_note(note.clone()).await.map(|_| ())
+        };
+        self.suppress.lock().await.remove(&note.id);
+        result
+    }
+}
+
+/// Storage decorator that turns local note writes into collaborative ops and
+/// REST calls. Sits *below* `LinkingBackend`/`EventBackend` in the stack.
+pub struct CollabBackend<B> {
+    inner: Arc<B>,
+    shared: Arc<Shared>,
+    out_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<CollabClientMsg>>>>,
+}
+
+// Manual impl: `B` itself need not be `Clone` (everything is behind `Arc`s).
+impl<B> Clone for CollabBackend<B> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            shared: self.shared.clone(),
+            out_rx: self.out_rx.clone(),
+        }
+    }
+}
+
+impl<B: StorageBackend> CollabBackend<B> {
+    pub fn new(inner: B, cfg: CollabConfig) -> Result<Self, StorageError> {
+        let device_id = device_id_from_token(&cfg.token).ok_or_else(|| {
+            StorageError::InvalidState("collab token has no device_id claim".into())
+        })?;
+        let (out, out_rx) = mpsc::unbounded_channel();
+        Ok(Self {
+            inner: Arc::new(inner),
+            shared: Arc::new(Shared {
+                cfg,
+                device_id,
+                http: reqwest::Client::new(),
+                notes: Mutex::new(HashMap::new()),
+                suppress: Mutex::new(HashSet::new()),
+                out,
+                top: OnceLock::new(),
+            }),
+            out_rx: Arc::new(Mutex::new(Some(out_rx))),
+        })
+    }
+
+    /// Start the connection task. `top` must be the outermost backend of the
+    /// daemon's stack (this backend wrapped by linking/eventing) so remote
+    /// writes flow through every decorator exactly once.
+    pub async fn start(&self, top: Arc<dyn StorageBackend>) {
+        let _ = self.shared.top.set(top);
+        let rx = self
+            .out_rx
+            .lock()
+            .await
+            .take()
+            .expect("collab task started twice");
+        tokio::spawn(run_connection(self.shared.clone(), rx));
+    }
+
+    /// Diff `note.body` against the mirror and queue the resulting ops.
+    async fn push_local_edit(&self, note: &Note) {
+        let mut notes = self.shared.notes.lock().await;
+        let lines = notes.entry(note.id).or_default();
+        let ops = lines.diff_body(&note.body, &self.shared.device_id);
+        drop(notes);
+        if !ops.is_empty() {
+            let _ = self.shared.out.send(CollabClientMsg::Op {
+                note_id: note.id,
+                ops,
+            });
+        }
+    }
+
+    /// Mirror title/metadata to the server; failures are logged and retried
+    /// implicitly by the next edit (the server holds the durable truth, the
+    /// local row already has the change).
+    async fn patch_meta(&self, note: &Note) {
+        let url = format!("{}/api/notes/{}", self.shared.cfg.api_url, note.id);
+        let body = serde_json::json!({
+            "title": note.title,
+            "notebook_id": note.notebook_id,
+            "is_todo": note.is_todo,
+            "todo_due": note.todo_due,
+            "todo_completed": note.todo_completed,
+        });
+        if let Err(e) = self
+            .shared
+            .auth(self.shared.http.patch(url))
+            .json(&body)
+            .send()
+            .await
+        {
+            tracing::warn!(error = %e, note = %note.id, "collab: PATCH note failed");
+        }
+    }
+}
+
+#[async_trait]
+impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
+    async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
+        let created = self.inner.create_note(note).await?;
+        if self.shared.suppressed(created.id).await {
+            return Ok(created);
+        }
+        // Register the note on the server keeping the local id, then push the
+        // body as ops. A 409 means it already exists there (e.g. created on
+        // another device); the ops still converge through resolution.
+        let url = format!("{}/api/notes", self.shared.cfg.api_url);
+        let body = serde_json::json!({ "id": created.id, "title": created.title });
+        if let Err(e) = self
+            .shared
+            .auth(self.shared.http.post(url))
+            .json(&body)
+            .send()
+            .await
+        {
+            tracing::warn!(error = %e, note = %created.id, "collab: POST note failed");
+        }
+        self.patch_meta(&created).await;
+        let _ = self.shared.out.send(CollabClientMsg::Join {
+            note_id: created.id,
+        });
+        self.push_local_edit(&created).await;
+        Ok(created)
+    }
+
+    async fn read_note(&self, id: Uuid) -> Result<Note, StorageError> {
+        self.inner.read_note(id).await
+    }
+
+    async fn update_note(&self, note: Note) -> Result<Note, StorageError> {
+        let previous = self.inner.read_note(note.id).await.ok();
+        let updated = self.inner.update_note(note).await?;
+        if self.shared.suppressed(updated.id).await {
+            return Ok(updated);
+        }
+        let meta_changed = previous.as_ref().is_none_or(|p| {
+            p.title != updated.title
+                || p.notebook_id != updated.notebook_id
+                || p.is_todo != updated.is_todo
+                || p.todo_due != updated.todo_due
+                || p.todo_completed != updated.todo_completed
+        });
+        if meta_changed {
+            self.patch_meta(&updated).await;
+        }
+        self.push_local_edit(&updated).await;
+        Ok(updated)
+    }
+
+    async fn delete_note(&self, id: Uuid) -> Result<(), StorageError> {
+        self.inner.delete_note(id).await?;
+        if !self.shared.suppressed(id).await {
+            let url = format!("{}/api/notes/{}", self.shared.cfg.api_url, id);
+            if let Err(e) = self.shared.auth(self.shared.http.delete(url)).send().await {
+                tracing::warn!(error = %e, note = %id, "collab: DELETE note failed");
+            }
+            self.shared.notes.lock().await.remove(&id);
+        }
+        Ok(())
+    }
+
+    async fn list_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        self.inner.list_notes(page_size, page_token).await
+    }
+
+    async fn note_backlinks(
+        &self,
+        target_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        self.inner
+            .note_backlinks(target_id, page_size, page_token)
+            .await
+    }
+}
+
+#[async_trait]
+impl<B: StorageBackend> NotebookRepository for CollabBackend<B> {
+    async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
+        self.inner.create_notebook(notebook).await
+    }
+    async fn read_notebook(&self, id: Uuid) -> Result<Notebook, StorageError> {
+        self.inner.read_notebook(id).await
+    }
+    async fn update_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
+        self.inner.update_notebook(notebook).await
+    }
+    async fn delete_notebook(&self, id: Uuid) -> Result<(), StorageError> {
+        self.inner.delete_notebook(id).await
+    }
+    async fn list_notebooks(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Notebook>, Option<String>), StorageError> {
+        self.inner.list_notebooks(page_size, page_token).await
+    }
+}
+
+#[async_trait]
+impl<B: StorageBackend> TagRepository for CollabBackend<B> {
+    async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
+        self.inner.create_tag(tag).await
+    }
+    async fn read_tag(&self, id: Uuid) -> Result<Tag, StorageError> {
+        self.inner.read_tag(id).await
+    }
+    async fn update_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
+        self.inner.update_tag(tag).await
+    }
+    async fn delete_tag(&self, id: Uuid) -> Result<(), StorageError> {
+        self.inner.delete_tag(id).await
+    }
+    async fn list_tags(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        self.inner.list_tags(page_size, page_token).await
+    }
+    async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
+        self.inner.add_note_tag(note_tag).await
+    }
+    async fn remove_note_tag(&self, note_id: Uuid, tag_id: Uuid) -> Result<(), StorageError> {
+        self.inner.remove_note_tag(note_id, tag_id).await
+    }
+    async fn list_note_tags(
+        &self,
+        note_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        self.inner
+            .list_note_tags(note_id, page_size, page_token)
+            .await
+    }
+}
+
+#[async_trait]
+impl<B: StorageBackend> ResourceRepository for CollabBackend<B> {
+    async fn create_resource(
+        &self,
+        resource: Resource,
+        data: Vec<u8>,
+    ) -> Result<Resource, StorageError> {
+        self.inner.create_resource(resource, data).await
+    }
+    async fn read_resource(&self, id: Uuid) -> Result<(Resource, Vec<u8>), StorageError> {
+        self.inner.read_resource(id).await
+    }
+    async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError> {
+        self.inner.delete_resource(id).await
+    }
+    async fn list_resources(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
+        self.inner.list_resources(page_size, page_token).await
+    }
+}
+
+#[async_trait]
+impl<B: StorageBackend> SyncBackend for CollabBackend<B> {
+    async fn get_device_id(&self) -> Result<String, StorageError> {
+        self.inner.get_device_id().await
+    }
+    async fn get_last_sync_time(&self) -> Result<DateTime<Utc>, StorageError> {
+        self.inner.get_last_sync_time().await
+    }
+    async fn update_sync_time(&self, ts: DateTime<Utc>) -> Result<(), StorageError> {
+        self.inner.update_sync_time(ts).await
+    }
+    /// Note changes are owned by the collaborative channel; the relay only
+    /// carries notebooks, tags and resources.
+    async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError> {
+        let changes = self.inner.get_changes_since(since).await?;
+        Ok(changes.into_iter().filter(|c| !is_note_change(c)).collect())
+    }
+    async fn apply_change(&self, change: Change) -> Result<(), StorageError> {
+        if is_note_change(&change) {
+            return Ok(());
+        }
+        self.inner.apply_change(change).await
+    }
+    async fn send_changes(&self, changes: Vec<Change>) -> Result<(), StorageError> {
+        self.inner.send_changes(changes).await
+    }
+    async fn receive_changes(&self) -> Result<Vec<Change>, StorageError> {
+        self.inner.receive_changes().await
+    }
+    async fn prune_change_journal(&self, older_than: DateTime<Utc>) -> Result<u64, StorageError> {
+        self.inner.prune_change_journal(older_than).await
+    }
+}
+
+fn is_note_change(change: &Change) -> bool {
+    matches!(
+        change,
+        Change::NoteCreate { .. } | Change::NoteUpdate { .. } | Change::NoteDelete { .. }
+    )
+}
+
+// ── Connection task ──────────────────────────────────────────────────────────
+
+/// Server note representation from `GET /api/notes`.
+#[derive(Debug, serde::Deserialize)]
+struct ServerNote {
+    id: Uuid,
+    title: String,
+    notebook_id: Option<Uuid>,
+    is_todo: bool,
+    todo_due: Option<DateTime<Utc>>,
+    todo_completed: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+/// Maintain the WebSocket connection forever: discover notes, join them, and
+/// pump ops in both directions. Reconnects with a capped backoff; every
+/// reconnect re-discovers and re-joins, so state is rebuilt from snapshots.
+async fn run_connection(shared: Arc<Shared>, mut out: mpsc::UnboundedReceiver<CollabClientMsg>) {
+    let mut backoff = Duration::from_secs(1);
+    loop {
+        match connect_once(&shared, &mut out).await {
+            Ok(()) => backoff = Duration::from_secs(1),
+            Err(e) => {
+                tracing::warn!(error = %e, "collab: connection ended; reconnecting");
+            }
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(30));
+    }
+}
+
+async fn connect_once(
+    shared: &Arc<Shared>,
+    out: &mut mpsc::UnboundedReceiver<CollabClientMsg>,
+) -> anyhow::Result<()> {
+    let url = format!("{}?token={}", shared.cfg.ws_url, shared.cfg.token);
+    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await?;
+    tracing::info!("collab: connected");
+
+    // Discover own + shared notes and join every one. Unknown notes are
+    // created locally (empty body — the Welcome snapshot fills it in).
+    let listing: Vec<ServerNote> = shared
+        .auth(shared.http.get(format!("{}/api/notes", shared.cfg.api_url)))
+        .send()
+        .await?
+        .json()
+        .await?;
+    for server_note in &listing {
+        ensure_local(shared, server_note).await;
+        let join = serde_json::to_string(&CollabClientMsg::Join {
+            note_id: server_note.id,
+        })?;
+        ws.send(Message::Text(join)).await?;
+    }
+
+    loop {
+        tokio::select! {
+            queued = out.recv() => {
+                let Some(msg) = queued else { return Ok(()) };
+                ws.send(Message::Text(serde_json::to_string(&msg)?)).await?;
+            }
+            incoming = ws.next() => {
+                let Some(frame) = incoming else { anyhow::bail!("socket closed") };
+                if let Message::Text(text) = frame? {
+                    if let Ok(msg) = serde_json::from_str::<CollabServerMsg>(&text) {
+                        handle_server_msg(shared, msg).await;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Make sure a note discovered on the server exists locally.
+async fn ensure_local(shared: &Arc<Shared>, server_note: &ServerNote) {
+    let Some(top) = shared.top.get() else { return };
+    if top.read_note(server_note.id).await.is_ok() {
+        return;
+    }
+    let note = Note {
+        id: server_note.id,
+        title: server_note.title.clone(),
+        body: String::new(),
+        notebook_id: server_note.notebook_id,
+        is_todo: server_note.is_todo,
+        todo_due: server_note.todo_due,
+        todo_completed: server_note.todo_completed,
+        created_at: server_note.created_at,
+        updated_at: server_note.updated_at,
+        ..Note::new("", "")
+    };
+    if let Err(e) = shared.apply_from_server(note, true).await {
+        tracing::warn!(error = %e, note = %server_note.id, "collab: local create failed");
+    }
+}
+
+async fn handle_server_msg(shared: &Arc<Shared>, msg: CollabServerMsg) {
+    match msg {
+        CollabServerMsg::Welcome { note_id, snapshot } => {
+            let lines = NoteLines::from_snapshot(snapshot);
+            let body = lines.materialize();
+            shared.notes.lock().await.insert(note_id, lines);
+            write_body(shared, note_id, body).await;
+        }
+        CollabServerMsg::Op { note_id, ops, .. } => {
+            let mut notes = shared.notes.lock().await;
+            let Some(lines) = notes.get_mut(&note_id) else {
+                return;
+            };
+            for op in &ops {
+                lines.apply(op);
+            }
+            let body = lines.materialize();
+            drop(notes);
+            write_body(shared, note_id, body).await;
+        }
+        CollabServerMsg::Error { code, message } => {
+            tracing::warn!(code, message, "collab: server error");
+        }
+        CollabServerMsg::Presence { .. } => {}
+    }
+}
+
+/// Persist a server-derived body locally (suppressed), keeping metadata.
+async fn write_body(shared: &Arc<Shared>, note_id: Uuid, body: String) {
+    let Some(top) = shared.top.get() else { return };
+    match top.read_note(note_id).await {
+        Ok(mut note) => {
+            if note.body != body {
+                note.body = body;
+                note.updated_at = Utc::now();
+                if let Err(e) = shared.apply_from_server(note, false).await {
+                    tracing::warn!(error = %e, note = %note_id, "collab: local update failed");
+                }
+            }
+        }
+        Err(_) => {
+            let mut note = Note::new("", body);
+            note.id = note_id;
+            if let Err(e) = shared.apply_from_server(note, true).await {
+                tracing::warn!(error = %e, note = %note_id, "collab: local create failed");
+            }
+        }
+    }
+}
