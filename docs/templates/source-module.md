@@ -13,39 +13,37 @@
 {{What the module does, in two or three sentences. Name the key type(s) it defines and the
 trait(s) it implements or the decorator it is.}}
 
-## Structure
+## Key types
 
-<!-- The shape of the module: the main type(s), how they compose, the important invariant.
-     Use a table for a method/field inventory; fence a signature when it clarifies. -->
-{{The central type and its role. If it implements `StorageBackend` (or wraps one), say so
-and note where it sits in the decorator stack. If it is pure/`no I/O`, say that.}}
+<!-- The shape of the module: the central type(s), what they define/implement, and how they
+     compose. A short inventory table is the house style; fence a signature when it clarifies.
+     If the type implements `StorageBackend` (or wraps one), say where it sits in the decorator
+     stack; if the module is pure (no I/O), say that. -->
+| Type | Kind | Description |
+|------|------|-------------|
+| `{{Type}}` | {{struct/enum/trait}} | {{what it is / the trait it implements / the decorator it is}} |
 
-| Item | Description |
-|------|-------------|
-| `{{fn_or_field}}` | {{what it does / why it exists}} |
+## Public API
 
-## How it works
+<!-- The functions/methods a caller uses, grouped or listed with a one-line contract each.
+     A table (or `### fn signature` subsections for the load-bearing ones) is the house style.
+     Note anything non-obvious about a signature: what it validates, when it errors, what it
+     ignores (e.g. "sets `updated_at = now()`, ignoring the client value"). -->
+| Function | Description |
+|----------|-------------|
+| `{{fn(...) -> ...}}` | {{what it does; its pre/post-conditions or error cases}} |
 
-<!-- The mechanism worth explaining: the algorithm, the on-disk/on-wire layout, the locking
-     discipline, the state machine. This is the section that earns its keep. -->
-{{The mechanism a reader needs to hold in their head to change this file safely — the data
-layout, the merge/resolve rule, the lock order, the lazy-build-then-maintain pattern, etc.}}
+## {{Module-specific mechanism}}
 
-## Invariants & edge cases
-
-<!-- The things that must stay true, and the non-obvious cases already handled. A future
-     editor breaks the module by violating these. Delete if the module has none worth
-     calling out. -->
-- {{Invariant that must hold (e.g. "single writer per device log"; "the projection is only
-  ever replaced atomically").}}
-- {{Edge case handled deliberately (e.g. legacy `0` sentinel; corrupt file falls back to X;
-  backward-compatible serde default).}}
-
-## Concurrency & sync
-
-<!-- Only if relevant: which lock guards what, what is safe to call concurrently, and how a
-     change made here interacts with the sync/version-vector model. Delete otherwise. -->
-{{Locking discipline and how state produced here participates in sync (or why it does not).}}
+<!-- Add one or more sections named for THIS module's load-bearing mechanism — the thing a
+     reader must hold in their head to change the file safely. Examples actually used in this
+     repo: "Directory layout", "Database schema", "WebSocket protocol", "The note model —
+     per-device logs + version-vector merge", "Concurrency — `note_write_lock`", "Atomic write
+     pattern", "`apply_change` — all N variants", "Startup security checks". Fold invariants,
+     edge cases, and the locking/sync discipline into the relevant section rather than into
+     fixed generic headings. Delete this placeholder heading; use real names. -->
+{{The algorithm, on-disk/on-wire layout, lock order, state machine, or resolution rule — plus
+the invariants that must stay true and the deliberate edge cases handled here.}}
 
 ## Design notes
 
