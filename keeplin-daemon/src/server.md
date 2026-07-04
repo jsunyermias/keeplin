@@ -92,7 +92,7 @@ message's repeated `bookmarks` field; there is no `EditBookmarkAlias` RPC.
 #### Sync RPC — server-streaming
 
 `Sync` is a server-streaming RPC that reports progress through a `tokio::sync::mpsc`
-channel with a capacity of 16. A `tokio::spawn` task drives the sync cycle and sends
+**unbounded** channel. A `tokio::spawn` task drives the sync cycle and sends
 `SyncProgress` messages at each stage:
 
 | Stage | `Stage` enum value | What it means |

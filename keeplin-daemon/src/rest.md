@@ -20,7 +20,7 @@ coexist.
 | `max_body_bytes: usize` | request-body cap (from `max_message_size`), raising axum's 2 MiB default |
 | `max_upload_bytes: usize` | cap for the streamed `POST /resources/upload` route, which bypasses `max_body_bytes` |
 | `journal_retention_days: u64` | days of change-journal history to keep; `POST /sync` prunes older rows |
-| `auth_username` / `auth_password` | Basic-Auth credentials (both `Some` → auth required) |
+| `auth_username` / `auth_password` | Basic-Auth credentials; auth is required only when both are `Some` and non-empty (a partial/empty pair is rejected at startup, so it never reaches the middleware) |
 
 ## Endpoints
 

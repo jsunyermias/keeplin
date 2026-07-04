@@ -481,13 +481,19 @@ async fn shutdown_signal() {
 /// configured), the function returns `Ok(req)` immediately and allows all callers
 /// through without checking any header.
 ///
-/// When both expected values are provided, the function:
-/// 1. Extracts the `authorization` metadata entry from the request.
-/// 2. Strips the `"Basic "` prefix to obtain the Base64-encoded credentials.
-/// 3. Decodes the Base64 payload and splits on the **first** colon to separate the
-///    username from the password. Passwords may themselves contain colons.
+/// When both expected values are provided, the function extracts the `authorization`
+/// metadata entry and hands it to [`auth::verify_basic`], which:
+/// 1. Rejects empty expected credentials outright (an empty pair would accept `Basic Og==`).
+/// 2. Parses the scheme per RFC 7617 / RFC 7235 — case-insensitive, any separating
+///    whitespace — rather than requiring a literal `"Basic "` prefix, then Base64-decodes
+///    the credential token.
+/// 3. Splits the decoded value on the **first** colon to separate the username from the
+///    password (passwords may themselves contain colons).
 /// 4. Compares username and password using [`subtle::ConstantTimeEq`] to prevent
 ///    timing side-channels that could reveal the correct credential length.
+///
+/// A half-configured or empty credential pair never reaches this point: the daemon refuses
+/// to start on it (see `Config::validate_auth`).
 ///
 /// Returns `Err(tonic::Status::unauthenticated(...))` for any malformed header or
 /// wrong credentials. The specific rejection reason is intentionally terse to avoid

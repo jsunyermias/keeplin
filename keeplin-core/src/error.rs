@@ -12,17 +12,21 @@ use thiserror::Error;
 
 /// Every error that can arise from a storage operation.
 ///
-/// Variants that wrap third-party errors (`Io`, `Serialization`, `WebSocket`)
-/// use `#[from]` so they are automatically constructed by the `?` operator.
-/// Variants that carry a `String` (`Database`, `NotFound`, `Conflict`, `InvalidState`)
-/// are constructed manually because their source types have no single `From` target.
+/// `Io` and `Serialization` wrap their third-party error directly via `#[from]`, so the
+/// `?` operator constructs them automatically. `Database` and `WebSocket` also work with
+/// `?` — but through hand-written `impl From` blocks (below) that flatten the source into a
+/// `String`, because their error types carry a chain worth preserving as text. The remaining
+/// `String` variants (`NotFound`, `Conflict`, `InvalidState`, `InvalidInput`, `CorruptedData`)
+/// have no source type and are always constructed explicitly at the call site.
 #[derive(Debug, Error)]
 pub enum StorageError {
     /// A filesystem I/O error occurred while reading or writing data on disk.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// A JSON serialisation or deserialisation error occurred (e.g. a corrupt log entry).
+    /// A `serde_json` serialisation or deserialisation error occurred (e.g. a malformed
+    /// global-log `data` value). Note the MessagePack sidecars/logs decoded via `rmp_serde`
+    /// do **not** land here — their decode failures surface as [`CorruptedData`](Self::CorruptedData).
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
