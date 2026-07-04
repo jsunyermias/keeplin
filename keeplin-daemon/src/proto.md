@@ -7,7 +7,7 @@ This file includes the Rust source code that was automatically generated from
 types and service traits available under the path `crate::proto::keeplin::*` for the
 rest of the daemon crate.
 
-## How it works
+## Code generation
 
 1. `build.rs` runs `tonic-build` on `proto/keeplin.proto`.
 2. `tonic-build` invokes `protoc` and then generates Rust code, writing it to a file

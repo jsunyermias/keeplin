@@ -13,7 +13,7 @@ resolution and encryption stay entirely in the clients.
 This file is the crate's library (`serve` + the buffer); `main.rs` is the thin binary that
 parses flags and calls `serve`.
 
-## Structure
+## Key types & functions
 
 | Item | Description |
 |------|-------------|
@@ -26,7 +26,7 @@ parses flags and calls `serve`.
 | `parse_auth` / `sanitize_device_id` | Parse the first frame; validate the client-supplied device id |
 | `token_ok` | Constant-time token comparison |
 
-## How it works
+## Wire protocol & durable buffer
 
 **Wire protocol** (matches `DbBackend::connect_ws` / `send_changes` / `receive_changes`):
 
@@ -50,7 +50,7 @@ On connect, a device with a known cursor is **replayed** every buffered frame pa
 An hourly task compacts the journal, dropping frames older than `retention_days`; `seq` stays
 monotonic across compactions and restarts, so cursors never go backwards.
 
-## Invariants & edge cases
+### Invariants & edge cases
 
 - **Delivery is exactly-once per device in the normal case, safely at-least-once otherwise.**
   A dropped connection or a lagged subscriber re-delivers from the cursor on reconnect; every
