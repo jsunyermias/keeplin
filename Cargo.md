@@ -2,17 +2,18 @@
 
 ## Crate purpose
 
-This is the Cargo workspace manifest. It declares the two member crates
-(`keeplin-core` and `keeplin-daemon`) and pins shared dependency versions in
-`[workspace.dependencies]` so that both crates always use the same versions of
-common libraries without repeating version strings in each crate's own `Cargo.toml`.
+This is the Cargo workspace manifest. It declares the three member crates
+(`keeplin-core`, `keeplin-daemon`, and `keeplin-relay`) and pins shared dependency versions
+in `[workspace.dependencies]` so that every crate uses the same versions of common libraries
+without repeating version strings in each crate's own `Cargo.toml`.
 
 ## Workspace members
 
 | Crate | Path | Role |
 |-------|------|------|
 | `keeplin-core` | `keeplin-core/` | Library: domain models, storage backends, encryption, sync engine |
-| `keeplin-daemon` | `keeplin-daemon/` | Binary: gRPC server that exposes `keeplin-core` over the network |
+| `keeplin-daemon` | `keeplin-daemon/` | Binary (+ lib): gRPC + REST/WebSocket server that exposes `keeplin-core` over the network |
+| `keeplin-relay` | `keeplin-relay/` | Binary (+ lib): the server-mode sync hub — a broadcast relay with a durable buffer |
 
 ## Workspace-level shared packages
 
@@ -20,6 +21,7 @@ common libraries without repeating version strings in each crate's own `Cargo.to
 |---------------|-------|-------------|
 | `version` | `0.1.0` | Shared across all crates; bump all at once |
 | `edition` | `2021` | Rust edition used by all crates |
+| `rust-version` | `1.89` | Minimum supported Rust (floor set by `std::fs::File::try_lock`) |
 | `authors` | `Keeplin Contributors` | Default author string |
 | `license` | `MIT` | SPDX identifier |
 

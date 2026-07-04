@@ -7,6 +7,7 @@
 //! never need to appear in the TOML file on disk.
 
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 /// The storage back-end mode that the daemon should use.
@@ -78,14 +79,34 @@ pub struct Config {
     #[serde(default = "default_max_message_size")]
     pub max_message_size: usize,
 
+    /// Maximum total size, in bytes, of a **streamed** resource upload (default: 1 GiB).
+    ///
+    /// The streaming upload paths — the gRPC `UploadResource` client-streaming RPC and
+    /// `POST /api/resources/upload` — assemble the payload from many small frames/chunks, so
+    /// unlike a single `CreateResource` message they are not bounded by `max_message_size`.
+    /// This cap bounds the assembled payload instead, so a client cannot exhaust server memory
+    /// with an unbounded stream. `0` means no limit (not recommended on a shared deployment).
+    #[serde(default = "default_max_upload_bytes")]
+    pub max_upload_bytes: usize,
+
     /// How many days of change-journal history to retain (default: 30).
     ///
-    /// After each successful sync the daemon prunes `entity_changes` rows older than
+    /// After each successful sync — driven by the gRPC `Sync` RPC or REST
+    /// `POST /api/sync` alike — the daemon prunes `entity_changes` rows older than
     /// this many days (no-op for the filesystem backend, whose logs are replicated by
     /// Syncthing). Keep this comfortably larger than the longest a peer device is
     /// expected to stay offline. Set to `0` to disable pruning entirely.
     #[serde(default = "default_journal_retention_days")]
     pub journal_retention_days: u64,
+
+    /// After each successful sync, reclaim the binary payloads of resources whose
+    /// soft-delete tombstone is older than this many days (`0`, the default, disables
+    /// reclamation and keeps payloads forever). The tombstone metadata is always kept so
+    /// the deletion goes on converging; only the dead bytes are freed. Keep this
+    /// comfortably larger than the longest a peer device stays offline, so a concurrent
+    /// revive on a lagging peer can never need bytes that were already purged.
+    #[serde(default)]
+    pub resource_purge_days: u64,
 
     /// Optional password for at-rest AES-256-GCM encryption (Argon2id key derivation).
     /// Prefer the KEEPLIN_ENCRYPTION_PASSWORD environment variable over storing the
@@ -105,9 +126,11 @@ pub struct Config {
     pub key_salt: Option<String>,
 
     /// Username for gRPC client authentication (HTTP Basic Auth).
-    /// When both auth_username and auth_password are set, every gRPC call must
-    /// include an `authorization: Basic <base64(user:pass)>` metadata header.
-    /// This applies equally in offline and server mode.
+    /// Auth is enabled only when both auth_username and auth_password are set and non-empty
+    /// (see [`Config::auth_enabled`]); then every gRPC call must include an
+    /// `authorization: Basic <base64(user:pass)>` metadata header. A partial (one-only) or
+    /// empty-string pair is rejected at startup by [`Config::validate_auth`] rather than
+    /// silently disabling auth. This applies equally in offline and server mode.
     /// Prefer the KEEPLIN_AUTH_USERNAME environment variable over storing the
     /// username here.
     #[serde(default)]
@@ -118,6 +141,17 @@ pub struct Config {
     /// password here to avoid committing credentials to version control.
     #[serde(default)]
     pub auth_password: Option<String>,
+
+    /// Escape hatch that downgrades the startup security checks from **errors** to warnings.
+    ///
+    /// By default the daemon **refuses to start** in a configuration that would expose data
+    /// or credentials without protection — a network-reachable API with no auth, or a
+    /// plaintext `ws://` sync URL to a remote host that would leak the bearer token (see
+    /// [`Config::security_issues`]). Set `insecure = true` only for deployments where another
+    /// layer provides that protection (an isolated network, an mTLS mesh, a fronting proxy that
+    /// also enforces auth); the daemon then logs each issue as a warning and starts anyway.
+    #[serde(default)]
+    pub insecure: bool,
 }
 
 /// Returns the default gRPC listen address: `127.0.0.1:50051`.
@@ -135,6 +169,15 @@ fn default_grpc_addr() -> String {
 /// use cases.
 fn default_max_message_size() -> usize {
     32 * 1024 * 1024
+}
+
+/// Returns the default maximum streamed-upload size in bytes (1 GiB).
+///
+/// Generous enough for large attachments (video, disk images) while still bounding the memory
+/// a single streamed upload can consume, since the payload is assembled in memory before it is
+/// handed to the backend.
+fn default_max_upload_bytes() -> usize {
+    1024 * 1024 * 1024
 }
 
 /// Returns the default change-journal retention window in days (30).
@@ -176,11 +219,288 @@ impl Default for Config {
             tls_cert_path: None,
             tls_key_path: None,
             max_message_size: default_max_message_size(),
+            max_upload_bytes: default_max_upload_bytes(),
             journal_retention_days: default_journal_retention_days(),
+            resource_purge_days: 0,
             encryption_password: None,
             key_salt: None,
             auth_username: None,
             auth_password: None,
+            insecure: false,
         }
+    }
+}
+
+impl Config {
+    /// Enumerate the security problems in this configuration that would expose data or
+    /// credentials on an untrusted network. Empty means the config is safe to start.
+    ///
+    /// Pure and side-effect-free so it is easy to unit-test; the daemon calls it once at
+    /// startup and — unless [`insecure`](Self::insecure) is set — refuses to start when it
+    /// returns anything (see `main::serve`). Each string is a complete, human-readable line.
+    ///
+    /// It flags only unambiguous exposures that no fronting TLS proxy can fix, so the
+    /// documented "terminate TLS at a reverse proxy" deployment is never blocked:
+    /// - a **network-reachable** (non-loopback) gRPC or HTTP listener with **no auth**
+    ///   configured — a proxy cannot invent application credentials; and
+    /// - a **plaintext `ws://` sync URL to a non-loopback host** (server mode), which sends the
+    ///   `auth_token` in the clear on the daemon's *outbound* connection, where a proxy in
+    ///   front of the daemon does not help.
+    ///
+    /// Missing daemon-terminated TLS on the listeners is deliberately **not** flagged: fronting
+    /// TLS at a reverse proxy is a supported, documented deployment.
+    pub fn security_issues(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        let auth = self.auth_enabled();
+
+        if !auth {
+            if let Ok(addr) = self.grpc_addr.parse::<SocketAddr>() {
+                if !addr.ip().is_loopback() {
+                    issues.push(format!(
+                        "grpc_addr ({addr}) is reachable from the network but no auth is \
+                         configured — set auth_username + auth_password (or KEEPLIN_AUTH_*)"
+                    ));
+                }
+            }
+            if let Some(http) = &self.http_addr {
+                if let Ok(addr) = http.parse::<SocketAddr>() {
+                    if !addr.ip().is_loopback() {
+                        issues.push(format!(
+                            "http_addr ({addr}) is reachable from the network but no auth is \
+                             configured — set auth_username + auth_password (or KEEPLIN_AUTH_*)"
+                        ));
+                    }
+                }
+            }
+        }
+
+        if matches!(self.mode, Mode::Server) {
+            if let Some(host) = plaintext_ws_remote_host(&self.server_url) {
+                issues.push(format!(
+                    "server_url uses plaintext ws:// to a non-loopback host ({host}), leaking \
+                     the auth_token in transit — use wss:// (TLS)"
+                ));
+            }
+        }
+
+        issues
+    }
+
+    /// Whether Basic-Auth is actually **active**: both the username and password are set and
+    /// non-empty. A half-configured or empty-string pair is *not* active (and is rejected by
+    /// [`Config::validate_auth`] at startup), so this never reports a store as protected when
+    /// requests would in fact pass unauthenticated.
+    pub fn auth_enabled(&self) -> bool {
+        matches!(
+            (self.auth_username.as_deref(), self.auth_password.as_deref()),
+            (Some(u), Some(p)) if !u.is_empty() && !p.is_empty()
+        )
+    }
+
+    /// Reject credential configurations that would silently disable authentication: exactly
+    /// one of `auth_username`/`auth_password` set, or either one set to an empty string.
+    /// Returns a human-readable reason on error. Called at startup so an operator who
+    /// half-configures auth (e.g. sets only `KEEPLIN_AUTH_PASSWORD`) gets a hard failure
+    /// instead of a daemon that quietly accepts every request (issue #73).
+    pub fn validate_auth(&self) -> Result<(), String> {
+        match (self.auth_username.as_deref(), self.auth_password.as_deref()) {
+            // Auth intentionally off.
+            (None, None) => Ok(()),
+            (Some(_), None) => Err(
+                "auth_username is set but auth_password is not — set both (or neither); \
+                 prefer KEEPLIN_AUTH_USERNAME + KEEPLIN_AUTH_PASSWORD"
+                    .into(),
+            ),
+            (None, Some(_)) => Err(
+                "auth_password is set but auth_username is not — set both (or neither); \
+                 prefer KEEPLIN_AUTH_USERNAME + KEEPLIN_AUTH_PASSWORD"
+                    .into(),
+            ),
+            (Some(u), Some(p)) => {
+                if u.is_empty() || p.is_empty() {
+                    Err(
+                        "auth_username and auth_password must both be non-empty when \
+                         authentication is configured"
+                            .into(),
+                    )
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+/// If `url` is a **plaintext** `ws://` URL pointing at a **non-loopback** host, return that
+/// host; otherwise `None`. `wss://` (TLS), an empty URL, and loopback targets are all safe and
+/// yield `None`. A host that cannot be confidently identified as loopback is treated as remote
+/// (fail safe: better a spurious warning than a silent token leak).
+fn plaintext_ws_remote_host(url: &str) -> Option<&str> {
+    // wss:// is TLS-protected; only bare ws:// leaks the token.
+    let rest = url.strip_prefix("ws://")?;
+    // Strip any path/query: `ws://host:port/path` → `host:port`.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    // Drop an optional `port`, tolerating an IPv6 literal in `[…]`.
+    let host = match authority.strip_prefix('[') {
+        // `[::1]:9000` → `::1`
+        Some(after) => after.split(']').next().unwrap_or(after),
+        None => authority.rsplit_once(':').map_or(authority, |(h, _)| h),
+    };
+    let is_loopback = matches!(host, "localhost" | "127.0.0.1" | "::1")
+        || host.starts_with("127.")
+        || host.eq_ignore_ascii_case("ip6-localhost");
+    if is_loopback {
+        None
+    } else {
+        Some(host)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal loopback config with the given tweaks applied by the caller.
+    fn base() -> Config {
+        Config::default()
+    }
+
+    fn with_auth(mut c: Config) -> Config {
+        c.auth_username = Some("alice".into());
+        c.auth_password = Some("s3cr3t".into());
+        c
+    }
+
+    #[test]
+    fn loopback_defaults_are_safe() {
+        assert!(base().security_issues().is_empty());
+    }
+
+    #[test]
+    fn network_grpc_without_auth_is_flagged() {
+        let mut c = base();
+        c.grpc_addr = "0.0.0.0:50051".into();
+        let issues = c.security_issues();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(issues[0].contains("grpc_addr"));
+
+        // Adding auth clears it.
+        assert!(with_auth(c).security_issues().is_empty());
+    }
+
+    #[test]
+    fn network_http_without_auth_is_flagged() {
+        let mut c = base();
+        c.http_addr = Some("0.0.0.0:50052".into());
+        let issues = c.security_issues();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(issues[0].contains("http_addr"));
+        assert!(with_auth(c).security_issues().is_empty());
+    }
+
+    #[test]
+    fn validate_auth_rejects_partial_and_empty_credentials() {
+        // Both unset → auth intentionally off, valid.
+        let mut c = base();
+        assert!(c.validate_auth().is_ok());
+        assert!(!c.auth_enabled());
+
+        // Only one set → half-configured, rejected.
+        c.auth_username = Some("alice".into());
+        assert!(c.validate_auth().is_err());
+        assert!(!c.auth_enabled());
+
+        c.auth_username = None;
+        c.auth_password = Some("s3cr3t".into());
+        assert!(c.validate_auth().is_err());
+        assert!(!c.auth_enabled());
+
+        // Both set but empty → rejected (would accept `Basic Og==`).
+        c.auth_username = Some(String::new());
+        c.auth_password = Some(String::new());
+        assert!(c.validate_auth().is_err());
+        assert!(!c.auth_enabled());
+
+        // One empty → rejected.
+        c.auth_username = Some("alice".into());
+        c.auth_password = Some(String::new());
+        assert!(c.validate_auth().is_err());
+        assert!(!c.auth_enabled());
+
+        // Both set and non-empty → valid and enabled.
+        c.auth_password = Some("s3cr3t".into());
+        assert!(c.validate_auth().is_ok());
+        assert!(c.auth_enabled());
+    }
+
+    #[test]
+    fn partial_auth_still_flags_network_exposure() {
+        // A half-configured credential must NOT be treated as "auth enabled" by the security
+        // check, so a network listener is still flagged (defence in depth alongside
+        // validate_auth's hard failure).
+        let mut c = base();
+        c.grpc_addr = "0.0.0.0:50051".into();
+        c.auth_password = Some("s3cr3t".into()); // username missing
+        let issues = c.security_issues();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(issues[0].contains("grpc_addr"));
+    }
+
+    #[test]
+    fn plaintext_ws_to_remote_is_flagged_in_server_mode() {
+        let mut c = with_auth(base()); // auth on, so only the ws:// issue can surface
+        c.mode = Mode::Server;
+        c.server_url = "ws://sync.example.com:9000/ws".into();
+        let issues = c.security_issues();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(issues[0].contains("server_url"));
+
+        // wss:// is safe.
+        c.server_url = "wss://sync.example.com:9000/ws".into();
+        assert!(c.security_issues().is_empty());
+
+        // A loopback ws:// relay (local testing) is safe.
+        c.server_url = "ws://127.0.0.1:9000/ws".into();
+        assert!(c.security_issues().is_empty());
+
+        // The same ws:// URL in offline mode is ignored (server_url is unused there).
+        c.mode = Mode::Offline;
+        c.server_url = "ws://sync.example.com:9000/ws".into();
+        assert!(c.security_issues().is_empty());
+    }
+
+    #[test]
+    fn plaintext_ws_remote_host_parsing() {
+        // Remote ws:// → Some(host).
+        assert_eq!(
+            plaintext_ws_remote_host("ws://example.com:9000/ws"),
+            Some("example.com")
+        );
+        assert_eq!(
+            plaintext_ws_remote_host("ws://example.com"),
+            Some("example.com")
+        );
+        // IPv6 literal, port stripped.
+        assert_eq!(
+            plaintext_ws_remote_host("ws://[2001:db8::1]:80/x"),
+            Some("2001:db8::1")
+        );
+        // Safe cases → None.
+        assert_eq!(plaintext_ws_remote_host("wss://example.com/ws"), None);
+        assert_eq!(plaintext_ws_remote_host(""), None);
+        assert_eq!(plaintext_ws_remote_host("ws://localhost:9000"), None);
+        assert_eq!(plaintext_ws_remote_host("ws://127.0.0.1:9000"), None);
+        assert_eq!(plaintext_ws_remote_host("ws://[::1]:9000"), None);
+    }
+
+    #[test]
+    fn multiple_issues_accumulate() {
+        let mut c = base();
+        c.grpc_addr = "0.0.0.0:50051".into();
+        c.http_addr = Some("0.0.0.0:50052".into());
+        c.mode = Mode::Server;
+        c.server_url = "ws://sync.example.com/ws".into();
+        // No auth → grpc + http + ws all flagged.
+        assert_eq!(c.security_issues().len(), 3, "{:?}", c.security_issues());
     }
 }

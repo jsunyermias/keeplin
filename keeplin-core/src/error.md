@@ -18,14 +18,15 @@ below).
 
 | Variant | Source type | When it arises |
 |---------|-------------|----------------|
-| `Io(std::io::Error)` | auto-converted | Filesystem read/write failure in `FsBackend` |
-| `Serialization(serde_json::Error)` | auto-converted | JSON parse or serialise failure |
-| `Database(String)` | manual impl | LibSQL or SQLite error (full chain included) |
-| `WebSocket(String)` | auto-converted | `tokio-tungstenite` connection or protocol error |
-| `NotFound(String)` | manual | Entity with the given ID does not exist |
-| `Conflict(String)` | manual | Reserved — not returned by the built-in backends (conflicts are resolved automatically by version vectors) |
-| `InvalidState(String)` | manual | Key-derivation failure or other unexpected internal state |
-| `CorruptedData(String)` | manual | Stored data could not be decrypted (bad base64, short buffer, failed AES-GCM tag, or non-UTF-8 plaintext) |
+| `Io(std::io::Error)` | `#[from]` (auto via `?`) | Filesystem read/write failure in `FsBackend` |
+| `Serialization(serde_json::Error)` | `#[from]` (auto via `?`) | `serde_json` parse/serialise failure (e.g. a malformed global-log `data` value; msgpack sidecars surface as `CorruptedData`) |
+| `Database(String)` | hand-written `From<libsql::Error>` (auto via `?`; flattens the chain) | LibSQL or SQLite error (full chain included) |
+| `WebSocket(String)` | hand-written `From<tungstenite::Error>` (auto via `?`) | `tokio-tungstenite` connection or protocol error |
+| `NotFound(String)` | constructed at call site | Entity with the given ID does not exist |
+| `Conflict(String)` | constructed at call site | Uniqueness violation the client should retry differently: a duplicate alias from `LinkingBackend`, or pinning past the 999-note limit (HTTP `409` / gRPC `ALREADY_EXISTS`). Concurrent *edits* never surface it — they resolve automatically by version vectors |
+| `InvalidState(String)` | constructed at call site | Server-side unexpected internal state (e.g. key-derivation failure) — HTTP `500` / gRPC `INTERNAL` |
+| `InvalidInput(String)` | constructed at call site | The caller broke a domain rule: pinning an Inbox note, an out-of-band `sort_key`, deleting the Inbox (HTTP `400` / gRPC `INVALID_ARGUMENT`). Distinct from `InvalidState` — the client's mistake, not the server's |
+| `CorruptedData(String)` | constructed at call site | Stored data could not be decrypted (bad base64, short buffer, failed AES-GCM tag, or non-UTF-8 plaintext) |
 
 ## `SyncError` variants
 

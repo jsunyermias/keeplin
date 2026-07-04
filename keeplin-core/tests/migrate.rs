@@ -46,7 +46,7 @@ async fn seed(src: &dyn StorageBackend) -> Seeded {
         "intro [Anchor](### \"Alias\") and a [link](#target)",
     );
     let note_a_id = note_a.id;
-    note_a.notebook_id = Some(notebook_id);
+    note_a.notebook_id = notebook_id;
     note_a.alias = Some("alpha".to_string());
     note_a.bookmarks = vec![Bookmark {
         number: 1,
@@ -92,7 +92,7 @@ async fn assert_migrated(dst: &dyn StorageBackend, s: &Seeded) {
 
     let a = dst.read_note(s.note_a).await.unwrap();
     assert_eq!(a.title, "Source");
-    assert_eq!(a.notebook_id, Some(s.notebook_id));
+    assert_eq!(a.notebook_id, s.notebook_id);
     assert_eq!(a.alias.as_deref(), Some("alpha"));
     assert_eq!(a.bookmarks.len(), 1);
     assert_eq!(a.bookmarks[0].text, "Anchor");

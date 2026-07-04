@@ -308,6 +308,48 @@ async fn add_and_list_note_tags() {
 }
 
 #[tokio::test]
+async fn add_note_tag_rejects_missing_or_deleted_ends() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    let note = Note::new("N", "");
+    let tag = Tag::new("T");
+    let (note_id, tag_id) = (note.id, tag.id);
+    backend.create_note(note).await.unwrap();
+    backend.create_tag(tag).await.unwrap();
+
+    // Nonexistent note / tag: no dangling association may be created.
+    let err = backend
+        .add_note_tag(NoteTag {
+            note_id: uuid::Uuid::new_v4(),
+            tag_id,
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)), "got: {err}");
+    let err = backend
+        .add_note_tag(NoteTag {
+            note_id,
+            tag_id: uuid::Uuid::new_v4(),
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)), "got: {err}");
+
+    // Soft-deleted ends are rejected the same way.
+    backend.delete_tag(tag_id).await.unwrap();
+    let err = backend
+        .add_note_tag(NoteTag { note_id, tag_id })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, StorageError::NotFound(_)), "got: {err}");
+
+    // Nothing was attached by the failed calls.
+    let (tags, _) = backend.list_note_tags(note_id, 0, None).await.unwrap();
+    assert!(tags.is_empty());
+}
+
+#[tokio::test]
 async fn remove_note_tag() {
     let dir = tempdir().unwrap();
     let backend = FsBackend::new(dir.path()).await.unwrap();
@@ -760,8 +802,10 @@ async fn fs_note_log_compacts_and_still_converges() {
     );
 }
 
-/// Simulate Syncthing replicating one device's global NDJSON logs to another by copying every
-/// `logs/*.log` file (each is single-writer, so this never conflicts).
+/// Simulate Syncthing replicating one device's single-writer log files to another: every
+/// global `logs/*.log` file plus every per-note `notes/{id}/log.*.msgpack` op log. Each has a
+/// single writer, so this never conflicts. Projections (`note.md`, `meta.msgpack`) are *not*
+/// copied — they are per-device caches the receiver regenerates from the logs on sync.
 async fn replicate_logs(from: &std::path::Path, to: &std::path::Path) {
     let from_logs = from.join("logs");
     let to_logs = to.join("logs");
@@ -773,6 +817,23 @@ async fn replicate_logs(from: &std::path::Path, to: &std::path::Path) {
             tokio::fs::copy(e.path(), to_logs.join(&name))
                 .await
                 .unwrap();
+        }
+    }
+
+    let from_notes = from.join("notes");
+    if let Ok(mut notes_rd) = tokio::fs::read_dir(&from_notes).await {
+        while let Some(note_dir) = notes_rd.next_entry().await.unwrap() {
+            let to_note_dir = to.join("notes").join(note_dir.file_name());
+            tokio::fs::create_dir_all(&to_note_dir).await.unwrap();
+            let mut files = tokio::fs::read_dir(note_dir.path()).await.unwrap();
+            while let Some(f) = files.next_entry().await.unwrap() {
+                let name = f.file_name().to_string_lossy().into_owned();
+                if name.starts_with("log.") && name.ends_with(".msgpack") {
+                    tokio::fs::copy(f.path(), to_note_dir.join(&name))
+                        .await
+                        .unwrap();
+                }
+            }
         }
     }
 }
@@ -914,5 +975,224 @@ async fn fs_global_log_snapshot_covers_all_entity_types() {
     assert!(
         tags.iter().any(|t| t.id == tag.id),
         "the note↔tag association must be reconstructed from the snapshot"
+    );
+}
+
+// ── Pinning / ordering / starring (issues #49–#52) ────────────────────────────
+
+#[tokio::test]
+async fn ordering_fields_round_trip_and_manual_order_query() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+    let nb = backend.create_notebook(Notebook::new("nb")).await.unwrap();
+
+    let mut pinned = Note::new("pinned", "");
+    pinned.notebook_id = nb.id;
+    pinned.is_pinned = true;
+    pinned.sort_key = 5;
+    let mut legacy = Note::new("legacy", "");
+    legacy.notebook_id = nb.id; // sort_key 0 sentinel → orders as 1000
+    let mut normal = Note::new("normal", "");
+    normal.notebook_id = nb.id;
+    normal.sort_key = 1500;
+    let mut starred = Note::new("starred", ""); // Inbox note
+    starred.is_starred = true;
+    for n in [&pinned, &legacy, &normal, &starred] {
+        backend.create_note(n.clone()).await.unwrap();
+    }
+
+    let read = backend.read_note(pinned.id).await.unwrap();
+    assert!(read.is_pinned);
+    assert_eq!(read.sort_key, 5);
+
+    // Manual order with single-note pages: cursor semantics over the effective key.
+    let mut walked = Vec::new();
+    let mut token = None;
+    loop {
+        let (page, next) = backend
+            .list_notes_in_notebook(nb.id, 1, token)
+            .await
+            .unwrap();
+        walked.extend(page.into_iter().map(|n| n.title));
+        match next {
+            Some(t) => token = Some(t),
+            None => break,
+        }
+    }
+    assert_eq!(walked, ["pinned", "legacy", "normal"]);
+
+    let (stars, _) = backend.list_starred_notes(0, None).await.unwrap();
+    assert_eq!(stars.len(), 1);
+    assert_eq!(stars[0].title, "starred");
+
+    let profile = backend.notebook_sort_profile(nb.id).await.unwrap();
+    assert_eq!(profile.pinned_keys, [5]);
+    assert_eq!(profile.max_normal_key, Some(1500));
+}
+
+// ── In-memory note index (listing scalability) ────────────────────────────────
+
+/// The index is built lazily on the first listing, then maintained in place: a create
+/// after the build appears, and a delete after the build disappears — without any listing
+/// re-reading every note's logs.
+#[tokio::test]
+async fn note_index_reflects_local_writes_after_it_is_built() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    let a = backend.create_note(Note::new("a", "")).await.unwrap();
+    // First listing builds the index (sees `a`).
+    let (page, _) = backend.list_notes(0, None).await.unwrap();
+    assert_eq!(page.len(), 1);
+
+    // A create after the build must appear (incremental insert).
+    let b = backend.create_note(Note::new("b", "")).await.unwrap();
+    let mut ids: Vec<_> = backend
+        .list_notes(0, None)
+        .await
+        .unwrap()
+        .0
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    ids.sort();
+    let mut want = vec![a.id, b.id];
+    want.sort();
+    assert_eq!(ids, want);
+
+    // A delete after the build must drop it (incremental remove).
+    backend.delete_note(a.id).await.unwrap();
+    let ids: Vec<_> = backend
+        .list_notes(0, None)
+        .await
+        .unwrap()
+        .0
+        .into_iter()
+        .map(|n| n.id)
+        .collect();
+    assert_eq!(ids, vec![b.id]);
+}
+
+/// A change pulled from a peer (its log replicated, then a sync cycle) flows through the
+/// same `persist_note_projection` choke point, so it shows up in the listings too.
+#[tokio::test]
+async fn note_index_reflects_changes_pulled_from_a_peer() {
+    let dir_a = tempdir().unwrap();
+    let dir_b = tempdir().unwrap();
+    let a = FsBackend::new(dir_a.path()).await.unwrap();
+    let b = FsBackend::new(dir_b.path()).await.unwrap();
+
+    // Warm B's index while it is empty.
+    assert!(b.list_notes(0, None).await.unwrap().0.is_empty());
+
+    // A creates a starred note; its per-device log replicates to B.
+    let mut note = Note::new("from A", "body");
+    note.is_starred = true;
+    let id = note.id;
+    a.create_note(note).await.unwrap();
+    replicate_logs(dir_a.path(), dir_b.path()).await;
+
+    // A sync cycle materializes the peer note and updates B's index.
+    drain_sync(&b).await;
+    let (page, _) = b.list_notes(0, None).await.unwrap();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].id, id);
+    let (starred, _) = b.list_starred_notes(0, None).await.unwrap();
+    assert_eq!(starred.len(), 1);
+    assert_eq!(starred[0].id, id);
+}
+
+/// #71: on `FsBackend`, a notebook/tag/resource delete for an entity unknown locally must
+/// write a minimal tombstone sidecar, so a later stale create/update loses against it in
+/// `resolve` instead of resurrecting the entity. (Note deletes converge through the
+/// Syncthing-replicated per-note logs, not through this apply path, so they are covered by
+/// the two-device convergence tests instead.)
+#[tokio::test]
+async fn delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_create() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+    let vv = |dev: &str, n: u64| std::collections::BTreeMap::from([(dev.to_string(), n)]);
+    let ts = Utc::now();
+
+    // ── Notebook ──────────────────────────────────────────────────────────────
+    let nb_id = uuid::Uuid::new_v4();
+    backend
+        .apply_change(Change::NotebookDelete {
+            id: nb_id,
+            deleted_at: ts,
+            vv: vv("peer", 2),
+            last_writer: "peer".into(),
+        })
+        .await
+        .unwrap();
+    let mut nb = Notebook::new("resurrected?");
+    nb.id = nb_id;
+    nb.vv = vv("peer", 1);
+    nb.last_writer = "peer".into();
+    backend
+        .apply_change(Change::NotebookCreate { notebook: nb })
+        .await
+        .unwrap();
+    let (nbs, _) = backend.list_notebooks(0, None).await.unwrap();
+    assert!(
+        !nbs.iter().any(|n| n.id == nb_id),
+        "a stale create must not resurrect a notebook deleted before it was known"
+    );
+
+    // ── Tag ───────────────────────────────────────────────────────────────────
+    let tag_id = uuid::Uuid::new_v4();
+    backend
+        .apply_change(Change::TagDelete {
+            id: tag_id,
+            deleted_at: ts,
+            vv: vv("peer", 2),
+            last_writer: "peer".into(),
+        })
+        .await
+        .unwrap();
+    let mut tag = Tag::new("resurrected?");
+    tag.id = tag_id;
+    tag.vv = vv("peer", 1);
+    tag.last_writer = "peer".into();
+    backend
+        .apply_change(Change::TagCreate { tag })
+        .await
+        .unwrap();
+    let (tags, _) = backend.list_tags(0, None).await.unwrap();
+    assert!(!tags.iter().any(|t| t.id == tag_id), "tag stays deleted");
+
+    // ── Resource ──────────────────────────────────────────────────────────────
+    let res_id = uuid::Uuid::new_v4();
+    backend
+        .apply_change(Change::ResourceDelete {
+            id: res_id,
+            deleted_at: ts,
+            vv: vv("peer", 2),
+            last_writer: "peer".into(),
+        })
+        .await
+        .unwrap();
+    let res = Resource {
+        id: res_id,
+        title: "resurrected?".into(),
+        mime_type: "text/plain".into(),
+        file_name: "f.txt".into(),
+        size: 3,
+        created_at: ts,
+        deleted_at: None,
+        vv: vv("peer", 1),
+        last_writer: "peer".into(),
+    };
+    backend
+        .apply_change(Change::ResourceCreate {
+            resource: res,
+            data: Some(b"abc".to_vec()),
+        })
+        .await
+        .unwrap();
+    let (resources, _) = backend.list_resources(0, None).await.unwrap();
+    assert!(
+        !resources.iter().any(|r| r.id == res_id),
+        "resource stays deleted"
     );
 }

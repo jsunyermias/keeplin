@@ -120,6 +120,32 @@ impl<B: NoteRepository> NoteRepository for EventBackend<B> {
             .note_backlinks(target_id, page_size, page_token)
             .await
     }
+
+    async fn list_notes_in_notebook(
+        &self,
+        notebook_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        self.inner
+            .list_notes_in_notebook(notebook_id, page_size, page_token)
+            .await
+    }
+
+    async fn list_starred_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        self.inner.list_starred_notes(page_size, page_token).await
+    }
+
+    async fn notebook_sort_profile(
+        &self,
+        notebook_id: Uuid,
+    ) -> Result<keeplin_core::storage::NotebookSortProfile, StorageError> {
+        self.inner.notebook_sort_profile(notebook_id).await
+    }
 }
 
 #[async_trait]
@@ -282,6 +308,14 @@ impl<B: ResourceRepository> ResourceRepository for EventBackend<B> {
         page_token: Option<String>,
     ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
         self.inner.list_resources(page_size, page_token).await
+    }
+
+    async fn purge_deleted_resources(
+        &self,
+        older_than: DateTime<Utc>,
+    ) -> Result<u64, StorageError> {
+        // Maintenance only: the deletions themselves were published when they happened.
+        self.inner.purge_deleted_resources(older_than).await
     }
 }
 

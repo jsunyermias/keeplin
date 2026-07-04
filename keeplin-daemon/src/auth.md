@@ -15,9 +15,15 @@ value whose decoded credentials match. `header` is `None` when the header is abs
 
 Steps:
 
-1. Require the `"Basic "` prefix; Base64-decode the rest; interpret as UTF-8.
-2. Split on the **first** colon only (so passwords may contain colons, per RFC 7617).
-3. Compare username and password with **constant-time** equality.
+1. Reject up front if either expected credential is empty — empty credentials are never a
+   valid configuration and would let `Basic Og==` (base64 of `:`) authenticate as anyone.
+   (Startup validation also refuses this; see `config.md`.)
+2. Parse the scheme **per RFC 7617 / RFC 7235**: split on whitespace, accept the scheme
+   case-insensitively (`basic`, `BASIC`) with any amount of separating whitespace, and take
+   the single Base64 token that follows (a stray third token is malformed). Base64-decode it;
+   interpret as UTF-8.
+3. Split on the **first** colon only (so passwords may contain colons, per RFC 7617).
+4. Compare username and password with **constant-time** equality.
 
 ## Why constant-time
 

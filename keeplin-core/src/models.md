@@ -12,7 +12,7 @@ layer.
 
 | Type | Kind | Description |
 |------|------|-------------|
-| `Note` | struct | A user-created note, optionally inside a notebook, optionally a to-do |
+| `Note` | struct | A user-created note; always in exactly one notebook (the Inbox / nil UUID when unfiled), optionally a to-do |
 | `Notebook` | struct | A named collection that groups notes |
 | `Tag` | struct | A short label that can be attached to any number of notes |
 | `NoteTag` | struct | A many-to-many link between one note and one tag |
@@ -27,7 +27,7 @@ layer.
 | `id` | `Uuid` | Unique identifier, generated at creation time |
 | `title` | `String` | User-visible title; may be encrypted at rest |
 | `body` | `String` | Full text content; may be encrypted at rest |
-| `notebook_id` | `Option<Uuid>` | Parent notebook, or `None` if the note is un-filed |
+| `notebook_id` | `Uuid` | Parent notebook — **never "none"**: an unfiled note belongs to the Inbox (nil UUID, `ordering::INBOX_ID`). A custom deserializer maps an old `null`/missing value to the nil UUID |
 | `is_todo` | `bool` | Whether this note is a to-do item |
 | `todo_due` | `Option<DateTime<Utc>>` | Optional deadline for the to-do |
 | `todo_completed` | `Option<DateTime<Utc>>` | Timestamp when the to-do was checked off |
@@ -39,10 +39,20 @@ layer.
 | `links` | `Vec<NoteLink>` | Links to other notes: content-derived (`[t](#…)`) and manual |
 | `vv` | `VersionVector` | Per-device version vector for conflict resolution; a local write increments this device's counter. Plaintext sync metadata. See `note_log::resolve` |
 | `last_writer` | `String` | Device id that authored the current value; the concurrent tiebreak alongside `updated_at`. Plaintext |
+| `is_pinned` | `bool` | Pinned to the top of its notebook (`sort_key` in `1..=999`). The Inbox has no pinning. Plaintext |
+| `is_starred` | `bool` | Globally starred; orthogonal to pinning and to the notebook (never moves the note). Plaintext |
+| `sort_key` | `u32` | Manual position within the notebook, ascending. `0` is the legacy "never positioned" sentinel |
 
 The three navigation fields are `#[serde(default)]` (older rows without them still parse) and are
 maintained by `LinkingBackend` — see `links.md` / `linking.md`. The `vv`/`last_writer` fields
 are also `#[serde(default)]` (empty ⇒ pre-VV record) and are stamped by the backends on write.
+
+The ordering fields (`is_pinned`, `is_starred`, `sort_key`) are likewise `#[serde(default)]`, so
+old records and old peers parse without them; the placement rules that set them live in
+`ordering.rs` (`pin_note`, `unpin_note`, `star_note`, `unstar_note`, `reorder_note`,
+`place_new_note`, etc.). `Note::effective_sort_key()` maps the `0` sentinel to `DEFAULT_SORT_KEY`
+(1000), so a never-positioned note orders at the start of the normal band without any data
+rewrite. See `ordering.md`.
 
 ### `Notebook`
 | Field | Type | Description |

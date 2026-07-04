@@ -12,17 +12,21 @@ use thiserror::Error;
 
 /// Every error that can arise from a storage operation.
 ///
-/// Variants that wrap third-party errors (`Io`, `Serialization`, `WebSocket`)
-/// use `#[from]` so they are automatically constructed by the `?` operator.
-/// Variants that carry a `String` (`Database`, `NotFound`, `Conflict`, `InvalidState`)
-/// are constructed manually because their source types have no single `From` target.
+/// `Io` and `Serialization` wrap their third-party error directly via `#[from]`, so the
+/// `?` operator constructs them automatically. `Database` and `WebSocket` also work with
+/// `?` — but through hand-written `impl From` blocks (below) that flatten the source into a
+/// `String`, because their error types carry a chain worth preserving as text. The remaining
+/// `String` variants (`NotFound`, `Conflict`, `InvalidState`, `InvalidInput`, `CorruptedData`)
+/// have no source type and are always constructed explicitly at the call site.
 #[derive(Debug, Error)]
 pub enum StorageError {
     /// A filesystem I/O error occurred while reading or writing data on disk.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// A JSON serialisation or deserialisation error occurred (e.g. a corrupt log entry).
+    /// A `serde_json` serialisation or deserialisation error occurred (e.g. a malformed
+    /// global-log `data` value). Note the MessagePack sidecars/logs decoded via `rmp_serde`
+    /// do **not** land here — their decode failures surface as [`CorruptedData`](Self::CorruptedData).
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
@@ -42,12 +46,15 @@ pub enum StorageError {
     #[error("Not found: {0}")]
     NotFound(String),
 
-    /// A write conflict between two concurrent mutations.
+    /// A write was rejected because it conflicts with existing state. Today this means
+    /// a **duplicate alias**: [`crate::linking::LinkingBackend`] returns it when a local
+    /// create/update claims a note/notebook alias already held by another live entity of
+    /// the same type. The daemon maps it to HTTP `409 Conflict` (REST) and
+    /// `ALREADY_EXISTS` (gRPC).
     ///
-    /// Reserved: the built-in backends do not currently return this variant because
-    /// `apply_change` reconciles concurrent edits with last-write-wins by `updated_at`
-    /// rather than surfacing an error. It is retained for backends or future modes that
-    /// implement strict (error-on-conflict) reconciliation.
+    /// Concurrent *edits* to the same entity never surface this error: `apply_change`
+    /// reconciles them automatically with version vectors and a deterministic
+    /// `(timestamp, device_id)` tiebreak (see [`crate::storage::note_log::resolve`]).
     #[error("Conflict: {0}")]
     Conflict(String),
 
@@ -55,6 +62,13 @@ pub enum StorageError {
     /// This variant is used for key-derivation errors and general unexpected conditions.
     #[error("Invalid state: {0}")]
     InvalidState(String),
+
+    /// The caller asked for something the domain rules forbid — pinning an Inbox note, a
+    /// sort key outside the note's band, deleting the Inbox. Purely a client mistake, so
+    /// the daemon maps it to HTTP `400 Bad Request` (REST) and `INVALID_ARGUMENT` (gRPC),
+    /// unlike [`InvalidState`](Self::InvalidState) which reports a server-side problem.
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
 
     /// Stored data could not be decrypted because it is corrupt or was encrypted with
     /// a different key. This is raised when the AES-GCM authentication tag verification
@@ -104,9 +118,11 @@ pub enum SyncError {
     /// `local_id` and `remote_id` identify the conflicting records for diagnostic
     /// purposes (they may be the same entity UUID with different content).
     ///
-    /// Reserved: the default sync cycle resolves conflicts automatically via
-    /// last-write-wins and does not return this variant. It exists for callers that
-    /// layer strict conflict detection on top of [`crate::sync::run_sync`].
+    /// Reserved: the default sync cycle resolves conflicts automatically via version
+    /// vectors (with a deterministic `(timestamp, device_id)` tiebreak — see
+    /// [`crate::storage::note_log::resolve`]) and does not return this variant. It
+    /// exists for callers that layer strict conflict detection on top of
+    /// [`crate::sync::run_sync`].
     #[error("Conflict: local={local_id}, remote={remote_id}")]
     Conflict { local_id: String, remote_id: String },
 

@@ -8,16 +8,21 @@
 //! [`crate::auth`]. `GET /api/ws` upgrades to a WebSocket that streams every [`Change`]
 //! published by the daemon's `EventBackend`, and `POST /api/sync` runs one sync cycle.
 //!
+//! Three **operational** endpoints — `GET /api/health` (liveness), `/api/ready` (readiness),
+//! and `/api/metrics` (Prometheus, see [`crate::metrics`]) — sit outside the auth middleware
+//! and the HTTP-status counter so orchestrator probes and metric scrapers work without
+//! credentials and do not inflate the request metrics.
+//!
 //! The HTTP listener is plain HTTP — terminate TLS at a reverse proxy in production, as
 //! noted in `SECURITY.md`.
 
 use std::sync::Arc;
 
 use axum::{
-    body::Bytes,
+    body::{Body, Bytes},
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path, Query, Request, State,
+        DefaultBodyLimit, Path, Query, Request, State,
     },
     http::{
         header::{AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE},
@@ -34,6 +39,7 @@ use keeplin_core::{
     linking,
     links::{parse_link_ref, NoteLink},
     models::{now, Change, Note, NoteTag, Notebook, Resource, Tag},
+    ordering,
     storage::StorageBackend,
     sync::run_sync,
 };
@@ -49,9 +55,23 @@ pub struct AppState {
     /// Sender for the live change feed. Each WebSocket connection subscribes to a fresh
     /// receiver; mutations published here by the daemon's `EventBackend` are streamed out.
     pub events: broadcast::Sender<Change>,
+    /// Operational counters, shared with the outermost `MetricsBackend` decorator so
+    /// `GET /api/metrics` exports the same registry the storage layer writes to.
+    pub metrics: Arc<crate::metrics::Metrics>,
     /// Maximum request body size in bytes. Mirrors the gRPC `max_message_size` so a large
     /// resource upload (`POST /api/resources`) is not silently capped at axum's 2 MiB default.
     pub max_body_bytes: usize,
+    /// Maximum assembled size, in bytes, of a **streamed** upload (`POST /api/resources/upload`).
+    /// That route bypasses `max_body_bytes` and streams the body incrementally up to this cap,
+    /// so attachments larger than `max_message_size` can be uploaded. `0` means no limit.
+    pub max_upload_bytes: usize,
+    /// How many days of change-journal history to retain; `POST /api/sync` prunes older
+    /// entries after a successful cycle, exactly like the gRPC `Sync` RPC (both call
+    /// [`crate::server::prune_journal_after_sync`]). `0` disables pruning.
+    pub journal_retention_days: u64,
+    /// After each successful sync, reclaim payloads of resources tombstoned longer than
+    /// this many days ago (`0` disables; see `Config::resource_purge_days`).
+    pub resource_purge_days: u64,
     /// Basic-Auth credentials; when both are `Some`, every request must authenticate.
     pub auth_username: Option<String>,
     pub auth_password: Option<String>,
@@ -60,10 +80,19 @@ pub struct AppState {
 /// Handler-facing shared state. `Arc` makes it cheaply cloneable for axum's `State`.
 pub type Shared = Arc<AppState>;
 
-/// Build the `/api` router (REST endpoints) with the auth middleware applied.
+/// Build the `/api` router: unauthenticated operational probes plus the auth-gated data API.
 pub fn router(state: Shared) -> Router {
-    let api = Router::new()
+    // Operational endpoints carry no user data and must be reachable by liveness/readiness
+    // probes and metrics scrapers that cannot present Basic-Auth credentials, so they sit
+    // **outside** the auth middleware — and outside the HTTP-status counter, so frequent
+    // probe/scrape traffic does not drown out the request metrics that matter.
+    let ops = Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
+        .route("/metrics", get(metrics))
+        .with_state(state.clone());
+
+    let api = Router::new()
         .route("/notes", get(list_notes).post(create_note))
         .route(
             "/notes/:id",
@@ -81,6 +110,10 @@ pub fn router(state: Shared) -> Router {
             axum::routing::delete(remove_link),
         )
         .route("/notes/:id/backlinks", get(list_backlinks))
+        .route("/notes/starred", get(list_starred_notes))
+        .route("/notes/:id/pin", post(pin_note).delete(unpin_note))
+        .route("/notes/:id/star", post(star_note).delete(unstar_note))
+        .route("/notes/:id/sort-key", put(reorder_note))
         .route("/links/resolve", get(resolve_reference))
         .route("/aliases/conflicts", get(list_alias_conflicts))
         .route("/notebooks", get(list_notebooks).post(create_notebook))
@@ -91,9 +124,17 @@ pub fn router(state: Shared) -> Router {
                 .delete(delete_notebook),
         )
         .route("/notebooks/:id/alias", put(set_notebook_alias))
+        .route("/notebooks/:id/notes", get(list_notes_in_notebook))
         .route("/tags", get(list_tags).post(create_tag))
         .route("/tags/:id", get(get_tag).put(update_tag).delete(delete_tag))
         .route("/resources", get(list_resources).post(create_resource))
+        // Streaming upload for large attachments: the request body is read incrementally up to
+        // `max_upload_bytes` instead of being capped at `max_body_bytes`, so this one route
+        // disables the router-wide body limit and enforces its own larger cap.
+        .route(
+            "/resources/upload",
+            post(upload_resource).layer(DefaultBodyLimit::disable()),
+        )
         .route("/resources/:id", get(get_resource).delete(delete_resource))
         .route("/resources/:id/data", get(get_resource_data))
         .route("/sync", post(sync))
@@ -101,9 +142,13 @@ pub fn router(state: Shared) -> Router {
         // Raise the request-body cap from axum's 2 MiB default to the configured size so REST
         // resource uploads match what gRPC accepts.
         .layer(axum::extract::DefaultBodyLimit::max(state.max_body_bytes))
+        // Layers apply outermost-last: auth runs inside the status counter, so a rejected
+        // request is still counted (as a 4xx) by `status_mw`.
         .layer(middleware::from_fn_with_state(state.clone(), auth_mw))
+        .layer(middleware::from_fn_with_state(state.clone(), status_mw))
         .with_state(state);
-    Router::new().nest("/api", api)
+
+    Router::new().nest("/api", ops.merge(api))
 }
 
 // ── Auth middleware ─────────────────────────────────────────────────────────────
@@ -126,6 +171,15 @@ async fn auth_mw(State(state): State<Shared>, req: Request, next: Next) -> Respo
         }
     }
     next.run(req).await
+}
+
+/// Record every response's status class into the shared metrics registry
+/// (`keeplin_http_requests_total`). Applied only to the data API, not the operational
+/// probes, so scrape/probe traffic does not inflate the request counts.
+async fn status_mw(State(state): State<Shared>, req: Request, next: Next) -> Response {
+    let resp = next.run(req).await;
+    state.metrics.record_http_status(resp.status().as_u16());
+    resp
 }
 
 // ── Error mapping ───────────────────────────────────────────────────────────────
@@ -158,6 +212,9 @@ impl IntoResponse for ApiError {
             StorageError::CorruptedData(_) => StatusCode::UNPROCESSABLE_ENTITY,
             // A duplicate alias (uniqueness violation) is a client conflict, not a server bug.
             StorageError::Conflict(_) => StatusCode::CONFLICT,
+            // Domain-rule rejections (pin an Inbox note, out-of-band sort key, delete the
+            // Inbox) are the caller's mistake.
+            StorageError::InvalidInput(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (code, Json(json!({ "error": self.0.to_string() }))).into_response()
@@ -192,8 +249,38 @@ fn page<T>((items, next): (Vec<T>, Option<String>)) -> Json<Page<T>> {
 
 // ── Health ──────────────────────────────────────────────────────────────────────
 
+/// Liveness probe: the process is up and serving. Always `200 ok`; it does not touch the
+/// backend, so it stays green even if storage is momentarily unavailable (that is what
+/// `ready` is for).
 async fn health() -> &'static str {
     "ok"
+}
+
+/// Readiness probe: can the daemon actually serve requests? Issues one cheap backend read
+/// (`list_notes` with a page size of 1). `200 ready` when storage answers, `503` with the
+/// error otherwise — so an orchestrator stops routing traffic to an instance whose database
+/// is locked or unreachable. (This read flows through the metrics decorator, so a busy
+/// readiness schedule contributes to the `note`/`list` counter.)
+async fn ready(State(s): State<Shared>) -> Response {
+    match s.backend.list_notes(1, None).await {
+        Ok(_) => (StatusCode::OK, "ready").into_response(),
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+/// Prometheus metrics exposition (`text/plain; version=0.0.4`). Renders the shared registry
+/// the `MetricsBackend` decorator and the HTTP middleware write to. Unauthenticated: the
+/// counters carry only fixed-label aggregates, no user content.
+async fn metrics(State(s): State<Shared>) -> Response {
+    (
+        [(CONTENT_TYPE, "text/plain; version=0.0.4")],
+        s.metrics.render_prometheus(),
+    )
+        .into_response()
 }
 
 // ── Notes ───────────────────────────────────────────────────────────────────────
@@ -223,9 +310,12 @@ async fn create_note(
     Json(req): Json<CreateNote>,
 ) -> Result<Json<Note>, ApiError> {
     let mut note = Note::new(req.title, req.body);
-    note.notebook_id = req.notebook_id;
+    note.notebook_id = req.notebook_id.unwrap_or_else(Uuid::nil);
     note.is_todo = req.is_todo;
     note.todo_due = req.todo_due;
+    // Initial manual position: top of the Inbox, or the end of a normal notebook's
+    // unpinned band.
+    ordering::place_new_note(s.backend.as_ref(), &mut note).await?;
     Ok(Json(s.backend.create_note(note).await?))
 }
 
@@ -244,7 +334,14 @@ async fn update_note(
     Path(id): Path<Uuid>,
     Json(mut note): Json<Note>,
 ) -> Result<Json<Note>, ApiError> {
+    // A tombstoned note reads as 404 on this surface, so updating one is a 404 too —
+    // otherwise a PUT (whose body defaults `deleted_at` to null) would silently revive
+    // it. Revival is reserved for the sync path (`apply_change`).
+    let stored = read_live_note(&s, id).await?;
     note.id = id;
+    // Moving the note to a different notebook re-places it (its old position and pinned
+    // state belonged to the source notebook); a plain edit keeps its position.
+    ordering::reconcile_notebook_move(s.backend.as_ref(), stored.notebook_id, &mut note).await?;
     note.updated_at = now();
     Ok(Json(s.backend.update_note(note).await?))
 }
@@ -361,6 +458,73 @@ async fn list_backlinks(
     ))
 }
 
+/// `GET /api/notebooks/:id/notes` — the notebook's notes in their manual order (pinned
+/// band first). Use the nil UUID for the Inbox.
+async fn list_notes_in_notebook(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+    Query(p): Query<Pagination>,
+) -> Result<Json<Page<Note>>, ApiError> {
+    Ok(page(
+        s.backend
+            .list_notes_in_notebook(id, p.page_size, p.page_token)
+            .await?,
+    ))
+}
+
+/// `GET /api/notes/starred` — every live starred note, across all notebooks.
+async fn list_starred_notes(
+    State(s): State<Shared>,
+    Query(p): Query<Pagination>,
+) -> Result<Json<Page<Note>>, ApiError> {
+    Ok(page(
+        s.backend
+            .list_starred_notes(p.page_size, p.page_token)
+            .await?,
+    ))
+}
+
+/// `POST /api/notes/:id/pin` — move the note into its notebook's pinned band.
+async fn pin_note(State(s): State<Shared>, Path(id): Path<Uuid>) -> Result<Json<Note>, ApiError> {
+    Ok(Json(ordering::pin_note(s.backend.as_ref(), id).await?))
+}
+
+/// `DELETE /api/notes/:id/pin` — move the note back to the end of the normal band.
+async fn unpin_note(State(s): State<Shared>, Path(id): Path<Uuid>) -> Result<Json<Note>, ApiError> {
+    Ok(Json(ordering::unpin_note(s.backend.as_ref(), id).await?))
+}
+
+/// `POST /api/notes/:id/star` — set the global star (never moves the note).
+async fn star_note(State(s): State<Shared>, Path(id): Path<Uuid>) -> Result<Json<Note>, ApiError> {
+    Ok(Json(ordering::star_note(s.backend.as_ref(), id).await?))
+}
+
+/// `DELETE /api/notes/:id/star` — clear the global star.
+async fn unstar_note(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Note>, ApiError> {
+    Ok(Json(ordering::unstar_note(s.backend.as_ref(), id).await?))
+}
+
+/// `{ "sort_key": … }` body for `PUT /api/notes/:id/sort-key`.
+#[derive(Deserialize)]
+struct ReorderBody {
+    sort_key: u32,
+}
+
+/// `PUT /api/notes/:id/sort-key` — give the note a new manual position within its
+/// current band (pinned `1..=999`, normal `>= 1000`, Inbox `>= 1`).
+async fn reorder_note(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+    Json(b): Json<ReorderBody>,
+) -> Result<Json<Note>, ApiError> {
+    Ok(Json(
+        ordering::reorder_note(s.backend.as_ref(), id, b.sort_key).await?,
+    ))
+}
+
 /// `?ref=#notebook1#note3#5` query for resolving a reference to a note (+ bookmark number).
 #[derive(Debug, Deserialize)]
 struct ResolveQuery {
@@ -415,15 +579,20 @@ async fn create_notebook(
     ))
 }
 
-async fn get_notebook(
-    State(s): State<Shared>,
-    Path(id): Path<Uuid>,
-) -> Result<Json<Notebook>, ApiError> {
+/// Read a live notebook or return 404 for a missing or soft-deleted one.
+async fn read_live_notebook(s: &Shared, id: Uuid) -> Result<Notebook, ApiError> {
     let nb = s.backend.read_notebook(id).await?;
     if nb.deleted_at.is_some() {
         return Err(StorageError::NotFound(id.to_string()).into());
     }
-    Ok(Json(nb))
+    Ok(nb)
+}
+
+async fn get_notebook(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Notebook>, ApiError> {
+    Ok(Json(read_live_notebook(&s, id).await?))
 }
 
 async fn update_notebook(
@@ -431,6 +600,8 @@ async fn update_notebook(
     Path(id): Path<Uuid>,
     Json(mut nb): Json<Notebook>,
 ) -> Result<Json<Notebook>, ApiError> {
+    // Updating a tombstoned notebook is a 404, like reading one (see `update_note`).
+    read_live_notebook(&s, id).await?;
     nb.id = id;
     nb.updated_at = now();
     Ok(Json(s.backend.update_notebook(nb).await?))
@@ -440,6 +611,12 @@ async fn delete_notebook(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
+    if ordering::is_inbox(id) {
+        return Err(StorageError::InvalidInput(
+            "the Inbox system notebook cannot be deleted".to_string(),
+        )
+        .into());
+    }
     s.backend.delete_notebook(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -470,12 +647,17 @@ async fn create_tag(
     Ok(Json(s.backend.create_tag(Tag::new(req.title)).await?))
 }
 
-async fn get_tag(State(s): State<Shared>, Path(id): Path<Uuid>) -> Result<Json<Tag>, ApiError> {
+/// Read a live tag or return 404 for a missing or soft-deleted one.
+async fn read_live_tag(s: &Shared, id: Uuid) -> Result<Tag, ApiError> {
     let tag = s.backend.read_tag(id).await?;
     if tag.deleted_at.is_some() {
         return Err(StorageError::NotFound(id.to_string()).into());
     }
-    Ok(Json(tag))
+    Ok(tag)
+}
+
+async fn get_tag(State(s): State<Shared>, Path(id): Path<Uuid>) -> Result<Json<Tag>, ApiError> {
+    Ok(Json(read_live_tag(&s, id).await?))
 }
 
 async fn update_tag(
@@ -483,6 +665,8 @@ async fn update_tag(
     Path(id): Path<Uuid>,
     Json(mut tag): Json<Tag>,
 ) -> Result<Json<Tag>, ApiError> {
+    // Updating a tombstoned tag is a 404, like reading one (see `update_note`).
+    read_live_tag(&s, id).await?;
     tag.id = id;
     tag.updated_at = now();
     Ok(Json(s.backend.update_tag(tag).await?))
@@ -530,6 +714,47 @@ async fn create_resource(
     Ok(Json(s.backend.create_resource(resource, data).await?))
 }
 
+/// Streaming upload: `POST /api/resources/upload?title=&file_name=` with the raw file bytes as
+/// the body and `Content-Type` as the MIME type. The body is read incrementally up to
+/// `max_upload_bytes` (this route bypasses the router's `max_body_bytes` cap), so an attachment
+/// larger than `max_message_size` can be uploaded. A body over the cap is rejected with `413`.
+async fn upload_resource(
+    State(s): State<Shared>,
+    Query(meta): Query<ResourceMeta>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let limit = if s.max_upload_bytes == 0 {
+        usize::MAX
+    } else {
+        s.max_upload_bytes
+    };
+    // `to_bytes` reads the body incrementally and errors once it passes `limit`, so an
+    // oversized upload never fully materialises in memory.
+    let data = match axum::body::to_bytes(body, limit).await {
+        Ok(bytes) => bytes.to_vec(),
+        Err(_) => {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(json!({
+                    "error": format!("upload exceeds max_upload_bytes ({})", s.max_upload_bytes)
+                })),
+            )
+                .into_response()
+        }
+    };
+    let mime = headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let resource = Resource::new(meta.title, mime, meta.file_name, data.len() as u64);
+    match s.backend.create_resource(resource, data).await {
+        Ok(r) => (StatusCode::OK, Json(r)).into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
 async fn get_resource(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -564,13 +789,17 @@ struct SyncSummary {
 }
 
 /// Run one synchronisation cycle on the shared backend and report how many remote
-/// changes were applied. Mirrors the gRPC `Sync` RPC, minus the streaming progress.
+/// changes were applied. Mirrors the gRPC `Sync` RPC, minus the streaming progress —
+/// including the post-sync journal prune, so `journal_retention_days` is honoured no
+/// matter which surface drives the sync.
 ///
 /// The backend is passed as `&dyn StorageBackend`; `run_sync` accepts it because
 /// `dyn StorageBackend` itself satisfies `StorageBackend` (see the `?Sized` blanket impl
 /// in `keeplin-core`).
 async fn sync(State(s): State<Shared>) -> Result<Json<SyncSummary>, ApiError> {
     let applied = run_sync(s.backend.as_ref(), |_stage, _count| {}).await?;
+    crate::server::prune_journal_after_sync(s.backend.as_ref(), s.journal_retention_days).await;
+    crate::server::purge_resources_after_sync(s.backend.as_ref(), s.resource_purge_days).await;
     Ok(Json(SyncSummary {
         applied: applied.len(),
     }))
@@ -641,7 +870,11 @@ mod tests {
         Arc::new(AppState {
             backend: Arc::new(fs),
             events,
+            metrics: Arc::new(crate::metrics::Metrics::new()),
             max_body_bytes: 32 * 1024 * 1024,
+            max_upload_bytes: 1024 * 1024 * 1024,
+            journal_retention_days: 30,
+            resource_purge_days: 0,
             auth_username: auth.map(|a| a.0.to_string()),
             auth_password: auth.map(|a| a.1.to_string()),
         })
@@ -659,7 +892,11 @@ mod tests {
         Arc::new(AppState {
             backend: Arc::new(LinkingBackend::new(fs)),
             events,
+            metrics: Arc::new(crate::metrics::Metrics::new()),
             max_body_bytes: 32 * 1024 * 1024,
+            max_upload_bytes: 1024 * 1024 * 1024,
+            journal_retention_days: 30,
+            resource_purge_days: 0,
             auth_username: None,
             auth_password: None,
         })
@@ -733,6 +970,225 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn updates_on_deleted_entities_are_404() {
+        let st = state(None).await;
+
+        // Note: create → delete → PUT must be a 404, not a silent revival.
+        let (_, body) = call(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(r#"{"title":"T","body":"B"}"#),
+            None,
+        )
+        .await;
+        let note: Note = serde_json::from_slice(&body).unwrap();
+        call(
+            &st,
+            "DELETE",
+            &format!("/api/notes/{}", note.id),
+            None,
+            None,
+        )
+        .await;
+
+        let update = serde_json::to_string(&note).unwrap(); // deleted_at: null
+        let (code, _) = call(
+            &st,
+            "PUT",
+            &format!("/api/notes/{}", note.id),
+            Some(&update),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND, "PUT on deleted note");
+        let (code, _) = call(
+            &st,
+            "PUT",
+            &format!("/api/notes/{}/alias", note.id),
+            Some(r#"{"alias":"ghost"}"#),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND, "alias PUT on deleted note");
+        // Still deleted afterwards.
+        let (code, _) = call(&st, "GET", &format!("/api/notes/{}", note.id), None, None).await;
+        assert_eq!(code, StatusCode::NOT_FOUND, "note must remain deleted");
+
+        // Notebook.
+        let (_, body) = call(
+            &st,
+            "POST",
+            "/api/notebooks",
+            Some(r#"{"title":"NB"}"#),
+            None,
+        )
+        .await;
+        let nb: Notebook = serde_json::from_slice(&body).unwrap();
+        call(
+            &st,
+            "DELETE",
+            &format!("/api/notebooks/{}", nb.id),
+            None,
+            None,
+        )
+        .await;
+        let (code, _) = call(
+            &st,
+            "PUT",
+            &format!("/api/notebooks/{}", nb.id),
+            Some(&serde_json::to_string(&nb).unwrap()),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND, "PUT on deleted notebook");
+
+        // Tag.
+        let (_, body) = call(&st, "POST", "/api/tags", Some(r#"{"title":"t"}"#), None).await;
+        let tag: Tag = serde_json::from_slice(&body).unwrap();
+        call(&st, "DELETE", &format!("/api/tags/{}", tag.id), None, None).await;
+        let (code, _) = call(
+            &st,
+            "PUT",
+            &format!("/api/tags/{}", tag.id),
+            Some(&serde_json::to_string(&tag).unwrap()),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND, "PUT on deleted tag");
+    }
+
+    #[tokio::test]
+    async fn sync_endpoint_prunes_journal_within_retention() {
+        // A DbBackend state (empty server_url → local-only sync) exercises the pruning
+        // path that FsBackend no-ops: after POST /api/sync, fresh journal rows must
+        // survive a 30-day retention window (the prune ran, and respected the window).
+        use keeplin_core::storage::db::DbBackend;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rest.db");
+        std::mem::forget(dir);
+        let db = DbBackend::new(path, "", "").await.unwrap();
+        let (events, _rx) = broadcast::channel(16);
+        let st: Shared = Arc::new(AppState {
+            backend: Arc::new(db),
+            events,
+            metrics: Arc::new(crate::metrics::Metrics::new()),
+            max_body_bytes: 32 * 1024 * 1024,
+            max_upload_bytes: 1024 * 1024 * 1024,
+            journal_retention_days: 30,
+            resource_purge_days: 0,
+            auth_username: None,
+            auth_password: None,
+        });
+
+        let (code, _) = call(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(r#"{"title":"kept","body":""}"#),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+
+        let (code, body) = call(&st, "POST", "/api/sync", None, None).await;
+        assert_eq!(code, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["applied"], 0, "no relay → nothing applied");
+
+        // The fresh create is younger than the retention cutoff, so it must survive.
+        let epoch = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap();
+        let journal = st.backend.get_changes_since(epoch).await.unwrap();
+        assert_eq!(journal.len(), 1, "recent journal rows survive the prune");
+    }
+
+    #[tokio::test]
+    async fn operational_endpoints_bypass_auth() {
+        // With auth configured, the data API requires credentials but the operational
+        // probes must remain reachable without them (orchestrators cannot authenticate).
+        let st = state(Some(("alice", "s3cr3t"))).await;
+
+        for path in ["/api/health", "/api/ready", "/api/metrics"] {
+            let (code, _) = call(&st, "GET", path, None, None).await;
+            assert_eq!(
+                code,
+                StatusCode::OK,
+                "{path} must be reachable without auth"
+            );
+        }
+        let (code, _) = call(&st, "GET", "/api/notes", None, None).await;
+        assert_eq!(code, StatusCode::UNAUTHORIZED, "data API still gated");
+    }
+
+    /// Build an `AppState` whose backend is a `MetricsBackend` over a fresh `FsBackend`
+    /// sharing the state's own `Arc<Metrics>` — mirroring how `main` wires the outermost
+    /// decorator — so storage operations issued through the router move the same counters
+    /// `GET /api/metrics` renders.
+    async fn metrics_state() -> Shared {
+        use crate::metrics::{Metrics, MetricsBackend};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let fs = FsBackend::new(&path).await.unwrap();
+        let metrics = Arc::new(Metrics::new());
+        let (events, _rx) = broadcast::channel(16);
+        Arc::new(AppState {
+            backend: Arc::new(MetricsBackend::new(fs, metrics.clone())),
+            events,
+            metrics,
+            max_body_bytes: 32 * 1024 * 1024,
+            max_upload_bytes: 1024 * 1024 * 1024,
+            journal_retention_days: 30,
+            resource_purge_days: 0,
+            auth_username: None,
+            auth_password: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn metrics_reflect_operations_and_http_status() {
+        let st = metrics_state().await;
+
+        // One successful create, then one 404 (GET a missing note).
+        let (code, _) = call(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(r#"{"title":"T","body":"B"}"#),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        let (code, _) = call(
+            &st,
+            "GET",
+            &format!("/api/notes/{}", uuid::Uuid::new_v4()),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+
+        let (code, body) = call(&st, "GET", "/api/metrics", None, None).await;
+        assert_eq!(code, StatusCode::OK);
+        let text = String::from_utf8(body).unwrap();
+        assert!(
+            text.contains("keeplin_storage_operations_total{entity=\"note\",op=\"create\"} 1"),
+            "create counted:\n{text}"
+        );
+        // The create was a 2xx and the missing-note GET a 4xx; the /metrics scrape itself is
+        // not counted (operational routes bypass the status middleware).
+        assert!(
+            text.contains("keeplin_http_requests_total{status=\"2xx\"} 1"),
+            "one 2xx:\n{text}"
+        );
+        assert!(
+            text.contains("keeplin_http_requests_total{status=\"4xx\"} 1"),
+            "one 4xx:\n{text}"
+        );
+    }
+
+    #[tokio::test]
     async fn invalid_uuid_is_bad_request() {
         let st = state(None).await;
         let (code, _) = call(&st, "GET", "/api/notes/not-a-uuid", None, None).await;
@@ -800,6 +1256,66 @@ mod tests {
         assert_eq!(code, StatusCode::OK);
         let res: Resource = serde_json::from_slice(&body).unwrap();
         assert_eq!(res.size, big.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn streaming_upload_round_trips() {
+        let st = state(None).await;
+        let payload = "some large attachment bytes";
+        let (code, body) = call(
+            &st,
+            "POST",
+            "/api/resources/upload?title=vid&file_name=v.bin",
+            Some(payload),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        let res: Resource = serde_json::from_slice(&body).unwrap();
+        assert_eq!(res.title, "vid");
+        assert_eq!(res.size, payload.len() as u64);
+
+        // The uploaded bytes download intact.
+        let (code, data) = call(
+            &st,
+            "GET",
+            &format!("/api/resources/{}/data", res.id),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(data, payload.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn streaming_upload_over_cap_is_413() {
+        // A state with a tiny 8-byte upload cap rejects a larger streamed body.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_path_buf();
+        std::mem::forget(dir);
+        let fs = FsBackend::new(&path).await.unwrap();
+        let (events, _rx) = broadcast::channel(16);
+        let st: Shared = Arc::new(AppState {
+            backend: Arc::new(fs),
+            events,
+            metrics: Arc::new(crate::metrics::Metrics::new()),
+            max_body_bytes: 32 * 1024 * 1024,
+            max_upload_bytes: 8,
+            journal_retention_days: 30,
+            resource_purge_days: 0,
+            auth_username: None,
+            auth_password: None,
+        });
+        let (code, _) = call(
+            &st,
+            "POST",
+            "/api/resources/upload?title=big&file_name=big.bin",
+            Some("0123456789"),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]
@@ -999,7 +1515,11 @@ mod tests {
         Arc::new(AppState {
             backend,
             events,
+            metrics: Arc::new(crate::metrics::Metrics::new()),
             max_body_bytes: 32 * 1024 * 1024,
+            max_upload_bytes: 1024 * 1024 * 1024,
+            journal_retention_days: 30,
+            resource_purge_days: 0,
             auth_username: None,
             auth_password: None,
         })

@@ -33,9 +33,11 @@ pub fn now() -> DateTime<Utc> {
 
 /// A user-created note.
 ///
-/// Notes are the primary content unit in Keeplin. They may optionally belong to a
-/// [`Notebook`] (via `notebook_id`) and may be flagged as to-do items with an optional
-/// due date and completion timestamp.
+/// Notes are the primary content unit in Keeplin. Every note belongs to exactly one
+/// [`Notebook`] (via `notebook_id`) — an unfiled note belongs to the Inbox (the nil UUID,
+/// [`crate::ordering::INBOX_ID`]) — and may be flagged as a to-do item with an optional due
+/// date and completion timestamp. Its position within the notebook is the `sort_key` /
+/// `is_pinned` pair; `is_starred` is a global flag (see [`crate::ordering`]).
 ///
 /// Soft deletion is used: instead of removing the row, `deleted_at` is set to the
 /// current UTC time. The note is then excluded from `list_notes` results but remains
@@ -52,9 +54,14 @@ pub struct Note {
     pub title: String,
     /// Full text content of the note. May be multi-line. Encrypted at rest.
     pub body: String,
-    /// UUID of the parent notebook, or `None` if the note has not been placed in any
-    /// notebook. Stored in plaintext because it is needed for database queries.
-    pub notebook_id: Option<Uuid>,
+    /// UUID of the parent notebook. Never "none": a note that has not been placed in any
+    /// notebook belongs to the **Inbox** system notebook, whose fixed id is the nil UUID
+    /// (see [`crate::ordering::INBOX_ID`]). Records written before this rule (serialized
+    /// with `null` or without the field) deserialize as the nil UUID, so old data lands
+    /// in the Inbox transparently. Stored in plaintext because it is needed for database
+    /// queries.
+    #[serde(default = "Uuid::nil", deserialize_with = "de_notebook_id")]
+    pub notebook_id: Uuid,
     /// Whether this note is being used as a to-do item.
     pub is_todo: bool,
     /// Optional deadline for the to-do. `None` when the note has no due date.
@@ -90,19 +97,51 @@ pub struct Note {
     /// `updated_at`. Empty on pre-VV records. Plaintext. Defaults to empty.
     #[serde(default)]
     pub last_writer: String,
+    /// Whether the note is pinned to the top of its notebook. Pinned notes carry a
+    /// `sort_key` in the pinned range `1..=999` (see [`crate::ordering`]); the Inbox has
+    /// no pinning. Plaintext (needed for queries). Defaults to `false` on old records.
+    #[serde(default)]
+    pub is_pinned: bool,
+    /// Whether the note is globally starred. Orthogonal to pinning and to the notebook:
+    /// starring never moves the note. Plaintext. Defaults to `false` on old records.
+    #[serde(default)]
+    pub is_starred: bool,
+    /// Manual position of the note inside its notebook, ascending. `1..=999` is the
+    /// pinned band of a normal notebook, `>= 1000` the normal band; the Inbox is one flat
+    /// band. `0` means "never positioned" (every record written before this field) and is
+    /// ordered as if it were [`Note::DEFAULT_SORT_KEY`] — see
+    /// [`effective_sort_key`](Note::effective_sort_key). Plaintext. Defaults to `0`.
+    #[serde(default)]
+    pub sort_key: u32,
+}
+
+/// Backward-compatible `notebook_id` deserializer: records written when the field was
+/// `Option<Uuid>` carry an explicit `null` (and even older ones may omit it entirely);
+/// both must land in the Inbox (nil UUID) rather than fail to parse.
+fn de_notebook_id<'de, D>(deserializer: D) -> Result<Uuid, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Uuid>::deserialize(deserializer)?.unwrap_or_else(Uuid::nil))
 }
 
 impl Note {
+    /// The sort key a never-positioned note (`sort_key == 0`) is ordered as: the start of
+    /// the normal (unpinned) band. Old notes therefore appear at the top of the normal
+    /// band, tie-broken by id, without any data rewrite.
+    pub const DEFAULT_SORT_KEY: u32 = 1000;
+
     /// Creates a new note with a fresh UUID, the given title and body, and the current
     /// UTC time for both `created_at` and `updated_at`. All optional fields are
-    /// initialised to `None` / `false` / empty.
+    /// initialised to `None` / `false` / empty; the note starts in the Inbox (nil
+    /// notebook id) with no manual position.
     pub fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
         let ts = now();
         Self {
             id: new_id(),
             title: title.into(),
             body: body.into(),
-            notebook_id: None,
+            notebook_id: Uuid::nil(),
             is_todo: false,
             todo_due: None,
             todo_completed: None,
@@ -114,6 +153,20 @@ impl Note {
             links: Vec::new(),
             vv: VersionVector::new(),
             last_writer: String::new(),
+            is_pinned: false,
+            is_starred: false,
+            sort_key: 0,
+        }
+    }
+
+    /// The key this note actually sorts by: its `sort_key`, with the legacy `0` sentinel
+    /// mapped to [`DEFAULT_SORT_KEY`](Self::DEFAULT_SORT_KEY) so never-positioned notes
+    /// order at the start of the normal band instead of above pinned notes.
+    pub fn effective_sort_key(&self) -> u32 {
+        if self.sort_key == 0 {
+            Self::DEFAULT_SORT_KEY
+        } else {
+            self.sort_key
         }
     }
 }
@@ -423,4 +476,67 @@ pub enum Change {
         #[serde(default)]
         last_writer: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A note serialized before pinning/starring/ordering existed — `notebook_id` is an
+    /// explicit `null` and the new fields are absent — must load with the defaults: the
+    /// Inbox (nil UUID), unpinned, unstarred, and the `sort_key 0` sentinel.
+    #[test]
+    fn pre_ordering_note_json_lands_in_the_inbox_with_defaults() {
+        let old = r#"{
+            "id": "6f2a5b1c-9d5c-4c3a-8f21-3b1a2c4d5e6f",
+            "title": "t", "body": "b",
+            "notebook_id": null,
+            "is_todo": false, "todo_due": null, "todo_completed": null,
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "deleted_at": null
+        }"#;
+        let note: Note = serde_json::from_str(old).unwrap();
+        assert_eq!(note.notebook_id, Uuid::nil(), "null lands in the Inbox");
+        assert!(!note.is_pinned);
+        assert!(!note.is_starred);
+        assert_eq!(note.sort_key, 0);
+        assert_eq!(note.effective_sort_key(), Note::DEFAULT_SORT_KEY);
+    }
+
+    /// The same round-trips through MessagePack (the on-disk note-log encoding).
+    #[test]
+    fn pre_ordering_note_msgpack_round_trips() {
+        // Serialize with the *old* shape by writing an Option-carrying mirror struct.
+        #[derive(serde::Serialize)]
+        struct OldNote<'a> {
+            id: Uuid,
+            title: &'a str,
+            body: &'a str,
+            notebook_id: Option<Uuid>,
+            is_todo: bool,
+            todo_due: Option<DateTime<Utc>>,
+            todo_completed: Option<DateTime<Utc>>,
+            created_at: DateTime<Utc>,
+            updated_at: DateTime<Utc>,
+            deleted_at: Option<DateTime<Utc>>,
+        }
+        let ts = now();
+        let old = OldNote {
+            id: new_id(),
+            title: "t",
+            body: "b",
+            notebook_id: None,
+            is_todo: false,
+            todo_due: None,
+            todo_completed: None,
+            created_at: ts,
+            updated_at: ts,
+            deleted_at: None,
+        };
+        let bytes = rmp_serde::to_vec_named(&old).unwrap();
+        let note: Note = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(note.notebook_id, Uuid::nil());
+        assert_eq!(note.sort_key, 0);
+    }
 }

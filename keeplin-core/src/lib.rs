@@ -14,6 +14,8 @@
 //!   note body, resolves references, and enforces alias uniqueness.
 //! - [`migrate`] — one-shot state copy between any two backends (e.g. `FsBackend ↔ DbBackend`).
 //! - [`models`] — Domain types (`Note`, `Notebook`, `Tag`, `Resource`, `Change`, …).
+//! - [`ordering`] — the Inbox system notebook, pinning, manual sort keys, and starring:
+//!   pure placement rules plus the read-modify-write operations the API surfaces call.
 //! - [`storage`] — `StorageBackend` trait plus `FsBackend` and `DbBackend` implementations.
 //! - [`sync`] — `SyncEngine`: orchestrates a full push-then-pull sync cycle.
 
@@ -24,5 +26,6 @@ pub mod linking;
 pub mod links;
 pub mod migrate;
 pub mod models;
+pub mod ordering;
 pub mod storage;
 pub mod sync;

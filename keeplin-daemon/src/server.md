@@ -25,7 +25,7 @@ These functions are stateless and have no error path other than parsing.
 | `notebook_to_proto(CoreNotebook) -> Notebook` | Same pattern for notebooks |
 | `resource_to_proto(CoreResource) -> Resource` | Same pattern for resources; `size: u64` becomes `size: i64` (proto3 has no unsigned integers) |
 | `tag_to_proto(CoreTag) -> Tag` | Same pattern for tags |
-| `storage_err(StorageError) -> Status` | Maps `NotFound → not_found`, `Conflict → already_exists`, `CorruptedData → data_loss`, everything else → `internal` |
+| `storage_err(StorageError) -> Status` | Maps `NotFound → not_found`, `Conflict → already_exists`, `InvalidInput → invalid_argument`, `CorruptedData → data_loss`, everything else → `internal` |
 | `parse_uuid(&str, field_name) -> Result<Uuid, Status>` | Parses a UUID string from a proto field; returns `Status::invalid_argument` if malformed |
 | `parse_optional_dt(&str) -> Result<Option<DateTime<Utc>>, Status>` | Parses an RFC-3339 timestamp; returns `None` for empty strings |
 | `proto_to_note(Note) -> Result<CoreNote, Status>` | Full conversion from protobuf to domain `Note`; validates all timestamp and UUID fields |
@@ -40,14 +40,24 @@ gRPC handler tasks (tonic calls handlers from a thread pool).
 
 ### gRPC methods
 
-All 30 RPC methods are implemented. They follow this pattern:
+All RPC methods are implemented. They follow this pattern:
 1. Extract the request payload from `tonic::Request<T>`.
 2. Parse and validate fields (UUIDs, timestamps) using the helper functions above.
-3. Call the corresponding `StorageBackend` method (or a `linking::` free helper).
+3. Call the corresponding `StorageBackend` method (or a `linking::`/`ordering::` free helper).
 4. Map the result to the protobuf response type.
 
 #### Notes RPCs
-`ListNotes`, `CreateNote`, `GetNote`, `UpdateNote`, `DeleteNote` (list is cursor-paginated)
+`ListNotes`, `CreateNote`, `GetNote`, `UpdateNote`, `DeleteNote` (list is cursor-paginated).
+`CreateNote` runs `ordering::place_new_note` before storing (top of the Inbox, or the end of a
+normal notebook's normal band); `UpdateNote` runs `ordering::reconcile_notebook_move`, so a
+`notebook_id` change re-places the note in the destination band (a same-notebook edit keeps its
+position). On the wire the Inbox (nil UUID) stays **absent**, so pre-Inbox clients see what they
+always did for an unfiled note.
+
+#### Pinning / ordering / starring RPCs
+`ListNotesInNotebook` (manual order; nil UUID = the Inbox / `Pizarra`), `ListStarredNotes`,
+`PinNote`, `UnpinNote`, `StarNote`, `UnstarNote`, `ReorderNotes` (a batch of `{note_id,
+sort_key}`, applied in order). These delegate to the free helpers in `keeplin_core::ordering`.
 
 #### Notebooks RPCs
 `ListNotebooks`, `CreateNotebook`, `GetNotebook`, `UpdateNotebook`, `DeleteNotebook`
@@ -57,7 +67,17 @@ All 30 RPC methods are implemented. They follow this pattern:
 `AddNoteTag`, `RemoveNoteTag`, `ListNoteTags`
 
 #### Resources RPCs
-`ListResources`, `CreateResource`, `GetResource`, `DeleteResource`
+`ListResources`, `CreateResource`, `UploadResource`, `GetResource`, `DeleteResource`
+
+`UploadResource` is **client-streaming**: the first frame carries `ResourceMeta`, each later
+frame a payload `chunk` (in order), so an attachment larger than `max_message_size` uploads
+without any single oversized message. The assembly logic lives in the inherent
+`KeeplinServer::assemble_upload`, which is generic over the frame stream (`Stream<Item =
+Result<UploadResourceRequest, Status>>`) so it can be unit-tested with an in-memory
+`tokio_stream::iter` rather than a real `tonic::Streaming`. It rejects a stream that does not
+start with metadata (`INVALID_ARGUMENT`) and one whose assembled size exceeds `max_upload_bytes`
+(`RESOURCE_EXHAUSTED`), then calls `create_resource` with the assembled bytes. `from_shared`
+now takes `max_upload_bytes` alongside `journal_retention_days`.
 
 #### Linking & references RPCs
 `SetNoteAlias`, `SetNotebookAlias`, `AddNoteLink`, `RemoveNoteLink`,
@@ -72,7 +92,7 @@ message's repeated `bookmarks` field; there is no `EditBookmarkAlias` RPC.
 #### Sync RPC — server-streaming
 
 `Sync` is a server-streaming RPC that reports progress through a `tokio::sync::mpsc`
-channel with a capacity of 16. A `tokio::spawn` task drives the sync cycle and sends
+**unbounded** channel. A `tokio::spawn` task drives the sync cycle and sends
 `SyncProgress` messages at each stage:
 
 | Stage | `Stage` enum value | What it means |
@@ -98,10 +118,20 @@ gRPC client → CreateNoteRequest (proto)
 
 ## Design notes
 
-- `UpdateNote` explicitly overwrites `note.updated_at = now()` before calling the
-  backend. This ensures the timestamp reflects when the gRPC call was received, not the
-  value supplied by the client, which prevents clients from supplying arbitrary
-  timestamps.
+- `UpdateNote`, `UpdateNotebook`, and `UpdateTag` all overwrite `updated_at = now()`
+  before calling the backend, ignoring any client-supplied value. This ensures the
+  timestamp reflects when the gRPC call was received, keeps ordering-by-`updated_at`
+  consistent across all three entity types, and prevents a client from back/post-dating an
+  edit (which would also confuse conflict resolution). This matches the REST surface, which
+  already refreshes the timestamp server-side.
+- The `Update{Note,Notebook,Tag}` RPCs reject a soft-deleted target with `NOT_FOUND`
+  (`ensure_not_deleted`): the `Get*` RPCs intentionally serve tombstones for sync, but an
+  update on one would silently revive it (the client's proto carries `deleted_at: None`).
+  Revival is reserved for the sync path; the REST surface applies the same rule.
+- `prune_journal_after_sync(backend, retention_days)` trims `entity_changes` history
+  after a successful cycle (clamped to ~100 years; `0` disables; failures are non-fatal
+  warnings). It is shared with the REST `POST /api/sync` handler so both surfaces honour
+  `journal_retention_days` identically.
 - `parse_uuid` and `parse_optional_dt` return `tonic::Status` errors (not
   `StorageError`) because they validate client input at the RPC boundary; `StorageError`
   is reserved for backend-layer failures.

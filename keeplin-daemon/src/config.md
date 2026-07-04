@@ -27,11 +27,48 @@ file (default: `keeplin.toml`) and may be partially overridden by environment va
 | `tls_cert_path` | `Option<String>` | `None` | Filesystem path to the PEM-encoded TLS certificate |
 | `tls_key_path` | `Option<String>` | `None` | Filesystem path to the PEM-encoded TLS private key |
 | `max_message_size` | `usize` | 33,554,432 (32 MiB) | Max size of a single gRPC message (inbound and outbound); also caps the REST request body (`DefaultBodyLimit`) so resource uploads have the same limit on both surfaces |
+| `max_upload_bytes` | `usize` | 1,073,741,824 (1 GiB) | Max assembled size of a **streamed** upload (gRPC `UploadResource` / `POST /api/resources/upload`), which is not bounded by `max_message_size`; `0` disables the cap |
 | `journal_retention_days` | `u64` | `30` | Days of `entity_changes` history to keep; pruned after each successful sync (`0` disables; no-op for the filesystem backend) |
+| `resource_purge_days` | `u64` | `0` (keep forever) | After each successful sync, free the binary payloads of resources soft-deleted more than this many days ago (`purge_deleted_resources`); the tombstone metadata is always kept, so convergence is unaffected |
 | `encryption_password` | `Option<String>` | `None` | Passphrase for AES-256-GCM at-rest encryption; prefer env var (`KEEPLIN_ENCRYPTION_PASSWORD`) |
-| `key_salt` | `Option<String>` | `None` | Argon2id salt (≥ 8 bytes) for the encryption key; falls back to the device ID when unset. Set the **same** value on all synced devices for portable encryption; prefer env var (`KEEPLIN_KEY_SALT`) |
+| `key_salt` | `Option<String>` | `None` | Argon2id salt (≥ 8 bytes) for the encryption key. When unset, the effective salt is derived from the device ID and **persisted** to `{data_dir}/.keeplin/key_salt` (which then takes precedence) — back that file up. Set the **same** value on all synced devices for portable encryption; prefer env var (`KEEPLIN_KEY_SALT`) |
 | `auth_username` | `Option<String>` | `None` | Username for HTTP Basic Auth on every gRPC call; prefer env var |
 | `auth_password` | `Option<String>` | `None` | Password for HTTP Basic Auth on every gRPC call; prefer env var |
+| `insecure` | `bool` | `false` | Downgrade the startup security checks from errors to warnings (see below) |
+
+## Startup security checks — `Config::security_issues`
+
+`security_issues(&self) -> Vec<String>` is a pure enumeration of configurations that would
+expose data or credentials on an untrusted network. `main::serve` calls it once at startup: if
+it returns anything and `insecure` is `false`, the daemon **refuses to start** (listing the
+issues); if `insecure` is `true`, each issue is logged as a warning and startup proceeds.
+
+It flags only unambiguous exposures a fronting TLS proxy cannot fix, so the documented
+"terminate TLS at a reverse proxy" deployment is never blocked:
+
+| Issue | Condition |
+|-------|-----------|
+| gRPC/HTTP listener open without auth | `grpc_addr` or `http_addr` binds a **non-loopback** address and auth is not **enabled** (see below) |
+| Plaintext sync token | server mode with a `ws://` (not `wss://`) `server_url` whose host is **non-loopback** — the outbound handshake would send `auth_token` in the clear |
+
+Missing daemon-terminated TLS on the listeners is deliberately **not** flagged (proxy
+termination is supported). The `encryption_password`-without-`key_salt` warning is separate and
+always non-fatal. `plaintext_ws_remote_host` is the helper that classifies a `server_url`,
+tolerating IPv6 literals and treating any not-clearly-loopback host as remote (fail safe).
+
+### Auth is all-or-nothing (`auth_enabled` / `validate_auth`)
+
+Basic-Auth counts as **enabled** only when `auth_username` **and** `auth_password` are both set
+and non-empty (`Config::auth_enabled`). Anything in between is a misconfiguration that would
+silently leave the daemon unauthenticated, so `Config::validate_auth` — called by `main::serve`
+**before** the store is touched — makes the daemon **refuse to start** when:
+
+- exactly one of `auth_username` / `auth_password` is set (half-configured), or
+- either is set to an empty string (an empty pair would accept `Basic Og==`, base64 of `:`).
+
+This is independent of `insecure`: a half-configured credential is a mistake, not a deployment
+trade-off. Because the security scan keys off `auth_enabled`, a partial credential also still
+trips the "listener open without auth" issue above — defence in depth alongside the hard failure.
 
 ## `Mode` variants
 

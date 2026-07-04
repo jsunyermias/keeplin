@@ -16,26 +16,40 @@ coexist.
 |-------|---------|
 | `backend: Arc<dyn StorageBackend>` | shared with the gRPC server (top of the decorator stack) |
 | `events: broadcast::Sender<Change>` | the live-feed channel; each WS connection subscribes |
+| `metrics: Arc<crate::metrics::Metrics>` | operational counters, shared with the outermost `MetricsBackend` decorator; rendered by `GET /metrics` |
 | `max_body_bytes: usize` | request-body cap (from `max_message_size`), raising axum's 2 MiB default |
-| `auth_username` / `auth_password` | Basic-Auth credentials (both `Some` → auth required) |
+| `max_upload_bytes: usize` | cap for the streamed `POST /resources/upload` route, which bypasses `max_body_bytes` |
+| `journal_retention_days: u64` | days of change-journal history to keep; `POST /sync` prunes older rows |
+| `auth_username` / `auth_password` | Basic-Auth credentials; auth is required only when both are `Some` and non-empty (a partial/empty pair is rejected at startup, so it never reaches the middleware) |
 
 ## Endpoints
 
-All under `/api`, all behind the auth middleware.
+The router is two sub-routers merged under `/api`: **operational** endpoints
+(`/health`, `/ready`, `/metrics`) sit *outside* the auth middleware and the HTTP-status
+counter (probes/scrapers cannot authenticate, and their traffic must not inflate the request
+metrics); every other route is behind auth and counted by `status_mw`.
 
-| Method & path | Purpose |
-|---------------|---------|
-| `GET /health` | liveness (`200 ok`) |
+| Method & path | Auth | Purpose |
+|---------------|------|---------|
+| `GET /health` | none | liveness (`200 ok`); does not touch storage |
+| `GET /ready` | none | readiness: one `list_notes(1)` probe → `200 ready` or `503` when storage is unreachable |
+| `GET /metrics` | none | Prometheus exposition (`text/plain; version=0.0.4`) — see `metrics.md` |
 | `GET/POST /notes`, `GET/PUT/DELETE /notes/:id` | note CRUD (cursor pagination on list) |
 | `GET /notes/:id/tags`, `PUT/DELETE /notes/:note_id/tags/:tag_id` | note↔tag associations |
 | `PUT /notes/:id/alias`, `PUT /notebooks/:id/alias` | set/clear an alias |
 | `GET/POST /notes/:id/links`, `DELETE /notes/:id/links/:index` | list / add-manual / remove links |
 | `GET /notes/:id/backlinks?page_size=&page_token=` | notes linking **to** this note (paginated) |
+| `GET /notes/starred?page_size=&page_token=` | every starred note, across all notebooks |
+| `POST/DELETE /notes/:id/pin` | pin (into the `1–999` band, max 999) / unpin (to the end of the normal band) |
+| `POST/DELETE /notes/:id/star` | star / unstar (global flag; never moves the note) |
+| `PUT /notes/:id/sort-key` | reorder within the note's current band (`{ "sort_key": … }`) |
+| `GET /notebooks/:id/notes?page_size=&page_token=` | the notebook's notes in **manual order** (pinned band first); nil UUID = the Inbox |
 | `GET /links/resolve?ref=#…` | resolve a reference → `{ note_id, bookmark_number }` |
 | `GET /aliases/conflicts` | aliases shared by 2+ live entities (sync collisions) |
-| `GET/POST/PUT/DELETE /notebooks`, `/tags` | notebook / tag CRUD |
-| `GET/POST /resources`, `GET/PUT/DELETE /resources/:id`, `GET /resources/:id/data` | resource metadata CRUD + raw upload/download |
-| `POST /sync` | run one sync cycle → `{ "applied": n }` |
+| `GET/POST/PUT/DELETE /notebooks`, `/tags` | notebook / tag CRUD (deleting the Inbox / `Pizarra` → `400`) |
+| `GET/POST /resources`, `GET/PUT/DELETE /resources/:id`, `GET /resources/:id/data` | resource metadata CRUD + raw upload/download (create is capped at `max_body_bytes`) |
+| `POST /resources/upload` | **streaming upload** for large attachments: reads the body incrementally up to `max_upload_bytes` (this one route disables the router's body limit); over the cap → `413` |
+| `POST /sync` | run one sync cycle → `{ "applied": n }`, then prune journal rows older than `journal_retention_days` (shared `server::prune_journal_after_sync`) |
 | `GET /ws` | upgrade to the WebSocket live-change feed |
 
 ## Auth middleware
@@ -49,13 +63,23 @@ valid `Authorization: Basic …` header (via `crate::auth::verify_basic`), retur
 | `StorageError` | HTTP status |
 |----------------|-------------|
 | `NotFound` | `404` |
-| `Conflict` (duplicate alias) | `409` |
+| `Conflict` (duplicate alias, or the 999-pin limit) | `409` |
+| `InvalidInput` (pin an Inbox note, out-of-band sort key, delete the Inbox) | `400` |
 | `CorruptedData` / invalid link ref | `422` |
 | invalid UUID / body | `400` (axum extractor rejection) |
 | anything else | `500` |
 
-Reads of a soft-deleted note/notebook/tag return `404` (the gRPC `Get` RPCs still return the
-tombstone for sync — a deliberate REST-vs-gRPC divergence).
+Reads **and updates** of a soft-deleted note/notebook/tag return `404` (the gRPC `Get` RPCs
+still return the tombstone for sync — a deliberate divergence — but the `Update` RPCs reject
+it with `NOT_FOUND` too). Without the update guard, a `PUT` whose body defaults `deleted_at`
+to null would silently *revive* the entity; revival is reserved for the sync path
+(`apply_change` resolving a causal edit made after the delete). The alias/link endpoints
+inherit the same rule from the `linking` helpers.
+
+The generic note `PUT` also **re-places the note when its `notebook_id` changes**
+(`ordering::reconcile_notebook_move`): position and pinned state belong to the source notebook,
+so a move resets them and re-places the note in the destination band. A same-notebook edit keeps
+its position. The pin/unpin/reorder routes set those fields deliberately and bypass this.
 
 ## WebSocket feed (`GET /api/ws`)
 
@@ -70,6 +94,13 @@ published.
 as the MIME type. The body is capped at `max_body_bytes` (= `max_message_size`, 32 MiB default)
 via `DefaultBodyLimit`, matching gRPC.
 
+For attachments larger than that, `POST /api/resources/upload` (`upload_resource`) reads the
+body incrementally via `axum::body::to_bytes` up to `max_upload_bytes`, returning `413` when it
+is exceeded. That route carries a per-route `DefaultBodyLimit::disable()` so the router-wide
+`max_body_bytes` cap does not apply to it. The gRPC equivalent is the client-streaming
+`UploadResource` RPC (see `server.md`). The assembled payload is still buffered in memory before
+`create_resource`; streaming it to storage is a later refinement.
+
 ## Tests
 
 Because the daemon is a binary crate, integration tests can't reach these internals, so tests
@@ -80,5 +111,6 @@ live **inline** (`#[cfg(test)] mod tests`) and drive the router in-process with
 
 - `keeplin-daemon/src/main.rs` — builds `AppState` and serves this router next to gRPC.
 - `keeplin-daemon/src/event_backend.rs` — the feed source.
+- `keeplin-daemon/src/metrics.rs` — the counter registry and `MetricsBackend` behind `/metrics`.
 - `keeplin-daemon/src/auth.rs` — the shared Basic-Auth check.
 - `keeplin-core/src/linking.rs` — the bookmark/link/alias helpers the routes call.

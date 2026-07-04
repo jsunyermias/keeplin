@@ -17,7 +17,7 @@ unit-tested in isolation.
 | `VersionVector` | type alias | `BTreeMap<String, u64>`: per-device counter map (`device_id -> counter`); a missing key is `0` |
 | `NoteOp` | enum | `Upsert(Note)` (full content) or `Tombstone { deleted_at }` |
 | `NoteLogEntry` | struct | One log entry: `{ vv, timestamp, device_id, op }` |
-| `Merged` | struct | Result of a merge: `{ note: Option<Note>, vv, conflict: bool }` |
+| `Merged` | struct | Result of a merge: `{ note: Option<Note>, vv, winner_vv, winner_device, conflict: bool }` |
 
 ## Public API
 
@@ -41,7 +41,11 @@ Merge all of a note's per-device logs:
 3. The winner is the sole frontier element, or — on a conflict — the frontier element with
    the greatest `(timestamp, device_id)`. This tiebreak is deterministic, so every device
    computes the same winner and the note **converges**.
-4. The merged `vv` is the join of all heads.
+4. The merged `vv` is the join of all heads. `winner_vv`/`winner_device` additionally expose the
+   **winning head's own** vector and author — what a state-based backend (`DbBackend`) must put
+   on an emitted `Change` (e.g. a `NoteDelete`) so its `resolve` sees the same causal position
+   this merge did, rather than the joined frontier (which folds in concurrent heads) or an empty
+   vector a peer would treat as stale.
 
 For a `Tombstone` winner, the returned note carries the most recent known content fields
 with `deleted_at`/`updated_at` set to the tombstone time, so the note is both hidden from

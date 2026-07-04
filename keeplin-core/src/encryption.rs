@@ -290,6 +290,42 @@ impl<B: StorageBackend> NoteRepository for EncryptedBackend<B> {
             notes.into_iter().map(|n| self.dec_note(n)).collect();
         Ok((decrypted?, next))
     }
+
+    async fn list_notes_in_notebook(
+        &self,
+        notebook_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        // `notebook_id` and `sort_key` are plaintext, so the inner backend can order
+        // natively; only the returned page needs decrypting.
+        let (notes, next) = self
+            .inner
+            .list_notes_in_notebook(notebook_id, page_size, page_token)
+            .await?;
+        let decrypted: Result<Vec<Note>, StorageError> =
+            notes.into_iter().map(|n| self.dec_note(n)).collect();
+        Ok((decrypted?, next))
+    }
+
+    async fn list_starred_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        let (notes, next) = self.inner.list_starred_notes(page_size, page_token).await?;
+        let decrypted: Result<Vec<Note>, StorageError> =
+            notes.into_iter().map(|n| self.dec_note(n)).collect();
+        Ok((decrypted?, next))
+    }
+
+    async fn notebook_sort_profile(
+        &self,
+        notebook_id: Uuid,
+    ) -> Result<crate::storage::NotebookSortProfile, StorageError> {
+        // Pure plaintext metadata — nothing to decrypt.
+        self.inner.notebook_sort_profile(notebook_id).await
+    }
 }
 
 #[async_trait]
@@ -423,6 +459,14 @@ impl<B: StorageBackend> ResourceRepository for EncryptedBackend<B> {
             .map(|r| self.dec_resource(r))
             .collect();
         Ok((decrypted?, next))
+    }
+
+    async fn purge_deleted_resources(
+        &self,
+        older_than: DateTime<Utc>,
+    ) -> Result<u64, StorageError> {
+        // Pure storage reclamation of (encrypted) dead bytes — nothing to decrypt.
+        self.inner.purge_deleted_resources(older_than).await
     }
 }
 

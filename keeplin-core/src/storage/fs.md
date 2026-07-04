@@ -82,10 +82,25 @@ compete through `note_log::resolve` on the receiver.
 - `entity_id` accepts the old `"note_id"` field name via a serde alias.
 - Both old (`"create"`) and new (`"note_create"`) operation strings are accepted.
 
-`FORMAT_VERSION = 4`. `ensure_format_version()` reads `.keeplin/format_version` on startup;
-older stamps are logged and re-stamped. Migrations to date need no data transformation (serde
-aliases/defaults handle old files at parse time); the stamp is always (re)written so brand-new
-and un-stamped stores are marked immediately.
+### Format migrations (`ensure_format_version`, `FORMAT_VERSION = 5`)
+
+`FsBackend::new` calls `ensure_format_version(fresh)`, a versioned ladder mirroring
+`DbBackend`'s `PRAGMA user_version` runner:
+
+- A **brand-new** store (`fresh` — the device-id file did not exist, so `.keeplin/device_id`
+  was just created) is stamped directly at `FORMAT_VERSION` and runs no migration step; there
+  is no prior data to transform, which matters once a future step does real work.
+- An existing store runs each outstanding step (`apply_format_migration`) in order, stamping
+  `.keeplin/format_version` **after each one**, so a crash mid-ladder resumes from the last
+  completed step. An existing store with no stamp file is treated as format `1`.
+- A stamp **newer** than this build is refused (`StorageError::InvalidState`) rather than
+  opened, matching `DbBackend`'s downgrade guard.
+
+Every historical step (v1→v5) is a no-op that only advances the stamp: the format changes so
+far — the `LogEntry` serde aliases/defaults, versioned associations, resource tombstones, and
+the optional global-log epoch header — are all parse-compatible with older files. A future
+breaking change gets a real body in `apply_format_migration`, guaranteed to run exactly once,
+in order, on the stores that need it.
 
 ## Concurrency — `note_write_lock`
 
@@ -99,13 +114,42 @@ them a consistent view of every log file.
 
 ## Atomic write pattern
 
-All file writes use temp-then-rename so a reader always sees the old or the new file, never a
-half-written one:
+All file writes go through the `atomic_write` helper so a reader always sees the old or the
+new file, never a half-written one, and a failed write leaves the previous contents (and no
+temp litter) behind:
 
 ```rust
-tokio::fs::write(&tmp, bytes).await?;
-tokio::fs::rename(&tmp, &final_path).await?;
+// write {path}.tmp, fsync it, then rename over the destination; remove the tmp on failure.
+let mut file = File::create(&tmp).await?;
+file.write_all(bytes).await?;
+file.sync_all().await?;          // fsync closes the crash window: rename persisted, data not
+drop(file);
+tokio::fs::rename(&tmp, path).await?;
 ```
+
+The `fsync` before the rename closes the power-loss window in which the directory entry is
+persisted but the file's data is not (which would replace a good file with a truncated one).
+On any failure the temp file is best-effort removed. A crash can still orphan a `*.tmp`, so
+`FsBackend::new` runs a **startup sweep** (`sweep_orphan_tmp_files`) that removes stray `*.tmp`
+files from keeplin-managed directories — explicitly leaving Syncthing's own in-flight
+`.syncthing.*.tmp` transfers alone.
+
+## Note listing index — `NoteMetaIndex`
+
+`list_notes`, `list_notes_in_notebook`, `list_starred_notes`, and `notebook_sort_profile`
+would otherwise re-merge **every** note's per-device logs on every call (O(store)). Instead
+they consult a lazily-built in-memory `NoteMetaIndex` (`note_id -> {notebook_id, created_at,
+effective sort_key, is_starred}`, live notes only) for selection/ordering/pagination and
+**materialize only the returned page**.
+
+- **Built once**, on the first listing, from the cheap `meta.msgpack` projections (full-merge
+  fallback only for a peer note that has no projection yet).
+- **Maintained in place** at `persist_note_projection` — the single choke point every local
+  write *and* every sync-applied change passes through — so no invalidation dance is needed.
+- **Freshness:** listings reflect the last-*materialized* state (like `DbBackend`, whose rows
+  only change on `apply_change`), so a Syncthing-replicated peer edit appears after the next
+  sync cycle. Single-note `read_note` stays a **live log merge**, so reading a specific note is
+  always current.
 
 ## `apply_change`
 
@@ -124,6 +168,12 @@ the normal case); **`ResourceDelete` is version-vector resolved too** — `resou
 runs `note_log::resolve` over the resource sidecar's `(vv, effective_ts, last_writer)`, and a
 winning delete soft-deletes the metadata (`deleted_at` set, blob retained) rather than removing
 the resource dir, so a concurrent delete-vs-recreate converges.
+
+A winning notebook/tag/resource **delete for an entity this device has never seen writes a
+minimal tombstone sidecar** instead of doing nothing: a delete can arrive (from a `DbBackend`
+peer) before the entity's own create, and without a persisted tombstone a later stale create
+would resurrect it. (Note deletes need no such handling — their tombstone lives in the
+Syncthing-replicated per-note log, and `apply_change` merely re-materializes.)
 
 Local notebook/tag/resource writes stamp the sidecar's `vv`/`last_writer` (`next_sidecar_vv` /
 `next_resource_vv` load the current vector and increment this device's component), and note↔tag
@@ -152,10 +202,20 @@ vector, so existing stores keep working. `list_resources` skips soft-deleted sid
   version-vector resolved and idempotent, replay converges rather than duplicating or resurrecting
   state. This bounds the log by entity count, not mutation count. `prune_change_journal` stays a
   no-op — compaction, not time-based deletion, does the bounding.
+- **Corruption is reported, never silent.** An unreadable per-device note log
+  (`read_note_logs`), a damaged note↔tag association (`read_assoc_state`), and an undecodable
+  sidecar during global-log compaction (`build_global_snapshot`) are all logged at **error**
+  level with the file path and recovery guidance. Compaction *declines to run* while any
+  sidecar is unreadable, so it never rewrites the journal with an entity silently missing.
+- **`purge_deleted_resources`** frees the `resources/{id}/data` payloads of resources tombstoned
+  before a cutoff (the daemon runs it after sync when `resource_purge_days` is set); the
+  metadata tombstone is always kept so the deletion keeps converging.
+- **Multi-device safety.** `FsBackend::new` scans for Syncthing `*.sync-conflict-*` files — the
+  signature of a replicated `.keeplin/` (two devices sharing one identity) — and logs a
+  prominent error without deleting them. See README "Multi-device setup with Syncthing".
 - FsBackend targets single-user, low-concurrency desktop use; cross-*process* writes to the
-  same store are still unsupported (the lock is per-process).
-- FsBackend targets single-user, low-concurrency desktop use; cross-*process* writes to the
-  same store are still unsupported (the lock is per-process).
+  same store are prevented by the daemon's per-store OS lock (`keeplin-daemon/src/main.rs`),
+  not by `FsBackend` itself.
 
 ## Related files
 

@@ -5,9 +5,11 @@
 When `encryption_password` is set (or `KEEPLIN_ENCRYPTION_PASSWORD` env var), Keeplin
 derives a 32-byte AES-256-GCM key using Argon2id (65536 KiB, 3 iterations, 1 thread).
 The Argon2id salt comes from the `key_salt` config field (or `KEEPLIN_KEY_SALT` env var)
-when set; otherwise it falls back to this device's ID. The salt is not secret, but it
-must be **stable** and **identical on every device that needs to read the same data**
-(see the multi-device note below).
+when set; otherwise it is read from — or on first use derived from this device's ID and
+persisted to — `{data_dir}/.keeplin/key_salt`. The salt is not secret, but it must be
+**stable** and **identical on every device that needs to read the same data** (see the
+multi-device note below), and it is **required for recovery**: back up the salt file (or
+record your `key_salt`) together with your password.
 
 ### Encrypted at rest
 
@@ -100,11 +102,22 @@ both inputs must match for two devices to derive the same key. Because encryptio
 happens before data is written or synced, a mismatch in either value means a peer
 receives ciphertext it cannot decrypt.
 
+Multi-device replication itself has one hard setup requirement: **exclude `.keeplin/`
+from Syncthing** (it holds each device's identity; replicating it makes two devices share
+a writer identity and breaks the single-writer invariant every log relies on). See the
+README's "Multi-device setup with Syncthing" section; the daemon logs a prominent error
+at startup when it finds `*.sync-conflict-*` files, the signature of this misconfiguration.
+
 If `key_salt` is left unset, the salt defaults to the device ID — which is unique per
-installation — so encrypted data is **not** portable to other devices. The daemon logs
-a loud warning at startup when `encryption_password` is set without `key_salt`. For
-encrypted multi-device sync, set the same `key_salt` (at least 8 bytes) on every device.
-Keeplin does not otherwise detect or prevent mismatched-key sync configurations.
+installation — so encrypted data is **not** portable to other devices. The effective
+salt is persisted to `{data_dir}/.keeplin/key_salt` (plaintext; the salt is not secret)
+and that file takes precedence over the device ID on later startups, so **backing up
+that one file plus the password is sufficient to recover the store** — restoring it into
+a fresh `data_dir` re-derives the same key even if `.keeplin/device_id` was lost or
+regenerated. The daemon logs a loud warning at startup when `encryption_password` is set
+without `key_salt`. For encrypted multi-device sync, set the same `key_salt` (at least
+8 bytes) on every device. Keeplin does not otherwise detect or prevent mismatched-key
+sync configurations.
 
 ### Sync delivery guarantee
 
@@ -123,9 +136,13 @@ resource's metadata so the tombstone competes in `note_log::resolve` exactly lik
 delete. This makes concurrent delete-vs-recreate converge on every device instead of depending on
 apply order. Deleted resources are excluded from `list_resources` and read as `NotFound`, and the
 `ResourceDelete` change carries the tombstone's `vv`/`last_writer` so it propagates and resolves
-correctly. The binary payload is **retained on disk / in the database** after a soft delete: the
+correctly. The binary payload is **retained** after a soft delete by default: the
 tombstone must persist so the deletion converges, and log compaction rewrites change history, not
-attachment blobs. Reclaiming a deleted attachment's bytes is left to out-of-band maintenance.
+attachment blobs. Setting `resource_purge_days` reclaims the payloads of tombstones older than
+that many days after each successful sync — the tombstone metadata always survives (only the dead
+bytes are freed), so convergence is unaffected; choose a window comfortably longer than the
+longest any device stays offline, so a concurrent revive on a lagging peer can never need bytes
+that were already purged (and even then, a revive carries or replicates a fresh payload).
 
 ## Known limitations
 
@@ -133,7 +150,11 @@ attachment blobs. Reclaiming a deleted attachment's bytes is left to out-of-band
   authentication token is sent in the first WebSocket message. If the WebSocket URL
   uses `ws://` (unencrypted), the token is transmitted in plaintext on the network.
   Always use a `wss://` URL or place a TLS-terminating reverse proxy in front of the
-  WebSocket endpoint in production deployments.
+  WebSocket endpoint in production deployments. The daemon now **refuses to start** with a
+  plaintext `ws://` `server_url` to a non-loopback host (and with a network-reachable
+  listener that has no auth configured); set `insecure = true` to override when another layer
+  provides the protection. See `Config::security_issues` and the config reference in the
+  README.
 
 - **Mixed-backend sync is not supported.** It is not possible to mix `FsBackend`
   and `DbBackend` devices in the same sync topology. Each backend uses a different

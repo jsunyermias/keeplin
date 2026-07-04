@@ -279,6 +279,32 @@ impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
             .note_backlinks(target_id, page_size, page_token)
             .await
     }
+
+    async fn list_notes_in_notebook(
+        &self,
+        notebook_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        self.inner
+            .list_notes_in_notebook(notebook_id, page_size, page_token)
+            .await
+    }
+
+    async fn list_starred_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        self.inner.list_starred_notes(page_size, page_token).await
+    }
+
+    async fn notebook_sort_profile(
+        &self,
+        notebook_id: Uuid,
+    ) -> Result<crate::storage::NotebookSortProfile, StorageError> {
+        self.inner.notebook_sort_profile(notebook_id).await
+    }
 }
 
 #[async_trait]
@@ -364,6 +390,12 @@ impl<B: StorageBackend> ResourceRepository for CollabBackend<B> {
         page_token: Option<String>,
     ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
         self.inner.list_resources(page_size, page_token).await
+    }
+    async fn purge_deleted_resources(
+        &self,
+        older_than: DateTime<Utc>,
+    ) -> Result<u64, StorageError> {
+        self.inner.purge_deleted_resources(older_than).await
     }
 }
 
@@ -492,7 +524,9 @@ async fn ensure_local(shared: &Arc<Shared>, server_note: &ServerNote) {
         id: server_note.id,
         title: server_note.title.clone(),
         body: String::new(),
-        notebook_id: server_note.notebook_id,
+        // The server may have no notebook for the note; locally the nil UUID
+        // is the Inbox system notebook.
+        notebook_id: server_note.notebook_id.unwrap_or_else(Uuid::nil),
         is_todo: server_note.is_todo,
         todo_due: server_note.todo_due,
         todo_completed: server_note.todo_completed,

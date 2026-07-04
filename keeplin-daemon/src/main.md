@@ -35,16 +35,32 @@ configured exactly like a running daemon.
 
 ```
 serve(cfg)
- 1. Warn if gRPC / HTTP is exposed to the network without authentication
- 2. Construct backend according to (mode, encryption_password):
+ 1. Take the per-store OS lock ({data_dir}/.keeplin/daemon.lock) — a second daemon fails fast
+ 2. Refuse to start on an insecure config (Config::security_issues) unless insecure=true
+ 3. Construct backend according to (mode, encryption_password):
     ┌─────────────────────┬───────────────────────────────────┐
     │ (Offline, None)     │ FsBackend                         │
-    │ (Offline, Some(pw)) │ EncryptedBackend<FsBackend>       │
+    │ (Offline, Some(pw)) │ EncryptedBackend<FsBackend>       │  ← salt via resolve_key_salt
     │ (Server, None)      │ DbBackend                         │
     │ (Server, Some(pw))  │ EncryptedBackend<DbBackend>       │
     └─────────────────────┴───────────────────────────────────┘
- 3. Call run_server(cfg, addr, backend)
+ 4. Call run_server(cfg, addr, backend)
 ```
+
+**One daemon per store (`acquire_store_lock`).** Before touching the data directory, `serve`
+takes an exclusive advisory lock on `{data_dir}/.keeplin/daemon.lock` (via
+`std::fs::File::try_lock`, no extra dependency). The decorator stack holds in-process state
+(write serialisation, the alias index, the FS note-metadata index, the live feed), so a second
+daemon on the same store would silently corrupt it; instead it fails fast with a clear message.
+The kernel releases the lock on process exit — crashes included — so it can never go stale, and
+the `migrate` subcommand locks **both** stores for the copy. The lock file lives inside
+`.keeplin/` (per-device, excluded from replication; its contents are irrelevant to the lock).
+
+**Encryption salt (`resolve_key_salt`).** A configured `key_salt` wins. Otherwise the effective
+salt is read from — or on first use derived from the device ID and **persisted to** —
+`{data_dir}/.keeplin/key_salt`, which then takes precedence on later startups. This makes the
+salt an explicit, backup-friendly file: losing `.keeplin/device_id` no longer makes an encrypted
+store unrecoverable. The daemon logs a prominent backup warning when it falls back.
 
 ### `migrate` subcommand — `run_migrate(from, to)`
 
@@ -79,7 +95,9 @@ plaintext ↔ encrypted (even different keys) transparently. See `keeplin-core/s
 
    `LinkingBackend` sits **outside** encryption so it reads plaintext; `EventBackend` sits
    outside it so the live feed carries the refreshed metadata. The result is one
-   `Arc<dyn StorageBackend>` shared by every surface.
+   `Arc<dyn StorageBackend>` shared by every surface. The outermost `MetricsBackend` is then
+   added, and `ordering::ensure_inbox` runs so the Inbox system notebook ("Pizarra", nil UUID)
+   exists before any request lands (new notes without a notebook go to it).
 2. Creates a `KeeplinServiceServer` wrapping `KeeplinServer::from_shared(backend.clone(), …)`
    and sets `max_decoding/encoding_message_size` from config.
 3. Wraps the service with `InterceptedService` using `validate_basic_auth` (runs on every RPC
@@ -136,11 +154,15 @@ migrate:
 Environment variables take precedence over the config file so that secrets do not need
 to be stored in plaintext on disk.
 
-## Security warnings
+## Startup security enforcement
 
-At startup, if the gRPC address is not a loopback address (`127.*` or `::1`) and
-authentication is not configured, a `WARN`-level tracing message is emitted. This is a
-deliberate reminder that the server is exposed to the network without protection.
+`serve` calls `Config::security_issues` (see `config.md`) before constructing anything. If it
+reports any exposure — a non-loopback `grpc_addr`/`http_addr` without auth, or a plaintext
+`ws://` `server_url` to a remote host — the daemon **refuses to start** with an `anyhow` error
+listing them, unless `insecure = true`, in which case each is logged as a `WARN` and startup
+proceeds. The separate `encryption_password`-without-`key_salt` case remains a non-fatal
+`WARN`. Missing daemon-terminated TLS is not enforced: fronting TLS at a reverse proxy is a
+supported deployment.
 
 ## Design notes
 

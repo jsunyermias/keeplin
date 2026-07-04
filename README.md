@@ -31,6 +31,11 @@ content can be **encrypted at rest** with AES‑256‑GCM.
     stale edit can never resurrect a delete and a stale delete can never clobber a newer edit.
 - **At‑rest encryption:** AES‑256‑GCM with an Argon2id‑derived key (opt‑in).
 - **gRPC API** with HTTP Basic Auth (constant‑time check) and optional TLS.
+- **Pinning, manual ordering, starring, and the Inbox**: every note lives in exactly one
+  notebook (unfiled notes land in the **Inbox**, "Pizarra", auto‑created with the nil
+  UUID); notebooks order manually by `sort_key` with a pinned band (`1–999`, max 999) above
+  the normal band (`≥ 1000`), the Inbox is a flat top‑insert list, and a global star flag
+  is queryable across notebooks — see [Pinning, ordering & the Inbox](#pinning-ordering--the-inbox).
 - **Cursor pagination** on every list endpoint.
 - **Soft delete** (versioned tombstones) for every entity, resources included.
 
@@ -38,12 +43,13 @@ content can be **encrypted at rest** with AES‑256‑GCM.
 
 ## Architecture
 
-A Cargo workspace with two crates:
+A Cargo workspace with three crates:
 
 | Crate | What it is |
 |-------|------------|
 | [`keeplin-core`](keeplin-core) | The library: domain models, the `StorageBackend` supertrait + two implementations (`FsBackend`, `DbBackend`), the `EncryptedBackend` and `LinkingBackend` decorators, the bookmark/link grammar, and the `SyncEngine`. |
-| [`keeplin-daemon`](keeplin-daemon) | The binary: a [tonic](https://github.com/hyperium/tonic) gRPC server (`KeeplinService`) plus an optional [axum](https://github.com/tokio-rs/axum) REST/WebSocket surface, both sharing one backend, with auth and TLS. It adds the outermost `EventBackend` (live‑change feed). |
+| [`keeplin-daemon`](keeplin-daemon) | The binary: a [tonic](https://github.com/hyperium/tonic) gRPC server (`KeeplinService`) plus an optional [axum](https://github.com/tokio-rs/axum) REST/WebSocket surface, both sharing one backend, with auth and TLS. It adds the outermost `MetricsBackend` and `EventBackend` (metrics + live‑change feed). |
+| [`keeplin-relay`](keeplin-relay) | The server‑mode sync hub: a WebSocket broadcast relay that authenticates devices and forwards each device's change batches to the others (server mode's central peer). |
 
 Backends compose as a **decorator stack** — innermost storage outward:
 
@@ -54,7 +60,9 @@ EventBackend( LinkingBackend( [EncryptedBackend]( Fs | Db ) ) )
 For a one‑page tour of how it all fits together, read
 [`ARCHITECTURE.md`](ARCHITECTURE.md). Every `.rs` source file also has a companion `.md`
 describing it in depth (e.g. [`keeplin-core/src/storage/fs.md`](keeplin-core/src/storage/fs.md),
-[`keeplin-core/src/storage/note_log.md`](keeplin-core/src/storage/note_log.md)).
+[`keeplin-core/src/storage/note_log.md`](keeplin-core/src/storage/note_log.md)). When adding or
+changing a file, keep its companion current — the templates and conventions live in
+[`docs/templates/`](docs/templates/).
 
 ### Storage models
 
@@ -83,6 +91,53 @@ differs.
 > ["Conflict resolution is unified on version vectors"](SECURITY.md#conflict-resolution-is-unified-on-version-vectors).
 > You **can** do a one‑shot copy of a store from one backend to the other — see
 > [Migrating between backends](#migrating-between-backends).
+
+### Multi‑device setup with Syncthing
+
+The whole model rests on one invariant: **every log file has exactly one writer**, and the
+writer's identity lives in `{data_dir}/.keeplin/device_id`. That directory is **per‑device
+state and must never be replicated**. If Syncthing copies `.keeplin/` to another device, the
+second device adopts (or fights over) the first one's identity, both devices append to the
+*same* log files, and Syncthing starts producing `*.sync-conflict-*` copies of files that
+were designed never to conflict — silently breaking convergence.
+
+On **every** device, add a [`.stignore`](https://docs.syncthing.net/users/ignoring.html)
+file at the root of the shared folder before the first sync:
+
+```
+// {data_dir}/.stignore — keep per-device state and scratch files local
+.keeplin
+*.tmp
+```
+
+- `.keeplin` holds this device's identity (`device_id`), its read cursors (`offsets/`),
+  its sync watermark, and (when encryption is on without a configured `key_salt`) its
+  persisted key salt. None of it is meaningful on another device.
+- `*.tmp` are the short‑lived halves of atomic writes; excluding them avoids pointless
+  replication churn (never exclude anything else — every other file is real data).
+- For **encrypted** multi‑device sync, do not rely on the per‑device persisted salt: set
+  the **same `key_salt`** explicitly in the config of every device (see
+  [`SECURITY.md`](SECURITY.md#multi-device-encryption-constraint)).
+
+The daemon checks for `*.sync-conflict-*` files at startup and logs a prominent error if
+any exist — that is the signature of a replicated `.keeplin/` or of two daemons sharing an
+identity, and it should be fixed before continuing to write.
+
+### Backups
+
+For a store you care about, back up:
+
+1. **The data directory** (`data_dir`) — notes, notebooks, tags, associations, resources,
+   and the per‑device logs. Any file‑level backup tool works; the on‑disk files are only
+   ever replaced atomically, so a snapshot is always internally consistent per file.
+2. **`.keeplin/key_salt`** (or your configured `key_salt` value) **and your encryption
+   password** — with encryption on, the data is unrecoverable without both. The salt is
+   not secret; keep a copy wherever you keep the password.
+
+A second Syncthing device is a live replica, which protects against device loss — but it
+is **not** a backup against accidental deletion (deletes replicate too). Syncthing's
+[file versioning](https://docs.syncthing.net/users/versioning.html) or a periodic snapshot
+of `data_dir` covers that case.
 
 ---
 
@@ -140,6 +195,29 @@ export KEEPLIN_AUTH_PASSWORD="…"
 
 The daemon serves `KeeplinService` on `grpc_addr` and shuts down cleanly on `Ctrl‑C`.
 
+**One daemon per store.** The daemon takes an OS-level exclusive lock on
+`{data_dir}/.keeplin/daemon.lock`; a second daemon (or a `migrate` run) against the same
+`data_dir` refuses to start instead of silently corrupting in-process write
+serialisation. The lock is released automatically on exit — crashes included — so it can
+never go stale.
+
+### Run a sync relay (server mode)
+
+Server‑mode devices sync through a central [`keeplin-relay`](keeplin-relay) — a WebSocket
+broadcast hub that authenticates each device and forwards its change batches to the others:
+
+```bash
+KEEPLIN_RELAY_TOKEN="a-long-random-secret" \
+  ./target/release/keeplin-relay --listen 0.0.0.0:9000
+```
+
+Point each device's `auth_token` at the same secret and its `server_url` at the relay. The
+relay keeps a **durable buffer** (`--data-dir`, default `./keeplin-relay-data`): a device
+that was offline is caught up on reconnect with every change batch it missed, up to
+`--retention-days` (default 30). The relay speaks plain `ws://`; terminate TLS at a reverse
+proxy and use `wss://` — the daemon refuses a non‑loopback `ws://` `server_url`. See
+[`keeplin-relay/README.md`](keeplin-relay/README.md).
+
 ---
 
 ## Configuration reference
@@ -156,14 +234,50 @@ variables shown.
 | `grpc_addr` | `127.0.0.1:50051` | gRPC listen address. |
 | `http_addr` | `none` | Optional HTTP listen address for the REST/JSON API + WebSocket feed (e.g. `127.0.0.1:50052`). Plain HTTP — front with a TLS proxy. Same Basic‑Auth credentials apply. |
 | `tls_cert_path` / `tls_key_path` | `none` | PEM cert/key; set both to enable TLS. |
-| `max_message_size` | 32 MiB | Max gRPC message size (in/out). |
+| `max_message_size` | 32 MiB | Max gRPC message size (in/out); also the raw‑body cap for `POST /api/resources`. |
+| `max_upload_bytes` | 1 GiB | Max assembled size of a **streamed** upload (`UploadResource` RPC / `POST /api/resources/upload`); `0` disables the cap. |
 | `journal_retention_days` | `30` | Days of change‑journal history to keep; pruned after each sync (`0` disables; no‑op for the filesystem backend). |
+| `resource_purge_days` | `0` (keep forever) | After each sync, free the binary payloads of resources soft‑deleted more than this many days ago. Tombstone metadata is always kept (deletion keeps converging); only the dead bytes are reclaimed. Set comfortably above the longest a device stays offline. |
 | `encryption_password` | `none` | Enables at‑rest encryption. Env: `KEEPLIN_ENCRYPTION_PASSWORD`. |
-| `key_salt` | `none` (→ device ID) | Argon2id salt (≥ 8 bytes); set the **same** value on all synced devices for portable encryption. Env: `KEEPLIN_KEY_SALT`. |
-| `auth_username` / `auth_password` | `none` | gRPC Basic Auth; when both are set, every call must authenticate. Env: `KEEPLIN_AUTH_USERNAME` / `KEEPLIN_AUTH_PASSWORD`. |
+| `key_salt` | `none` (→ persisted per‑store salt, device‑ID fallback) | Argon2id salt (≥ 8 bytes); set the **same** value on all synced devices for portable encryption. When unset, the effective salt is persisted to `{data_dir}/.keeplin/key_salt` — **back that file up**; it is required (with the password) to recover encrypted data. Env: `KEEPLIN_KEY_SALT`. |
+| `auth_username` / `auth_password` | `none` | gRPC/REST Basic Auth. Enabled only when **both** are set and non-empty; then every call must authenticate. A partial (one-only) or empty-string pair is rejected at startup (the daemon refuses to start) so auth is never silently disabled. Env: `KEEPLIN_AUTH_USERNAME` / `KEEPLIN_AUTH_PASSWORD`. |
+| `insecure` | `false` | Downgrade the startup security checks (below) from **errors** to warnings. Only for deployments where another layer provides the protection. |
 
-The daemon logs a loud warning if it binds a non‑loopback address without auth, or if
+**Secure by default.** The daemon **refuses to start** in a configuration that would expose
+data or credentials on an untrusted network — a non‑loopback `grpc_addr`/`http_addr` with no
+auth configured, or a plaintext `ws://` `server_url` to a remote host (which would leak
+`auth_token` in transit). Fix the config, or set `insecure = true` if an isolated network,
+mTLS, or a fronting proxy that also enforces auth already protects it. Terminating TLS at a
+reverse proxy is fully supported: the daemon does **not** require its own TLS on the listeners,
+so missing daemon TLS is never a start‑up error. It still logs a (non‑fatal) warning if
 encryption is on without `key_salt`.
+
+---
+
+## Pinning, ordering & the Inbox
+
+Every note belongs to exactly one notebook: a note created without choosing one lands in
+the **Inbox** — a system notebook titled **"Pizarra"** with the fixed nil UUID
+(`00000000-0000-0000-0000-000000000000`), auto‑created at startup and protected from
+deletion. Old data migrates transparently: notes stored without a notebook read as Inbox
+notes on every backend.
+
+Within a notebook, notes order by `(sort_key ASC, id ASC)`:
+
+- **Normal notebooks** have two bands: `1–999` is the **pinned** band (shown first, at
+  most 999 pinned notes; pinning picks the lowest free key, unpinning appends to the
+  normal band) and `≥ 1000` the **normal** band (new notes append at the end).
+- **The Inbox** is one flat, fully manual list with no pinning; new notes are inserted at
+  the **top**.
+- Reordering (`ReorderNotes` / `PUT /api/notes/:id/sort-key`) moves a note **within its
+  current band**; keys outside the band are rejected.
+- Notes written before this feature carry `sort_key 0` ("never positioned") and order at
+  the start of the normal band — no data rewrite needed.
+
+**Starring** is a global, orthogonal flag: it never moves the note, and
+`ListStarredNotes` / `GET /api/notes/starred` returns every starred note across all
+notebooks. All of it syncs as ordinary note fields (version‑vector resolved); old peers
+ignore the new fields safely.
 
 ---
 
@@ -171,11 +285,16 @@ encryption is on without `key_salt`.
 
 The service is defined in
 [`keeplin-daemon/proto/keeplin.proto`](keeplin-daemon/proto/keeplin.proto). `KeeplinService`
-provides CRUD + paginated list RPCs for **notes, notebooks, tags, and resources**, the
+provides CRUD + paginated list RPCs for **notes, notebooks, tags, and resources**, a
+**client‑streaming `UploadResource`** RPC for large attachments (a metadata frame followed by
+payload chunks, so no single message holds the whole file), the
 note↔tag association RPCs, the **alias/link** RPCs (`SetNoteAlias`, `SetNotebookAlias`,
 `AddNoteLink`, `RemoveNoteLink`, `ListBacklinks`, `ResolveReference`,
-`ListAliasConflicts` — see [Bookmarks & links](#bookmarks--links)), and a server‑streaming **`Sync`** RPC that
-reports progress through one sync cycle. Authentication is HTTP Basic Auth via the
+`ListAliasConflicts` — see [Bookmarks & links](#bookmarks--links)), the **pinning /
+ordering / starring** RPCs (`ListNotesInNotebook`, `ListStarredNotes`, `PinNote`,
+`UnpinNote`, `StarNote`, `UnstarNote`, `ReorderNotes` — see
+[Pinning, ordering & the Inbox](#pinning-ordering--the-inbox)), and a server‑streaming
+**`Sync`** RPC that reports progress through one sync cycle. Authentication is HTTP Basic Auth via the
 `authorization` metadata header: `Basic base64(user:password)`.
 
 ---
@@ -189,30 +308,45 @@ base64(user:password)` header (only required when `auth_username`/`auth_password
 
 | Method & path | Purpose |
 |---------------|---------|
-| `GET /api/health` | Liveness probe (`200 ok`). |
+| `GET /api/health` | Liveness probe (`200 ok`); no auth, does not touch storage. |
+| `GET /api/ready` | Readiness probe: one backend read → `200 ready` or `503` when storage is unreachable; no auth. |
+| `GET /api/metrics` | Prometheus metrics exposition (`text/plain`); no auth. |
 | `GET /api/notes?page_size=&page_token=` | List notes (cursor pagination → `{ items, next_page_token }`). |
 | `POST /api/notes` | Create a note. |
 | `GET/PUT/DELETE /api/notes/:id` | Read / update / soft‑delete a note. |
 | `GET /api/notes/:id/tags` | List a note's tags. |
-| `PUT/DELETE /api/notes/:note_id/tags/:tag_id` | Add / remove a note↔tag association. |
+| `PUT/DELETE /api/notes/:note_id/tags/:tag_id` | Add / remove a note↔tag association. Adding returns `404` when the note or tag is missing or deleted (no dangling associations). |
 | `GET/POST /api/notebooks`, `GET/PUT/DELETE /api/notebooks/:id` | Notebook CRUD. |
 | `GET/POST /api/tags`, `GET/PUT/DELETE /api/tags/:id` | Tag CRUD. |
-| `GET/POST /api/resources`, `GET/PUT/DELETE /api/resources/:id` | Resource metadata CRUD. |
+| `GET/POST /api/resources`, `GET/PUT/DELETE /api/resources/:id` | Resource metadata CRUD (create = raw-body upload, capped at `max_message_size`). |
+| `POST /api/resources/upload?title=&file_name=` | **Streaming upload** for large attachments: the body is read incrementally up to `max_upload_bytes` (not `max_message_size`); over the cap → `413`. |
 | `GET /api/resources/:id/data` | Download the raw resource bytes. |
 | `PUT /api/notes/:id/alias`, `PUT /api/notebooks/:id/alias` | Set/clear an alias (`{ "alias": "…" \| null }`). |
 | `GET/POST /api/notes/:id/links` | List / add a link (`POST {"raw":"#…"}`, manual link). |
 | `DELETE /api/notes/:id/links/:index` | Remove the link at `index`. |
 | `GET /api/notes/:id/backlinks?page_size=&page_token=` | Notes that link **to** this note (cursor pagination). |
+| `GET /api/notebooks/:id/notes?page_size=&page_token=` | The notebook's notes in their **manual order** (pinned band first); use the nil UUID for the Inbox. |
+| `GET /api/notes/starred?page_size=&page_token=` | Every starred note, across all notebooks. |
+| `POST/DELETE /api/notes/:id/pin` | Pin (into the `1–999` band, max 999 per notebook) / unpin (to the end of the normal band). |
+| `POST/DELETE /api/notes/:id/star` | Star / unstar (global flag; never moves the note). |
+| `PUT /api/notes/:id/sort-key` | Reorder within the note's current band (`{ "sort_key": … }`). |
 | `GET /api/links/resolve?ref=#…` | Resolve a reference → `{ "note_id", "bookmark_number" }`. |
 | `GET /api/aliases/conflicts` | Aliases shared by 2+ live notes/notebooks (sync collisions). |
-| `POST /api/sync` | Run one sync cycle; returns `{ "applied": <n> }`. |
+| `POST /api/sync` | Run one sync cycle; returns `{ "applied": <n> }`. Prunes journal history older than `journal_retention_days` afterwards, like the gRPC `Sync` RPC. |
 | `GET /api/ws` | Upgrade to the WebSocket live‑change feed (see below). |
 
 Resource upload is a raw request body: `POST /api/resources?title=&file_name=` with the
 file bytes as the body and the `Content-Type` header as the MIME type. The request body is
-capped at `max_message_size` (32 MiB by default), matching the gRPC limit. Reads of a
-soft‑deleted note, notebook, or tag return `404` (the gRPC `Get` RPCs still return the
-tombstone for sync). Errors map to `404` (not found), `409` (duplicate alias), `422`
+capped at `max_message_size` (32 MiB by default), matching the gRPC limit. For attachments
+larger than that, `POST /api/resources/upload` streams the body incrementally up to
+`max_upload_bytes` (1 GiB by default) — the gRPC equivalent is the client‑streaming
+`UploadResource` RPC (a metadata frame, then payload chunks), so no single message needs to
+hold the whole file. (The assembled payload is still buffered in memory before it reaches
+storage; true end‑to‑end streaming to disk/DB is a later refinement.) Reads **and
+updates** of a soft‑deleted note, notebook, or tag return `404` (the gRPC `Get` RPCs still
+return the tombstone for sync, but the `Update` RPCs answer `NOT_FOUND` too) — an edit can
+never silently revive a deleted entity; revival happens only through sync, when a causal
+edit made after the delete arrives. Errors map to `404` (not found), `409` (duplicate alias), `422`
 (corrupted data / invalid link reference), `400` (invalid UUID/body), and `500` otherwise.
 
 The HTTP listener is **plain HTTP** — terminate TLS at a reverse proxy in production, exactly
@@ -331,7 +465,7 @@ cargo fmt --all --check
 The suite includes unit tests for the version‑vector merge, integration tests for both
 backends and the encryption layer, two‑device convergence tests, and an **end‑to‑end
 WebSocket sync test** (`keeplin-core/tests/ws_sync.rs`) that stands up an in‑process relay.
-CI (`.github/workflows/ci.yml`) runs check, test, clippy, and `cargo audit`.
+CI (`.github/workflows/ci.yml`) runs fmt, test, clippy (`--all-targets`), and `cargo audit`.
 
 ---
 
@@ -351,12 +485,27 @@ filesystem note model is well‑tested and converges deterministically.
 **Not yet production‑ready** as a multi‑user, server‑backed service. Outstanding work,
 roughly in priority order:
 
-1. **No production sync server** ships in this repo — server mode needs a real relay
-   (the WebSocket path is now covered end‑to‑end by a test‑only relay).
-2. `DbBackend` resolves note conflicts by last‑write‑wins (no version‑vector merge).
-3. Operability: metrics, health checks, and a schema/format **migration path**.
-4. Performance at scale: filesystem reads materialize from logs (no compaction yet).
-5. Hardening: `wss://`/TLS by default, chunked upload for large attachments.
+1. **Sync relay ships** as [`keeplin-relay`](keeplin-relay) — a WebSocket hub with token
+   auth **and a durable per‑device buffer**: every change batch is journaled, and a device
+   that was offline is caught up on reconnect from its own delivery cursor (covered
+   end‑to‑end by tests driving real `DbBackend`s, plus buffer/restart/cursor tests). A
+   device offline longer than the relay's retention window (default 30 days) still needs a
+   peer online to converge.
+2. Operability: liveness/readiness probes and Prometheus metrics ship (`GET /api/health`,
+   `/api/ready`, `/api/metrics`), and both backends now carry a **versioned migration path**
+   (`DbBackend` via `PRAGMA user_version`, `FsBackend` via a stamped format ladder, each with
+   a downgrade guard).
+3. Performance at scale: `FsBackend` note listings are served from a lazily‑built
+   in‑memory metadata index (maintained on every write and sync cycle), so they no longer
+   re‑merge every note's logs — only the returned page is materialized. Listings reflect
+   the last‑materialized state (like `DbBackend`), so a peer edit appears after the next
+   sync cycle; single‑note `read_note` stays a live merge. Full‑text search and richer
+   queries are still absent.
+4. Hardening: the daemon is **secure by default** (refuses to start on an exposed config,
+   see [Configuration reference](#configuration-reference)) and supports **streamed uploads**
+   for large attachments (`UploadResource` RPC / `POST /api/resources/upload`); remaining work
+   is `wss://`/TLS terminated *by the daemon itself* (today it is fronted by a proxy) and true
+   end‑to‑end streaming of upload payloads to storage.
 
 ---
 

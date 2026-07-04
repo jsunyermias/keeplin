@@ -41,13 +41,28 @@ All methods are `async` (via `async-trait`) and return `Result<T, StorageError>`
 | `read_note(id) -> Note` | Fetch by id; `NotFound` if absent or soft-deleted |
 | `update_note(note) -> Note` | Overwrite an existing note |
 | `delete_note(id) -> ()` | Soft-delete (set `deleted_at`) |
-| `list_notes(page_size, page_token) -> (Vec<Note>, Option<String>)` | Cursor-paginated list of live notes (`page_size = 0` → default 100) |
+| `list_notes(page_size, page_token) -> (Vec<Note>, Option<String>)` | Cursor-paginated list of live notes, `(created_at, id)` order (`page_size = 0` → default 100, clamped to `MAX_PAGE_SIZE`) |
+| `list_notes_in_notebook(notebook_id, page_size, page_token)` | One notebook's live notes in **manual order** (`effective sort_key`, then id); the nil UUID is the Inbox |
+| `list_starred_notes(page_size, page_token)` | Every live **starred** note, across all notebooks, `(created_at, id)` order |
+| `notebook_sort_profile(notebook_id) -> NotebookSortProfile` | Compact `{pinned_keys, min_key, max_normal_key}` summary the `ordering` placement rules read instead of materialising the notebook |
 | `note_backlinks(target_id, page_size, page_token) -> (Vec<Note>, Option<String>)` | Live notes that link **to** `target_id`, paginated |
 
 `note_backlinks` has a **default implementation** on the trait: it collects notes page by
 page and keeps those whose `links` resolve to `target_id`, paginating via the `paginate_notes`
 helper. `FsBackend` inherits this scan; `DbBackend` overrides it with an indexed query against
 its `note_links` projection table. Both share the same cursor shape.
+
+The listing/ordering methods (`list_notes_in_notebook`, `list_starred_notes`,
+`notebook_sort_profile`) back the pinning/ordering/starring feature; each backend implements
+them natively (`DbBackend` with the `(notebook_id, sort_key, id)` index, `FsBackend` from an
+in-memory metadata index). The placement rules that *decide* `sort_key`/`is_pinned` live in
+`keeplin-core/src/ordering.rs` (`pin_note`, `unpin_note`, `reorder_note`, `place_new_note`,
+`reconcile_notebook_move`, etc.), not here.
+
+`NotebookSortProfile` (defined in this file) is a plaintext summary of one notebook's live
+sort keys — `pinned_keys` (the used `1..=999` slots), `min_key`, and `max_normal_key` — built
+by `from_effective_keys`. `ordering` reads it to pick the next pin slot or the end of the
+normal band without loading any note bodies.
 
 ## Notebooks, Tags
 
@@ -57,7 +72,7 @@ association methods:
 
 | Method | Description |
 |--------|-------------|
-| `add_note_tag(note_tag) -> ()` | Attach a tag to a note (idempotent) |
+| `add_note_tag(note_tag) -> ()` | Attach a tag to a note (idempotent); `NotFound` when the note or tag is missing or soft-deleted — no dangling associations via the API (`apply_change` skips this check: sync delivery order is unordered) |
 | `remove_note_tag(note_id, tag_id) -> ()` | Detach a tag |
 | `list_note_tags(note_id, page_size, page_token) -> (Vec<Tag>, Option<String>)` | Tags on a note, paginated |
 
@@ -69,6 +84,7 @@ association methods:
 | `read_resource(id) -> (Resource, Vec<u8>)` | Retrieve metadata and bytes together |
 | `delete_resource(id) -> ()` | Soft-delete a resource (versioned tombstone; blob retained on both backends) |
 | `list_resources(page_size, page_token) -> (Vec<Resource>, Option<String>)` | Metadata only, paginated |
+| `purge_deleted_resources(older_than) -> u64` | Reclaim the **binary payloads** of resources tombstoned before `older_than`; the tombstone metadata is always kept, so convergence is unaffected. Returns how many payloads were freed |
 
 ## Synchronisation (`SyncBackend`)
 

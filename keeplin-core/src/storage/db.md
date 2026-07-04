@@ -17,11 +17,13 @@ WebSocket is used to push those changes to the server and pull changes from othe
 
 ## Database schema
 
-All tables are created idempotently by `run_migrations` on first connection.
+The schema is applied by a **versioned migration runner** keyed on SQLite's
+`PRAGMA user_version` (see "Migrations" below); `run_migrations` runs only the steps a
+database is behind on.
 
 | Table | Purpose |
 |-------|---------|
-| `notes` | Note rows: soft-delete (`deleted_at`), `alias`, `bookmarks`/`links` (JSON), and the conflict-resolution `vv` (JSON version vector) + `last_writer` |
+| `notes` | Note rows: soft-delete (`deleted_at`), `alias`, `bookmarks`/`links` (JSON), the conflict-resolution `vv` (JSON version vector) + `last_writer`, and the ordering columns `is_pinned`/`is_starred`/`sort_key` with the `(notebook_id, sort_key, id)` index |
 | `notebooks` | Notebook rows with soft-delete column, `alias`, and `vv`/`last_writer` |
 | `tags` | Tag rows with soft-delete column and `vv`/`last_writer` |
 | `note_tags` | Many-to-many association (PK `(note_id, tag_id)`), **versioned**: `updated_at`, `deleted_at` (tombstone), `vv`, `last_writer` so add/remove converge like other entities |
@@ -31,12 +33,38 @@ All tables are created idempotently by `run_migrations` on first connection.
 | `device` | Single-row table holding the stable device UUID |
 | `entity_changes` | Append-only change journal (see below) |
 
-The `alias`, `bookmarks`, and `links` columns are added by `add_column_if_missing` after the
-`CREATE TABLE IF NOT EXISTS` statements, so pre-existing databases gain them without a manual
-migration. There is deliberately **no `UNIQUE` index on `alias`**: under at-rest encryption the
+There is deliberately **no `UNIQUE` index on `alias`**: under at-rest encryption the
 stored alias is per-write ciphertext (so an index could not detect duplicates anyway), and a
 hard constraint would reject a duplicate alias arriving through sync, breaking the sync cycle.
 Alias uniqueness is instead enforced in `LinkingBackend` against decrypted values.
+
+### Migrations (`run_migrations`, `PRAGMA user_version`)
+
+`DbBackend::new` calls `run_migrations`, which advances the schema to `SCHEMA_VERSION` and
+records progress in SQLite's built-in `PRAGMA user_version`:
+
+- The stored version is read once. An **up-to-date** database does no schema work at all —
+  unlike the previous code, which re-ran the whole `CREATE TABLE IF NOT EXISTS` batch and every
+  `ALTER TABLE … ADD COLUMN` (swallowing "duplicate column") on every startup.
+- Only the **outstanding** steps run, each in its own `BEGIN IMMEDIATE … COMMIT`. SQLite DDL is
+  transactional and `PRAGMA user_version` set inside the transaction rolls back with it, so a
+  crash never leaves a step half-applied with the stamp advanced; the next startup retries it.
+- A database whose `user_version` is **newer** than this build is refused
+  (`StorageError::InvalidState`) rather than opened, so a downgrade cannot run against a schema
+  it does not understand.
+
+Version **1** is the baseline: the complete current schema. The pre-framework additive
+`ALTER`s live inside it as `add_column_if_missing` guards, so a database created by an older
+build (already carrying those columns, `user_version` still `0`) is stamped `1` untouched.
+A new step is a new arm in `apply_migration` plus a bump of `SCHEMA_VERSION`.
+
+Version **2** (`migrate_v2_ordering`) adds the pinning/ordering/starring columns: it
+`add_column_if_missing`s `is_pinned`/`is_starred`/`sort_key`, rewrites any `NULL notebook_id`
+to the nil-UUID Inbox (so `notebook_id` is never null again, matching the non-optional model
+field), and creates the `(notebook_id, sort_key, id)` index that backs `list_notes_in_notebook`
+and `notebook_sort_profile`. `list_notes_in_notebook` orders by
+`CASE WHEN sort_key = 0 THEN 1000 ELSE sort_key END` so the legacy `0` sentinel sorts at the
+start of the normal band without a data rewrite.
 
 ### `note_links` table — indexed backlinks
 
@@ -81,16 +109,21 @@ so the receiving device can store the file without a separate gRPC call.
 ### `DbBackend::new(db_path, server_url, auth_token) -> Result<Self, StorageError>`
 **What it does:** Opens (or creates) a LibSQL database at `db_path`, runs all migrations,
 reads or generates the device ID, and attempts to open a WebSocket connection to
-`server_url`. If `server_url` is empty or the connection fails, the backend starts in
-offline mode (all local CRUD operations still work; sync operations are no-ops or return
-empty results).  
+`server_url`. If `server_url` is empty or the connection fails, the backend starts
+disconnected: all local CRUD operations still work. The two cases then differ for sync:
+with an **empty `server_url`** (no relay configured) `send_changes` is a deliberate no-op
+and `receive_changes` returns empty; with a **configured but unreachable relay**,
+`send_changes` of a non-empty batch returns `StorageError::WebSocket` so the sync cycle
+fails and its watermark does not advance — the changes are re-sent once the relay is
+reachable (see "Sending changes" below).  
 **Parameters:**
 - `db_path` — filesystem path to the `.db` file
 - `server_url` — WebSocket URL such as `ws://host:port/sync`; empty string = offline
 - `auth_token` — bearer token sent as the first WebSocket message after connecting  
 **Returns:** A ready-to-use backend.  
-**Errors:** `StorageError::Database` if migrations fail; `StorageError::Io` if the path
-is not writable.
+**Errors:** `StorageError::Database` if migrations fail; `StorageError::InvalidState` if the
+database's `user_version` is newer than this build supports (see "Migrations"); `StorageError::Io`
+if the path is not writable.
 
 All other methods implement `StorageBackend` — see `storage/backend.md`.
 
@@ -134,13 +167,25 @@ can use it to ignore duplicate batches from a retrying client.
 
 Retry strategy: up to three retries with exponential backoff (2 s, 4 s, 8 s). Before
 each retry, `ensure_ws()` is called to re-establish the WebSocket connection if it
-dropped. If all retries fail, `StorageError::WebSocket` is returned.
+dropped. If all retries fail — or the connection cannot be (re-)established at all, which
+fails fast without sleeping through the backoff — `StorageError::WebSocket` is returned.
+
+**An undeliverable batch must error, never silently succeed.** `run_sync` only advances
+the last-sync watermark after `send_changes` returns `Ok`; if the send were a no-op while
+disconnected, the watermark would move past changes the relay never received and
+`get_changes_since` would skip them on every future cycle — a permanent, silent sync gap.
+By erroring instead, the failed cycle leaves the watermark unchanged and the same batch is
+re-collected and re-sent on the next cycle (covered end-to-end by
+`failed_send_keeps_watermark_and_changes_are_resent_after_recovery` in
+`tests/ws_sync.rs`). The one exception is an **empty `server_url`**: no relay is
+configured, the backend is deliberately local-only, and skipping the send is correct.
 
 ### Receiving changes (`receive_changes`)
 The client reads all available WebSocket messages in a non-blocking loop, stopping
 after 100 ms of silence (`drain_timeout = 100 ms`). Each text message is deserialised
-as a `Vec<Change>` and appended to the result. Binary messages and errors are ignored
-(logged as warnings).
+as a `Vec<Change>` and appended to the result. Binary messages, errors, and malformed
+text frames are ignored (logged as warnings) — one bad frame from the relay must not
+abort the sync cycle or block the well-formed batches behind it.
 
 ## `apply_change` — all 13 variants
 
@@ -148,17 +193,24 @@ as a `Vec<Change>` and appended to the result. Binary messages and errors are ig
 |---------|-----|
 | `NoteCreate` | `INSERT OR REPLACE INTO notes …` (shares the arm with `NoteUpdate`) |
 | `NoteUpdate` | `INSERT OR REPLACE INTO notes …` |
-| `NoteDelete` | `UPDATE notes SET deleted_at=?, updated_at=?, vv=?, last_writer=? WHERE id = ?` |
+| `NoteDelete` | `UPDATE notes SET deleted_at=?, updated_at=?, vv=?, last_writer=? WHERE id = ?`; if it hits **0 rows** (note unknown locally), `INSERT OR IGNORE` a minimal tombstone |
 | `NotebookCreate` | `INSERT OR REPLACE INTO notebooks …` |
 | `NotebookUpdate` | `INSERT OR REPLACE INTO notebooks …` |
-| `NotebookDelete` | `UPDATE notebooks SET deleted_at=?, updated_at=?, vv=?, last_writer=? WHERE id = ?` |
+| `NotebookDelete` | `UPDATE notebooks … WHERE id = ?`; 0 rows → `INSERT OR IGNORE` a minimal tombstone |
 | `TagCreate` | `INSERT OR REPLACE INTO tags …` |
 | `TagUpdate` | `INSERT OR REPLACE INTO tags …` |
-| `TagDelete` | `UPDATE tags SET deleted_at=?, updated_at=?, vv=?, last_writer=? WHERE id = ?` |
+| `TagDelete` | `UPDATE tags … WHERE id = ?`; 0 rows → `INSERT OR IGNORE` a minimal tombstone |
 | `NoteTagAdd` | version-vector `resolve`, then `INSERT OR REPLACE` the present state (`deleted_at` NULL) |
 | `NoteTagRemove` | version-vector `resolve`, then `INSERT OR REPLACE` a tombstone (`deleted_at` set) |
 | `ResourceCreate` | `INSERT OR IGNORE INTO resources (…, data) VALUES (…, ?)` with `data = payload.unwrap_or_default()` |
-| `ResourceDelete` | version-vector `resolve`, then `UPDATE resources SET deleted_at=?, vv=?, last_writer=? WHERE id = ?` (soft-delete tombstone; BLOB retained) |
+| `ResourceDelete` | version-vector `resolve`, then `UPDATE resources … WHERE id = ?` (BLOB retained); 0 rows → `INSERT OR IGNORE` a minimal metadata tombstone |
+
+The four `*Delete` arms insert a **minimal tombstone** when the `UPDATE` matches no row: a
+delete can arrive before the entity itself (out-of-order relay delivery, a device catching up).
+Without the stored tombstone a later stale `*Create`/`*Update` would see no local state and
+resurrect the entity; with it, that stale write loses in `resolve` against the tombstone's
+`(vv, last_writer)`. The insert holds the same per-apply write lock, so the `UPDATE`-hit-0
+check is race-free.
 
 All operations are idempotent by design. The create/update/delete arms for notes, notebooks,
 and tags are guarded by **version-vector conflict resolution** (`incoming_wins` → `resolve`,
@@ -206,8 +258,10 @@ files); `DbBackend` keeps the current row plus its `vv`. See `SECURITY.md`.
   (resolved through `note_log::resolve`) rather than running a physical `DELETE`, so a concurrent
   delete-vs-recreate converges. `list_resources` filters `deleted_at IS NULL` and `read_resource`
   returns `NotFound` for a tombstoned row. The BLOB in the `data` column is **retained** after a
-  soft delete (the tombstone must persist for convergence); reclaiming that space is left to
-  out-of-band maintenance.
+  soft delete (the tombstone must persist for convergence). `purge_deleted_resources(older_than)`
+  reclaims it out of band — it `UPDATE`s `data = NULL` for tombstones older than the cutoff
+  while keeping the row (and its `vv`/`last_writer`), so the deletion goes on converging; the
+  daemon runs it after a successful sync when `resource_purge_days` is set.
 
 ## Related files
 

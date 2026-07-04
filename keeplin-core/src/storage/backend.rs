@@ -20,6 +20,8 @@ use crate::{
     models::{Change, Note, NoteTag, Notebook, Resource, Tag},
 };
 
+use super::SortableRfc3339;
+
 // ── NoteRepository ────────────────────────────────────────────────────────────
 
 /// CRUD operations for [`Note`] entities.
@@ -55,7 +57,8 @@ pub trait NoteRepository: Send + Sync + 'static {
     /// Returns a page of notes that have not been soft-deleted, ordered by
     /// `(created_at ASC, id ASC)`.
     ///
-    /// `page_size = 0` uses the backend default of 100. `page_token = None` starts
+    /// `page_size = 0` uses [`super::DEFAULT_PAGE_SIZE`]; values above
+    /// [`super::MAX_PAGE_SIZE`] are clamped to it. `page_token = None` starts
     /// from the beginning. The returned `Option<String>` is the opaque cursor for the
     /// next page; `None` means there are no further pages.
     async fn list_notes(
@@ -63,6 +66,36 @@ pub trait NoteRepository: Send + Sync + 'static {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError>;
+
+    /// Returns a page of the live notes of one notebook, ordered by
+    /// `(`[`Note::effective_sort_key`]` ASC, id ASC)` — the notebook's manual order, with
+    /// pinned notes (`sort_key 1..=999`) first. Pagination semantics match
+    /// [`list_notes`](Self::list_notes); the cursor is `"<sort_key>|<uuid>"` over the
+    /// *effective* key.
+    async fn list_notes_in_notebook(
+        &self,
+        notebook_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError>;
+
+    /// Returns a page of every live **starred** note, across all notebooks (the Inbox
+    /// included), ordered by `(created_at ASC, id ASC)`. Pagination semantics match
+    /// [`list_notes`](Self::list_notes).
+    async fn list_starred_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError>;
+
+    /// A compact ordering summary of one notebook's live notes, consumed by the placement
+    /// rules in [`crate::ordering`] (new-note position, pin, unpin) so they never have to
+    /// materialize the notebook. All keys are *effective* keys (the legacy `0` sentinel
+    /// already mapped — see [`Note::effective_sort_key`]).
+    async fn notebook_sort_profile(
+        &self,
+        notebook_id: Uuid,
+    ) -> Result<NotebookSortProfile, StorageError>;
 
     /// Returns a page of the live notes that link **to** `target_id` (its backlinks), ordered
     /// by `(created_at ASC, id ASC)`. Pagination semantics match [`list_notes`](Self::list_notes):
@@ -103,6 +136,39 @@ pub trait NoteRepository: Send + Sync + 'static {
     }
 }
 
+/// A compact summary of one notebook's live-note ordering, computed natively by each
+/// backend (an indexed scan of sort keys — never the note bodies). All keys are
+/// *effective* keys: the legacy `0` sentinel is already mapped to
+/// [`Note::DEFAULT_SORT_KEY`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NotebookSortProfile {
+    /// The keys currently used in the pinned band (`1..=999`), sorted ascending.
+    pub pinned_keys: Vec<u32>,
+    /// The smallest effective key in the notebook, or `None` when it has no live notes.
+    pub min_key: Option<u32>,
+    /// The largest effective key in the normal band (`>= 1000`), or `None` when the
+    /// normal band is empty.
+    pub max_normal_key: Option<u32>,
+}
+
+impl NotebookSortProfile {
+    /// Build a profile from an iterator of the notebook's live effective sort keys.
+    pub fn from_effective_keys(keys: impl IntoIterator<Item = u32>) -> Self {
+        let mut profile = Self::default();
+        for key in keys {
+            profile.min_key = Some(profile.min_key.map_or(key, |min| min.min(key)));
+            if (1..1000).contains(&key) {
+                profile.pinned_keys.push(key);
+            } else {
+                profile.max_normal_key =
+                    Some(profile.max_normal_key.map_or(key, |max| max.max(key)));
+            }
+        }
+        profile.pinned_keys.sort_unstable();
+        profile
+    }
+}
+
 /// Paginate an already-`(created_at, id)`-ordered slice of notes with a `"created_at|id"`
 /// cursor (the same format used by the backends' `list_*` methods). Used by the default
 /// [`NoteRepository::note_backlinks`] implementation.
@@ -111,17 +177,13 @@ fn paginate_notes(
     page_size: u32,
     token: Option<&str>,
 ) -> (Vec<Note>, Option<String>) {
-    let limit = if page_size == 0 {
-        100
-    } else {
-        page_size as usize
-    };
+    let limit = super::effective_page_size(page_size) as usize;
     let start = match token.filter(|t| !t.is_empty()) {
         Some(cursor) => match cursor.split_once('|') {
             Some((ts, id_str)) => {
                 let cursor_id = Uuid::parse_str(id_str).ok();
                 items.partition_point(|n| {
-                    let item_ts = n.created_at.to_rfc3339();
+                    let item_ts = n.created_at.to_sortable_rfc3339();
                     item_ts.as_str() < ts
                         || (item_ts.as_str() == ts && cursor_id.is_some_and(|c| n.id <= c))
                 })
@@ -135,7 +197,7 @@ fn paginate_notes(
     let page: Vec<Note> = remaining.into_iter().take(limit).collect();
     let next = if has_more {
         page.last()
-            .map(|n| format!("{}|{}", n.created_at.to_rfc3339(), n.id))
+            .map(|n| format!("{}|{}", n.created_at.to_sortable_rfc3339(), n.id))
     } else {
         None
     };
@@ -209,6 +271,11 @@ pub trait TagRepository: Send + Sync + 'static {
     ///
     /// Must be idempotent: attaching a tag that is already attached must not
     /// return an error.
+    ///
+    /// Returns [`StorageError::NotFound`] when the note or the tag does not exist or is
+    /// soft-deleted — the API must not create dangling associations. (`apply_change`
+    /// deliberately skips this validation: sync delivery order is not guaranteed, so an
+    /// association may arrive before its note or tag.)
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError>;
 
     /// Detaches the tag identified by `tag_id` from the note identified by `note_id`.
@@ -267,6 +334,22 @@ pub trait ResourceRepository: Send + Sync + 'static {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Resource>, Option<String>), StorageError>;
+
+    /// Reclaim the binary payloads of resources whose soft-delete tombstone is older
+    /// than `older_than`, returning how many payloads were freed.
+    ///
+    /// The tombstone **metadata is always retained** — it must keep competing in conflict
+    /// resolution so the deletion converges — only the dead bytes are released. Reads of
+    /// a tombstoned resource were already `NotFound`, so no read path changes.
+    ///
+    /// The cutoff exists because a *concurrent* revive on a peer that has not synced yet
+    /// can still win resolution and legitimately need the payload; purging only
+    /// tombstones older than a generous window (the daemon uses days, mirroring journal
+    /// retention) makes that race practically closed, and a revive that does land after a
+    /// purge is made whole by the revive itself, which always carries (or replicates) a
+    /// fresh payload.
+    async fn purge_deleted_resources(&self, older_than: DateTime<Utc>)
+        -> Result<u64, StorageError>;
 }
 
 // ── SyncBackend ───────────────────────────────────────────────────────────────

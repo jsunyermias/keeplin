@@ -21,9 +21,33 @@ together provide the complete storage layer and re-exports the `StorageBackend` 
 ```rust
 pub use backend::{
     StorageBackend, NoteRepository, NotebookRepository, TagRepository,
-    ResourceRepository, SyncBackend,
+    ResourceRepository, SyncBackend, NotebookSortProfile,
 };
 ```
+
+`NotebookSortProfile` is the compact per-notebook ordering summary (`pinned_keys`, `min_key`,
+`max_normal_key`) the `ordering` placement rules read; each backend builds it natively.
+
+## Page-size clamping — `effective_page_size`
+
+Every list method sizes its page through `effective_page_size(page_size)`: `0` means the
+`DEFAULT_PAGE_SIZE` (100), and any value above `MAX_PAGE_SIZE` (1000) is clamped down to it.
+`page_size` arrives from the network as an arbitrary `u32`, so the cap stops a single request
+for `u32::MAX` rows from making a backend materialize the whole store in one response (a
+memory-exhaustion DoS); the reply's cursor lets a well-behaved client keep paging.
+
+## `SortableRfc3339` — fixed-precision timestamps for text comparison
+
+The backends store timestamps as RFC 3339 TEXT and order them lexicographically (SQLite
+`WHERE created_at > ?` / `ORDER BY`, and the `"<ts>|<id>"` keyset cursors). Plain
+`DateTime::to_rfc3339()` emits a *variable* number of fractional digits (3/6/9, whatever
+the instant needs — platform clock precision leaks into the format), so equal instants can
+be unequal strings and the cursor's `created_at = ?` equality branch silently fails across
+precisions. The crate-private `SortableRfc3339::to_sortable_rfc3339` extension pins the
+shape — always nine fractional digits, `+00:00` offset — and is what `db.rs`, `fs.rs`, and
+`backend.rs` use for every stored/compared timestamp. Rows written before this existed keep
+their variable-precision text; ordering against them remains chronologically consistent
+(proven by the `lexicographic_order_matches_chronological_even_mixed_with_old_format` test).
 
 ## Design notes
 
