@@ -118,9 +118,11 @@ pub struct Config {
     pub key_salt: Option<String>,
 
     /// Username for gRPC client authentication (HTTP Basic Auth).
-    /// When both auth_username and auth_password are set, every gRPC call must
-    /// include an `authorization: Basic <base64(user:pass)>` metadata header.
-    /// This applies equally in offline and server mode.
+    /// Auth is enabled only when both auth_username and auth_password are set and non-empty
+    /// (see [`Config::auth_enabled`]); then every gRPC call must include an
+    /// `authorization: Basic <base64(user:pass)>` metadata header. A partial (one-only) or
+    /// empty-string pair is rejected at startup by [`Config::validate_auth`] rather than
+    /// silently disabling auth. This applies equally in offline and server mode.
     /// Prefer the KEEPLIN_AUTH_USERNAME environment variable over storing the
     /// username here.
     #[serde(default)]

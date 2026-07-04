@@ -240,7 +240,7 @@ variables shown.
 | `resource_purge_days` | `0` (keep forever) | After each sync, free the binary payloads of resources soft‑deleted more than this many days ago. Tombstone metadata is always kept (deletion keeps converging); only the dead bytes are reclaimed. Set comfortably above the longest a device stays offline. |
 | `encryption_password` | `none` | Enables at‑rest encryption. Env: `KEEPLIN_ENCRYPTION_PASSWORD`. |
 | `key_salt` | `none` (→ persisted per‑store salt, device‑ID fallback) | Argon2id salt (≥ 8 bytes); set the **same** value on all synced devices for portable encryption. When unset, the effective salt is persisted to `{data_dir}/.keeplin/key_salt` — **back that file up**; it is required (with the password) to recover encrypted data. Env: `KEEPLIN_KEY_SALT`. |
-| `auth_username` / `auth_password` | `none` | gRPC Basic Auth; when both are set, every call must authenticate. Env: `KEEPLIN_AUTH_USERNAME` / `KEEPLIN_AUTH_PASSWORD`. |
+| `auth_username` / `auth_password` | `none` | gRPC/REST Basic Auth. Enabled only when **both** are set and non-empty; then every call must authenticate. A partial (one-only) or empty-string pair is rejected at startup (the daemon refuses to start) so auth is never silently disabled. Env: `KEEPLIN_AUTH_USERNAME` / `KEEPLIN_AUTH_PASSWORD`. |
 | `insecure` | `false` | Downgrade the startup security checks (below) from **errors** to warnings. Only for deployments where another layer provides the protection. |
 
 **Secure by default.** The daemon **refuses to start** in a configuration that would expose

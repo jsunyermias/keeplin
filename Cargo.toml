@@ -9,6 +9,9 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+# Minimum supported Rust version. Floor set by the daemon's per-store lock, which uses the
+# `std::fs::File::try_lock` / `TryLockError` API stabilised in Rust 1.89.
+rust-version = "1.89"
 authors = ["Keeplin Contributors"]
 license = "MIT"
 

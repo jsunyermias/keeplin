@@ -12,7 +12,7 @@ layer.
 
 | Type | Kind | Description |
 |------|------|-------------|
-| `Note` | struct | A user-created note, optionally inside a notebook, optionally a to-do |
+| `Note` | struct | A user-created note; always in exactly one notebook (the Inbox / nil UUID when unfiled), optionally a to-do |
 | `Notebook` | struct | A named collection that groups notes |
 | `Tag` | struct | A short label that can be attached to any number of notes |
 | `NoteTag` | struct | A many-to-many link between one note and one tag |
