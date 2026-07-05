@@ -206,6 +206,10 @@ impl NoteLines {
             });
         }
         // Surplus new lines are inserted after the last paired/prefix line.
+        // Inserts resolve against the ORDER entity, so each one must advance
+        // the device's component past the previous — a single edit that adds
+        // several lines carries strictly increasing vectors (the server would
+        // drop the second insert as a replay otherwise).
         let mut anchor = if paired > 0 {
             Some(old_mid[paired - 1])
         } else if prefix > 0 {
@@ -213,9 +217,10 @@ impl NoteLines {
         } else {
             None
         };
+        let mut order_vv = self.vv.clone();
         for content in &new_mid[paired..] {
-            let mut vv = self.vv.clone();
-            bump(&mut vv, device);
+            bump(&mut order_vv, device);
+            let vv = order_vv.clone();
             let line_id = Uuid::new_v4();
             ops.push(LineOp::Insert {
                 after_line_id: anchor,

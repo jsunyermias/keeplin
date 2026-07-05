@@ -472,6 +472,11 @@ async fn run_connection(shared: Arc<Shared>, mut out: mpsc::UnboundedReceiver<Co
     }
 }
 
+/// How often a live connection re-runs note discovery, so notes created on
+/// other devices — or newly shared with this user — get joined without a
+/// reconnect.
+const REDISCOVER_EVERY: Duration = Duration::from_secs(15);
+
 async fn connect_once(
     shared: &Arc<Shared>,
     out: &mut mpsc::UnboundedReceiver<CollabClientMsg>,
@@ -480,26 +485,19 @@ async fn connect_once(
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await?;
     tracing::info!("collab: connected");
 
-    // Discover own + shared notes and join every one. Unknown notes are
-    // created locally (empty body — the Welcome snapshot fills it in).
-    let listing: Vec<ServerNote> = shared
-        .auth(shared.http.get(format!("{}/api/notes", shared.cfg.api_url)))
-        .send()
-        .await?
-        .json()
-        .await?;
-    for server_note in &listing {
-        ensure_local(shared, server_note).await;
-        let join = serde_json::to_string(&CollabClientMsg::Join {
-            note_id: server_note.id,
-        })?;
-        ws.send(Message::Text(join)).await?;
-    }
+    let mut joined: HashSet<Uuid> = HashSet::new();
+    discover_and_join(shared, &mut ws, &mut joined).await?;
+
+    let mut rediscover = tokio::time::interval(REDISCOVER_EVERY);
+    rediscover.tick().await; // consume the immediate first tick
 
     loop {
         tokio::select! {
             queued = out.recv() => {
                 let Some(msg) = queued else { return Ok(()) };
+                if let CollabClientMsg::Join { note_id } = &msg {
+                    joined.insert(*note_id);
+                }
                 ws.send(Message::Text(serde_json::to_string(&msg)?)).await?;
             }
             incoming = ws.next() => {
@@ -510,9 +508,44 @@ async fn connect_once(
                     }
                 }
             }
+            _ = rediscover.tick() => {
+                discover_and_join(shared, &mut ws, &mut joined).await?;
+            }
         }
     }
 }
+
+/// Discover own + shared notes and join the ones this connection has not
+/// joined yet. Unknown notes are created locally (empty body — the Welcome
+/// snapshot fills it in).
+async fn discover_and_join(
+    shared: &Arc<Shared>,
+    ws: &mut WsStream,
+    joined: &mut HashSet<Uuid>,
+) -> anyhow::Result<()> {
+    let listing: Vec<ServerNote> = shared
+        .auth(shared.http.get(format!("{}/api/notes", shared.cfg.api_url)))
+        .send()
+        .await?
+        .json()
+        .await?;
+    for server_note in &listing {
+        if joined.contains(&server_note.id) {
+            continue;
+        }
+        ensure_local(shared, server_note).await;
+        let join = serde_json::to_string(&CollabClientMsg::Join {
+            note_id: server_note.id,
+        })?;
+        ws.send(Message::Text(join)).await?;
+        joined.insert(server_note.id);
+    }
+    Ok(())
+}
+
+/// The client-side WebSocket stream type (plain TCP or TLS).
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Make sure a note discovered on the server exists locally.
 async fn ensure_local(shared: &Arc<Shared>, server_note: &ServerNote) {
