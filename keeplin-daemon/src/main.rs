@@ -226,7 +226,8 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
                 Some(collab_cfg) => {
                     let collab = CollabBackend::new(backend, collab_cfg)?;
                     let starter = collab_starter(&collab);
-                    run_server_with(&cfg, addr, collab, Some(starter)).await?;
+                    let handle = collab.handle();
+                    run_server_with(&cfg, addr, collab, Some(starter), Some(handle)).await?;
                 }
                 None => run_server(&cfg, addr, backend).await?,
             }
@@ -243,7 +244,8 @@ async fn serve(cfg: Config) -> anyhow::Result<()> {
                 Some(collab_cfg) => {
                     let collab = CollabBackend::new(enc, collab_cfg)?;
                     let starter = collab_starter(&collab);
-                    run_server_with(&cfg, addr, collab, Some(starter)).await?;
+                    let handle = collab.handle();
+                    run_server_with(&cfg, addr, collab, Some(starter), Some(handle)).await?;
                 }
                 None => run_server(&cfg, addr, enc).await?,
             }
@@ -430,7 +432,7 @@ async fn run_server<B: keeplin_core::storage::StorageBackend>(
     addr: std::net::SocketAddr,
     backend: B,
 ) -> anyhow::Result<()> {
-    run_server_with(cfg, addr, backend, None).await
+    run_server_with(cfg, addr, backend, None, None).await
 }
 
 #[allow(clippy::result_large_err)]
@@ -439,6 +441,7 @@ async fn run_server_with<B: keeplin_core::storage::StorageBackend>(
     addr: std::net::SocketAddr,
     backend: B,
     stack_hook: Option<StackHook>,
+    collab_handle: Option<keeplin_core::collab::CollabHandle>,
 ) -> anyhow::Result<()> {
     // Decorator stack (innermost → outermost): the storage backend, then (optionally)
     // `EncryptedBackend` already applied by the caller, then `LinkingBackend` which derives
@@ -504,6 +507,7 @@ async fn run_server_with<B: keeplin_core::storage::StorageBackend>(
         let http_addr: std::net::SocketAddr = http_addr.parse()?;
         let state = Arc::new(rest::AppState {
             backend: backend.clone(),
+            collab: collab_handle.clone(),
             events: events.clone(),
             metrics: metrics.clone(),
             max_body_bytes: cfg.max_message_size,
