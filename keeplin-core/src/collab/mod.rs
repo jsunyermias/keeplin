@@ -105,6 +105,29 @@ impl Shared {
         self.suppress.lock().await.remove(&note.id);
         result
     }
+
+    /// Upload a resource's binary payload to keeplin-srv out-of-band, so the
+    /// bytes never ride the relay journal (they are stripped from the relayed
+    /// `ResourceCreate`). Best effort: a failure is logged and the metadata
+    /// still syncs; the blob can be re-uploaded by a later read/retry.
+    async fn upload_blob(&self, id: Uuid, data: Vec<u8>) {
+        let url = format!("{}/api/resources/{}/data", self.cfg.api_url, id);
+        if let Err(e) = self.auth(self.http.put(url)).body(data).send().await {
+            tracing::warn!(error = %e, resource = %id, "collab: resource blob upload failed");
+        }
+    }
+
+    /// Fetch a resource's binary payload from keeplin-srv (the source of truth
+    /// for blobs). `None` on any failure, so the caller falls back to whatever
+    /// the local cache holds.
+    async fn download_blob(&self, id: Uuid) -> Option<Vec<u8>> {
+        let url = format!("{}/api/resources/{}/data", self.cfg.api_url, id);
+        let resp = self.auth(self.http.get(url)).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        resp.bytes().await.ok().map(|b| b.to_vec())
+    }
 }
 
 /// An ungeneric, cloneable view of the collaborative session for the daemon's
@@ -418,10 +441,24 @@ impl<B: StorageBackend> ResourceRepository for CollabBackend<B> {
         resource: Resource,
         data: Vec<u8>,
     ) -> Result<Resource, StorageError> {
-        self.inner.create_resource(resource, data).await
+        let created = self.inner.create_resource(resource, data.clone()).await?;
+        // Upload the binary to keeplin-srv out-of-band; the metadata syncs over
+        // the relay (with the blob stripped, see `get_changes_since`).
+        self.shared.upload_blob(created.id, data).await;
+        Ok(created)
     }
     async fn read_resource(&self, id: Uuid) -> Result<(Resource, Vec<u8>), StorageError> {
-        self.inner.read_resource(id).await
+        let (resource, data) = self.inner.read_resource(id).await?;
+        // A blob that never arrived over the relay (metadata synced from another
+        // device) is not in the local cache; fetch it from the server, the
+        // source of truth for resource binaries.
+        if data.is_empty() && resource.size > 0 {
+            if let Some(bytes) = self.shared.download_blob(id).await {
+                return Ok((resource, bytes));
+            }
+            tracing::warn!(resource = %id, "collab: resource blob unavailable from server");
+        }
+        Ok((resource, data))
     }
     async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError> {
         self.inner.delete_resource(id).await
@@ -453,10 +490,16 @@ impl<B: StorageBackend> SyncBackend for CollabBackend<B> {
         self.inner.update_sync_time(ts).await
     }
     /// Note changes are owned by the collaborative channel; the relay only
-    /// carries notebooks, tags and resources.
+    /// carries notebooks, tags and resources. Resource binaries are stripped:
+    /// they are uploaded out-of-band (`create_resource` → `PUT …/data`) and the
+    /// server holds them, so they must not bloat the relay journal.
     async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError> {
         let changes = self.inner.get_changes_since(since).await?;
-        Ok(changes.into_iter().filter(|c| !is_note_change(c)).collect())
+        Ok(changes
+            .into_iter()
+            .filter(|c| !is_note_change(c))
+            .map(strip_resource_blob)
+            .collect())
     }
     async fn apply_change(&self, change: Change) -> Result<(), StorageError> {
         if is_note_change(&change) {
@@ -480,6 +523,19 @@ fn is_note_change(change: &Change) -> bool {
         change,
         Change::NoteCreate { .. } | Change::NoteUpdate { .. } | Change::NoteDelete { .. }
     )
+}
+
+/// Drop the inline binary from a `ResourceCreate` before it is relayed: with
+/// keeplin-srv the blob is uploaded out-of-band and served from the server, so
+/// carrying it in the change would duplicate it and bloat the journal.
+fn strip_resource_blob(change: Change) -> Change {
+    match change {
+        Change::ResourceCreate { resource, .. } => Change::ResourceCreate {
+            resource,
+            data: None,
+        },
+        other => other,
+    }
 }
 
 // ── Connection task ──────────────────────────────────────────────────────────

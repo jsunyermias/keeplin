@@ -11,7 +11,10 @@ use keeplin_core::collab::protocol::{
 };
 use keeplin_core::collab::state::NoteLines;
 use keeplin_core::collab::{device_id_from_token, CollabBackend, CollabConfig};
-use keeplin_core::storage::{db::DbBackend, NoteRepository, StorageBackend};
+use keeplin_core::models::{Change, Resource};
+use keeplin_core::storage::{
+    db::DbBackend, NoteRepository, ResourceRepository, StorageBackend, SyncBackend,
+};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use uuid::Uuid;
@@ -70,8 +73,17 @@ fn ops_replay_identically_on_another_mirror() {
 /// accepted and ignored.
 async fn mock_server(note_id: Uuid) -> SocketAddr {
     use axum::extract::ws::{Message as AxMsg, WebSocket, WebSocketUpgrade};
-    use axum::routing::{any, get};
+    use axum::extract::Path;
+    use axum::http::StatusCode;
+    use axum::routing::{any, get, put};
     use axum::Json;
+    use std::collections::HashMap;
+    use tokio::sync::Mutex as TokioMutex;
+
+    // In-memory resource-blob store, exercised by the out-of-band upload path
+    // (`PUT /api/resources/:id/data`) and lazy download (`GET …/data`).
+    type Blobs = Arc<TokioMutex<HashMap<Uuid, Vec<u8>>>>;
+    let blobs: Blobs = Arc::new(TokioMutex::new(HashMap::new()));
 
     let (relay, _) = broadcast::channel::<(u64, String)>(64);
     let seeded = NoteLinesSnapshot {
@@ -102,6 +114,29 @@ async fn mock_server(note_id: Uuid) -> SocketAddr {
             .post(|| async { Json(serde_json::json!({"ok": true})) }),
         )
         .route("/api/notes/:id", any(|| async { "{}" }))
+        .route(
+            "/api/resources/:id/data",
+            {
+                let put_blobs = blobs.clone();
+                let get_blobs = blobs.clone();
+                put(move |Path(id): Path<Uuid>, body: axum::body::Bytes| {
+                    let blobs = put_blobs.clone();
+                    async move {
+                        blobs.lock().await.insert(id, body.to_vec());
+                        Json(serde_json::json!({ "ok": true }))
+                    }
+                })
+                .get(move |Path(id): Path<Uuid>| {
+                    let blobs = get_blobs.clone();
+                    async move {
+                        match blobs.lock().await.get(&id) {
+                            Some(bytes) => (StatusCode::OK, bytes.clone()),
+                            None => (StatusCode::NOT_FOUND, Vec::new()),
+                        }
+                    }
+                })
+            },
+        )
         .route(
             "/api/ws",
             get(move |ws: WebSocketUpgrade| {
@@ -244,6 +279,48 @@ async fn edits_travel_between_two_daemons() {
     note.body = "hola\ndesde B".into();
     b.update_note(note).await.unwrap();
     wait_body(&a, note_id, "hola\ndesde B").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resource_blob_uploads_out_of_band_and_downloads_on_read() {
+    let note_id = Uuid::new_v4();
+    let addr = mock_server(note_id).await;
+
+    // Device A creates a resource: the binary is uploaded to the server, and
+    // the relayed ResourceCreate carries no `data`.
+    let a = client(addr, "dev-a").await;
+    let bytes = b"opaque-ciphertext-bytes".to_vec();
+    let resource = a
+        .create_resource(
+            Resource::new("photo", "image/png", "photo.png", bytes.len() as u64),
+            bytes.clone(),
+        )
+        .await
+        .unwrap();
+
+    // The change A would relay has the blob stripped.
+    let changes = a
+        .get_changes_since(chrono::DateTime::from_timestamp(0, 0).unwrap())
+        .await
+        .unwrap();
+    let create = changes
+        .iter()
+        .find(|c| matches!(c, Change::ResourceCreate { resource: r, .. } if r.id == resource.id))
+        .expect("a ResourceCreate is queued");
+    match create {
+        Change::ResourceCreate { data, .. } => {
+            assert!(data.is_none(), "binary is stripped from the relayed change")
+        }
+        _ => unreachable!(),
+    }
+
+    // Device B receives only the metadata (stripped change), so its local blob
+    // is empty; read_resource must fetch it from the server.
+    let b = client(addr, "dev-b").await;
+    b.apply_change(create.clone()).await.unwrap();
+    let (got_meta, got_bytes) = b.read_resource(resource.id).await.unwrap();
+    assert_eq!(got_meta.id, resource.id);
+    assert_eq!(got_bytes, bytes, "B downloaded the blob from the server");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
