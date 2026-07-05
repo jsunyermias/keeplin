@@ -19,7 +19,6 @@ Three crates:
 |-------|------|----------|
 | `keeplin-core` | library | domain models, the two storage backends, at-rest encryption, the bookmark/link layer, and the sync engine |
 | `keeplin-daemon` | binary | the gRPC + REST + WebSocket servers, auth, config, metrics, and the process wiring |
-| `keeplin-relay` | binary (+lib) | the server-mode sync hub: a WebSocket broadcast relay with token auth that forwards each device's change batches to the others |
 
 ---
 
@@ -150,10 +149,11 @@ metadata index (built from the note projections, maintained on every write and s
 receive remote `Change`s → apply each (`apply_change` is **idempotent**) → record the new
 watermark → optionally prune old journal entries (and, when `resource_purge_days` is set,
 reclaim old resource payloads). `FsBackend` "sends" passively (Syncthing copies its logs);
-`DbBackend` sends/receives over WebSocket with retry, through the `keeplin-relay` hub. The relay
-authenticates each device, forwards its change batches to the other connected devices, and
-**journals every frame** so a device that was offline is caught up on reconnect from its own
-per-device cursor. The two backends' `Change` channels are **not** interchangeable for live
+`DbBackend` sends/receives over WebSocket with retry, through the central
+[keeplin-srv](https://github.com/jsunyermias/keeplin-srv) server. It authenticates each
+device, forwards its change batches to the user's other devices, and **journals every
+batch** so a device that was offline is caught up on reconnect from its own per-device
+cursor. The two backends' `Change` channels are **not** interchangeable for live
 sync, so they don't cross-sync directly.
 
 **Migration** (`keeplin-core/src/migrate.rs`) is the one-shot escape hatch: `migrate(src, dst)`

@@ -544,7 +544,7 @@ impl DbBackend {
     ///
     /// The `device_id` identifies this installation to the relay so it can keep a
     /// per-device delivery cursor and replay, on reconnect, every change batch this
-    /// device missed while offline (see `keeplin-relay`'s durable buffer). A relay that
+    /// device missed while offline (see keeplin-srv's durable change journal). A relay that
     /// predates the field simply ignores it.
     async fn connect_ws(url: &str, token: &str, device_id: &str) -> Result<WsStream, StorageError> {
         let (mut stream, _) = connect_async(url).await?;
