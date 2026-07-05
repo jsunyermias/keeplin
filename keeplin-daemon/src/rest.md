@@ -21,6 +21,7 @@ coexist.
 | `max_upload_bytes: usize` | cap for the streamed `POST /resources/upload` route, which bypasses `max_body_bytes` |
 | `journal_retention_days: u64` | days of change-journal history to keep; `POST /sync` prunes older rows |
 | `auth_username` / `auth_password` | Basic-Auth credentials; auth is required only when both are `Some` and non-empty (a partial/empty pair is rejected at startup, so it never reaches the middleware) |
+| `collab: Option<CollabHandle>` | presence/cursor view of the collaborative session (server mode with `collab_api_url` set); `None` when collaboration is disabled — the presence/cursor routes then return empty / `503` |
 
 ## Endpoints
 
@@ -44,6 +45,8 @@ metrics); every other route is behind auth and counted by `status_mw`.
 | `POST/DELETE /notes/:id/star` | star / unstar (global flag; never moves the note) |
 | `PUT /notes/:id/sort-key` | reorder within the note's current band (`{ "sort_key": … }`) |
 | `GET /notebooks/:id/notes?page_size=&page_token=` | the notebook's notes in **manual order** (pinned band first); nil UUID = the Inbox |
+| `GET /notes/:id/presence` | who is inside the note's live collaborative session and where their caret is (empty when collaboration is disabled or nobody is in) |
+| `PUT /notes/:id/cursor` | publish this device's caret position; the server fans updated presence out to every participant (`503` when collaboration is disabled) |
 | `GET /links/resolve?ref=#…` | resolve a reference → `{ note_id, bookmark_number }` |
 | `GET /aliases/conflicts` | aliases shared by 2+ live entities (sync collisions) |
 | `GET/POST/PUT/DELETE /notebooks`, `/tags` | notebook / tag CRUD (deleting the Inbox / `Pizarra` → `400`) |
@@ -101,6 +104,21 @@ is exceeded. That route carries a per-route `DefaultBodyLimit::disable()` so the
 `UploadResource` RPC (see `server.md`). The assembled payload is still buffered in memory before
 `create_resource`; streaming it to storage is a later refinement.
 
+## Collaborative presence (`GET /notes/:id/presence`, `PUT /notes/:id/cursor`)
+
+When the daemon runs in server mode with `collab_api_url` set, `AppState.collab` holds a
+`CollabHandle` — a cloneable view of the collaborative session that owns the WebSocket to
+keeplin-srv (see `collab/mod.md`). These two routes are the frontend's window onto that session:
+
+- `note_presence` returns the latest presence list the server broadcast for the note (participants
+  and their carets), or an empty list when `collab` is `None`.
+- `set_cursor` publishes this device's caret through `CollabHandle::send_cursor`; the server
+  rebroadcasts `Presence` to everyone. Returns `503` when `collab` is `None`.
+
+Note **bodies** are not edited through this router when collaboration is on — they flow line-by-line
+over the collab WebSocket (via `CollabBackend`), not through the note `PUT`. These endpoints only
+expose presence/cursors; the note CRUD routes above still serve title/metadata and the local body.
+
 ## Tests
 
 Because the daemon is a binary crate, integration tests can't reach these internals, so tests
@@ -114,3 +132,4 @@ live **inline** (`#[cfg(test)] mod tests`) and drive the router in-process with
 - `keeplin-daemon/src/metrics.rs` — the counter registry and `MetricsBackend` behind `/metrics`.
 - `keeplin-daemon/src/auth.rs` — the shared Basic-Auth check.
 - `keeplin-core/src/linking.rs` — the bookmark/link/alias helpers the routes call.
+- `keeplin-core/src/collab/mod.md` — the `CollabHandle`/`CollabBackend` behind the presence/cursor routes.
