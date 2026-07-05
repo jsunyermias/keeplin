@@ -52,6 +52,9 @@ use uuid::Uuid;
 pub struct AppState {
     /// The storage backend, shared (as a trait object) with the gRPC server.
     pub backend: Arc<dyn StorageBackend>,
+    /// Presence/cursor view of the collaborative session (server mode with
+    /// `collab_api_url` set); `None` when collaboration is disabled.
+    pub collab: Option<keeplin_core::collab::CollabHandle>,
     /// Sender for the live change feed. Each WebSocket connection subscribes to a fresh
     /// receiver; mutations published here by the daemon's `EventBackend` are streamed out.
     pub events: broadcast::Sender<Change>,
@@ -98,6 +101,8 @@ pub fn router(state: Shared) -> Router {
             "/notes/:id",
             get(get_note).put(update_note).delete(delete_note),
         )
+        .route("/notes/:id/presence", get(note_presence))
+        .route("/notes/:id/cursor", put(set_cursor))
         .route("/notes/:id/tags", get(list_note_tags))
         .route(
             "/notes/:note_id/tags/:tag_id",
@@ -868,6 +873,7 @@ mod tests {
         let fs = FsBackend::new(&path).await.unwrap();
         let (events, _rx) = broadcast::channel(16);
         Arc::new(AppState {
+            collab: None,
             backend: Arc::new(fs),
             events,
             metrics: Arc::new(crate::metrics::Metrics::new()),
@@ -890,6 +896,7 @@ mod tests {
         let fs = FsBackend::new(&path).await.unwrap();
         let (events, _rx) = broadcast::channel(16);
         Arc::new(AppState {
+            collab: None,
             backend: Arc::new(LinkingBackend::new(fs)),
             events,
             metrics: Arc::new(crate::metrics::Metrics::new()),
@@ -1070,6 +1077,7 @@ mod tests {
         let db = DbBackend::new(path, "", "").await.unwrap();
         let (events, _rx) = broadcast::channel(16);
         let st: Shared = Arc::new(AppState {
+            collab: None,
             backend: Arc::new(db),
             events,
             metrics: Arc::new(crate::metrics::Metrics::new()),
@@ -1133,6 +1141,7 @@ mod tests {
         let metrics = Arc::new(Metrics::new());
         let (events, _rx) = broadcast::channel(16);
         Arc::new(AppState {
+            collab: None,
             backend: Arc::new(MetricsBackend::new(fs, metrics.clone())),
             events,
             metrics,
@@ -1297,6 +1306,7 @@ mod tests {
         let fs = FsBackend::new(&path).await.unwrap();
         let (events, _rx) = broadcast::channel(16);
         let st: Shared = Arc::new(AppState {
+            collab: None,
             backend: Arc::new(fs),
             events,
             metrics: Arc::new(crate::metrics::Metrics::new()),
@@ -1513,6 +1523,7 @@ mod tests {
         let (events, _rx) = broadcast::channel(16);
         let backend = Arc::new(EventBackend::new(fs, events.clone()));
         Arc::new(AppState {
+            collab: None,
             backend,
             events,
             metrics: Arc::new(crate::metrics::Metrics::new()),
@@ -1573,5 +1584,48 @@ mod tests {
             }
             other => panic!("expected NoteCreate, got {other:?}"),
         }
+    }
+}
+
+// ── Collaborative presence (design §7.3) ─────────────────────────────────────
+
+/// `GET /api/notes/:id/presence` — who is inside the note's live session and
+/// where their caret is. Empty when collaboration is disabled or nobody is in.
+async fn note_presence(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+) -> Json<Vec<keeplin_core::collab::protocol::PresenceInfo>> {
+    match &s.collab {
+        Some(collab) => Json(collab.presence(id).await),
+        None => Json(Vec::new()),
+    }
+}
+
+#[derive(Deserialize)]
+struct CursorBody {
+    line_id: Uuid,
+    column: usize,
+}
+
+/// `PUT /api/notes/:id/cursor` — publish this device's caret position; the
+/// server fans the updated presence out to every participant. 503 when
+/// collaboration is disabled.
+async fn set_cursor(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<CursorBody>,
+) -> StatusCode {
+    match &s.collab {
+        Some(collab) => {
+            collab.send_cursor(
+                id,
+                keeplin_core::collab::protocol::Cursor {
+                    line_id: body.line_id,
+                    column: body.column,
+                },
+            );
+            StatusCode::NO_CONTENT
+        }
+        None => StatusCode::SERVICE_UNAVAILABLE,
     }
 }

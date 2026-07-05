@@ -136,6 +136,23 @@ async fn mock_server(note_id: Uuid) -> SocketAddr {
                                                 ))
                                                 .await;
                                         }
+                                        Ok(CollabClientMsg::Cursor { note_id, cursor }) => {
+                                            // Echo a presence list carrying the
+                                            // cursor straight back to the sender.
+                                            let presence = CollabServerMsg::Presence {
+                                                note_id,
+                                                users: vec![keeplin_core::collab::protocol::PresenceInfo {
+                                                    user_id: "u".into(),
+                                                    display_name: "mock".into(),
+                                                    cursor: Some(cursor),
+                                                }],
+                                            };
+                                            let _ = socket
+                                                .send(AxMsg::Text(
+                                                    serde_json::to_string(&presence).unwrap(),
+                                                ))
+                                                .await;
+                                        }
                                         Ok(CollabClientMsg::Op { note_id, ops }) => {
                                             let fan = CollabServerMsg::Op {
                                                 server_seq: 1,
@@ -227,4 +244,37 @@ async fn edits_travel_between_two_daemons() {
     note.body = "hola\ndesde B".into();
     b.update_note(note).await.unwrap();
     wait_body(&a, note_id, "hola\ndesde B").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cursor_updates_flow_into_presence() {
+    let note_id = Uuid::new_v4();
+    let addr = mock_server(note_id).await;
+    let a = client(addr, "dev-a").await;
+    wait_body(&a, note_id, "").await;
+
+    let handle = a.handle();
+    assert!(handle.presence(note_id).await.is_empty());
+
+    let line = Uuid::new_v4();
+    handle.send_cursor(
+        note_id,
+        keeplin_core::collab::protocol::Cursor {
+            line_id: line,
+            column: 7,
+        },
+    );
+
+    let mut seen = Vec::new();
+    for _ in 0..50 {
+        seen = handle.presence(note_id).await;
+        if seen
+            .iter()
+            .any(|p| p.cursor.as_ref().is_some_and(|c| c.column == 7))
+        {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("presence never carried the cursor: {seen:?}");
 }

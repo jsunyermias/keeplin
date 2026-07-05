@@ -72,6 +72,9 @@ struct Shared {
     /// Note ids currently being written *from* the server, so the decorator
     /// does not diff them back into ops (no echo).
     suppress: Mutex<HashSet<Uuid>>,
+    /// Latest presence list per note, as broadcast by the server after every
+    /// join/leave/cursor move. Served to frontends via the daemon's REST API.
+    presence: Mutex<HashMap<Uuid, Vec<protocol::PresenceInfo>>>,
     /// Outbound queue drained by the connection task.
     out: mpsc::UnboundedSender<CollabClientMsg>,
     /// Top of the daemon's decorator stack, set once after construction, used
@@ -101,6 +104,37 @@ impl Shared {
         };
         self.suppress.lock().await.remove(&note.id);
         result
+    }
+}
+
+/// An ungeneric, cloneable view of the collaborative session for the daemon's
+/// HTTP/gRPC surfaces: read presence and publish this device's cursor without
+/// knowing the storage type behind [`CollabBackend`].
+#[derive(Clone)]
+pub struct CollabHandle {
+    shared: Arc<Shared>,
+}
+
+impl CollabHandle {
+    /// The latest presence list the server broadcast for `note_id` (empty if
+    /// the note has no live session or is unknown).
+    pub async fn presence(&self, note_id: Uuid) -> Vec<protocol::PresenceInfo> {
+        self.shared
+            .presence
+            .lock()
+            .await
+            .get(&note_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Queue this device's caret position for `note_id`; the server fans the
+    /// updated presence out to every participant.
+    pub fn send_cursor(&self, note_id: Uuid, cursor: protocol::Cursor) {
+        let _ = self
+            .shared
+            .out
+            .send(CollabClientMsg::Cursor { note_id, cursor });
     }
 }
 
@@ -137,11 +171,19 @@ impl<B: StorageBackend> CollabBackend<B> {
                 http: reqwest::Client::new(),
                 notes: Mutex::new(HashMap::new()),
                 suppress: Mutex::new(HashSet::new()),
+                presence: Mutex::new(HashMap::new()),
                 out,
                 top: OnceLock::new(),
             }),
             out_rx: Arc::new(Mutex::new(Some(out_rx))),
         })
+    }
+
+    /// A cloneable presence/cursor view for the daemon's surfaces.
+    pub fn handle(&self) -> CollabHandle {
+        CollabHandle {
+            shared: self.shared.clone(),
+        }
     }
 
     /// Start the connection task. `top` must be the outermost backend of the
@@ -595,7 +637,9 @@ async fn handle_server_msg(shared: &Arc<Shared>, msg: CollabServerMsg) {
         CollabServerMsg::Error { code, message } => {
             tracing::warn!(code, message, "collab: server error");
         }
-        CollabServerMsg::Presence { .. } => {}
+        CollabServerMsg::Presence { note_id, users } => {
+            shared.presence.lock().await.insert(note_id, users);
+        }
     }
 }
 
