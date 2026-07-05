@@ -21,7 +21,8 @@ file (default: `keeplin.toml`) and may be partially overridden by environment va
 | `mode` | `Mode` | `Offline` | Storage backend to use |
 | `data_dir` | `PathBuf` | `./keeplin-data` | Root directory for file storage (offline) or location of the `.db` file (server) |
 | `server_url` | `String` | `""` | WebSocket URL of the sync server (server mode only) |
-| `auth_token` | `String` | `""` | Bearer token sent on first WebSocket connection (server mode only) |
+| `auth_token` | `String` | `""` | Bearer token sent on first WebSocket connection (server mode only); also the per-device login token for the collaborative channel when `collab_api_url` is set |
+| `collab_api_url` | `Option<String>` | `None` | HTTP base of the keeplin-srv collaborative server (e.g. `http://host:3000`). When set in server mode, note bodies are edited collaboratively over the line protocol (`/api/ws`) and note changes stop flowing through the relay; notebooks/tags/resources still sync over `server_url` |
 | `grpc_addr` | `String` | `127.0.0.1:50051` | Address and port on which the gRPC server listens |
 | `http_addr` | `Option<String>` | `None` | Optional second listener for the REST/JSON + WebSocket API; when unset, only gRPC runs |
 | `tls_cert_path` | `Option<String>` | `None` | Filesystem path to the PEM-encoded TLS certificate |
@@ -115,6 +116,10 @@ exposed to a network, TLS should always be enabled.
 - `http_addr` is opt-in: leave it unset for a gRPC-only daemon; set it (e.g.
   `"127.0.0.1:8080"`) to additionally expose the REST/JSON + WebSocket surface described in
   `rest.md`. Both surfaces share one backend `Arc` and one auth model.
+- `collab_api_url` is opt-in and layered on top of server mode: when set, `main` inserts a
+  `CollabBackend` into the stack so note **bodies** are edited line-by-line against keeplin-srv
+  (`collab/mod.md`) while the rest of the model keeps syncing over `server_url`. Leaving it unset
+  falls back to relaying note changes like any other entity.
 
 ## Related files
 

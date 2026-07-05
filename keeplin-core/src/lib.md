@@ -11,6 +11,7 @@ is to make the sub-modules accessible to dependents.
 
 | Module | Public | Description |
 |--------|--------|-------------|
+| `collab` | yes | `CollabBackend` decorator — client of keeplin-srv's real-time note channel (line ops, presence, cursors) |
 | `encryption` | yes | AES-256-GCM transparent encryption decorator for any `StorageBackend` |
 | `error` | yes | All error types used across the crate (`StorageError`, `SyncError`) |
 | `links` | yes | Pure bookmark/link types and the `#…` reference grammar (I/O-free) |
@@ -35,6 +36,9 @@ lib
  │    └── db        (uses error, models, storage::backend)
  ├── encryption     (uses error, models, storage::backend)
  ├── linking        (uses error, models, links, storage::backend)
+ ├── collab         (uses error, models, storage::backend, note_log::VersionVector)
+ │    ├── protocol  (wire types mirroring keeplin-srv; I/O-free)
+ │    └── state     (client line mirror + body↔lines diff; I/O-free)
  └── sync
       └── engine    (uses error, models, storage::backend)
 ```
