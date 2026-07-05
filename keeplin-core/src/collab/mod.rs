@@ -523,8 +523,15 @@ async fn connect_once(
     shared: &Arc<Shared>,
     out: &mut mpsc::UnboundedReceiver<CollabClientMsg>,
 ) -> anyhow::Result<()> {
-    let url = format!("{}?token={}", shared.cfg.ws_url, shared.cfg.token);
-    let (mut ws, _) = tokio_tungstenite::connect_async(&url).await?;
+    // The token travels in the Authorization header, not the URL: query
+    // strings end up in proxy and access logs.
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = shared.cfg.ws_url.as_str().into_client_request()?;
+    request.headers_mut().insert(
+        "authorization",
+        format!("Bearer {}", shared.cfg.token).parse()?,
+    );
+    let (mut ws, _) = tokio_tungstenite::connect_async(request).await?;
     tracing::info!("collab: connected");
 
     let mut joined: HashSet<Uuid> = HashSet::new();
