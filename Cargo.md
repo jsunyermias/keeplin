@@ -3,7 +3,7 @@
 ## Crate purpose
 
 This is the Cargo workspace manifest. It declares the three member crates
-(`keeplin-core`, `keeplin-daemon`, and `keeplin-relay`) and pins shared dependency versions
+(`keeplin-core` and `keeplin-daemon`) and pins shared dependency versions
 in `[workspace.dependencies]` so that every crate uses the same versions of common libraries
 without repeating version strings in each crate's own `Cargo.toml`.
 
@@ -13,7 +13,6 @@ without repeating version strings in each crate's own `Cargo.toml`.
 |-------|------|------|
 | `keeplin-core` | `keeplin-core/` | Library: domain models, storage backends, encryption, sync engine |
 | `keeplin-daemon` | `keeplin-daemon/` | Binary (+ lib): gRPC + REST/WebSocket server that exposes `keeplin-core` over the network |
-| `keeplin-relay` | `keeplin-relay/` | Binary (+ lib): the server-mode sync hub — a broadcast relay with a durable buffer |
 
 ## Workspace-level shared packages
 

@@ -35,7 +35,6 @@ Runs on `ubuntu-latest`.
 | cargo fmt | `cargo fmt --check --all` | Verifies that all Rust source files in the workspace are formatted according to the project's `rustfmt` style. Fails the CI job if any file is not formatted. |
 | cargo test (core) | `cargo test -p keeplin-core` | Runs all unit and integration tests in `keeplin-core`, including the `FsBackend`, `DbBackend`, and `EncryptedBackend` test suites |
 | cargo test (daemon) | `cargo test -p keeplin-daemon` | Runs all tests in `keeplin-daemon`, including the `validate_basic_auth` unit tests in `main.rs` |
-| cargo test (relay) | `cargo test -p keeplin-relay` | Runs the `keeplin-relay` unit tests and the end-to-end relay tests that drive real `DbBackend`s through a socket |
 | cargo clippy | `cargo clippy --workspace --all-targets -- -D warnings` | Lints the entire workspace **including test and bench code** (matching the command the README tells contributors to run) and treats every warning as an error. Also fully subsumes the type-checking a separate `cargo check` step used to provide. |
 | Install cargo-audit | `taiki-e/install-action@v2` (`tool: cargo-audit`) | Downloads a prebuilt `cargo-audit` binary; compiling it from source with `cargo install` added minutes to every run for no additional coverage |
 | cargo audit | `cargo audit` | Checks `Cargo.lock` against the RustSec advisory database |
@@ -58,7 +57,7 @@ rebuilt from scratch.
   `cargo clippy`) because `keeplin-daemon/build.rs` invokes `tonic-build`, which in turn
   calls `protoc`.
 - The workflow runs tests for each crate separately (`-p keeplin-core`, `-p keeplin-daemon`,
-  `-p keeplin-relay`) rather than `--workspace` because the suites are logically independent and
+  rather than `--workspace` because the suites are logically independent and
   this makes it easier to identify which crate a failure belongs to.
 
 ## Related files

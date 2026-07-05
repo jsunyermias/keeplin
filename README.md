@@ -49,7 +49,6 @@ A Cargo workspace with three crates:
 |-------|------------|
 | [`keeplin-core`](keeplin-core) | The library: domain models, the `StorageBackend` supertrait + two implementations (`FsBackend`, `DbBackend`), the `EncryptedBackend` and `LinkingBackend` decorators, the bookmark/link grammar, and the `SyncEngine`. |
 | [`keeplin-daemon`](keeplin-daemon) | The binary: a [tonic](https://github.com/hyperium/tonic) gRPC server (`KeeplinService`) plus an optional [axum](https://github.com/tokio-rs/axum) REST/WebSocket surface, both sharing one backend, with auth and TLS. It adds the outermost `MetricsBackend` and `EventBackend` (metrics + live‑change feed). |
-| [`keeplin-relay`](keeplin-relay) | The server‑mode sync hub: a WebSocket broadcast relay that authenticates devices and forwards each device's change batches to the others (server mode's central peer). |
 
 Backends compose as a **decorator stack** — innermost storage outward:
 
@@ -201,22 +200,25 @@ The daemon serves `KeeplinService` on `grpc_addr` and shuts down cleanly on `Ctr
 serialisation. The lock is released automatically on exit — crashes included — so it can
 never go stale.
 
-### Run a sync relay (server mode)
+### Run a sync server (server mode)
 
-Server‑mode devices sync through a central [`keeplin-relay`](keeplin-relay) — a WebSocket
-broadcast hub that authenticates each device and forwards its change batches to the others:
+Server‑mode devices sync through the central
+[keeplin-srv](https://github.com/jsunyermias/keeplin-srv) server: per‑user accounts with a
+token per device, a durable change journal with per‑device delivery cursors for the relay
+channel (`/api/sync`), and **real‑time collaborative editing by lines** (`/api/ws`) with
+the note state stored in PostgreSQL. Create an account and one token per device
+(`POST /api/register`, `POST /api/login`), then point the daemon at it:
 
-```bash
-KEEPLIN_RELAY_TOKEN="a-long-random-secret" \
-  ./target/release/keeplin-relay --listen 0.0.0.0:9000
+```toml
+mode = "server"
+server_url = "ws://host:3000/api/sync"     # relay: notebooks/tags/resources
+collab_api_url = "http://host:3000"         # collaborative notes by lines
+auth_token = "<token from POST /api/login>"
 ```
 
-Point each device's `auth_token` at the same secret and its `server_url` at the relay. The
-relay keeps a **durable buffer** (`--data-dir`, default `./keeplin-relay-data`): a device
-that was offline is caught up on reconnect with every change batch it missed, up to
-`--retention-days` (default 30). The relay speaks plain `ws://`; terminate TLS at a reverse
-proxy and use `wss://` — the daemon refuses a non‑loopback `ws://` `server_url`. See
-[`keeplin-relay/README.md`](keeplin-relay/README.md).
+The server speaks plain `ws://`; terminate TLS at a reverse proxy and use `wss://` — the
+daemon refuses a non‑loopback `ws://` `server_url`. See the
+[keeplin-srv README](https://github.com/jsunyermias/keeplin-srv#readme).
 
 ---
 
@@ -485,12 +487,11 @@ filesystem note model is well‑tested and converges deterministically.
 **Not yet production‑ready** as a multi‑user, server‑backed service. Outstanding work,
 roughly in priority order:
 
-1. **Sync relay ships** as [`keeplin-relay`](keeplin-relay) — a WebSocket hub with token
-   auth **and a durable per‑device buffer**: every change batch is journaled, and a device
-   that was offline is caught up on reconnect from its own delivery cursor (covered
-   end‑to‑end by tests driving real `DbBackend`s, plus buffer/restart/cursor tests). A
-   device offline longer than the relay's retention window (default 30 days) still needs a
-   peer online to converge.
+1. **The production sync server ships** as
+   [keeplin-srv](https://github.com/jsunyermias/keeplin-srv) — per‑user accounts with
+   revocable per‑device tokens, a durable change journal with per‑device delivery cursors,
+   and real‑time collaborative editing by lines with the note state stored in PostgreSQL
+   (covered end‑to‑end by tests driving real `DbBackend`s and by that repo's own suite).
 2. Operability: liveness/readiness probes and Prometheus metrics ship (`GET /api/health`,
    `/api/ready`, `/api/metrics`), and both backends now carry a **versioned migration path**
    (`DbBackend` via `PRAGMA user_version`, `FsBackend` via a stamped format ladder, each with
