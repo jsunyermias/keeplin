@@ -1455,13 +1455,17 @@ mod tests {
     #[tokio::test]
     async fn alias_backlinks_and_resolve_endpoints() {
         let st = linking_state().await;
+        // Aliases live in a real notebook (Inbox notes carry none), so place both notes there.
+        let nb = Uuid::from_u128(0xa11a5).to_string();
 
         // Target note, then give it an alias via the alias endpoint.
         let (_, body) = call(
             &st,
             "POST",
             "/api/notes",
-            Some("{\"title\":\"target\",\"body\":\"[Anchor](###) here\"}"),
+            Some(&format!(
+                "{{\"title\":\"target\",\"body\":\"[Anchor](###) here\",\"notebook_id\":\"{nb}\"}}"
+            )),
             None,
         )
         .await;
@@ -1488,7 +1492,9 @@ mod tests {
             &st,
             "POST",
             "/api/notes",
-            Some(r#"{"title":"src","body":"see [x](#note3)"}"#),
+            Some(&format!(
+                "{{\"title\":\"src\",\"body\":\"see [x](#note3)\",\"notebook_id\":\"{nb}\"}}"
+            )),
             None,
         )
         .await;
@@ -1530,11 +1536,16 @@ mod tests {
         // the same alias can be planted on two notes — the way a cross-device sync collision
         // would appear.
         let st = state(None).await;
+        // Aliases only exist outside the Inbox, so plant both notes in a real notebook — the
+        // collision is grouped by (alias, notebook_id), so they must share one.
+        let nb = Uuid::from_u128(0xc0111de).to_string();
         let (_, b1) = call(
             &st,
             "POST",
             "/api/notes",
-            Some(r#"{"title":"a","body":""}"#),
+            Some(&format!(
+                "{{\"title\":\"a\",\"body\":\"\",\"notebook_id\":\"{nb}\"}}"
+            )),
             None,
         )
         .await;
@@ -1542,7 +1553,9 @@ mod tests {
             &st,
             "POST",
             "/api/notes",
-            Some(r#"{"title":"b","body":""}"#),
+            Some(&format!(
+                "{{\"title\":\"b\",\"body\":\"\",\"notebook_id\":\"{nb}\"}}"
+            )),
             None,
         )
         .await;

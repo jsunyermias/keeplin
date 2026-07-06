@@ -38,7 +38,7 @@ metrics); every other route is behind auth and counted by `status_mw`.
 | `GET /metrics` | none | Prometheus exposition (`text/plain; version=0.0.4`) — see `metrics.md` |
 | `GET/POST /notes`, `GET/PUT/DELETE /notes/:id` | note CRUD (cursor pagination on list) |
 | `GET /notes/:id/tags`, `PUT/DELETE /notes/:note_id/tags/:tag_id` | note↔tag associations |
-| `PUT /notes/:id/alias`, `PUT /notebooks/:id/alias` | set/clear an alias |
+| `PUT /notes/:id/alias`, `PUT /notebooks/:id/alias` | set/clear an alias (note aliases are unique **per notebook**; setting one on an Inbox note → `400`) |
 | `GET/POST /notes/:id/links`, `DELETE /notes/:id/links/:index` | list / add-manual / remove links |
 | `GET /notes/:id/backlinks?page_size=&page_token=` | notes linking **to** this note (paginated) |
 | `GET /notes/starred?page_size=&page_token=` | every starred note, across all notebooks |

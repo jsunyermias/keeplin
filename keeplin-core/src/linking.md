@@ -25,6 +25,10 @@ EventBackend( LinkingBackend( [EncryptedBackend]( Fs | Db ) ) )
 
 `prepare(note)` runs before delegating to the inner backend:
 
+0. **Inbox short-circuit.** A note in the Inbox (the "Pizarra"; `ordering::is_inbox`) carries
+   **no alias and emits no links**: `prepare` clears `note.alias`, drops every link's
+   `target_note_id`, and returns before any scan. Moving a note *into* the Inbox therefore
+   strips its alias; moving one *out* lets it claim an alias again.
 1. **Refresh (pure).** Rebuild `note.bookmarks` from the body's `[text](### "alias")`
    declarations (alias = title, else text; number = order). Rebuild content links from the
    body's `[t](#…)` markdown links, keeping any existing `Manual` links. The **body is the
@@ -33,8 +37,11 @@ EventBackend( LinkingBackend( [EncryptedBackend]( Fs | Db ) ) )
    entirely (the common case → O(1)). Otherwise fetch the note corpus (and notebooks only when
    there are links) to:
    - **Enforce alias uniqueness** — reject a create/update whose `alias` already belongs to
-     another live note (`StorageError::Conflict`).
-   - **Resolve links** — fill each link's `target_note_id` best-effort.
+     another live note **in the same notebook** (`StorageError::Conflict`). Note aliases are
+     unique *per notebook*, not globally, so the same alias may live in two notebooks. Notebook
+     aliases stay globally unique.
+   - **Resolve links** — fill each link's `target_note_id` best-effort. Inbox notes are never
+     targets: a reference that names one, by alias or by raw `#<uuid>`, resolves to nothing.
 
 Reads, sync (`apply_change`), and the other entity types delegate unchanged.
 
@@ -67,21 +74,28 @@ check-then-write race that could otherwise create a local duplicate alias.
 |----------|---------|
 | `resolve(backend, raw)` | resolve a `#…` reference → `ResolvedReference { note_id, bookmark_number? }` |
 | `backlinks(backend, target_id, page_size, page_token)` | paginated list of notes linking **to** a note (delegates to `note_backlinks`) |
-| `set_note_alias` / `set_notebook_alias` | read-modify-write the alias (one `NoteUpdate`/`NotebookUpdate`); a soft-deleted target is `NotFound` (the edit must not revive it) |
+| `set_note_alias` / `set_notebook_alias` | read-modify-write the alias (one `NoteUpdate`/`NotebookUpdate`); a soft-deleted target is `NotFound` (the edit must not revive it); setting an alias on an Inbox note is `InvalidInput` |
 | `add_manual_link` / `remove_link` | add a `Manual` link / remove a link by index; a soft-deleted note is `NotFound` |
 | `alias_conflicts(backend)` | list aliases shared by 2+ live notes/notebooks (post-sync collisions) |
 | `collect_notes` / `collect_notebooks` | exhaust the paginated `list_*` into a `Vec` |
 
 ## Resolution rules (`resolve_ref`, pure)
 
-- `#note` → resolve the note (uuid as-is, else alias → smallest-uuid live match).
-- `#a#b` → prefer `notebook#note`; if `b` is not a resolvable note, fall back to
-  `note#bookmark`.
+- `#note` → resolve the note. A uuid is returned as-is (unless it names a known Inbox note,
+  which is rejected). A **bare alias** resolves globally when exactly one live note carries it;
+  when several notebooks share the alias it scopes to the **referencing note's own notebook**,
+  and failing that falls back to the smallest-uuid match with a warning.
+- `#a#b` → prefer `notebook#note` (the alias `b` scoped to notebook `a`); if `b` is not a
+  resolvable note, fall back to `note#bookmark`.
 - `#notebook#note#bookmark` → resolve note (scoped by notebook), then map the bookmark
   alias/number to a stored number.
 
-A duplicate alias (from a cross-device sync collision) resolves deterministically to the
-smallest uuid, with a warning — surfaced for cleanup by `alias_conflicts`.
+Inbox notes are excluded from every alias match and rejected on the uuid path, so nothing
+resolves *to* an Inbox note (the incoming/backlink side is enforced in `note_backlinks`).
+
+A duplicate alias (from a cross-device sync collision *within one notebook*) resolves
+deterministically to the smallest uuid, with a warning — surfaced for cleanup by
+`alias_conflicts`, which groups note collisions by `(alias, notebook_id)`.
 
 ## Types
 
