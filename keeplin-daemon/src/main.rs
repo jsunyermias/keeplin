@@ -13,6 +13,7 @@ mod event_backend;
 mod metrics;
 mod proto;
 mod rest;
+mod search;
 mod server;
 
 use std::sync::Arc;
@@ -505,9 +506,13 @@ async fn run_server_with<B: keeplin_core::storage::StorageBackend>(
     // separate HTTP port, sharing the same backend and Basic-Auth credentials.
     if let Some(http_addr) = &cfg.http_addr {
         let http_addr: std::net::SocketAddr = http_addr.parse()?;
+        // Full-text search index: rebuilt from the store and kept live off the
+        // change stream. Available on the REST surface via `GET /api/search`.
+        let search = search::start(backend.clone(), events.clone()).await;
         let state = Arc::new(rest::AppState {
             backend: backend.clone(),
             collab: collab_handle.clone(),
+            search,
             events: events.clone(),
             metrics: metrics.clone(),
             max_body_bytes: cfg.max_message_size,
