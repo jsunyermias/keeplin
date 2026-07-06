@@ -32,6 +32,10 @@ subtle = "2"
 # so the gRPC and HTTP servers share one dependency tree.
 axum = { version = "0.7", features = ["ws"] }
 
+# In-process SQLite (FTS5) for the daemon's full-text search index. Same major
+# as keeplin-core's store; the index is separate and in-memory.
+libsql = "0.6"
+
 [build-dependencies]
 tonic-build = "0.12"
 

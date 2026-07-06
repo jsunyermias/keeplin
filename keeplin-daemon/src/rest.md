@@ -22,6 +22,7 @@ coexist.
 | `journal_retention_days: u64` | days of change-journal history to keep; `POST /sync` prunes older rows |
 | `auth_username` / `auth_password` | Basic-Auth credentials; auth is required only when both are `Some` and non-empty (a partial/empty pair is rejected at startup, so it never reaches the middleware) |
 | `collab: Option<CollabHandle>` | presence/cursor view of the collaborative session (server mode with `collab_api_url` set); `None` when collaboration is disabled — the presence/cursor routes then return empty / `503` |
+| `search: Option<SearchHandle>` | full-text search query view (`search.md`); `None` if the index could not be created — `GET /search` then returns `503` |
 
 ## Endpoints
 
@@ -41,6 +42,7 @@ metrics); every other route is behind auth and counted by `status_mw`.
 | `GET/POST /notes/:id/links`, `DELETE /notes/:id/links/:index` | list / add-manual / remove links |
 | `GET /notes/:id/backlinks?page_size=&page_token=` | notes linking **to** this note (paginated) |
 | `GET /notes/starred?page_size=&page_token=` | every starred note, across all notebooks |
+| `GET /search?q=&notebook=&todo=&open=&starred=&pinned=&due_after=&due_before=&updated_after=&updated_before=&limit=` | full-text search over title/body/tag/notebook names with structured filters; returns matching notes best-first (`503` if the index is unavailable) — see `search.md` |
 | `POST/DELETE /notes/:id/pin` | pin (into the `1–999` band, max 999) / unpin (to the end of the normal band) |
 | `POST/DELETE /notes/:id/star` | star / unstar (global flag; never moves the note) |
 | `PUT /notes/:id/sort-key` | reorder within the note's current band (`{ "sort_key": … }`) |

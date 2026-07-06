@@ -55,6 +55,9 @@ pub struct AppState {
     /// Presence/cursor view of the collaborative session (server mode with
     /// `collab_api_url` set); `None` when collaboration is disabled.
     pub collab: Option<keeplin_core::collab::CollabHandle>,
+    /// Full-text search index query view; `None` when the index could not be
+    /// created (search then responds `503`).
+    pub search: Option<crate::search::SearchHandle>,
     /// Sender for the live change feed. Each WebSocket connection subscribes to a fresh
     /// receiver; mutations published here by the daemon's `EventBackend` are streamed out.
     pub events: broadcast::Sender<Change>,
@@ -116,6 +119,7 @@ pub fn router(state: Shared) -> Router {
         )
         .route("/notes/:id/backlinks", get(list_backlinks))
         .route("/notes/starred", get(list_starred_notes))
+        .route("/search", get(search_notes))
         .route("/notes/:id/pin", post(pin_note).delete(unpin_note))
         .route("/notes/:id/star", post(star_note).delete(unstar_note))
         .route("/notes/:id/sort-key", put(reorder_note))
@@ -154,6 +158,61 @@ pub fn router(state: Shared) -> Router {
         .with_state(state);
 
     Router::new().nest("/api", ops.merge(api))
+}
+
+// ── Full-text search ─────────────────────────────────────────────────────────────
+
+/// Query parameters for `GET /api/search`. All are optional; timestamps are
+/// RFC3339, booleans `true`/`false`.
+#[derive(Debug, Deserialize)]
+struct SearchParams {
+    /// Free text, matched against title, body, tag names and notebook name.
+    q: Option<String>,
+    notebook: Option<Uuid>,
+    todo: Option<bool>,
+    /// `true` = open to-dos only, `false` = completed only.
+    open: Option<bool>,
+    starred: Option<bool>,
+    pinned: Option<bool>,
+    due_after: Option<DateTime<Utc>>,
+    due_before: Option<DateTime<Utc>>,
+    updated_after: Option<DateTime<Utc>>,
+    updated_before: Option<DateTime<Utc>>,
+    limit: Option<usize>,
+}
+
+/// `GET /api/search` — full-text search over the daemon's index, returning the
+/// matching notes (best match first). `503` when the index is unavailable.
+async fn search_notes(State(s): State<Shared>, Query(p): Query<SearchParams>) -> Response {
+    let Some(search) = &s.search else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "search unavailable").into_response();
+    };
+    let query = crate::search::SearchQuery {
+        text: p.q.unwrap_or_default(),
+        notebook_id: p.notebook,
+        is_todo: p.todo,
+        todo_open: p.open,
+        is_starred: p.starred,
+        is_pinned: p.pinned,
+        due_after: p.due_after,
+        due_before: p.due_before,
+        updated_after: p.updated_after,
+        updated_before: p.updated_before,
+        limit: p.limit.unwrap_or(50),
+    };
+    let ids = match search.search(&query).await {
+        Ok(ids) => ids,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    // Resolve ids to full notes through the backend (plaintext); skip any that
+    // raced a deletion between the index query and the read.
+    let mut notes = Vec::with_capacity(ids.len());
+    for id in ids {
+        if let Ok(note) = s.backend.read_note(id).await {
+            notes.push(note);
+        }
+    }
+    Json(notes).into_response()
 }
 
 // ── Auth middleware ─────────────────────────────────────────────────────────────
@@ -874,6 +933,7 @@ mod tests {
         let (events, _rx) = broadcast::channel(16);
         Arc::new(AppState {
             collab: None,
+            search: None,
             backend: Arc::new(fs),
             events,
             metrics: Arc::new(crate::metrics::Metrics::new()),
@@ -897,6 +957,7 @@ mod tests {
         let (events, _rx) = broadcast::channel(16);
         Arc::new(AppState {
             collab: None,
+            search: None,
             backend: Arc::new(LinkingBackend::new(fs)),
             events,
             metrics: Arc::new(crate::metrics::Metrics::new()),
@@ -1078,6 +1139,7 @@ mod tests {
         let (events, _rx) = broadcast::channel(16);
         let st: Shared = Arc::new(AppState {
             collab: None,
+            search: None,
             backend: Arc::new(db),
             events,
             metrics: Arc::new(crate::metrics::Metrics::new()),
@@ -1142,6 +1204,7 @@ mod tests {
         let (events, _rx) = broadcast::channel(16);
         Arc::new(AppState {
             collab: None,
+            search: None,
             backend: Arc::new(MetricsBackend::new(fs, metrics.clone())),
             events,
             metrics,
@@ -1307,6 +1370,7 @@ mod tests {
         let (events, _rx) = broadcast::channel(16);
         let st: Shared = Arc::new(AppState {
             collab: None,
+            search: None,
             backend: Arc::new(fs),
             events,
             metrics: Arc::new(crate::metrics::Metrics::new()),
@@ -1524,6 +1588,7 @@ mod tests {
         let backend = Arc::new(EventBackend::new(fs, events.clone()));
         Arc::new(AppState {
             collab: None,
+            search: None,
             backend,
             events,
             metrics: Arc::new(crate::metrics::Metrics::new()),
