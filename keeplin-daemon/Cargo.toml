@@ -33,8 +33,11 @@ subtle = "2"
 axum = { version = "0.7", features = ["ws"] }
 
 # In-process SQLite (FTS5) for the daemon's full-text search index. Same major
-# as keeplin-core's store; the index is separate and in-memory.
-libsql = "0.6"
+# as keeplin-core's store; the index is separate and in-memory. Default features
+# are disabled (as in keeplin-core) so the remote-replication stack — and its old
+# hyper-rustls/rustls with the RUSTSEC-2026 rustls-webpki advisories — is not
+# pulled in; only local `Builder::new_local` is needed.
+libsql = { version = "0.6", default-features = false, features = ["core"] }
 
 [build-dependencies]
 tonic-build = "0.12"
