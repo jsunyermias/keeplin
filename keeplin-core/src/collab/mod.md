@@ -37,13 +37,25 @@ A local note write flows `frontend → LinkingBackend → EventBackend → Colla
 way through, `CollabBackend`:
 
 - **create_note**: create locally, then `POST /api/notes` (keeping the local id — a `409` is fine,
-  the note exists on another device), `PATCH` metadata, `Join`, then diff the body into ops.
+  the note exists on another device), `PATCH` metadata, mark the note **pending** and `Join`. The
+  body is **not** pushed here — it is reconciled when the Join's `Welcome` arrives (see below).
 - **update_note**: update locally, `PATCH` metadata only when title/notebook/todo fields changed,
-  then diff the body into ops.
+  then diff the body into ops — unless the note is still **pending** its first `Welcome`, in which
+  case the push is left to that reconcile.
 - **delete_note**: delete locally, then `DELETE /api/notes/:id`; drop the in-memory mirror.
 - The **body** is diffed into `LineOp`s (see `state.md`) and pushed over the socket; **title and
   metadata** go over REST. Notes are the collab channel's; notebooks/tags/resources delegate to
   `inner` unchanged.
+
+### Pending push: reconcile on `Welcome`, don't clobber
+
+A note with local content the server has not seen yet (freshly created, or edited before its first
+`Welcome`) is held in a **`pending_push`** set instead of being pushed eagerly. When the note's
+`Welcome` arrives, the handler diffs the **current local body against the snapshot** and pushes that
+difference. This fixes an ordering bug: pushing before the `Welcome` let a late (empty) snapshot
+overwrite the local body to blank. A note the client merely **caches** (discovered, not pending) is
+not reconciled — it takes the server's body as-is, so a fresh device never diffs its empty placeholder
+against real server content (which would delete it).
 
 ## The decorator — `SyncBackend` split
 
