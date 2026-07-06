@@ -85,7 +85,8 @@ now takes `max_upload_bytes` alongside `journal_retention_days`.
 
 These delegate to the free helpers in `keeplin_core::linking` (`set_note_alias`, `resolve`,
 `backlinks`, `add_manual_link`, `remove_link`, `alias_conflicts`) rather than to a raw
-`StorageBackend` method. Bookmarks are **not** set via an RPC — they are declared inline in
+`StorageBackend` method. Note aliases are unique **per notebook** (notebook aliases globally);
+Inbox notes are outside the linking graph, so `SetNoteAlias` on one returns `INVALID_ARGUMENT`. Bookmarks are **not** set via an RPC — they are declared inline in
 the note body as `[text](### "alias")` markdown links and are returned inside each `Note`
 message's repeated `bookmarks` field; there is no `EditBookmarkAlias` RPC.
 

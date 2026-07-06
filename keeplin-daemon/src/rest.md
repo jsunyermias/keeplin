@@ -69,7 +69,7 @@ valid `Authorization: Basic …` header (via `crate::auth::verify_basic`), retur
 |----------------|-------------|
 | `NotFound` | `404` |
 | `Conflict` (duplicate alias, or the 999-pin limit) | `409` |
-| `InvalidInput` (pin an Inbox note, out-of-band sort key, delete the Inbox) | `400` |
+| `InvalidInput` (pin an Inbox note, alias an Inbox note, out-of-band sort key, delete the Inbox) | `400` |
 | `CorruptedData` / invalid link ref | `422` |
 | invalid UUID / body | `400` (axum extractor rejection) |
 | anything else | `500` |

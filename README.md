@@ -412,12 +412,17 @@ API, not present in the body). A reference uses this grammar:
 For example `#notebook1#note3#anchor5` (bookmark by alias) or `#notebook1#note3#5` (by
 number). A two‑segment `#a#b` is resolved as `notebook#note` when `b` is a resolvable note;
 otherwise it falls back to `note#bookmark` (so `#note3#anchor5` / `#note3#5` targets a
-bookmark without naming a notebook). Note and notebook **aliases** are user‑assigned and unique
-among live entities of each type (a duplicate is rejected with `409`/`ALREADY_EXISTS`);
-concurrent cross‑device edits can still introduce a collision through sync, in which case
-resolution deterministically picks the smallest‑uuid match and logs a warning, and the
-collision is listed by `GET /api/aliases/conflicts` (or `ListAliasConflicts`) so it can be
-cleaned up. Each link records a best‑effort `target_note_id`; `GET /api/links/resolve` (or the
+bookmark without naming a notebook). Note and notebook **aliases** are user‑assigned; **note
+aliases are unique per notebook** (the same alias may recur in another notebook) and **notebook
+aliases are globally unique** (a duplicate is rejected with `409`/`ALREADY_EXISTS`). A bare
+`#<alias>` resolves globally when exactly one note carries it, and otherwise scopes to the
+referencing note's own notebook. Concurrent cross‑device edits can still introduce a same‑notebook
+collision through sync, in which case resolution deterministically picks the smallest‑uuid match
+and logs a warning, and the collision is listed by `GET /api/aliases/conflicts` (or
+`ListAliasConflicts`) so it can be cleaned up. **Inbox (`Pizarra`) notes stand apart from the
+linking graph entirely**: they carry no alias, emit no links, and are never a link target —
+setting an alias on one is rejected with `400`. Each link records a best‑effort `target_note_id`;
+`GET /api/links/resolve` (or the
 `ResolveReference` RPC) resolves a reference on demand, and `GET /api/notes/:id/backlinks`
 lists the notes pointing at a note (answered by an indexed `note_links` projection in
 `DbBackend`, and a scan in `FsBackend`).

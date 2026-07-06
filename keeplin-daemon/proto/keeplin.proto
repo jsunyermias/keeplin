@@ -19,7 +19,8 @@ message Note {
   string updated_at      = 9;  // RFC-3339
   // absent means the note has not been deleted
   optional string deleted_at     = 10; // RFC-3339
-  // absent means the note has no alias
+  // absent means the note has no alias; when present it is unique per notebook (Inbox notes
+  // carry none and are never a link target)
   optional string alias  = 11;
   // bookmarks (in-note anchors) derived from `[text](### "alias")` links in the body
   repeated Bookmark bookmarks = 12;
@@ -368,7 +369,7 @@ message SyncProgress {
 
 message SetNoteAliasRequest {
   string id = 1;
-  // absent clears the alias
+  // absent clears the alias; setting an alias on an Inbox note is rejected (INVALID_ARGUMENT)
   optional string alias = 2;
 }
 message SetNoteAliasResponse { Note note = 1; }

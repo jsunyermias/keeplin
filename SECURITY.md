@@ -162,8 +162,9 @@ that were already purged (and even then, a revive carries or replicates a fresh 
   incompatible. Attempting to mix them may produce undefined behaviour (missing or
   duplicated changes).
 
-- **Alias uniqueness is best-effort across devices.** Note and notebook aliases are
-  enforced unique on the device performing a write (the duplicate is rejected). Because
+- **Alias uniqueness is best-effort across devices.** Note aliases are enforced unique
+  **per notebook** and notebook aliases globally, on the device performing a write (the
+  duplicate is rejected); Inbox notes carry no alias at all. Because
   sync replays edits that were made independently on other devices, two devices can each
   assign the same alias before they exchange changes; that collision is not rejected on
   apply. Reference resolution tolerates it by deterministically picking the smallest-uuid

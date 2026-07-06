@@ -83,7 +83,9 @@ pub async fn ensure_inbox(backend: &dyn StorageBackend) -> Result<(), StorageErr
     }
 }
 
-/// Whether `id` names the Inbox. The API surfaces use this to refuse deleting it.
+/// Whether `id` names the Inbox. The API surfaces use this to refuse deleting it, and
+/// [`crate::linking::LinkingBackend`] uses it to keep Inbox notes out of the linking graph
+/// (they carry no alias, emit no links, and are never a link target).
 pub fn is_inbox(id: Uuid) -> bool {
     id == INBOX_ID
 }

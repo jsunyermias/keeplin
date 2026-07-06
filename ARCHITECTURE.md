@@ -116,9 +116,11 @@ Two navigation features layered on notes, both **stored on the note** (so they r
   alias-or-number).
 
 `LinkingBackend` re-derives bookmarks/content-links on every note write, resolves each link's
-`target_note_id`, and enforces that note/notebook aliases are unique — the last two backed by a
-lazily-built in-memory alias index (rebuilt on sync) so an alias/link write doesn't rescan the
-corpus.
+`target_note_id`, and enforces alias uniqueness — **note aliases per notebook, notebook aliases
+globally** (a bare `#<alias>` resolves globally when unique, else scopes to the referencing note's
+notebook). The last two are backed by a lazily-built in-memory alias index (rebuilt on sync) so an
+alias/link write doesn't rescan the corpus. **Inbox notes are excluded from the graph**: they
+carry no alias, emit no links, and are never a link target.
 
 ---
 
@@ -129,6 +131,9 @@ path — no new `Change` variants):
 
 - **The Inbox** ("Pizarra") — a system notebook with the fixed **nil UUID**, auto-created at
   startup and protected from deletion. A note created without choosing a notebook lands here.
+  Inbox notes are a scratch space outside the linking graph: they carry **no alias**, emit
+  **no links**, and are **never a link target** (moving a note into the Inbox clears its alias
+  and outgoing links; moving it out lets it claim an alias again).
 - **Manual order** — within a notebook, notes order by `(sort_key ASC, id ASC)`. Normal
   notebooks have a **pinned band** (`1..=999`, max 999) above a **normal band** (`≥ 1000`); the
   Inbox is one flat top-insert list. The legacy `sort_key 0` sentinel sorts at the start of the
