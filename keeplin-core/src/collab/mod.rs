@@ -77,6 +77,11 @@ struct Shared {
     presence: Mutex<HashMap<Uuid, Vec<protocol::PresenceInfo>>>,
     /// Outbound queue drained by the connection task.
     out: mpsc::UnboundedSender<CollabClientMsg>,
+    /// Notes with local content not yet on the server (freshly created, or
+    /// edited before the note's first `Welcome`). Their body is reconciled
+    /// against the join snapshot instead of being pushed eagerly, so a late
+    /// (empty) `Welcome` cannot clobber the local content.
+    pending_push: Mutex<HashSet<Uuid>>,
     /// Top of the daemon's decorator stack, set once after construction, used
     /// to apply remote state so linking/eventing run on those writes too.
     top: OnceLock<Arc<dyn StorageBackend>>,
@@ -196,6 +201,7 @@ impl<B: StorageBackend> CollabBackend<B> {
                 suppress: Mutex::new(HashSet::new()),
                 presence: Mutex::new(HashMap::new()),
                 out,
+                pending_push: Mutex::new(HashSet::new()),
                 top: OnceLock::new(),
             }),
             out_rx: Arc::new(Mutex::new(Some(out_rx))),
@@ -268,9 +274,9 @@ impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
         if self.shared.suppressed(created.id).await {
             return Ok(created);
         }
-        // Register the note on the server keeping the local id, then push the
-        // body as ops. A 409 means it already exists there (e.g. created on
-        // another device); the ops still converge through resolution.
+        // Register the note on the server keeping the local id. A 409 means it
+        // already exists there (e.g. created on another device); the body still
+        // converges through resolution.
         let url = format!("{}/api/notes", self.shared.cfg.api_url);
         let body = serde_json::json!({ "id": created.id, "title": created.title });
         if let Err(e) = self
@@ -283,10 +289,14 @@ impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
             tracing::warn!(error = %e, note = %created.id, "collab: POST note failed");
         }
         self.patch_meta(&created).await;
+        // Mark the body as pending and Join. The body is pushed when the Join's
+        // `Welcome` arrives (reconciled against the snapshot), NOT eagerly:
+        // pushing before the `Welcome` lets a late empty snapshot clobber the
+        // local content. See `handle_server_msg`.
+        self.shared.pending_push.lock().await.insert(created.id);
         let _ = self.shared.out.send(CollabClientMsg::Join {
             note_id: created.id,
         });
-        self.push_local_edit(&created).await;
         Ok(created)
     }
 
@@ -310,7 +320,12 @@ impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
         if meta_changed {
             self.patch_meta(&updated).await;
         }
-        self.push_local_edit(&updated).await;
+        // If the note is still pending its first `Welcome`, leave the push to
+        // that reconcile (which reads the latest local body) rather than
+        // diffing against a mirror that has not been initialised yet.
+        if !self.shared.pending_push.lock().await.contains(&updated.id) {
+            self.push_local_edit(&updated).await;
+        }
         Ok(updated)
     }
 
@@ -680,10 +695,34 @@ async fn ensure_local(shared: &Arc<Shared>, server_note: &ServerNote) {
 async fn handle_server_msg(shared: &Arc<Shared>, msg: CollabServerMsg) {
     match msg {
         CollabServerMsg::Welcome { note_id, snapshot } => {
-            let lines = NoteLines::from_snapshot(snapshot);
-            let body = lines.materialize();
-            shared.notes.lock().await.insert(note_id, lines);
-            write_body(shared, note_id, body).await;
+            let mut lines = NoteLines::from_snapshot(snapshot);
+            if shared.pending_push.lock().await.remove(&note_id) {
+                // This note has local content the server has not seen yet (it
+                // was just created, or edited before this first Welcome). Rather
+                // than overwrite it with the snapshot, diff the local body
+                // against the snapshot and push the difference — so the content
+                // is preserved and correctly transformed into ops against the
+                // server's actual state.
+                let local_body = match shared.top.get() {
+                    Some(top) => top
+                        .read_note(note_id)
+                        .await
+                        .map(|n| n.body)
+                        .unwrap_or_default(),
+                    None => String::new(),
+                };
+                let ops = lines.diff_body(&local_body, &shared.device_id);
+                shared.notes.lock().await.insert(note_id, lines);
+                if !ops.is_empty() {
+                    let _ = shared.out.send(CollabClientMsg::Op { note_id, ops });
+                }
+                // The local body already equals `local_body`; nothing to write.
+            } else {
+                // A note we only cache: take the server's body as-is.
+                let body = lines.materialize();
+                shared.notes.lock().await.insert(note_id, lines);
+                write_body(shared, note_id, body).await;
+            }
         }
         CollabServerMsg::Op { note_id, ops, .. } => {
             let mut notes = shared.notes.lock().await;

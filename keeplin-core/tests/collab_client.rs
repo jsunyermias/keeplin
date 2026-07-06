@@ -11,7 +11,7 @@ use keeplin_core::collab::protocol::{
 };
 use keeplin_core::collab::state::NoteLines;
 use keeplin_core::collab::{device_id_from_token, CollabBackend, CollabConfig};
-use keeplin_core::models::{Change, Resource};
+use keeplin_core::models::{Change, Note, Resource};
 use keeplin_core::storage::{
     db::DbBackend, NoteRepository, ResourceRepository, StorageBackend, SyncBackend,
 };
@@ -254,6 +254,27 @@ async fn wait_body(backend: &Arc<CollabBackend<DbBackend>>, id: Uuid, want: &str
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     panic!("body never became {want:?}; last {last:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn created_note_body_survives_the_join_welcome() {
+    // Regression: `create_note` used to push the body ops before the Join's
+    // `Welcome`, so a late empty `Welcome` clobbered the local body to "". The
+    // fix defers the push to the Welcome reconcile.
+    let seeded = Uuid::new_v4();
+    let addr = mock_server(seeded).await;
+    let a = client(addr, "dev-a").await;
+
+    let note = a.create_note(Note::new("t", "hello world")).await.unwrap();
+
+    // Give the Join/Welcome round-trip ample time to complete (the mock does not
+    // echo the sender's own op, so a clobber here would be permanent).
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    assert_eq!(
+        a.read_note(note.id).await.unwrap().body,
+        "hello world",
+        "the created note's local body must survive the Welcome snapshot"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
