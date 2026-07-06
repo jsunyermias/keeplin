@@ -20,9 +20,18 @@
 //! 2. **Links** — markdown `[t](#…)` destinations become `source = Content` [`NoteLink`]s;
 //!    existing `source = Manual` links (added via the API) are preserved.
 //! 3. **Resolution** — each link's `target_note_id` is filled best-effort by resolving its
-//!    note reference (by uuid, or by alias through the in-memory alias index).
-//! 4. **Alias uniqueness** — a create/update whose `alias` collides with another **live**
-//!    entity of the same type is rejected with [`StorageError::Conflict`].
+//!    note reference (by uuid, or by alias through the in-memory alias index). Notes in the
+//!    **Inbox** (the "Pizarra"; [`crate::ordering::is_inbox`]) are never link targets: a
+//!    reference that names one — whether by alias or by raw uuid — resolves to nothing, and
+//!    those notes themselves carry no alias and emit no links.
+//! 4. **Alias uniqueness** — note aliases are unique **per notebook**, not globally: the same
+//!    alias may live in two different notebooks, but a create/update whose `alias` collides
+//!    with another **live** note in the *same* notebook is rejected with
+//!    [`StorageError::Conflict`]. Notebook aliases remain globally unique.
+//!
+//! A bare `#alias` reference resolves globally when exactly one live note carries the alias;
+//! when several notebooks share it, resolution scopes to the referencing note's own notebook
+//! (see [`AliasIndex::resolve_note_seg`]).
 //!
 //! Reads, sync (`apply_change`) and the other entities delegate unchanged. Cross-device
 //! concurrent edits can still introduce duplicate aliases through sync (which cannot be
@@ -42,7 +51,7 @@
 //! daemon routes every surface and the sync engine through one shared decorator stack, so
 //! within a daemon the index stays coherent.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -55,6 +64,7 @@ use crate::{
     error::StorageError,
     links::{self, Bookmark, LinkSource, NoteLink},
     models::{Change, Note, NoteTag, Notebook, Resource, Tag},
+    ordering::is_inbox,
     storage::{
         NoteRepository, NotebookRepository, ResourceRepository, StorageBackend, SyncBackend,
         TagRepository,
@@ -106,6 +116,11 @@ struct AliasIndex {
     notebook_aliases: BTreeMap<String, BTreeSet<Uuid>>,
     /// notebook id → its indexed alias.
     aliased_notebooks: HashMap<Uuid, String>,
+    /// Live notes that sit in the Inbox. They can carry no alias, so they never appear in
+    /// `note_aliases`, but a raw `#<uuid>` reference could still name one — this set lets the
+    /// uuid path reject that at write time, keeping the "nothing links to an Inbox note"
+    /// guarantee on the outgoing side too (the backlink layer covers the incoming side).
+    inbox_notes: HashSet<Uuid>,
 }
 
 impl AliasIndex {
@@ -128,6 +143,10 @@ impl AliasIndex {
         if note.deleted_at.is_some() {
             return;
         }
+        if is_inbox(note.notebook_id) {
+            self.inbox_notes.insert(note.id);
+            return;
+        }
         if let Some(alias) = &note.alias {
             self.note_aliases
                 .entry(alias.clone())
@@ -140,6 +159,7 @@ impl AliasIndex {
 
     /// Drop a note's entry (used for deletes and as the first half of an upsert).
     fn remove_note(&mut self, id: Uuid) {
+        self.inbox_notes.remove(&id);
         if let Some((alias, notebook_id)) = self.aliased_notes.remove(&id) {
             if let Some(set) = self.note_aliases.get_mut(&alias) {
                 set.remove(&(id, notebook_id));
@@ -177,11 +197,14 @@ impl AliasIndex {
         }
     }
 
-    /// Whether `alias` is carried by a live note other than `self_id`.
-    fn note_alias_taken(&self, alias: &str, self_id: Uuid) -> bool {
-        self.note_aliases
-            .get(alias)
-            .is_some_and(|set| set.iter().any(|(id, _)| *id != self_id))
+    /// Whether `alias` is carried by another live note **in the same notebook**
+    /// (`self_id` excluded). Note aliases are unique per notebook, not globally,
+    /// so the same alias may live in two different notebooks.
+    fn note_alias_taken(&self, alias: &str, self_id: Uuid, notebook_id: Uuid) -> bool {
+        self.note_aliases.get(alias).is_some_and(|set| {
+            set.iter()
+                .any(|(id, nb)| *id != self_id && *nb == notebook_id)
+        })
     }
 
     /// Whether `alias` is carried by a live notebook other than `self_id`.
@@ -202,29 +225,64 @@ impl AliasIndex {
             .and_then(|set| set.iter().next().copied())
     }
 
-    /// Resolve a note segment (uuid or alias) to a uuid, optionally scoped to a notebook
-    /// segment, breaking alias ties by smallest uuid. A uuid is returned as-is; an alias
-    /// that matches no live note yields `None` (which drives the 2-segment fallback).
-    fn resolve_note_seg(&self, seg: &str, notebook_seg: Option<&str>) -> Option<Uuid> {
+    /// Resolve a note segment (uuid or alias) to a uuid.
+    ///
+    /// - A uuid is returned as-is.
+    /// - With an explicit `notebook_seg`, the alias is scoped to that notebook.
+    /// - A **bare** alias resolves globally when it is the only live note carrying it;
+    ///   when several notebooks share the alias it is scoped to `source_notebook`
+    ///   (the notebook of the note that carries the link).
+    ///
+    /// Notes in the **Inbox** are never link targets and are excluded from alias matches.
+    /// An alias that matches no eligible live note yields `None` (driving the 2-segment
+    /// fallback).
+    fn resolve_note_seg(
+        &self,
+        seg: &str,
+        notebook_seg: Option<&str>,
+        source_notebook: Option<Uuid>,
+    ) -> Option<Uuid> {
         if let Ok(id) = Uuid::parse_str(seg) {
-            return Some(id);
+            // A raw uuid is returned as-is — unless it names a known Inbox note, which is
+            // never a link target.
+            return (!self.inbox_notes.contains(&id)).then_some(id);
         }
-        let nb_id = notebook_seg.and_then(|ns| self.resolve_notebook_seg(ns));
-        let set = self.note_aliases.get(seg)?;
-        let mut candidates: Vec<(Uuid, Uuid)> = set.iter().copied().collect();
-        if let Some(nb) = nb_id {
-            let scoped: Vec<(Uuid, Uuid)> = candidates
-                .iter()
-                .copied()
-                .filter(|(_, notebook_id)| *notebook_id == nb)
-                .collect();
-            if !scoped.is_empty() {
-                candidates = scoped;
+        // Candidates carrying this alias, excluding Inbox notes (never targets).
+        let candidates: Vec<(Uuid, Uuid)> = self
+            .note_aliases
+            .get(seg)?
+            .iter()
+            .copied()
+            .filter(|(_, nb)| !is_inbox(*nb))
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        // Explicit notebook scoping: only that notebook (Inbox is not a target).
+        if let Some(ns) = notebook_seg {
+            let nb = self.resolve_notebook_seg(ns)?;
+            if is_inbox(nb) {
+                return None;
             }
+            return candidates
+                .iter()
+                .filter(|(_, n)| *n == nb)
+                .map(|(id, _)| *id)
+                .min();
         }
-        if candidates.len() > 1 {
-            tracing::warn!(alias = %seg, "ambiguous note alias; resolving to smallest uuid");
+        // Bare alias: unique → resolve globally; otherwise scope to the source notebook.
+        if candidates.len() == 1 {
+            return Some(candidates[0].0);
         }
+        if let Some(src) = source_notebook {
+            return candidates
+                .iter()
+                .filter(|(_, n)| *n == src)
+                .map(|(id, _)| *id)
+                .min();
+        }
+        // No source context (standalone resolve): deterministic smallest-uuid.
+        tracing::warn!(alias = %seg, "ambiguous note alias; resolving to smallest uuid");
         candidates.into_iter().map(|(id, _)| id).min()
     }
 
@@ -239,26 +297,37 @@ impl AliasIndex {
     ///   the reference is re-read as `#note#bookmark` (so a bookmark can be targeted
     ///   without naming a notebook).
     /// - `#notebook#note#bookmark`
-    fn resolve_target<'a>(&self, raw: &'a str) -> Option<(Uuid, Option<&'a str>)> {
+    ///
+    /// `source_notebook` is the notebook of the note that carries the reference (when known),
+    /// used to disambiguate a bare alias shared across notebooks (see [`resolve_note_seg`]).
+    fn resolve_target<'a>(
+        &self,
+        raw: &'a str,
+        source_notebook: Option<Uuid>,
+    ) -> Option<(Uuid, Option<&'a str>)> {
         let body = raw.strip_prefix('#')?;
         let segments: Vec<&str> = body.split('#').collect();
         if segments.iter().any(|s| s.is_empty()) {
             return None;
         }
         match segments.as_slice() {
-            [note] => Some((self.resolve_note_seg(note, None)?, None)),
+            [note] => Some((self.resolve_note_seg(note, None, source_notebook)?, None)),
             [first, second] => {
                 // Prefer notebook#note; fall back to note#bookmark when the second segment
                 // is not a resolvable note.
-                if let Some(id) = self.resolve_note_seg(second, Some(first)) {
+                if let Some(id) = self.resolve_note_seg(second, Some(first), source_notebook) {
                     Some((id, None))
                 } else {
-                    Some((self.resolve_note_seg(first, None)?, Some(second)))
+                    Some((
+                        self.resolve_note_seg(first, None, source_notebook)?,
+                        Some(second),
+                    ))
                 }
             }
-            [notebook, note, bookmark] => {
-                Some((self.resolve_note_seg(note, Some(notebook))?, Some(bookmark)))
-            }
+            [notebook, note, bookmark] => Some((
+                self.resolve_note_seg(note, Some(notebook), source_notebook)?,
+                Some(bookmark),
+            )),
             _ => None,
         }
     }
@@ -403,19 +472,33 @@ impl<B: StorageBackend> LinkingBackend<B> {
     /// index suffices and no note bodies are fetched.
     async fn prepare(&self, note: &mut Note) -> Result<(), StorageError> {
         Self::refresh(note);
+        // Inbox (Pizarra) notes carry no alias and do not link out: they cannot
+        // point at other notebooks/notes/bookmarks, and moving a note into the
+        // Inbox clears its alias.
+        if is_inbox(note.notebook_id) {
+            note.alias = None;
+            for link in note.links.iter_mut() {
+                link.target_note_id = None;
+            }
+            return Ok(());
+        }
         if note.alias.is_none() && note.links.is_empty() {
             return Ok(());
         }
+        let notebook_id = note.notebook_id;
         let (alias_taken, targets) = self
             .with_index(|idx| {
                 let taken = note
                     .alias
                     .as_deref()
-                    .is_some_and(|alias| idx.note_alias_taken(alias, note.id));
+                    .is_some_and(|alias| idx.note_alias_taken(alias, note.id, notebook_id));
                 let targets: Vec<Option<Uuid>> = note
                     .links
                     .iter()
-                    .map(|link| idx.resolve_target(&link.raw).map(|(id, _)| id))
+                    .map(|link| {
+                        idx.resolve_target(&link.raw, Some(notebook_id))
+                            .map(|(id, _)| id)
+                    })
                     .collect();
                 (taken, targets)
             })
@@ -515,7 +598,16 @@ fn resolve_bookmark_seg(seg: &str, note_id: Uuid, notes: &[Note]) -> Option<u32>
 /// which needs the target note's bookmarks and therefore the `notes` snapshot.
 fn resolve_ref(raw: &str, notes: &[Note], notebooks: &[Notebook]) -> Option<ResolvedReference> {
     let idx = AliasIndex::from_snapshots(notes, notebooks);
-    let (note_id, bookmark_seg) = idx.resolve_target(raw)?;
+    // No source note here, so a bare ambiguous alias falls back deterministically.
+    let (note_id, bookmark_seg) = idx.resolve_target(raw, None)?;
+    // Inbox notes are never link targets — a uuid reference to one does not resolve
+    // (alias references already exclude the Inbox inside `resolve_target`).
+    if notes
+        .iter()
+        .any(|n| n.id == note_id && is_inbox(n.notebook_id))
+    {
+        return None;
+    }
     Some(ResolvedReference {
         note_id,
         bookmark_number: bookmark_seg.and_then(|seg| resolve_bookmark_seg(seg, note_id, notes)),
@@ -581,9 +673,35 @@ pub async fn alias_conflicts(backend: &dyn StorageBackend) -> Result<AliasConfli
     let notes = collect_notes(backend).await?;
     let notebooks = collect_notebooks(backend).await?;
     Ok(AliasConflicts {
-        notes: group_conflicts(notes, |n| n.alias.clone(), |n| n.id),
+        notes: group_note_conflicts(notes),
         notebooks: group_conflicts(notebooks, |nb| nb.alias.clone(), |nb| nb.id),
     })
+}
+
+/// Group note conflicts by `(alias, notebook)`: note aliases are unique **per notebook**,
+/// so the same alias in two different notebooks is not a conflict. Inbox notes carry no
+/// alias and are skipped. Entities within a group are ordered by uuid.
+fn group_note_conflicts(notes: Vec<Note>) -> Vec<AliasConflict<Note>> {
+    let mut by_key: BTreeMap<(String, Uuid), Vec<Note>> = BTreeMap::new();
+    for note in notes {
+        if is_inbox(note.notebook_id) {
+            continue;
+        }
+        if let Some(alias) = note.alias.clone() {
+            by_key
+                .entry((alias, note.notebook_id))
+                .or_default()
+                .push(note);
+        }
+    }
+    by_key
+        .into_iter()
+        .filter(|(_, group)| group.len() >= 2)
+        .map(|((alias, _notebook), mut entities)| {
+            entities.sort_by_key(|n| n.id);
+            AliasConflict { alias, entities }
+        })
+        .collect()
 }
 
 /// Read a note for a user-facing read-modify-write, rejecting a tombstone as `NotFound`.
@@ -615,13 +733,21 @@ async fn read_live_notebook(
 }
 
 /// Set (or clear) a note's alias and persist it (read-modify-write → one `NoteUpdate`).
-/// A soft-deleted note is `NotFound` — the edit must not revive it.
+/// A soft-deleted note is `NotFound` — the edit must not revive it. Setting an alias on an
+/// Inbox note is `InvalidInput`: Inbox notes carry no alias.
 pub async fn set_note_alias(
     backend: &dyn StorageBackend,
     note_id: Uuid,
     alias: Option<String>,
 ) -> Result<Note, StorageError> {
     let mut note = read_live_note(backend, note_id).await?;
+    // Inbox ("Pizarra") notes carry no alias; reject rather than silently clear, matching the
+    // other Inbox domain rules (e.g. pinning). Clearing an already-null alias is a no-op.
+    if alias.is_some() && is_inbox(note.notebook_id) {
+        return Err(StorageError::InvalidInput(
+            "an Inbox note cannot carry an alias".into(),
+        ));
+    }
     note.alias = alias;
     backend.update_note(note).await
 }
@@ -723,6 +849,13 @@ impl<B: StorageBackend> NoteRepository for LinkingBackend<B> {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        // Inbox notes are never link targets, so they have no backlinks (this also
+        // hides any stale target left by data written before this rule).
+        if let Ok(note) = self.inner.read_note(target_id).await {
+            if is_inbox(note.notebook_id) {
+                return Ok((Vec::new(), None));
+            }
+        }
         // Delegate so an inner indexed backend (e.g. DbBackend) is reached.
         self.inner
             .note_backlinks(target_id, page_size, page_token)
@@ -946,6 +1079,20 @@ mod tests {
         LinkingBackend::new(FsBackend::new(&path).await.unwrap())
     }
 
+    /// A fixed non-Inbox notebook id: Inbox (nil) notes carry no alias and do not
+    /// link, so alias/link tests place their notes in a real notebook.
+    fn nb() -> Uuid {
+        Uuid::from_u128(0x00b0_000c)
+    }
+
+    /// A note with `alias` in the notebook `nb()`.
+    fn aliased(title: &str, alias: &str) -> Note {
+        let mut n = Note::new(title, "");
+        n.alias = Some(alias.to_string());
+        n.notebook_id = nb();
+        n
+    }
+
     #[tokio::test]
     async fn derives_bookmarks_and_content_links() {
         let be = backend().await;
@@ -988,16 +1135,16 @@ mod tests {
     #[tokio::test]
     async fn resolves_link_by_alias_and_uuid() {
         let be = backend().await;
-        // Target note with alias "note3".
+        // Target note with alias "note3", in a real notebook.
         let mut target = Note::new("target", "[Anchor](###) body");
         target.alias = Some("note3".to_string());
+        target.notebook_id = nb();
         let target = be.create_note(target).await.unwrap();
 
-        // Source note linking to it by alias.
-        let src = be
-            .create_note(Note::new("src", "go [here](#note3)"))
-            .await
-            .unwrap();
+        // Source note (also in a real notebook) linking to it by alias.
+        let mut src = Note::new("src", "go [here](#note3)");
+        src.notebook_id = nb();
+        let src = be.create_note(src).await.unwrap();
         assert_eq!(src.links[0].target_note_id, Some(target.id));
 
         // Resolve a 3-segment ref to note + bookmark number 1.
@@ -1018,14 +1165,122 @@ mod tests {
     #[tokio::test]
     async fn rejects_duplicate_note_alias() {
         let be = backend().await;
-        let mut a = Note::new("a", "");
-        a.alias = Some("dup".to_string());
-        be.create_note(a).await.unwrap();
-
-        let mut b = Note::new("b", "");
-        b.alias = Some("dup".to_string());
-        let err = be.create_note(b).await.unwrap_err();
+        be.create_note(aliased("a", "dup")).await.unwrap();
+        // Same alias in the same notebook conflicts.
+        let err = be.create_note(aliased("b", "dup")).await.unwrap_err();
         assert!(matches!(err, StorageError::Conflict(_)));
+    }
+
+    #[tokio::test]
+    async fn same_alias_in_different_notebooks_is_allowed() {
+        let be = backend().await;
+        let mut a = aliased("a", "shared");
+        a.notebook_id = Uuid::from_u128(1);
+        be.create_note(a).await.unwrap();
+        // A note with the same alias in a *different* notebook is fine.
+        let mut b = aliased("b", "shared");
+        b.notebook_id = Uuid::from_u128(2);
+        be.create_note(b).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn inbox_note_cannot_carry_an_alias() {
+        let be = backend().await;
+        // An alias set on an Inbox (nil notebook) note is dropped, not stored.
+        let mut n = Note::new("n", "");
+        n.alias = Some("x".to_string());
+        // notebook_id defaults to the nil Inbox.
+        let stored = be.create_note(n).await.unwrap();
+        assert!(stored.alias.is_none(), "Inbox notes carry no alias");
+    }
+
+    #[tokio::test]
+    async fn set_note_alias_rejects_inbox_notes() {
+        let be = backend().await;
+        // The explicit alias endpoint rejects (not silently clears) an Inbox note.
+        let inbox_note = be.create_note(Note::new("i", "")).await.unwrap();
+        let err = set_note_alias(&be, inbox_note.id, Some("x".into()))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::InvalidInput(_)), "got: {err}");
+        // Clearing an (already absent) alias on an Inbox note is still allowed.
+        let cleared = set_note_alias(&be, inbox_note.id, None).await.unwrap();
+        assert!(cleared.alias.is_none());
+    }
+
+    #[tokio::test]
+    async fn moving_a_note_to_inbox_clears_its_alias() {
+        let be = backend().await;
+        let mut n = be.create_note(aliased("n", "keep")).await.unwrap();
+        assert_eq!(n.alias.as_deref(), Some("keep"));
+        // Move it to the Inbox: the alias is cleared.
+        n.notebook_id = crate::ordering::INBOX_ID;
+        let moved = be.update_note(n).await.unwrap();
+        assert!(moved.alias.is_none());
+    }
+
+    #[tokio::test]
+    async fn inbox_note_does_not_link_out() {
+        let be = backend().await;
+        let target = be.create_note(aliased("t", "tgt")).await.unwrap();
+        // A note in the Inbox that references the target does not resolve the link.
+        let src = be
+            .create_note(Note::new("s", "see [t](#tgt)"))
+            .await
+            .unwrap();
+        assert_eq!(
+            src.links[0].target_note_id, None,
+            "Inbox notes do not link out"
+        );
+        // ...and the target gets no backlink from it.
+        let (back, _) = backlinks(&be, target.id, 0, None).await.unwrap();
+        assert!(back.is_empty());
+    }
+
+    #[tokio::test]
+    async fn nothing_links_to_an_inbox_note() {
+        let be = backend().await;
+        // An Inbox target (no alias possible) referenced by uuid does not resolve.
+        let inbox_note = be.create_note(Note::new("i", "")).await.unwrap();
+        let mut src = Note::new("s", format!("go [x](#{})", inbox_note.id));
+        src.notebook_id = nb();
+        let src = be.create_note(src).await.unwrap();
+        assert_eq!(src.links[0].target_note_id, None);
+        let (back, _) = backlinks(&be, inbox_note.id, 0, None).await.unwrap();
+        assert!(back.is_empty(), "Inbox notes have no backlinks");
+    }
+
+    #[tokio::test]
+    async fn bare_alias_resolves_globally_when_unique_else_scoped() {
+        let be = backend().await;
+        let nb1 = Uuid::from_u128(1);
+        let nb2 = Uuid::from_u128(2);
+        // Unique alias: a bare `#only` from anywhere resolves to it.
+        let mut only = aliased("only", "only");
+        only.notebook_id = nb1;
+        let only = be.create_note(only).await.unwrap();
+        let mut elsewhere = Note::new("e", "go [x](#only)");
+        elsewhere.notebook_id = nb2;
+        let elsewhere = be.create_note(elsewhere).await.unwrap();
+        assert_eq!(elsewhere.links[0].target_note_id, Some(only.id));
+
+        // Now the same alias exists in two notebooks: a bare ref scopes to the
+        // source note's own notebook.
+        let mut dup1 = aliased("d1", "dup");
+        dup1.notebook_id = nb1;
+        let dup1 = be.create_note(dup1).await.unwrap();
+        let mut dup2 = aliased("d2", "dup");
+        dup2.notebook_id = nb2;
+        be.create_note(dup2).await.unwrap();
+
+        let mut src = Note::new("src", "go [x](#dup)");
+        src.notebook_id = nb1;
+        let src = be.create_note(src).await.unwrap();
+        assert_eq!(
+            src.links[0].target_note_id,
+            Some(dup1.id),
+            "bare ambiguous alias scopes to the source notebook"
+        );
     }
 
     #[tokio::test]
@@ -1076,6 +1331,7 @@ mod tests {
         let be = backend().await;
         let mut target = Note::new("target", "[Anchor](###) body");
         target.alias = Some("note3".to_string());
+        target.notebook_id = nb();
         let target = be.create_note(target).await.unwrap();
 
         // `#note#bookmark` by bookmark alias.
@@ -1119,10 +1375,12 @@ mod tests {
         for title in ["a", "b"] {
             let mut n = Note::new(title, "");
             n.alias = Some("dup".to_string());
+            n.notebook_id = nb();
             fs.create_note(n).await.unwrap();
         }
         let mut unique = Note::new("c", "");
         unique.alias = Some("unique".to_string());
+        unique.notebook_id = nb();
         fs.create_note(unique).await.unwrap();
 
         let conflicts = alias_conflicts(&fs).await.unwrap();
@@ -1140,28 +1398,18 @@ mod tests {
         let be = backend().await;
 
         // Delete frees the alias.
-        let mut a = Note::new("a", "");
-        a.alias = Some("freed".to_string());
-        let a = be.create_note(a).await.unwrap();
+        let a = be.create_note(aliased("a", "freed")).await.unwrap();
         be.delete_note(a.id).await.unwrap();
-        let mut b = Note::new("b", "");
-        b.alias = Some("freed".to_string());
-        be.create_note(b).await.unwrap();
+        be.create_note(aliased("b", "freed")).await.unwrap();
 
         // Rename frees the old alias and claims the new one.
-        let mut c = Note::new("c", "");
-        c.alias = Some("old".to_string());
-        let mut c = be.create_note(c).await.unwrap();
+        let mut c = be.create_note(aliased("c", "old")).await.unwrap();
         c.alias = Some("new".to_string());
         be.update_note(c).await.unwrap();
 
-        let mut takes_old = Note::new("d", "");
-        takes_old.alias = Some("old".to_string());
-        be.create_note(takes_old).await.unwrap();
+        be.create_note(aliased("d", "old")).await.unwrap();
 
-        let mut takes_new = Note::new("e", "");
-        takes_new.alias = Some("new".to_string());
-        let err = be.create_note(takes_new).await.unwrap_err();
+        let err = be.create_note(aliased("e", "new")).await.unwrap_err();
         assert!(matches!(err, StorageError::Conflict(_)));
     }
 
@@ -1205,6 +1453,7 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 let mut note = Note::new(format!("n{i}"), "");
                 note.alias = Some("dup".to_string());
+                note.notebook_id = nb();
                 b.create_note(note).await
             }));
         }
