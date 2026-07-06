@@ -74,8 +74,10 @@ pub struct Note {
     pub updated_at: DateTime<Utc>,
     /// UTC timestamp set when the note is soft-deleted. `None` means the note is active.
     pub deleted_at: Option<DateTime<Utc>>,
-    /// Optional human-readable alias, unique among live notes. Lets links target the note as
-    /// `#<alias>` instead of `#<uuid>`. Encrypted at rest. Defaults to `None`.
+    /// Optional human-readable alias, unique among live notes **in the same notebook** (the
+    /// same alias may recur in other notebooks). Lets links target the note as `#<alias>`
+    /// instead of `#<uuid>`. Notes in the Inbox carry no alias and are never link targets (see
+    /// [`crate::linking`]). Encrypted at rest. Defaults to `None`.
     #[serde(default)]
     pub alias: Option<String>,
     /// Bookmarks (in-note anchors) derived from `[text](### "alias")` markdown links in the

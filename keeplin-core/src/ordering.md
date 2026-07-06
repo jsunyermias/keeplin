@@ -30,7 +30,10 @@ constants that fix the band layout and the Inbox's identity:
 ### The Inbox / board (`Pizarra`)
 
 The Inbox is the system notebook that acts as the default **board** for unfiled notes. It has
-no pinning and is ordered manually as one flat band.
+no pinning and is ordered manually as one flat band. It also sits **outside the linking graph**
+(see `linking.md`): notes here carry no alias, emit no links, and are never a link target — so
+moving a note into the Inbox clears its alias and outgoing links, and moving it out lets it
+claim an alias again. `is_inbox` is the predicate `LinkingBackend` uses for all of this.
 
 | Function | Signature (conceptual) | Description |
 |----------|------------------------|-------------|

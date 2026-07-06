@@ -34,7 +34,7 @@ layer.
 | `created_at` | `DateTime<Utc>` | Set once at creation; never modified |
 | `updated_at` | `DateTime<Utc>` | Refreshed on every mutation |
 | `deleted_at` | `Option<DateTime<Utc>>` | Set on soft-delete; `None` means the note is active |
-| `alias` | `Option<String>` | Optional human-readable alias, unique among live notes; lets links target `#<alias>`. Encrypted at rest. |
+| `alias` | `Option<String>` | Optional human-readable alias, unique among live notes **in the same notebook** (the same alias may recur elsewhere); lets links target `#<alias>`. Inbox notes carry none and are never link targets. Encrypted at rest. |
 | `bookmarks` | `Vec<Bookmark>` | In-note anchors derived from `[text](### "alias")` links in the body (see `links.rs`) |
 | `links` | `Vec<NoteLink>` | Links to other notes: content-derived (`[t](#…)`) and manual |
 | `vv` | `VersionVector` | Per-device version vector for conflict resolution; a local write increments this device's counter. Plaintext sync metadata. See `note_log::resolve` |
