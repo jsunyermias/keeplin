@@ -120,6 +120,16 @@ pub fn router(state: Shared) -> Router {
         .route("/notes/:id/backlinks", get(list_backlinks))
         .route("/notes/:id/history", get(note_history))
         .route("/notes/:id/revert", post(revert_note_ep))
+        // Permission management proxies to keeplin-srv (server mode only).
+        .route(
+            "/notes/:id/share",
+            post(proxy_note_share).get(proxy_note_shares),
+        )
+        .route(
+            "/notes/:id/share/:user_id",
+            axum::routing::delete(proxy_note_unshare),
+        )
+        .route("/notes/:id/transfer", post(proxy_note_transfer))
         .route("/notes/starred", get(list_starred_notes))
         .route("/search", get(search_notes))
         .route("/notes/:id/pin", post(pin_note).delete(unpin_note))
@@ -135,6 +145,15 @@ pub fn router(state: Shared) -> Router {
                 .delete(delete_notebook),
         )
         .route("/notebooks/:id/alias", put(set_notebook_alias))
+        .route(
+            "/notebooks/:id/share",
+            post(proxy_notebook_share).get(proxy_notebook_shares),
+        )
+        .route(
+            "/notebooks/:id/share/:user_id",
+            axum::routing::delete(proxy_notebook_unshare),
+        )
+        .route("/notebooks/:id/transfer", post(proxy_notebook_transfer))
         .route("/notebooks/:id/notes", get(list_notes_in_notebook))
         .route("/notebooks/:id/history", get(notebook_history))
         .route("/notebooks/:id/revert", post(revert_notebook_ep))
@@ -752,6 +771,111 @@ fn notebook_version_dto(v: EntityVersion<Notebook>) -> NotebookVersion {
     }
 }
 
+// ── Permission management (proxied to keeplin-srv) ──────────────────────────────
+//
+// Permissions are enforced server-side (the authority). The daemon does not store or enforce
+// them; it forwards these requests to keeplin-srv over the collab channel's authenticated REST
+// client and relays the response, so a frontend can view/manage shares on demand. In fs/offline
+// mode there is no server, so these routes return `503`.
+
+async fn proxy_perm(
+    s: &Shared,
+    method: &str,
+    path: String,
+    body: Option<serde_json::Value>,
+) -> Response {
+    let Some(collab) = &s.collab else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "permission management requires server mode" })),
+        )
+            .into_response();
+    };
+    match collab.proxy_request(method, &path, body).await {
+        Ok((status, body)) => {
+            let code = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+            (code, Json(body)).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn proxy_note_share(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    proxy_perm(&s, "POST", format!("/api/notes/{id}/share"), Some(body)).await
+}
+
+async fn proxy_note_shares(State(s): State<Shared>, Path(id): Path<Uuid>) -> Response {
+    proxy_perm(&s, "GET", format!("/api/notes/{id}/share"), None).await
+}
+
+async fn proxy_note_unshare(
+    State(s): State<Shared>,
+    Path((id, user_id)): Path<(Uuid, Uuid)>,
+) -> Response {
+    proxy_perm(
+        &s,
+        "DELETE",
+        format!("/api/notes/{id}/share/{user_id}"),
+        None,
+    )
+    .await
+}
+
+async fn proxy_note_transfer(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    proxy_perm(&s, "POST", format!("/api/notes/{id}/transfer"), Some(body)).await
+}
+
+async fn proxy_notebook_share(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    proxy_perm(&s, "POST", format!("/api/notebooks/{id}/share"), Some(body)).await
+}
+
+async fn proxy_notebook_shares(State(s): State<Shared>, Path(id): Path<Uuid>) -> Response {
+    proxy_perm(&s, "GET", format!("/api/notebooks/{id}/share"), None).await
+}
+
+async fn proxy_notebook_unshare(
+    State(s): State<Shared>,
+    Path((id, user_id)): Path<(Uuid, Uuid)>,
+) -> Response {
+    proxy_perm(
+        &s,
+        "DELETE",
+        format!("/api/notebooks/{id}/share/{user_id}"),
+        None,
+    )
+    .await
+}
+
+async fn proxy_notebook_transfer(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    proxy_perm(
+        &s,
+        "POST",
+        format!("/api/notebooks/{id}/transfer"),
+        Some(body),
+    )
+    .await
+}
+
 // ── Notebooks ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -1169,6 +1293,42 @@ mod tests {
         assert_eq!(code, StatusCode::NO_CONTENT);
         let (code, _) = call(&st, "GET", &format!("/api/notes/{id}"), None, None).await;
         assert_eq!(code, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn permission_endpoints_require_server_mode() {
+        // In fs/offline mode (collab: None) the permission proxies must 503, not panic.
+        let st = state(None).await;
+        let (_, body) = call(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(r#"{"title":"T","body":""}"#),
+            None,
+        )
+        .await;
+        let id = serde_json::from_slice::<Note>(&body).unwrap().id;
+
+        for (method, path, payload) in [
+            (
+                "POST",
+                format!("/api/notes/{id}/share"),
+                Some(r#"{"capabilities":1}"#),
+            ),
+            ("GET", format!("/api/notes/{id}/share"), None),
+            (
+                "POST",
+                format!("/api/notes/{id}/transfer"),
+                Some(r#"{"user_email":"x@y.z"}"#),
+            ),
+        ] {
+            let (code, _) = call(&st, method, &path, payload, None).await;
+            assert_eq!(
+                code,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "{method} {path} must 503 without a server"
+            );
+        }
     }
 
     #[tokio::test]

@@ -43,6 +43,7 @@ metrics); every other route is behind auth and counted by `status_mw`.
 | `GET /notes/:id/backlinks?page_size=&page_token=` | notes linking **to** this note (paginated) |
 | `GET /notes/:id/history?limit=` | a note's past versions, newest first (`limit = 0` → default 100); each version is `{ timestamp, device_id, note? }` (`note` absent = tombstone) — see `keeplin-core/src/history.md` |
 | `POST /notes/:id/revert` | forward-revert a note to its state as of `{ "at": <RFC-3339> }` (non-destructive: writes a new version) |
+| `POST/GET /notes/:id/share`, `DELETE /notes/:id/share/:user_id`, `POST /notes/:id/transfer` | **permission management, proxied to keeplin-srv** (the authority). Grant/list/revoke a capability share, or transfer ownership. Server-mode only — `503` in fs/offline mode, `502` if the server is unreachable |
 | `GET /notes/starred?page_size=&page_token=` | every starred note, across all notebooks |
 | `GET /search?q=&notebook=&todo=&open=&starred=&pinned=&due_after=&due_before=&updated_after=&updated_before=&limit=` | full-text search over title/body/tag/notebook names with structured filters; returns matching notes best-first (`503` if the index is unavailable) — see `search.md` |
 | `POST/DELETE /notes/:id/pin` | pin (into the `1–999` band, max 999) / unpin (to the end of the normal band) |
