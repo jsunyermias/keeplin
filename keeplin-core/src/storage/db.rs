@@ -2848,10 +2848,8 @@ impl DbBackend {
     fn server_http_base(&self) -> Option<String> {
         let (scheme, rest) = if let Some(rest) = self.server_url.strip_prefix("wss://") {
             ("https://", rest)
-        } else if let Some(rest) = self.server_url.strip_prefix("ws://") {
-            ("http://", rest)
         } else {
-            return None;
+            ("http://", self.server_url.strip_prefix("ws://")?)
         };
         let rest = rest.strip_suffix("/api/sync").unwrap_or(rest);
         Some(format!("{scheme}{}", rest.trim_end_matches('/')))
