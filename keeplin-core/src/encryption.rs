@@ -33,8 +33,8 @@ use crate::{
     error::StorageError,
     models::{Change, Note, NoteTag, Notebook, Resource, Tag},
     storage::{
-        NoteRepository, NotebookRepository, ResourceRepository, StorageBackend, SyncBackend,
-        TagRepository,
+        EntityVersion, HistoryRepository, NoteRepository, NotebookRepository, ResourceRepository,
+        StorageBackend, SyncBackend, TagRepository,
     },
 };
 
@@ -505,5 +505,48 @@ impl<B: StorageBackend> SyncBackend for EncryptedBackend<B> {
 
     async fn prune_change_journal(&self, older_than: DateTime<Utc>) -> Result<u64, StorageError> {
         self.inner.prune_change_journal(older_than).await
+    }
+}
+
+#[async_trait]
+impl<B: StorageBackend> HistoryRepository for EncryptedBackend<B> {
+    async fn note_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<EntityVersion<Note>>, StorageError> {
+        // The journal stores ciphertext snapshots; decrypt each version's entity on the way
+        // up, exactly as `read_note` does for the current state. Tombstones carry no entity.
+        self.inner
+            .note_history(id, limit)
+            .await?
+            .into_iter()
+            .map(|v| {
+                Ok(EntityVersion {
+                    timestamp: v.timestamp,
+                    device_id: v.device_id,
+                    entity: v.entity.map(|n| self.dec_note(n)).transpose()?,
+                })
+            })
+            .collect()
+    }
+
+    async fn notebook_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<EntityVersion<Notebook>>, StorageError> {
+        self.inner
+            .notebook_history(id, limit)
+            .await?
+            .into_iter()
+            .map(|v| {
+                Ok(EntityVersion {
+                    timestamp: v.timestamp,
+                    device_id: v.device_id,
+                    entity: v.entity.map(|n| self.dec_notebook(n)).transpose()?,
+                })
+            })
+            .collect()
     }
 }

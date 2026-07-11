@@ -25,10 +25,11 @@ use crate::{
     models::{new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag},
 };
 
+use super::backend::DEFAULT_HISTORY_LIMIT;
 use super::note_log::{self, resolve, VersionVector, Winner};
 use super::{
-    NoteRepository, NotebookRepository, ResourceRepository, SortableRfc3339, SyncBackend,
-    TagRepository,
+    EntityVersion, HistoryRepository, NoteRepository, NotebookRepository, ResourceRepository,
+    SortableRfc3339, SyncBackend, TagRepository,
 };
 
 /// A WebSocket stream over either a plain TCP connection or a TLS-wrapped TCP connection.
@@ -2822,6 +2823,84 @@ impl SyncBackend for DbBackend {
     }
 }
 
+impl DbBackend {
+    /// Read an entity's past versions from the `entity_changes` journal, newest first. The
+    /// journal holds only changes that **originated on this device** (see `apply_change`), so
+    /// this returns this device's own edit history; the full cross-device history lives on the
+    /// server (the source of truth). `data` carries the full snapshot for create/update and a
+    /// tombstone for delete, so a delete maps to `entity: None`.
+    async fn entity_history<T: serde::de::DeserializeOwned>(
+        &self,
+        entity_type: &str,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<EntityVersion<T>>, StorageError> {
+        let _read_guard = self.lock.read().await;
+        let cap = if limit == 0 {
+            DEFAULT_HISTORY_LIMIT
+        } else {
+            limit
+        };
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT operation, changed_at, data
+                 FROM entity_changes
+                 WHERE entity_type = ?1 AND entity_id = ?2
+                 ORDER BY id DESC
+                 LIMIT ?3",
+                libsql::params![entity_type, id.to_string(), cap as i64],
+            )
+            .await?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let operation: String = row.get(0)?;
+            let changed_at = Self::parse_required_dt(row.get::<String>(1)?)?;
+            let data_str: Option<String> = row.get(2)?;
+            let entity = match operation.as_str() {
+                "create" | "update" => {
+                    match data_str
+                        .as_deref()
+                        .and_then(|s| serde_json::from_str::<T>(s).ok())
+                    {
+                        Some(e) => Some(e),
+                        // Unparseable snapshot: skip rather than mislabel it as a delete.
+                        None => continue,
+                    }
+                }
+                "delete" => None,
+                _ => continue,
+            };
+            out.push(EntityVersion {
+                timestamp: changed_at,
+                device_id: self.device_id.clone(),
+                entity,
+            });
+        }
+        Ok(out)
+    }
+}
+
+#[async_trait]
+impl HistoryRepository for DbBackend {
+    async fn note_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<EntityVersion<Note>>, StorageError> {
+        self.entity_history::<Note>("note", id, limit).await
+    }
+
+    async fn notebook_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<EntityVersion<Notebook>>, StorageError> {
+        self.entity_history::<Notebook>("notebook", id, limit).await
+    }
+}
+
 #[cfg(test)]
 mod migration_tests {
     use super::*;
@@ -2835,6 +2914,32 @@ mod migration_tests {
 
     async fn user_version(conn: &libsql::Connection) -> u32 {
         DbBackend::schema_version(conn).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn note_history_reads_this_devices_versions_newest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hist.db");
+        let be = DbBackend::new(&path, "", "").await.unwrap();
+
+        let n = be.create_note(Note::new("t", "v1")).await.unwrap();
+        let mut e = n.clone();
+        e.body = "v2".into();
+        be.update_note(e).await.unwrap();
+
+        let hist = be.note_history(n.id, 0).await.unwrap();
+        assert_eq!(hist.len(), 2, "create + update");
+        assert_eq!(hist[0].entity.as_ref().unwrap().body, "v2", "newest first");
+        assert_eq!(hist[1].entity.as_ref().unwrap().body, "v1");
+
+        // A delete records a tombstone version (no snapshot).
+        be.delete_note(n.id).await.unwrap();
+        let hist = be.note_history(n.id, 0).await.unwrap();
+        assert_eq!(hist.len(), 3);
+        assert!(hist[0].entity.is_none(), "newest version is the tombstone");
+
+        // The limit caps the reply.
+        assert_eq!(be.note_history(n.id, 1).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

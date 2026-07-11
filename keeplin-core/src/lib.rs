@@ -22,6 +22,7 @@
 pub mod collab;
 pub mod encryption;
 pub mod error;
+pub mod history;
 pub mod linking;
 pub mod links;
 pub mod migrate;

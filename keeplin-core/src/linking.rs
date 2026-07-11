@@ -1067,6 +1067,27 @@ impl<B: StorageBackend> SyncBackend for LinkingBackend<B> {
     }
 }
 
+#[async_trait]
+impl<B: StorageBackend> crate::storage::HistoryRepository for LinkingBackend<B> {
+    // History returns the snapshots as they were stored (their links/bookmarks were derived
+    // at write time), so this decorator just delegates.
+    async fn note_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<crate::storage::EntityVersion<Note>>, StorageError> {
+        self.inner.note_history(id, limit).await
+    }
+
+    async fn notebook_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<crate::storage::EntityVersion<Notebook>>, StorageError> {
+        self.inner.notebook_history(id, limit).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

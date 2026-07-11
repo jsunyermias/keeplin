@@ -41,12 +41,18 @@ metrics); every other route is behind auth and counted by `status_mw`.
 | `PUT /notes/:id/alias`, `PUT /notebooks/:id/alias` | set/clear an alias (note aliases are unique **per notebook**; setting one on an Inbox note → `400`) |
 | `GET/POST /notes/:id/links`, `DELETE /notes/:id/links/:index` | list / add-manual / remove links |
 | `GET /notes/:id/backlinks?page_size=&page_token=` | notes linking **to** this note (paginated) |
+| `GET /notes/:id/history?limit=` | a note's past versions, newest first (`limit = 0` → default 100); each version is `{ timestamp, device_id, note? }` (`note` absent = tombstone) — see `keeplin-core/src/history.md` |
+| `POST /notes/:id/revert` | forward-revert a note to its state as of `{ "at": <RFC-3339> }` (non-destructive: writes a new version) |
 | `GET /notes/starred?page_size=&page_token=` | every starred note, across all notebooks |
 | `GET /search?q=&notebook=&todo=&open=&starred=&pinned=&due_after=&due_before=&updated_after=&updated_before=&limit=` | full-text search over title/body/tag/notebook names with structured filters; returns matching notes best-first (`503` if the index is unavailable) — see `search.md` |
 | `POST/DELETE /notes/:id/pin` | pin (into the `1–999` band, max 999) / unpin (to the end of the normal band) |
 | `POST/DELETE /notes/:id/star` | star / unstar (global flag; never moves the note) |
 | `PUT /notes/:id/sort-key` | reorder within the note's current band (`{ "sort_key": … }`) |
 | `GET /notebooks/:id/notes?page_size=&page_token=` | the notebook's notes in **manual order** (pinned band first); nil UUID = the Inbox |
+| `GET /notebooks/:id/history?limit=` | a notebook's past versions, newest first (best-effort in `FsBackend`; see `history.md`) |
+| `POST /notebooks/:id/revert` | forward-revert a notebook to its state as of `{ "at": … }` |
+| `POST /notebooks/:id/notes/revert` | batch forward-revert **every note currently in** the notebook to `{ "at": … }` |
+| `POST /history/revert` | batch forward-revert an explicit `{ "at": …, "note_ids": [ … ] }` list |
 | `GET /notes/:id/presence` | who is inside the note's live collaborative session and where their caret is (empty when collaboration is disabled or nobody is in) |
 | `PUT /notes/:id/cursor` | publish this device's caret position; the server fans updated presence out to every participant (`503` when collaboration is disabled) |
 | `GET /links/resolve?ref=#…` | resolve a reference → `{ note_id, bookmark_number }` |

@@ -475,6 +475,27 @@ impl<B: SyncBackend> SyncBackend for MetricsBackend<B> {
     }
 }
 
+#[async_trait]
+impl<B: keeplin_core::storage::HistoryRepository> keeplin_core::storage::HistoryRepository
+    for MetricsBackend<B>
+{
+    async fn note_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<keeplin_core::storage::EntityVersion<Note>>, StorageError> {
+        self.inner.note_history(id, limit).await
+    }
+
+    async fn notebook_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<keeplin_core::storage::EntityVersion<Notebook>>, StorageError> {
+        self.inner.notebook_history(id, limit).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

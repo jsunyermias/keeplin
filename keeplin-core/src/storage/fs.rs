@@ -60,10 +60,11 @@ use crate::{
     models::{new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag},
 };
 
+use super::backend::DEFAULT_HISTORY_LIMIT;
 use super::note_log::{self, resolve, NoteLogEntry, NoteOp, VersionVector, Winner};
 use super::{
-    NoteRepository, NotebookRepository, NotebookSortProfile, ResourceRepository, SortableRfc3339,
-    SyncBackend, TagRepository,
+    EntityVersion, HistoryRepository, NoteRepository, NotebookRepository, NotebookSortProfile,
+    ResourceRepository, SortableRfc3339, SyncBackend, TagRepository,
 };
 
 /// The materialized projection written to `notes/{id}/meta.msgpack`.
@@ -2921,6 +2922,113 @@ impl SyncBackend for FsBackend {
         // than deleting history a peer still needs, so this method remains a no-op returning zero.
         Ok(0)
     }
+}
+
+impl FsBackend {
+    /// Read every global NDJSON log (`logs/*.log`) and return each change entry paired with
+    /// the device that wrote it (the file's `{device}.log` stem). Epoch headers and blank or
+    /// unparseable lines are skipped. Used only by notebook history — notes have their own
+    /// per-device op logs.
+    async fn read_all_global_entries(&self) -> Result<Vec<(String, LogEntry)>, StorageError> {
+        let dir = self.root.join("logs");
+        let mut out = Vec::new();
+        let mut rd = match tokio::fs::read_dir(&dir).await {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(entry) = rd.next_entry().await? {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(device) = name.strip_suffix(".log") else {
+                continue;
+            };
+            let bytes = tokio::fs::read(entry.path()).await?;
+            let text = String::from_utf8_lossy(&bytes);
+            for line in text.lines() {
+                if line.trim().is_empty() || parse_epoch_header(line).is_some() {
+                    continue;
+                }
+                if let Ok(le) = serde_json::from_str::<LogEntry>(line) {
+                    out.push((device.to_string(), le));
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+#[async_trait]
+impl HistoryRepository for FsBackend {
+    async fn note_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<EntityVersion<Note>>, StorageError> {
+        // The per-note op logs (one per device) already are the note's version history: every
+        // edit is one entry carrying the full note (an `Upsert`) or a `Tombstone`.
+        let logs = self.read_note_logs(id).await?;
+        let mut versions: Vec<EntityVersion<Note>> = logs
+            .into_iter()
+            .flatten()
+            .map(|e| EntityVersion {
+                timestamp: e.timestamp,
+                device_id: e.device_id,
+                entity: match e.op {
+                    NoteOp::Upsert(note) => Some(note),
+                    NoteOp::Tombstone { .. } => None,
+                },
+            })
+            .collect();
+        sort_and_cap(&mut versions, limit);
+        Ok(versions)
+    }
+
+    async fn notebook_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<EntityVersion<Notebook>>, StorageError> {
+        // Notebooks are state-based sidecars, so their version history lives only in the global
+        // NDJSON journal — and that journal compacts to current state, so this is best-effort:
+        // it returns whatever versions the journal still holds. (Notes, which are op-logged, are
+        // not affected by this limitation.)
+        let entries = self.read_all_global_entries().await?;
+        let mut versions: Vec<EntityVersion<Notebook>> = entries
+            .into_iter()
+            .filter(|(_, le)| le.entity_type == "notebook" && le.entity_id == id)
+            .filter_map(|(device, le)| {
+                let entity = match le.operation.as_str() {
+                    "create" | "update" => Some(serde_json::from_value::<Notebook>(le.data).ok()?),
+                    "delete" => None,
+                    _ => return None,
+                };
+                Some(EntityVersion {
+                    timestamp: le.timestamp,
+                    device_id: device,
+                    entity,
+                })
+            })
+            .collect();
+        sort_and_cap(&mut versions, limit);
+        Ok(versions)
+    }
+}
+
+/// Order a history list newest-first (`(timestamp, device_id)` descending — the same total
+/// order the version-vector merge tiebreaks on) and truncate it to `limit` (`0` → the default
+/// cap). Shared by note and notebook history.
+fn sort_and_cap<T>(versions: &mut Vec<EntityVersion<T>>, limit: u32) {
+    versions.sort_by(|a, b| {
+        b.timestamp
+            .cmp(&a.timestamp)
+            .then_with(|| b.device_id.cmp(&a.device_id))
+    });
+    let cap = if limit == 0 {
+        DEFAULT_HISTORY_LIMIT
+    } else {
+        limit
+    } as usize;
+    versions.truncate(cap);
 }
 
 #[cfg(test)]
