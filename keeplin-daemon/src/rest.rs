@@ -996,15 +996,24 @@ async fn list_events_ep(State(s): State<Shared>) -> Result<Json<Vec<EventDto>>, 
     Ok(Json(events.into_iter().map(EventDto::from).collect()))
 }
 
-/// `POST /api/events/import` — body is an iCalendar `VEVENT`; parse, store, return it.
+/// `POST /api/events/import` — body is an iCalendar file; **every** `VEVENT` in it is
+/// parsed and stored, and the stored events are returned in document order (so a whole
+/// exported calendar imports in one call).
 async fn import_event_ep(
     State(s): State<Shared>,
     body: String,
-) -> Result<Json<EventDto>, ApiError> {
-    let event = CalendarEvent::from_ics(&body)
-        .ok_or_else(|| StorageError::InvalidInput("no VEVENT in input".into()))?;
-    let saved = interop::save_event(s.backend.as_ref(), event).await?;
-    Ok(Json(saved.into()))
+) -> Result<Json<Vec<EventDto>>, ApiError> {
+    let events = CalendarEvent::from_ics_all(&body);
+    if events.is_empty() {
+        return Err(StorageError::InvalidInput("no VEVENT in input".into()).into());
+    }
+    let mut saved = Vec::with_capacity(events.len());
+    for event in events {
+        saved.push(EventDto::from(
+            interop::save_event(s.backend.as_ref(), event).await?,
+        ));
+    }
+    Ok(Json(saved))
 }
 
 async fn export_event_ep(
@@ -1025,9 +1034,15 @@ async fn delete_event_ep(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /api/todos/import` — body is an iCalendar `VTODO`; create a Keeplin to-do note from it.
-async fn import_todo_ep(State(s): State<Shared>, body: String) -> Result<Json<Note>, ApiError> {
-    Ok(Json(interop::import_todo(s.backend.as_ref(), &body).await?))
+/// `POST /api/todos/import` — body is an iCalendar file; a Keeplin to-do note is created
+/// from **every** `VTODO` in it, returned in document order.
+async fn import_todo_ep(
+    State(s): State<Shared>,
+    body: String,
+) -> Result<Json<Vec<Note>>, ApiError> {
+    Ok(Json(
+        interop::import_todos(s.backend.as_ref(), &body).await?,
+    ))
 }
 
 /// `?name=&email=` for the profile-vCard endpoint.
@@ -1538,12 +1553,16 @@ mod tests {
     #[tokio::test]
     async fn todo_import_and_profile_vcard_endpoints() {
         let st = state(None).await;
-        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:t1\r\nSUMMARY:Task\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        // Two VTODOs in one calendar: the import creates a note per component.
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:t1\r\nSUMMARY:Task\r\nEND:VTODO\r\n\
+                   BEGIN:VTODO\r\nUID:t2\r\nSUMMARY:Other\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
         let (code, body) = call(&st, "POST", "/api/todos/import", Some(ics), None).await;
         assert_eq!(code, StatusCode::OK);
-        let note: Note = serde_json::from_slice(&body).unwrap();
-        assert!(note.is_todo);
-        assert_eq!(note.title, "Task");
+        let notes: Vec<Note> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(notes.len(), 2, "every VTODO in the calendar imports");
+        assert!(notes[0].is_todo);
+        assert_eq!(notes[0].title, "Task");
+        assert_eq!(notes[1].title, "Other");
 
         let (code, body) = call(&st, "GET", "/api/profile/vcard?email=me@x.com", None, None).await;
         assert_eq!(code, StatusCode::OK);

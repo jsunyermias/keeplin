@@ -116,11 +116,6 @@ struct AliasIndex {
     notebook_aliases: BTreeMap<String, BTreeSet<Uuid>>,
     /// notebook id → its indexed alias.
     aliased_notebooks: HashMap<Uuid, String>,
-    /// Live notes that sit in the Inbox. They can carry no alias, so they never appear in
-    /// `note_aliases`, but a raw `#<uuid>` reference could still name one — this set lets the
-    /// uuid path reject that at write time, keeping the "nothing links to an Inbox note"
-    /// guarantee on the outgoing side too (the backlink layer covers the incoming side).
-    inbox_notes: HashSet<Uuid>,
 }
 
 impl AliasIndex {
@@ -143,8 +138,11 @@ impl AliasIndex {
         if note.deleted_at.is_some() {
             return;
         }
+        // Inbox notes carry no alias, so they are never indexed; the "nothing links to an
+        // Inbox note" guarantee on the raw-uuid path is enforced by the callers instead
+        // (a backend read in `prepare`, the snapshot check in `resolve_ref`), keeping the
+        // index bounded by the alias count rather than the Inbox size.
         if is_inbox(note.notebook_id) {
-            self.inbox_notes.insert(note.id);
             return;
         }
         if let Some(alias) = &note.alias {
@@ -159,7 +157,6 @@ impl AliasIndex {
 
     /// Drop a note's entry (used for deletes and as the first half of an upsert).
     fn remove_note(&mut self, id: Uuid) {
-        self.inbox_notes.remove(&id);
         if let Some((alias, notebook_id)) = self.aliased_notes.remove(&id) {
             if let Some(set) = self.note_aliases.get_mut(&alias) {
                 set.remove(&(id, notebook_id));
@@ -243,9 +240,11 @@ impl AliasIndex {
         source_notebook: Option<Uuid>,
     ) -> Option<Uuid> {
         if let Ok(id) = Uuid::parse_str(seg) {
-            // A raw uuid is returned as-is — unless it names a known Inbox note, which is
-            // never a link target.
-            return (!self.inbox_notes.contains(&id)).then_some(id);
+            // A raw uuid is returned as-is. Inbox notes are never link targets, but that is
+            // enforced by the callers (`prepare` verifies uuid-resolved targets with a
+            // backend read; `resolve_ref` checks its notes snapshot) rather than indexed
+            // here, so the index need not track every Inbox note id.
+            return Some(id);
         }
         // Candidates carrying this alias, excluding Inbox notes (never targets).
         let candidates: Vec<(Uuid, Uuid)> = self
@@ -486,7 +485,7 @@ impl<B: StorageBackend> LinkingBackend<B> {
             return Ok(());
         }
         let notebook_id = note.notebook_id;
-        let (alias_taken, targets) = self
+        let (alias_taken, targets, unverified) = self
             .with_index(|idx| {
                 let taken = note
                     .alias
@@ -500,7 +499,17 @@ impl<B: StorageBackend> LinkingBackend<B> {
                             .map(|(id, _)| id)
                     })
                     .collect();
-                (taken, targets)
+                // Targets the index does not know as aliased notes were resolved through
+                // the raw-uuid path and could name an Inbox note (never a link target);
+                // they are verified against the store below. Alias-resolved targets are
+                // always indexed, hence never in the Inbox.
+                let unverified: Vec<Uuid> = targets
+                    .iter()
+                    .flatten()
+                    .filter(|id| !idx.aliased_notes.contains_key(id))
+                    .copied()
+                    .collect();
+                (taken, targets, unverified)
             })
             .await?;
         if alias_taken {
@@ -509,8 +518,22 @@ impl<B: StorageBackend> LinkingBackend<B> {
                 "note alias '{alias}' is already in use"
             )));
         }
+        // One read per uuid-resolved target: a link into a live Inbox note does not resolve
+        // (mirrors the old index-side rejection; a uuid that reads as missing or deleted
+        // keeps resolving as-is, same as before).
+        let mut inbox_targets: HashSet<Uuid> = HashSet::new();
+        for id in &unverified {
+            if inbox_targets.contains(id) {
+                continue;
+            }
+            if let Ok(target) = self.inner.read_note(*id).await {
+                if target.deleted_at.is_none() && is_inbox(target.notebook_id) {
+                    inbox_targets.insert(*id);
+                }
+            }
+        }
         for (link, target) in note.links.iter_mut().zip(targets) {
-            link.target_note_id = target;
+            link.target_note_id = target.filter(|t| !inbox_targets.contains(t));
         }
         Ok(())
     }

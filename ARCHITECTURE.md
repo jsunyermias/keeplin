@@ -174,7 +174,10 @@ Notes and notebooks carry a **version history**, and any past state can be **rol
 History is not a separate store — it is *derived from the same change journal* sync uses, since
 every journalled change carries a full entity snapshot. The `HistoryRepository` sub-trait reads
 it (`FsBackend` from the per-note op logs / global journal, `DbBackend` from `entity_changes`),
-newest-first; `EncryptedBackend` decrypts each version on the way up.
+newest-first; `EncryptedBackend` decrypts each version on the way up. In server mode `DbBackend`
+asks keeplin-srv's `GET /api/{notes,notebooks}/:id/history` first — the server journal holds
+every device's changes, so a fresh device sees the full history — and falls back to the local
+journal offline.
 
 Revert is **forward and non-destructive**: it writes the target state back as a new edit, so it
 mints a dominating version vector and converges under sync exactly like any edit (and can itself

@@ -87,6 +87,9 @@ pub struct DbBackend {
     /// It is stored in the `device` table and is sent in every change batch so the
     /// server can identify the originating device and deduplicate messages.
     device_id: String,
+    /// HTTP client for the server's REST surface (currently the history endpoints).
+    /// Only used when `server_url` is configured.
+    http: reqwest::Client,
     /// Guards access to the shared `libsql::Connection` so that reads and writes are
     /// correctly isolated even though every operation runs on a **single** connection.
     ///
@@ -161,6 +164,10 @@ impl DbBackend {
             auth_token,
             ws: Arc::new(Mutex::new(ws)),
             device_id,
+            http: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap_or_default(),
             lock: Arc::new(RwLock::new(())),
         })
     }
@@ -2823,24 +2830,105 @@ impl SyncBackend for DbBackend {
     }
 }
 
+/// One version as served by keeplin-srv's history endpoints
+/// (`GET /api/{notes,notebooks}/:id/history`): the edit's instant, the authoring sync
+/// device, and the snapshot exactly as this account's devices pushed it (`None` for a
+/// tombstone). Encrypted fields are still ciphertext here; `EncryptedBackend` decrypts
+/// them on the way up, the same as for the local journal.
+#[derive(Debug, serde::Deserialize)]
+struct ServerVersion {
+    timestamp: DateTime<Utc>,
+    device_id: String,
+    entity: Option<serde_json::Value>,
+}
+
 impl DbBackend {
-    /// Read an entity's past versions from the `entity_changes` journal, newest first. The
-    /// journal holds only changes that **originated on this device** (see `apply_change`), so
-    /// this returns this device's own edit history; the full cross-device history lives on the
-    /// server (the source of truth). `data` carries the full snapshot for create/update and a
-    /// tombstone for delete, so a delete maps to `entity: None`.
+    /// The HTTP base URL of the sync server, derived from the WebSocket `server_url`
+    /// (`ws`→`http`, `wss`→`https`, the relay path stripped). `None` in offline mode.
+    fn server_http_base(&self) -> Option<String> {
+        let (scheme, rest) = if let Some(rest) = self.server_url.strip_prefix("wss://") {
+            ("https://", rest)
+        } else if let Some(rest) = self.server_url.strip_prefix("ws://") {
+            ("http://", rest)
+        } else {
+            return None;
+        };
+        let rest = rest.strip_suffix("/api/sync").unwrap_or(rest);
+        Some(format!("{scheme}{}", rest.trim_end_matches('/')))
+    }
+
+    /// Fetch an entity's history from the server (the durable, cross-device change record).
+    /// `Ok(None)` when no server is configured or the fetch fails for any reason — the
+    /// caller falls back to the local journal, so history keeps working offline.
+    async fn server_entity_history<T: serde::de::DeserializeOwned>(
+        &self,
+        entity_type: &str,
+        id: Uuid,
+        cap: u32,
+    ) -> Option<Vec<EntityVersion<T>>> {
+        let base = self.server_http_base()?;
+        let url = format!("{base}/api/{entity_type}s/{id}/history?limit={cap}");
+        let response = match self
+            .http
+            .get(&url)
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(%url, "server history unavailable, using local journal: {e}");
+                return None;
+            }
+        };
+        let versions: Vec<ServerVersion> = match response.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(%url, "malformed server history, using local journal: {e}");
+                return None;
+            }
+        };
+        Some(
+            versions
+                .into_iter()
+                .filter_map(|v| {
+                    let entity = match v.entity {
+                        // Unparseable snapshot: skip rather than mislabel it as a delete.
+                        Some(raw) => Some(serde_json::from_value::<T>(raw).ok()?),
+                        None => None,
+                    };
+                    Some(EntityVersion {
+                        timestamp: v.timestamp,
+                        device_id: v.device_id,
+                        entity,
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// Read an entity's past versions, newest first. In server mode the server journal is
+    /// asked first — it holds **every** device's changes, so a fresh device still sees the
+    /// full history and cross-device rollback works; the local `entity_changes` journal
+    /// (which holds only changes that originated on this device, see `apply_change`) is the
+    /// offline fallback. `data` carries the full snapshot for create/update and a tombstone
+    /// for delete, so a delete maps to `entity: None`.
     async fn entity_history<T: serde::de::DeserializeOwned>(
         &self,
         entity_type: &str,
         id: Uuid,
         limit: u32,
     ) -> Result<Vec<EntityVersion<T>>, StorageError> {
-        let _read_guard = self.lock.read().await;
         let cap = if limit == 0 {
             DEFAULT_HISTORY_LIMIT
         } else {
             limit
         };
+        if let Some(versions) = self.server_entity_history::<T>(entity_type, id, cap).await {
+            return Ok(versions);
+        }
+        let _read_guard = self.lock.read().await;
         let mut rows = self
             .conn
             .query(

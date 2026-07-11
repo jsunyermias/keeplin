@@ -263,6 +263,17 @@ files); `DbBackend` keeps the current row plus its `vv`. See `SECURITY.md`.
   while keeping the row (and its `vv`/`last_writer`), so the deletion goes on converging; the
   daemon runs it after a successful sync when `resource_purge_days` is set.
 
+## History reads
+
+`note_history` / `notebook_history` (the `HistoryRepository` impl) ask the **server journal
+first** when a `server_url` is configured: `GET {http base}/api/{notes,notebooks}/:id/history`
+(the HTTP base is the WebSocket URL with `ws`→`http` and the `/api/sync` path stripped),
+authenticated with the same device token. The server holds every device's changes, so a fresh
+device still sees the full cross-device history; snapshots come back exactly as pushed
+(ciphertext under at-rest encryption — `EncryptedBackend` decrypts on the way up, as for the
+local journal). Any fetch failure falls back to the local `entity_changes` journal, which holds
+only changes that originated on this device, so history keeps working offline.
+
 ## Related files
 
 - `keeplin-core/src/storage/backend.rs` — trait that `DbBackend` implements

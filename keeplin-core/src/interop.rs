@@ -326,23 +326,31 @@ impl CalendarEvent {
         out
     }
 
-    /// Parse the first `VEVENT` found in `input`.
+    /// Parse the first `VEVENT` found in `input`. See [`from_ics_all`](Self::from_ics_all)
+    /// for whole-calendar import.
     pub fn from_ics(input: &str) -> Option<CalendarEvent> {
-        let mut ev = CalendarEvent::default();
-        if parse_component(input, "VEVENT", |name, value, line| match name {
-            "UID" => ev.uid = unescape_text(value),
-            "SUMMARY" => ev.summary = unescape_text(value),
-            "DTSTART" => ev.start = parse_dt(value),
-            "DTEND" => ev.end = parse_dt(value),
-            "LOCATION" => ev.location = Some(unescape_text(value)),
-            "DESCRIPTION" => ev.description = Some(unescape_text(value)),
-            "DTSTAMP" => {}
-            _ => ev.extra.push(line.to_string()),
-        }) {
-            Some(ev)
-        } else {
-            None
-        }
+        Self::from_ics_all(input).into_iter().next()
+    }
+
+    /// Parse **every** `VEVENT` in `input`, in document order (empty when there is none).
+    pub fn from_ics_all(input: &str) -> Vec<CalendarEvent> {
+        split_components(input, "VEVENT")
+            .into_iter()
+            .map(|lines| {
+                let mut ev = CalendarEvent::default();
+                parse_component_lines(&lines, |name, value, line| match name {
+                    "UID" => ev.uid = unescape_text(value),
+                    "SUMMARY" => ev.summary = unescape_text(value),
+                    "DTSTART" => ev.start = parse_dt(value),
+                    "DTEND" => ev.end = parse_dt(value),
+                    "LOCATION" => ev.location = Some(unescape_text(value)),
+                    "DESCRIPTION" => ev.description = Some(unescape_text(value)),
+                    "DTSTAMP" => {}
+                    _ => ev.extra.push(line.to_string()),
+                });
+                ev
+            })
+            .collect()
     }
 }
 
@@ -373,22 +381,30 @@ impl CalendarTodo {
         out
     }
 
-    /// Parse the first `VTODO` found in `input`.
+    /// Parse the first `VTODO` found in `input`. See [`from_ics_all`](Self::from_ics_all)
+    /// for whole-calendar import.
     pub fn from_ics(input: &str) -> Option<CalendarTodo> {
-        let mut td = CalendarTodo::default();
-        if parse_component(input, "VTODO", |name, value, line| match name {
-            "UID" => td.uid = unescape_text(value),
-            "SUMMARY" => td.summary = unescape_text(value),
-            "DUE" => td.due = parse_dt(value),
-            "COMPLETED" => td.completed = parse_dt(value),
-            "DESCRIPTION" => td.description = Some(unescape_text(value)),
-            "STATUS" | "PERCENT-COMPLETE" | "DTSTAMP" => {}
-            _ => td.extra.push(line.to_string()),
-        }) {
-            Some(td)
-        } else {
-            None
-        }
+        Self::from_ics_all(input).into_iter().next()
+    }
+
+    /// Parse **every** `VTODO` in `input`, in document order (empty when there is none).
+    pub fn from_ics_all(input: &str) -> Vec<CalendarTodo> {
+        split_components(input, "VTODO")
+            .into_iter()
+            .map(|lines| {
+                let mut td = CalendarTodo::default();
+                parse_component_lines(&lines, |name, value, line| match name {
+                    "UID" => td.uid = unescape_text(value),
+                    "SUMMARY" => td.summary = unescape_text(value),
+                    "DUE" => td.due = parse_dt(value),
+                    "COMPLETED" => td.completed = parse_dt(value),
+                    "DESCRIPTION" => td.description = Some(unescape_text(value)),
+                    "STATUS" | "PERCENT-COMPLETE" | "DTSTAMP" => {}
+                    _ => td.extra.push(line.to_string()),
+                });
+                td
+            })
+            .collect()
     }
 
     /// Build a `VTODO` view of a Keeplin to-do note (`title`→`SUMMARY`, `body`→`DESCRIPTION`,
@@ -433,29 +449,45 @@ fn write_uid_dtstamp(out: &mut String, uid: &str) {
     fold_line(&format!("DTSTAMP:{}", format_dt(now())), out);
 }
 
-/// Drive `f(name, value, raw_line)` over the properties of the first `BEGIN:<kind>` …
-/// `END:<kind>` component in `input`. Returns whether such a component was found.
-fn parse_component(input: &str, kind: &str, mut f: impl FnMut(&str, &str, &str)) -> bool {
-    let mut inside = false;
-    let mut found = false;
+/// Split `input` into the property lines of **every** `BEGIN:<kind>` … `END:<kind>`
+/// component, in document order. A component left open by a truncated input is still
+/// yielded with the lines seen so far (leniency preserved from the single-component
+/// parser). Real `.ics` exports routinely bundle many components in one `VCALENDAR`.
+fn split_components(input: &str, kind: &str) -> Vec<Vec<String>> {
+    let mut out = Vec::new();
+    let mut current: Option<Vec<String>> = None;
     for line in unfold(input) {
         let (name, value) = match split_prop(&line) {
             Some(p) => p,
             None => continue,
         };
         if name == "BEGIN" && value.eq_ignore_ascii_case(kind) {
-            inside = true;
-            found = true;
+            current = Some(Vec::new());
             continue;
         }
         if name == "END" && value.eq_ignore_ascii_case(kind) {
-            break;
+            if let Some(lines) = current.take() {
+                out.push(lines);
+            }
+            continue;
         }
-        if inside {
-            f(&name, value, &line);
+        if let Some(lines) = current.as_mut() {
+            lines.push(line);
         }
     }
-    found
+    if let Some(lines) = current.take() {
+        out.push(lines);
+    }
+    out
+}
+
+/// Drive `f(name, value, raw_line)` over one component's property lines.
+fn parse_component_lines(lines: &[String], mut f: impl FnMut(&str, &str, &str)) {
+    for line in lines {
+        if let Some((name, value)) = split_prop(line) {
+            f(&name, value, line);
+        }
+    }
 }
 
 // ── Typed contact/event storage over resources ─────────────────────────────────
@@ -464,7 +496,14 @@ fn parse_component(input: &str, kind: &str, mut f: impl FnMut(&str, &str, &str))
 // **resource** entity, so they ride the sync, encryption, permissions and server-materialisation
 // machinery already built — no new entity type, table, protobuf message, or sync `Change`. A
 // contact is a resource with mime `text/vcard`; an event, `text/calendar`. The stable identity is
-// the format `UID` (not the backing resource id), so an edit is a *replace* of the resource.
+// the format `UID` (not the backing resource id), so an edit is a *replace* of the resource: a
+// soft-delete of the old backing resource plus a fresh one. The tombstones this leaves behind
+// are reclaimed by the periodic `purge_deleted_resources` pass (`resource_purge_days`).
+//
+// `save_*` always names the backing file `<uid>.vcf` / `<uid>.ics`, so every by-UID operation
+// finds its resource from **metadata alone** (no blob reads); resources written before this
+// convention fall back to parsing the payloads. Listing all contacts/events inherently reads
+// every payload of that mime.
 
 /// Read every live resource with `mime`, paired with its bytes.
 async fn resources_with_mime(
@@ -472,22 +511,66 @@ async fn resources_with_mime(
     mime: &str,
 ) -> Result<Vec<(Resource, Vec<u8>)>, StorageError> {
     let mut out = Vec::new();
+    for meta in resource_metas_with_mime(backend, mime).await? {
+        if let Ok(pair) = backend.read_resource(meta.id).await {
+            out.push(pair);
+        }
+    }
+    Ok(out)
+}
+
+/// List every live resource with `mime` — metadata only, no payload reads.
+async fn resource_metas_with_mime(
+    backend: &dyn StorageBackend,
+    mime: &str,
+) -> Result<Vec<Resource>, StorageError> {
+    let mut out = Vec::new();
     let mut token = None;
     loop {
         let (page, next) = backend.list_resources(0, token).await?;
-        for meta in page {
-            if meta.mime_type == mime {
-                if let Ok(pair) = backend.read_resource(meta.id).await {
-                    out.push(pair);
-                }
-            }
-        }
+        out.extend(page.into_iter().filter(|meta| meta.mime_type == mime));
         match next {
             Some(t) => token = Some(t),
             None => break,
         }
     }
     Ok(out)
+}
+
+/// The canonical backing file name `save_*` writes for a UID — the metadata-level key every
+/// by-UID lookup uses first.
+fn uid_file_name(uid: &str, ext: &str) -> String {
+    format!("{uid}.{ext}")
+}
+
+/// Find the backing resources of `uid`: the metadata fast path (canonical file name) when it
+/// hits, otherwise the legacy fallback of parsing every payload of that mime with `uid_of`.
+async fn resources_with_uid(
+    backend: &dyn StorageBackend,
+    mime: &str,
+    ext: &str,
+    uid: &str,
+    uid_of: impl Fn(&[u8]) -> Option<String>,
+) -> Result<Vec<Resource>, StorageError> {
+    let metas = resource_metas_with_mime(backend, mime).await?;
+    let canonical = uid_file_name(uid, ext);
+    let named: Vec<Resource> = metas
+        .iter()
+        .filter(|m| m.file_name == canonical)
+        .cloned()
+        .collect();
+    if !named.is_empty() {
+        return Ok(named);
+    }
+    let mut matched = Vec::new();
+    for meta in metas {
+        if let Ok((_, data)) = backend.read_resource(meta.id).await {
+            if uid_of(&data).as_deref() == Some(uid) {
+                matched.push(meta);
+            }
+        }
+    }
+    Ok(matched)
 }
 
 /// Persist `contact` (upsert by its vCard `UID`, generating one when empty): any existing
@@ -502,10 +585,11 @@ pub async fn save_contact(
     }
     delete_contact(backend, &contact.uid).await?;
     let vcard = contact.to_vcard();
+    // The canonical file name is load-bearing: by-UID lookups key on it (metadata only).
     let res = Resource::new(
         contact.formatted_name.clone(),
         MIME_VCARD,
-        format!("{}.vcf", contact.uid),
+        uid_file_name(&contact.uid, "vcf"),
         vcard.len() as u64,
     );
     backend.create_resource(res, vcard.into_bytes()).await?;
@@ -523,25 +607,38 @@ pub async fn list_contacts(backend: &dyn StorageBackend) -> Result<Vec<Contact>,
     Ok(contacts)
 }
 
-/// The stored contact with `uid`, if any.
+/// The backing resources of the contact `uid` (metadata only; usually one).
+async fn contact_resources(
+    backend: &dyn StorageBackend,
+    uid: &str,
+) -> Result<Vec<Resource>, StorageError> {
+    resources_with_uid(backend, MIME_VCARD, "vcf", uid, |data| {
+        Contact::from_vcard(&String::from_utf8_lossy(data)).map(|c| c.uid)
+    })
+    .await
+}
+
+/// The stored contact with `uid`, if any. Reads only that contact's backing resource.
 pub async fn get_contact(
     backend: &dyn StorageBackend,
     uid: &str,
 ) -> Result<Option<Contact>, StorageError> {
-    Ok(list_contacts(backend)
-        .await?
-        .into_iter()
-        .find(|c| c.uid == uid))
+    for meta in contact_resources(backend, uid).await? {
+        if let Ok((_, data)) = backend.read_resource(meta.id).await {
+            if let Some(c) = Contact::from_vcard(&String::from_utf8_lossy(&data)) {
+                if c.uid == uid {
+                    return Ok(Some(c));
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Delete every contact resource carrying `uid` (usually one). A no-op if none match.
 pub async fn delete_contact(backend: &dyn StorageBackend, uid: &str) -> Result<(), StorageError> {
-    for (res, data) in resources_with_mime(backend, MIME_VCARD).await? {
-        let matches =
-            Contact::from_vcard(&String::from_utf8_lossy(&data)).is_some_and(|c| c.uid == uid);
-        if matches {
-            backend.delete_resource(res.id).await?;
-        }
+    for meta in contact_resources(backend, uid).await? {
+        backend.delete_resource(meta.id).await?;
     }
     Ok(())
 }
@@ -557,10 +654,11 @@ pub async fn save_event(
     }
     delete_event(backend, &event.uid).await?;
     let ics = event.to_ics();
+    // The canonical file name is load-bearing: by-UID lookups key on it (metadata only).
     let res = Resource::new(
         event.summary.clone(),
         MIME_ICALENDAR,
-        format!("{}.ics", event.uid),
+        uid_file_name(&event.uid, "ics"),
         ics.len() as u64,
     );
     backend.create_resource(res, ics.into_bytes()).await?;
@@ -578,37 +676,70 @@ pub async fn list_events(backend: &dyn StorageBackend) -> Result<Vec<CalendarEve
     Ok(events)
 }
 
-/// The stored event with `uid`, if any.
+/// The backing resources of the event `uid` (metadata only; usually one).
+async fn event_resources(
+    backend: &dyn StorageBackend,
+    uid: &str,
+) -> Result<Vec<Resource>, StorageError> {
+    resources_with_uid(backend, MIME_ICALENDAR, "ics", uid, |data| {
+        CalendarEvent::from_ics(&String::from_utf8_lossy(data)).map(|e| e.uid)
+    })
+    .await
+}
+
+/// The stored event with `uid`, if any. Reads only that event's backing resource.
 pub async fn get_event(
     backend: &dyn StorageBackend,
     uid: &str,
 ) -> Result<Option<CalendarEvent>, StorageError> {
-    Ok(list_events(backend)
-        .await?
-        .into_iter()
-        .find(|e| e.uid == uid))
+    for meta in event_resources(backend, uid).await? {
+        if let Ok((_, data)) = backend.read_resource(meta.id).await {
+            if let Some(e) = CalendarEvent::from_ics(&String::from_utf8_lossy(&data)) {
+                if e.uid == uid {
+                    return Ok(Some(e));
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Delete every event resource carrying `uid`. A no-op if none match.
 pub async fn delete_event(backend: &dyn StorageBackend, uid: &str) -> Result<(), StorageError> {
-    for (res, data) in resources_with_mime(backend, MIME_ICALENDAR).await? {
-        let matches =
-            CalendarEvent::from_ics(&String::from_utf8_lossy(&data)).is_some_and(|e| e.uid == uid);
-        if matches {
-            backend.delete_resource(res.id).await?;
-        }
+    for meta in event_resources(backend, uid).await? {
+        backend.delete_resource(meta.id).await?;
     }
     Ok(())
 }
 
 /// Import an iCalendar `VTODO` as a Keeplin **to-do note** (the native mapping), returning the
-/// created note. Unlike contacts/events, a to-do is a first-class note, not a resource.
+/// created note. Unlike contacts/events, a to-do is a first-class note, not a resource. Only
+/// the first `VTODO` is read; use [`import_todos`] to import a whole calendar.
 pub async fn import_todo(backend: &dyn StorageBackend, ics: &str) -> Result<Note, StorageError> {
     let todo = CalendarTodo::from_ics(ics)
         .ok_or_else(|| StorageError::InvalidInput("no VTODO in input".into()))?;
     let mut note = Note::new("", "");
     todo.apply_to_note(&mut note);
     backend.create_note(note).await
+}
+
+/// Import **every** `VTODO` in an iCalendar file as Keeplin to-do notes, returning the created
+/// notes in document order. Errors when the input carries no `VTODO` at all.
+pub async fn import_todos(
+    backend: &dyn StorageBackend,
+    ics: &str,
+) -> Result<Vec<Note>, StorageError> {
+    let todos = CalendarTodo::from_ics_all(ics);
+    if todos.is_empty() {
+        return Err(StorageError::InvalidInput("no VTODO in input".into()));
+    }
+    let mut notes = Vec::with_capacity(todos.len());
+    for todo in todos {
+        let mut note = Note::new("", "");
+        todo.apply_to_note(&mut note);
+        notes.push(backend.create_note(note).await?);
+    }
+    Ok(notes)
 }
 
 #[cfg(test)]
@@ -718,6 +849,50 @@ mod tests {
     fn missing_component_yields_none() {
         assert!(CalendarEvent::from_ics("not a calendar").is_none());
         assert!(Contact::from_vcard("nope").is_none());
+        assert!(CalendarEvent::from_ics_all("not a calendar").is_empty());
+    }
+
+    /// A whole exported calendar bundles many components; every one must import.
+    #[test]
+    fn multi_component_calendar_parses_every_event_and_todo() {
+        let a = CalendarEvent {
+            uid: "e1".into(),
+            summary: "First".into(),
+            ..Default::default()
+        };
+        let b = CalendarEvent {
+            uid: "e2".into(),
+            summary: "Second".into(),
+            ..Default::default()
+        };
+        let td = CalendarTodo {
+            uid: "t1".into(),
+            summary: "Task".into(),
+            ..Default::default()
+        };
+        // Splice the three components into one VCALENDAR (strip the per-file wrappers).
+        let inner = |ics: String, begin: &str, end: &str| -> String {
+            let start = ics.find(begin).unwrap();
+            let stop = ics.find(end).unwrap() + end.len();
+            ics[start..stop].to_string()
+        };
+        let calendar = format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n{}\r\n{}\r\n{}\r\nEND:VCALENDAR\r\n",
+            inner(a.to_ics(), "BEGIN:VEVENT", "END:VEVENT"),
+            inner(b.to_ics(), "BEGIN:VEVENT", "END:VEVENT"),
+            inner(td.to_ics(), "BEGIN:VTODO", "END:VTODO"),
+        );
+
+        let events = CalendarEvent::from_ics_all(&calendar);
+        assert_eq!(events.len(), 2, "both VEVENTs import");
+        assert_eq!(events[0].uid, "e1");
+        assert_eq!(events[1].uid, "e2");
+        // `from_ics` keeps its first-component behaviour.
+        assert_eq!(CalendarEvent::from_ics(&calendar).unwrap().uid, "e1");
+
+        let todos = CalendarTodo::from_ics_all(&calendar);
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0].uid, "t1");
     }
 
     async fn fs() -> crate::storage::fs::FsBackend {

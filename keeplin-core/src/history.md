@@ -24,8 +24,11 @@ unlike `get_changes_since`, which passes ciphertext through for the sync relay.
 
 In `DbBackend` mode the server (keeplin-srv) is the source of truth and holds every device's
 changes; the local `entity_changes` journal is this device's own contributions (a cache). Full
-cross-device history is served from the server — a follow-up stage. In `FsBackend` mode the
-per-note logs are replicated by Syncthing, so history is already multi-device.
+cross-device history is served from the server: `DbBackend`'s `note_history`/`notebook_history`
+fetch `GET /api/{notes,notebooks}/:id/history` first (so a fresh device sees every version and
+cross-device rollback works) and fall back to the local journal when the server is unreachable.
+In `FsBackend` mode the per-note logs are replicated by Syncthing, so history is already
+multi-device.
 
 ## Retention
 

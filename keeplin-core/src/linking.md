@@ -56,11 +56,17 @@ alias- or link-bearing write (on `FsBackend` a scan re-materialises every note).
   of a note or notebook updates the entry);
 - **invalidated** (rebuilt on next use) whenever a sync `apply_change`/`receive_changes` touches a
   note or notebook — what actually got stored then depends on conflict resolution inside the inner
-  backend, so reflecting it incrementally could drift.
+  backend, so reflecting it incrementally could drift;
+- **bounded by the alias count**, not the corpus: Inbox notes carry no alias and are not
+  tracked. The "nothing links to an Inbox note" guarantee on the raw-uuid path is enforced by a
+  backend read at write time and by the snapshot check in `resolve_ref`, instead of indexing
+  every (unbounded, high-churn) Inbox note id.
 
-Write-time link resolution only needs each link's target **note id**, so it runs entirely on the
-index — no note bodies are fetched. The read-side `resolve()` still snapshots the corpus because
-it additionally maps a bookmark segment to a number.
+Write-time link resolution only needs each link's target **note id**, so it runs on the index —
+no note bodies are fetched — except that each **uuid-resolved** target costs one `read_note` to
+reject a link into a live Inbox note (alias-resolved targets are indexed, hence never in the
+Inbox). The read-side `resolve()` still snapshots the corpus because it additionally maps a
+bookmark segment to a number.
 
 ## Concurrency
 
@@ -81,7 +87,7 @@ check-then-write race that could otherwise create a local duplicate alias.
 
 ## Resolution rules (`resolve_ref`, pure)
 
-- `#note` → resolve the note. A uuid is returned as-is (unless it names a known Inbox note,
+- `#note` → resolve the note. A uuid is returned as-is (unless it names a live Inbox note,
   which is rejected). A **bare alias** resolves globally when exactly one live note carries it;
   when several notebooks share the alias it scopes to the **referencing note's own notebook**,
   and failing that falls back to the smallest-uuid match with a warning.

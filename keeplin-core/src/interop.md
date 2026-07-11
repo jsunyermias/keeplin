@@ -27,6 +27,7 @@ verbatim so a parse→serialise round-trip drops nothing.
 |----------|-------------|
 | `Contact::to_vcard()` / `from_vcard(&str)` | serialise / parse the first `VCARD` |
 | `CalendarEvent::to_ics()` / `from_ics(&str)` | serialise / parse the first `VEVENT` (wrapped in a `VCALENDAR`) |
+| `CalendarEvent::from_ics_all(&str)` / `CalendarTodo::from_ics_all(&str)` | parse **every** `VEVENT` / `VTODO` in a calendar, in document order (real exports bundle many components) |
 | `CalendarTodo::to_ics()` / `from_ics(&str)` | serialise / parse the first `VTODO` |
 | `CalendarTodo::from_note(&Note)` / `apply_to_note(&mut Note)` | map a `VTODO` ⇄ a Keeplin to-do note (`title`↔`SUMMARY`, `body`↔`DESCRIPTION`, `todo_due`↔`DUE`, `todo_completed`↔`COMPLETED`; note id ↔ `UID`) |
 | `user_vcard(display_name, email)` | render a profile card for an account owner |
@@ -49,7 +50,14 @@ Contacts and events are **typed at the API level** but persist on top of the exi
 ride the sync/encryption/permissions/server-materialisation machinery already built. A contact
 is a resource with mime `text/vcard`; an event, `text/calendar`. **Identity is the format `UID`**
 (not the backing resource id), and since resources have no in-place update, `save_*` is a
-*replace by UID* (delete any resource with that UID, write a fresh one).
+*replace by UID* (delete any resource with that UID, write a fresh one). The tombstones each
+replace leaves behind are reclaimed by the periodic `purge_deleted_resources` pass
+(`resource_purge_days` in the daemon config).
+
+The backing file is always named **`<uid>.vcf` / `<uid>.ics`**, so every by-UID operation
+(`get_*`, `delete_*`, and the delete inside `save_*`) finds its resource from **metadata
+alone** — no payload reads; resources written before this convention fall back to parsing the
+payloads. Only `list_*` inherently reads every payload of its mime type.
 
 | Function | Description |
 |----------|-------------|
@@ -57,7 +65,8 @@ is a resource with mime `text/vcard`; an event, `text/calendar`. **Identity is t
 | `list_contacts(be)` / `list_events(be)` | parse every backing resource of the right mime type |
 | `get_contact(be, uid)` / `get_event(be, uid)` | fetch one by UID |
 | `delete_contact(be, uid)` / `delete_event(be, uid)` | remove the backing resource(s) |
-| `import_todo(be, ics)` | parse a `VTODO` and create a Keeplin **to-do note** (to-dos are notes, not resources) |
+| `import_todo(be, ics)` | parse the first `VTODO` and create a Keeplin **to-do note** (to-dos are notes, not resources) |
+| `import_todos(be, ics)` | create a to-do note for **every** `VTODO` in the calendar, in document order |
 
 `MIME_VCARD` / `MIME_ICALENDAR` are the marker media types. Listing scans resources and filters
 by (decrypted) mime type client-side — the server only ever sees ciphertext.
