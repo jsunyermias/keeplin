@@ -164,6 +164,36 @@ impl CollabHandle {
             .out
             .send(CollabClientMsg::Cursor { note_id, cursor });
     }
+
+    /// Forward a **permission-management** request (share, transfer, list, revoke) to
+    /// keeplin-srv — the authority for permissions in server mode — and return the server's
+    /// status code and JSON body. The daemon's REST surface proxies its own permission
+    /// endpoints through this, so a frontend can view/manage shares on demand without the
+    /// client re-implementing (or locally enforcing) the model. `method` is an HTTP verb
+    /// (`"GET"`, `"POST"`, `"DELETE"`); `path` is a server path like `/api/notes/<id>/share`.
+    pub async fn proxy_request(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<(u16, serde_json::Value), StorageError> {
+        let verb = reqwest::Method::from_bytes(method.as_bytes())
+            .map_err(|e| StorageError::InvalidInput(format!("bad method {method}: {e}")))?;
+        let url = format!("{}{}", self.shared.cfg.api_url, path);
+        let mut req = self.shared.auth(self.shared.http.request(verb, url));
+        if let Some(b) = &body {
+            req = req.json(b);
+        }
+        let resp = req.send().await.map_err(|e| {
+            StorageError::Database(format!("permission proxy to server failed: {e}"))
+        })?;
+        let status = resp.status().as_u16();
+        let json = resp
+            .json::<serde_json::Value>()
+            .await
+            .unwrap_or(serde_json::Value::Null);
+        Ok((status, json))
+    }
 }
 
 /// Storage decorator that turns local note writes into collaborative ops and

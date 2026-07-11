@@ -29,6 +29,7 @@ carry collab logic, the rest delegate to `inner`.
 | `CollabBackend::start(top)` | spawn the connection task; `top` must be the **outermost** backend so remote writes flow through every decorator once |
 | `CollabHandle::presence(note_id)` | latest presence list the server broadcast (empty if none) |
 | `CollabHandle::send_cursor(note_id, cursor)` | queue this device's caret; server fans it out |
+| `CollabHandle::proxy_request(method, path, body)` | forward a permission-management request (share/transfer/list/revoke) to keeplin-srv (the authority) and return its `(status, json)`; the daemon's REST layer proxies its permission endpoints through this |
 | `device_id_from_token(token)` | extract the `device_id` claim without verifying (the server verifies) |
 
 ## The decorator — write path
