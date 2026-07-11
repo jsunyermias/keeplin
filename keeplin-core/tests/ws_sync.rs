@@ -18,7 +18,7 @@ use futures_util::{SinkExt, StreamExt};
 use keeplin_core::{
     error::{StorageError, SyncError},
     models::{Change, Note},
-    storage::{db::DbBackend, NoteRepository, SyncBackend},
+    storage::{db::DbBackend, HistoryRepository, NoteRepository, SyncBackend},
     sync::run_sync,
 };
 use tokio::net::TcpListener;
@@ -284,4 +284,57 @@ async fn malformed_frame_does_not_abort_receive() {
         b.apply_change(change).await.unwrap();
     }
     assert_eq!(b.read_note(id).await.unwrap().title, "Survivor");
+}
+
+// ── Server-side history (Front D stage 2) ────────────────────────────────────
+
+/// Serve a canned history reply at `/api/notes/:id/history`. There is no `/api/sync`
+/// WebSocket here: the backend runs offline for sync, which history must not depend on.
+async fn spawn_history_server(reply: serde_json::Value) -> SocketAddr {
+    use axum::{routing::get, Router};
+    let app = Router::new().route(
+        "/api/notes/:id/history",
+        get(move || {
+            let reply = reply.clone();
+            async move { axum::Json(reply) }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+/// In server mode history comes from the server journal (every device's changes), so a
+/// device that authored none of the edits still sees the full history, tombstones included.
+#[tokio::test]
+async fn note_history_prefers_the_server_journal() {
+    let remote = Note::new("T", "v2-from-server");
+    let versions = serde_json::json!([
+        { "timestamp": "2026-01-02T00:00:00Z", "device_id": "other-device",
+          "entity": serde_json::to_value(&remote).unwrap() },
+        { "timestamp": "2026-01-01T00:00:00Z", "device_id": "other-device", "entity": null },
+    ]);
+    let addr = spawn_history_server(versions).await;
+    let be = device(&format!("ws://{addr}/api/sync")).await;
+
+    // The local journal knows nothing about this note; the versions are the server's.
+    let hist = be.note_history(remote.id, 0).await.unwrap();
+    assert_eq!(hist.len(), 2);
+    assert_eq!(hist[0].device_id, "other-device");
+    assert_eq!(hist[0].entity.as_ref().unwrap().body, "v2-from-server");
+    assert!(hist[1].entity.is_none(), "tombstones survive the trip");
+}
+
+/// When the server has no history endpoint (or is unreachable) history falls back to the
+/// local journal, so it keeps working offline.
+#[tokio::test]
+async fn note_history_falls_back_to_the_local_journal() {
+    let addr = spawn_relay().await; // WebSocket-only: the history GET fails.
+    let be = device(&format!("ws://{addr}/api/sync")).await;
+    let note = be.create_note(Note::new("T", "v1")).await.unwrap();
+
+    let hist = be.note_history(note.id, 0).await.unwrap();
+    assert_eq!(hist.len(), 1);
+    assert_eq!(hist[0].entity.as_ref().unwrap().body, "v1");
 }

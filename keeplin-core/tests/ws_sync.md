@@ -23,6 +23,8 @@ the local database — closing the gap the offline tests leave open.
 | `failed_send_keeps_watermark_and_changes_are_resent_after_recovery` | A's relay is down during a sync cycle, then comes back on the same address | The failed cycle errors (`StorageError::WebSocket`) and leaves the last-sync watermark unchanged; the next cycle re-sends the batch and B receives it |
 | `send_without_configured_relay_is_a_noop` | `server_url = ""` (no relay configured), `send_changes` with a non-empty batch | `Ok` — a local-only backend skipping the send is not a failure |
 | `malformed_frame_does_not_abort_receive` | The relay forwards a garbage text frame followed by a valid `changes` envelope | `receive_changes` skips the garbage with a warning and still delivers the valid batch |
+| `note_history_prefers_the_server_journal` | An HTTP server answers `GET /api/notes/:id/history` with two versions this device never authored | `note_history` returns the server's versions (tombstone included) instead of the empty local journal |
+| `note_history_falls_back_to_the_local_journal` | The relay is WebSocket-only (the history GET fails) | `note_history` serves the local `entity_changes` journal, so history works offline |
 
 ## Fixtures and helpers
 
@@ -30,6 +32,7 @@ the local database — closing the gap the offline tests leave open.
 |---------|---------|
 | `spawn_relay()` | Starts the in-process WebSocket relay on an ephemeral port and returns its `SocketAddr`; forwards each device's batch to the others |
 | `spawn_relay_on(listener)` | Same relay on an already-bound listener, so a test can reserve an address, fail against it, then bring the relay up there (the relay-recovery scenario) |
+| `spawn_history_server(reply)` | Serves a canned JSON reply at `/api/notes/:id/history` (no WebSocket), for the server-side history path |
 | `device(url)` | Builds a `DbBackend` connected to the relay `url` (performs the auth handshake) |
 | `push(dev)` | Runs one `send_changes` for a device's pending local changes |
 | `sync_until(dev, id, want_body)` | Polls `receive_changes` + `apply_change` until the note reaches the expected state (bounded retries) |
