@@ -21,7 +21,14 @@
 
 use chrono::{DateTime, TimeZone, Utc};
 
-use crate::models::{now, Note};
+use crate::error::StorageError;
+use crate::models::{new_id, now, Note, Resource};
+use crate::storage::StorageBackend;
+
+/// IANA media type marking a resource that backs a [`Contact`] (a vCard).
+pub const MIME_VCARD: &str = "text/vcard";
+/// IANA media type marking a resource that backs a [`CalendarEvent`] (an iCalendar object).
+pub const MIME_ICALENDAR: &str = "text/calendar";
 
 // ── Low-level line handling (shared by vCard and iCalendar) ─────────────────────
 
@@ -451,6 +458,159 @@ fn parse_component(input: &str, kind: &str, mut f: impl FnMut(&str, &str, &str))
     found
 }
 
+// ── Typed contact/event storage over resources ─────────────────────────────────
+//
+// "Native" contacts and events are typed at the API level but persist on top of the existing
+// **resource** entity, so they ride the sync, encryption, permissions and server-materialisation
+// machinery already built — no new entity type, table, protobuf message, or sync `Change`. A
+// contact is a resource with mime `text/vcard`; an event, `text/calendar`. The stable identity is
+// the format `UID` (not the backing resource id), so an edit is a *replace* of the resource.
+
+/// Read every live resource with `mime`, paired with its bytes.
+async fn resources_with_mime(
+    backend: &dyn StorageBackend,
+    mime: &str,
+) -> Result<Vec<(Resource, Vec<u8>)>, StorageError> {
+    let mut out = Vec::new();
+    let mut token = None;
+    loop {
+        let (page, next) = backend.list_resources(0, token).await?;
+        for meta in page {
+            if meta.mime_type == mime {
+                if let Ok(pair) = backend.read_resource(meta.id).await {
+                    out.push(pair);
+                }
+            }
+        }
+        match next {
+            Some(t) => token = Some(t),
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+/// Persist `contact` (upsert by its vCard `UID`, generating one when empty): any existing
+/// contact resource carrying the same UID is removed and a fresh vCard resource is written.
+/// Returns the stored contact (with its UID populated).
+pub async fn save_contact(
+    backend: &dyn StorageBackend,
+    mut contact: Contact,
+) -> Result<Contact, StorageError> {
+    if contact.uid.is_empty() {
+        contact.uid = new_id().to_string();
+    }
+    delete_contact(backend, &contact.uid).await?;
+    let vcard = contact.to_vcard();
+    let res = Resource::new(
+        contact.formatted_name.clone(),
+        MIME_VCARD,
+        format!("{}.vcf", contact.uid),
+        vcard.len() as u64,
+    );
+    backend.create_resource(res, vcard.into_bytes()).await?;
+    Ok(contact)
+}
+
+/// Every stored contact, parsed from its backing vCard resource.
+pub async fn list_contacts(backend: &dyn StorageBackend) -> Result<Vec<Contact>, StorageError> {
+    let mut contacts = Vec::new();
+    for (_, data) in resources_with_mime(backend, MIME_VCARD).await? {
+        if let Some(c) = Contact::from_vcard(&String::from_utf8_lossy(&data)) {
+            contacts.push(c);
+        }
+    }
+    Ok(contacts)
+}
+
+/// The stored contact with `uid`, if any.
+pub async fn get_contact(
+    backend: &dyn StorageBackend,
+    uid: &str,
+) -> Result<Option<Contact>, StorageError> {
+    Ok(list_contacts(backend)
+        .await?
+        .into_iter()
+        .find(|c| c.uid == uid))
+}
+
+/// Delete every contact resource carrying `uid` (usually one). A no-op if none match.
+pub async fn delete_contact(backend: &dyn StorageBackend, uid: &str) -> Result<(), StorageError> {
+    for (res, data) in resources_with_mime(backend, MIME_VCARD).await? {
+        let matches =
+            Contact::from_vcard(&String::from_utf8_lossy(&data)).is_some_and(|c| c.uid == uid);
+        if matches {
+            backend.delete_resource(res.id).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Persist `event` (upsert by its iCalendar `UID`, generating one when empty). See
+/// [`save_contact`].
+pub async fn save_event(
+    backend: &dyn StorageBackend,
+    mut event: CalendarEvent,
+) -> Result<CalendarEvent, StorageError> {
+    if event.uid.is_empty() {
+        event.uid = new_id().to_string();
+    }
+    delete_event(backend, &event.uid).await?;
+    let ics = event.to_ics();
+    let res = Resource::new(
+        event.summary.clone(),
+        MIME_ICALENDAR,
+        format!("{}.ics", event.uid),
+        ics.len() as u64,
+    );
+    backend.create_resource(res, ics.into_bytes()).await?;
+    Ok(event)
+}
+
+/// Every stored event, parsed from its backing iCalendar resource.
+pub async fn list_events(backend: &dyn StorageBackend) -> Result<Vec<CalendarEvent>, StorageError> {
+    let mut events = Vec::new();
+    for (_, data) in resources_with_mime(backend, MIME_ICALENDAR).await? {
+        if let Some(e) = CalendarEvent::from_ics(&String::from_utf8_lossy(&data)) {
+            events.push(e);
+        }
+    }
+    Ok(events)
+}
+
+/// The stored event with `uid`, if any.
+pub async fn get_event(
+    backend: &dyn StorageBackend,
+    uid: &str,
+) -> Result<Option<CalendarEvent>, StorageError> {
+    Ok(list_events(backend)
+        .await?
+        .into_iter()
+        .find(|e| e.uid == uid))
+}
+
+/// Delete every event resource carrying `uid`. A no-op if none match.
+pub async fn delete_event(backend: &dyn StorageBackend, uid: &str) -> Result<(), StorageError> {
+    for (res, data) in resources_with_mime(backend, MIME_ICALENDAR).await? {
+        let matches =
+            CalendarEvent::from_ics(&String::from_utf8_lossy(&data)).is_some_and(|e| e.uid == uid);
+        if matches {
+            backend.delete_resource(res.id).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Import an iCalendar `VTODO` as a Keeplin **to-do note** (the native mapping), returning the
+/// created note. Unlike contacts/events, a to-do is a first-class note, not a resource.
+pub async fn import_todo(backend: &dyn StorageBackend, ics: &str) -> Result<Note, StorageError> {
+    let todo = CalendarTodo::from_ics(ics)
+        .ok_or_else(|| StorageError::InvalidInput("no VTODO in input".into()))?;
+    let mut note = Note::new("", "");
+    todo.apply_to_note(&mut note);
+    backend.create_note(note).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,5 +718,73 @@ mod tests {
     fn missing_component_yields_none() {
         assert!(CalendarEvent::from_ics("not a calendar").is_none());
         assert!(Contact::from_vcard("nope").is_none());
+    }
+
+    async fn fs() -> crate::storage::fs::FsBackend {
+        crate::storage::fs::FsBackend::new(tempfile::tempdir().unwrap().keep())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn contact_save_list_get_delete_over_storage() {
+        let be = fs().await;
+        let saved = save_contact(
+            &be,
+            Contact {
+                formatted_name: "Ada".into(),
+                emails: vec!["a@b.com".into()],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!saved.uid.is_empty(), "a uid is assigned");
+        assert_eq!(list_contacts(&be).await.unwrap().len(), 1);
+
+        // Editing upserts by uid — replaces, never duplicates.
+        let mut edit = saved.clone();
+        edit.formatted_name = "Ada Lovelace".into();
+        save_contact(&be, edit).await.unwrap();
+        let list = list_contacts(&be).await.unwrap();
+        assert_eq!(list.len(), 1, "upsert by uid replaces");
+        assert_eq!(list[0].formatted_name, "Ada Lovelace");
+
+        assert!(get_contact(&be, &saved.uid).await.unwrap().is_some());
+        delete_contact(&be, &saved.uid).await.unwrap();
+        assert!(list_contacts(&be).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn event_round_trips_through_storage() {
+        let be = fs().await;
+        let saved = save_event(
+            &be,
+            CalendarEvent {
+                summary: "Launch".into(),
+                start: parse_dt("20260101T100000Z"),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let got = get_event(&be, &saved.uid).await.unwrap().unwrap();
+        assert_eq!(got.summary, "Launch");
+        assert_eq!(got.start, parse_dt("20260101T100000Z"));
+    }
+
+    #[tokio::test]
+    async fn import_todo_creates_a_todo_note() {
+        let be = fs().await;
+        let ics = CalendarTodo {
+            summary: "Task".into(),
+            due: parse_dt("20260101T090000Z"),
+            ..Default::default()
+        }
+        .to_ics();
+        let note = import_todo(&be, &ics).await.unwrap();
+        assert!(note.is_todo);
+        assert_eq!(note.title, "Task");
+        assert_eq!(note.todo_due, parse_dt("20260101T090000Z"));
     }
 }
