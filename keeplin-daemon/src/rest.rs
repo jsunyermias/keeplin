@@ -36,7 +36,9 @@ use axum::{
 use chrono::{DateTime, Utc};
 use keeplin_core::{
     error::{StorageError, SyncError},
-    history, linking,
+    history,
+    interop::{self, CalendarEvent, Contact},
+    linking,
     links::{parse_link_ref, NoteLink},
     models::{now, Change, Note, NoteTag, Notebook, Resource, Tag},
     ordering,
@@ -164,6 +166,17 @@ pub fn router(state: Shared) -> Router {
         .route("/history/revert", post(batch_revert_notes_ep))
         .route("/tags", get(list_tags).post(create_tag))
         .route("/tags/:id", get(get_tag).put(update_tag).delete(delete_tag))
+        // Standards-format interop (vCard / iCalendar) — see keeplin-core `interop`.
+        .route("/contacts", get(list_contacts_ep))
+        .route("/contacts/import", post(import_contact_ep))
+        .route("/contacts/:uid", axum::routing::delete(delete_contact_ep))
+        .route("/contacts/:uid/export", get(export_contact_ep))
+        .route("/events", get(list_events_ep))
+        .route("/events/import", post(import_event_ep))
+        .route("/events/:uid", axum::routing::delete(delete_event_ep))
+        .route("/events/:uid/export", get(export_event_ep))
+        .route("/todos/import", post(import_todo_ep))
+        .route("/profile/vcard", get(profile_vcard_ep))
         .route("/resources", get(list_resources).post(create_resource))
         // Streaming upload for large attachments: the request body is read incrementally up to
         // `max_upload_bytes` instead of being capped at `max_body_bytes`, so this one route
@@ -876,6 +889,166 @@ async fn proxy_notebook_transfer(
     .await
 }
 
+// ── Standards-format interop (vCard / iCalendar) ────────────────────────────────
+
+/// A contact as JSON (a serialisable view of `keeplin_core::interop::Contact`).
+#[derive(Debug, Serialize)]
+struct ContactDto {
+    uid: String,
+    formatted_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    family_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    given_name: Option<String>,
+    emails: Vec<String>,
+    phones: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    org: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+}
+
+impl From<Contact> for ContactDto {
+    fn from(c: Contact) -> Self {
+        Self {
+            uid: c.uid,
+            formatted_name: c.formatted_name,
+            family_name: c.family_name,
+            given_name: c.given_name,
+            emails: c.emails,
+            phones: c.phones,
+            org: c.org,
+            note: c.note,
+        }
+    }
+}
+
+/// A calendar event as JSON.
+#[derive(Debug, Serialize)]
+struct EventDto {
+    uid: String,
+    summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end: Option<DateTime<Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    location: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+}
+
+impl From<CalendarEvent> for EventDto {
+    fn from(e: CalendarEvent) -> Self {
+        Self {
+            uid: e.uid,
+            summary: e.summary,
+            start: e.start,
+            end: e.end,
+            location: e.location,
+            description: e.description,
+        }
+    }
+}
+
+/// Build a raw `text/vcard` or `text/calendar` body response.
+fn text_body(mime: &'static str, body: String) -> Response {
+    ([(CONTENT_TYPE, mime)], body).into_response()
+}
+
+async fn list_contacts_ep(State(s): State<Shared>) -> Result<Json<Vec<ContactDto>>, ApiError> {
+    let contacts = interop::list_contacts(s.backend.as_ref()).await?;
+    Ok(Json(contacts.into_iter().map(ContactDto::from).collect()))
+}
+
+/// `POST /api/contacts/import` — body is a vCard; parse it, store it, return the stored contact.
+async fn import_contact_ep(
+    State(s): State<Shared>,
+    body: String,
+) -> Result<Json<ContactDto>, ApiError> {
+    let contact = Contact::from_vcard(&body)
+        .ok_or_else(|| StorageError::InvalidInput("invalid vCard".into()))?;
+    let saved = interop::save_contact(s.backend.as_ref(), contact).await?;
+    Ok(Json(saved.into()))
+}
+
+/// `GET /api/contacts/:uid/export` — the contact as a `text/vcard` body.
+async fn export_contact_ep(
+    State(s): State<Shared>,
+    Path(uid): Path<String>,
+) -> Result<Response, ApiError> {
+    let contact = interop::get_contact(s.backend.as_ref(), &uid)
+        .await?
+        .ok_or_else(|| StorageError::NotFound(uid.clone()))?;
+    Ok(text_body(interop::MIME_VCARD, contact.to_vcard()))
+}
+
+async fn delete_contact_ep(
+    State(s): State<Shared>,
+    Path(uid): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    interop::delete_contact(s.backend.as_ref(), &uid).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_events_ep(State(s): State<Shared>) -> Result<Json<Vec<EventDto>>, ApiError> {
+    let events = interop::list_events(s.backend.as_ref()).await?;
+    Ok(Json(events.into_iter().map(EventDto::from).collect()))
+}
+
+/// `POST /api/events/import` — body is an iCalendar `VEVENT`; parse, store, return it.
+async fn import_event_ep(
+    State(s): State<Shared>,
+    body: String,
+) -> Result<Json<EventDto>, ApiError> {
+    let event = CalendarEvent::from_ics(&body)
+        .ok_or_else(|| StorageError::InvalidInput("no VEVENT in input".into()))?;
+    let saved = interop::save_event(s.backend.as_ref(), event).await?;
+    Ok(Json(saved.into()))
+}
+
+async fn export_event_ep(
+    State(s): State<Shared>,
+    Path(uid): Path<String>,
+) -> Result<Response, ApiError> {
+    let event = interop::get_event(s.backend.as_ref(), &uid)
+        .await?
+        .ok_or_else(|| StorageError::NotFound(uid.clone()))?;
+    Ok(text_body(interop::MIME_ICALENDAR, event.to_ics()))
+}
+
+async fn delete_event_ep(
+    State(s): State<Shared>,
+    Path(uid): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    interop::delete_event(s.backend.as_ref(), &uid).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /api/todos/import` — body is an iCalendar `VTODO`; create a Keeplin to-do note from it.
+async fn import_todo_ep(State(s): State<Shared>, body: String) -> Result<Json<Note>, ApiError> {
+    Ok(Json(interop::import_todo(s.backend.as_ref(), &body).await?))
+}
+
+/// `?name=&email=` for the profile-vCard endpoint.
+#[derive(Debug, Deserialize)]
+struct ProfileVcardQuery {
+    #[serde(default)]
+    name: Option<String>,
+    email: String,
+}
+
+/// `GET /api/profile/vcard?email=&name=` — render the account owner's profile vCard. The caller
+/// supplies the profile (the daemon does not own user identity); `name` defaults to the email's
+/// local part.
+async fn profile_vcard_ep(Query(q): Query<ProfileVcardQuery>) -> Response {
+    let name = q
+        .name
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| q.email.split('@').next().unwrap_or("").to_string());
+    text_body(interop::MIME_VCARD, interop::user_vcard(&name, &q.email))
+}
+
 // ── Notebooks ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -1329,6 +1502,57 @@ mod tests {
                 "{method} {path} must 503 without a server"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn contact_import_list_export_delete_endpoints() {
+        let st = state(None).await;
+        let vcard =
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nUID:c1\r\nFN:Ada\r\nEMAIL:a@b.com\r\nEND:VCARD\r\n";
+
+        let (code, body) = call(&st, "POST", "/api/contacts/import", Some(vcard), None).await;
+        assert_eq!(code, StatusCode::OK);
+        let c: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(c["formatted_name"], "Ada");
+        assert_eq!(c["uid"], "c1");
+
+        let (code, body) = call(&st, "GET", "/api/contacts", None, None).await;
+        assert_eq!(code, StatusCode::OK);
+        let list: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(list.as_array().unwrap().len(), 1);
+
+        let (code, body) = call(&st, "GET", "/api/contacts/c1/export", None, None).await;
+        assert_eq!(code, StatusCode::OK);
+        assert!(String::from_utf8(body).unwrap().contains("FN:Ada"));
+
+        let (code, _) = call(&st, "DELETE", "/api/contacts/c1", None, None).await;
+        assert_eq!(code, StatusCode::NO_CONTENT);
+        let (_, body) = call(&st, "GET", "/api/contacts", None, None).await;
+        assert!(serde_json::from_slice::<serde_json::Value>(&body)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn todo_import_and_profile_vcard_endpoints() {
+        let st = state(None).await;
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:t1\r\nSUMMARY:Task\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        let (code, body) = call(&st, "POST", "/api/todos/import", Some(ics), None).await;
+        assert_eq!(code, StatusCode::OK);
+        let note: Note = serde_json::from_slice(&body).unwrap();
+        assert!(note.is_todo);
+        assert_eq!(note.title, "Task");
+
+        let (code, body) = call(&st, "GET", "/api/profile/vcard?email=me@x.com", None, None).await;
+        assert_eq!(code, StatusCode::OK);
+        let text = String::from_utf8(body).unwrap();
+        assert!(
+            text.contains("FN:me"),
+            "name defaults to the email local part"
+        );
+        assert!(text.contains("EMAIL:me@x.com"));
     }
 
     #[tokio::test]
