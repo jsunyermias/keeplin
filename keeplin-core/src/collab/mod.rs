@@ -533,6 +533,25 @@ impl<B: StorageBackend> SyncBackend for CollabBackend<B> {
     }
 }
 
+#[async_trait]
+impl<B: StorageBackend> crate::storage::HistoryRepository for CollabBackend<B> {
+    async fn note_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<crate::storage::EntityVersion<Note>>, StorageError> {
+        self.inner.note_history(id, limit).await
+    }
+
+    async fn notebook_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<crate::storage::EntityVersion<Notebook>>, StorageError> {
+        self.inner.notebook_history(id, limit).await
+    }
+}
+
 fn is_note_change(change: &Change) -> bool {
     matches!(
         change,

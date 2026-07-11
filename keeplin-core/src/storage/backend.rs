@@ -438,6 +438,55 @@ pub trait SyncBackend: Send + Sync + 'static {
     async fn prune_change_journal(&self, older_than: DateTime<Utc>) -> Result<u64, StorageError>;
 }
 
+// ── HistoryRepository ─────────────────────────────────────────────────────────
+
+/// Default cap on the number of versions a `*_history` call returns when the caller passes
+/// `limit = 0`. Bounds a single reply regardless of how deep the journal retains history.
+pub const DEFAULT_HISTORY_LIMIT: u32 = 100;
+
+/// One past version of an entity, reconstructed from the change journal.
+///
+/// The journal already stores a **full snapshot** per change (a `NoteUpdate` carries the
+/// whole `Note`), so history is *derived* from it rather than kept in a parallel store.
+/// `entity` is `None` when this version is a **tombstone** (the entity was soft-deleted at
+/// this point); a later version may revive it. Versions are decrypted on the way up through
+/// [`crate::encryption::EncryptedBackend`], so the payload here is always plaintext.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntityVersion<T> {
+    /// Wall-clock time this version was written (the edit's `updated_at`/`deleted_at`).
+    pub timestamp: DateTime<Utc>,
+    /// The device that authored the version.
+    pub device_id: String,
+    /// The entity as of this version, or `None` for a tombstone.
+    pub entity: Option<T>,
+}
+
+/// Read-only access to an entity's past versions, and the raw material for
+/// [`crate::history`]'s forward-revert helpers.
+///
+/// History is **derived from the change journal** (per-device op logs in `FsBackend`, the
+/// `entity_changes` table in `DbBackend`), newest-first and bounded by `limit` (0 = the
+/// backend's default cap). What survives is governed by the journal's retention policy
+/// (version count and, unless disabled, age) — see [`crate::config`].
+#[async_trait]
+pub trait HistoryRepository: Send + Sync + 'static {
+    /// Past versions of a note, newest first (index 0 is the current state). An unknown id
+    /// yields an empty list rather than `NotFound`, so callers can treat "no history" and
+    /// "no such note" uniformly.
+    async fn note_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<EntityVersion<Note>>, StorageError>;
+
+    /// Past versions of a notebook, newest first. See [`note_history`](Self::note_history).
+    async fn notebook_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<EntityVersion<Notebook>>, StorageError>;
+}
+
 // ── StorageBackend supertrait ─────────────────────────────────────────────────
 
 /// Unified async storage interface.
@@ -458,7 +507,12 @@ pub trait SyncBackend: Send + Sync + 'static {
 /// - [`crate::storage::db::DbBackend`] — LibSQL database + WebSocket sync.
 /// - [`crate::encryption::EncryptedBackend<B>`] — transparent AES-256-GCM decorator.
 pub trait StorageBackend:
-    NoteRepository + NotebookRepository + TagRepository + ResourceRepository + SyncBackend
+    NoteRepository
+    + NotebookRepository
+    + TagRepository
+    + ResourceRepository
+    + SyncBackend
+    + HistoryRepository
 {
 }
 
@@ -471,6 +525,11 @@ pub trait StorageBackend:
 /// `Arc<dyn StorageBackend>` can be passed where a `B: StorageBackend` bound is expected —
 /// for example to [`crate::sync::run_sync`] from the daemon's type-erased REST layer.
 impl<T: ?Sized> StorageBackend for T where
-    T: NoteRepository + NotebookRepository + TagRepository + ResourceRepository + SyncBackend
+    T: NoteRepository
+        + NotebookRepository
+        + TagRepository
+        + ResourceRepository
+        + SyncBackend
+        + HistoryRepository
 {
 }

@@ -7,7 +7,7 @@ sync engine, decorators) is written against `Arc<dyn StorageBackend>` and never 
 concrete backend, so `FsBackend`, `DbBackend`, and the decorators (`EncryptedBackend`,
 `LinkingBackend`, `EventBackend`) are freely interchangeable.
 
-## Structure — one supertrait over five sub-traits
+## Structure — one supertrait over six sub-traits
 
 Rather than one giant trait, the contract is split by domain and re-composed:
 
@@ -18,18 +18,32 @@ Rather than one giant trait, the contract is split by domain and re-composed:
 | `TagRepository` | tag CRUD + note↔tag associations |
 | `ResourceRepository` | resource metadata + binary payload |
 | `SyncBackend` | device id, sync timestamps, change journal, push/pull, prune |
+| `HistoryRepository` | past versions of a note/notebook, derived from the change journal |
 
 ```rust
 pub trait StorageBackend:
-    NoteRepository + NotebookRepository + TagRepository + ResourceRepository + SyncBackend {}
+    NoteRepository + NotebookRepository + TagRepository + ResourceRepository
+    + SyncBackend + HistoryRepository {}
 
-impl<T: ?Sized> StorageBackend for T where T: /* all five */ {}
+impl<T: ?Sized> StorageBackend for T where T: /* all six */ {}
 ```
 
-A **blanket impl** means any type implementing all five sub-traits automatically *is* a
+A **blanket impl** means any type implementing all six sub-traits automatically *is* a
 `StorageBackend` — implementors never write `impl StorageBackend`. Splitting the trait keeps
-each backend file focused (its five `impl` blocks read one domain at a time) while callers
+each backend file focused (its `impl` blocks read one domain at a time) while callers
 still get every method on one object.
+
+### `HistoryRepository`
+
+| Method | Description |
+|--------|-------------|
+| `note_history(id, limit) -> Vec<EntityVersion<Note>>` | past note versions, newest first (`limit = 0` → `DEFAULT_HISTORY_LIMIT` = 100) |
+| `notebook_history(id, limit) -> Vec<EntityVersion<Notebook>>` | past notebook versions, newest first |
+
+`EntityVersion<T>` is `{ timestamp, device_id, entity: Option<T> }` — `entity` is `None` for a
+tombstone version. Unlike `SyncBackend::get_changes_since` (which passes ciphertext through for
+the relay), history is a **read** surface, so `EncryptedBackend` decrypts each version. The
+roll-back operations built on this live in `keeplin-core/src/history.rs`.
 
 All methods are `async` (via `async-trait`) and return `Result<T, StorageError>`.
 

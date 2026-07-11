@@ -168,6 +168,24 @@ copies all live state between any two backends via the typed `create_*` methods 
 
 ---
 
+## 7½. History and revert (`keeplin-core/src/history.rs`)
+
+Notes and notebooks carry a **version history**, and any past state can be **rolled back** to.
+History is not a separate store — it is *derived from the same change journal* sync uses, since
+every journalled change carries a full entity snapshot. The `HistoryRepository` sub-trait reads
+it (`FsBackend` from the per-note op logs / global journal, `DbBackend` from `entity_changes`),
+newest-first; `EncryptedBackend` decrypts each version on the way up.
+
+Revert is **forward and non-destructive**: it writes the target state back as a new edit, so it
+mints a dominating version vector and converges under sync exactly like any edit (and can itself
+be undone). Every revert targets an **instant** — the state as of `at` is the newest version at
+or before it — so single-version, point-in-time, and **batch** rollback (a whole notebook back
+to before a bad change) are one primitive. Retention follows the journal's **count + age**
+bounds (fs keeps ~256 note versions; keeplin-srv's `journal_retention_days` is the age dimension,
+disable-able). See `keeplin-core/src/history.md`.
+
+---
+
 ## 8. The surfaces (`keeplin-daemon`)
 
 | Surface | File | Notes |

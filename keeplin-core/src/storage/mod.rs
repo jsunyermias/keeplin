@@ -15,8 +15,8 @@ pub mod fs;
 pub mod note_log;
 
 pub use backend::{
-    NoteRepository, NotebookRepository, NotebookSortProfile, ResourceRepository, StorageBackend,
-    SyncBackend, TagRepository,
+    EntityVersion, HistoryRepository, NoteRepository, NotebookRepository, NotebookSortProfile,
+    ResourceRepository, StorageBackend, SyncBackend, TagRepository, DEFAULT_HISTORY_LIMIT,
 };
 
 /// Page size used when a list call passes `page_size = 0`.

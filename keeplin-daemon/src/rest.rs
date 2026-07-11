@@ -36,11 +36,11 @@ use axum::{
 use chrono::{DateTime, Utc};
 use keeplin_core::{
     error::{StorageError, SyncError},
-    linking,
+    history, linking,
     links::{parse_link_ref, NoteLink},
     models::{now, Change, Note, NoteTag, Notebook, Resource, Tag},
     ordering,
-    storage::StorageBackend,
+    storage::{EntityVersion, StorageBackend},
     sync::run_sync,
 };
 use serde::{Deserialize, Serialize};
@@ -118,6 +118,8 @@ pub fn router(state: Shared) -> Router {
             axum::routing::delete(remove_link),
         )
         .route("/notes/:id/backlinks", get(list_backlinks))
+        .route("/notes/:id/history", get(note_history))
+        .route("/notes/:id/revert", post(revert_note_ep))
         .route("/notes/starred", get(list_starred_notes))
         .route("/search", get(search_notes))
         .route("/notes/:id/pin", post(pin_note).delete(unpin_note))
@@ -134,6 +136,13 @@ pub fn router(state: Shared) -> Router {
         )
         .route("/notebooks/:id/alias", put(set_notebook_alias))
         .route("/notebooks/:id/notes", get(list_notes_in_notebook))
+        .route("/notebooks/:id/history", get(notebook_history))
+        .route("/notebooks/:id/revert", post(revert_notebook_ep))
+        .route(
+            "/notebooks/:id/notes/revert",
+            post(revert_notebook_notes_ep),
+        )
+        .route("/history/revert", post(batch_revert_notes_ep))
         .route("/tags", get(list_tags).post(create_tag))
         .route("/tags/:id", get(get_tag).put(update_tag).delete(delete_tag))
         .route("/resources", get(list_resources).post(create_resource))
@@ -618,6 +627,131 @@ async fn list_alias_conflicts(
     Ok(Json(linking::alias_conflicts(s.backend.as_ref()).await?))
 }
 
+// ── History & revert ──────────────────────────────────────────────────────────────
+
+/// `?limit=` for the history endpoints; `0` (absent) uses the backend's default cap.
+#[derive(Debug, Default, Deserialize)]
+struct HistoryQuery {
+    #[serde(default)]
+    limit: u32,
+}
+
+/// One past version of a note, as returned by `GET /notes/:id/history`. `note` is absent when
+/// the version is a tombstone (the note was deleted at that point).
+#[derive(Debug, Serialize)]
+struct NoteVersion {
+    timestamp: DateTime<Utc>,
+    device_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<Note>,
+}
+
+/// One past version of a notebook. See [`NoteVersion`].
+#[derive(Debug, Serialize)]
+struct NotebookVersion {
+    timestamp: DateTime<Utc>,
+    device_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notebook: Option<Notebook>,
+}
+
+/// `{ "at": "<RFC-3339>" }` — the instant to roll an entity back to (the newest version at or
+/// before it).
+#[derive(Debug, Deserialize)]
+struct RevertBody {
+    at: DateTime<Utc>,
+}
+
+/// `{ "at": …, "note_ids": [ … ] }` — batch forward-revert of the listed notes.
+#[derive(Debug, Deserialize)]
+struct BatchRevertBody {
+    at: DateTime<Utc>,
+    #[serde(default)]
+    note_ids: Vec<Uuid>,
+}
+
+/// `GET /api/notes/:id/history` — a note's past versions, newest first.
+async fn note_history(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+    Query(q): Query<HistoryQuery>,
+) -> Result<Json<Vec<NoteVersion>>, ApiError> {
+    let versions = s.backend.note_history(id, q.limit).await?;
+    Ok(Json(versions.into_iter().map(note_version_dto).collect()))
+}
+
+/// `GET /api/notebooks/:id/history` — a notebook's past versions, newest first.
+async fn notebook_history(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+    Query(q): Query<HistoryQuery>,
+) -> Result<Json<Vec<NotebookVersion>>, ApiError> {
+    let versions = s.backend.notebook_history(id, q.limit).await?;
+    Ok(Json(
+        versions.into_iter().map(notebook_version_dto).collect(),
+    ))
+}
+
+/// `POST /api/notes/:id/revert` — forward-revert a note to its state as of `at`.
+async fn revert_note_ep(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+    Json(b): Json<RevertBody>,
+) -> Result<Json<Note>, ApiError> {
+    Ok(Json(
+        history::revert_note(s.backend.as_ref(), id, b.at).await?,
+    ))
+}
+
+/// `POST /api/notebooks/:id/revert` — forward-revert a notebook to its state as of `at`.
+async fn revert_notebook_ep(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+    Json(b): Json<RevertBody>,
+) -> Result<Json<Notebook>, ApiError> {
+    Ok(Json(
+        history::revert_notebook(s.backend.as_ref(), id, b.at).await?,
+    ))
+}
+
+/// `POST /api/notebooks/:id/notes/revert` — batch-revert every note currently in the notebook
+/// to its state as of `at` (the roll-back companion to a destructive notebook-wide change).
+async fn revert_notebook_notes_ep(
+    State(s): State<Shared>,
+    Path(id): Path<Uuid>,
+    Json(b): Json<RevertBody>,
+) -> Result<Json<Vec<Note>>, ApiError> {
+    Ok(Json(
+        history::revert_notebook_notes_to(s.backend.as_ref(), id, b.at).await?,
+    ))
+}
+
+/// `POST /api/history/revert` — batch forward-revert of an explicit note-id list to `at`.
+async fn batch_revert_notes_ep(
+    State(s): State<Shared>,
+    Json(b): Json<BatchRevertBody>,
+) -> Result<Json<Vec<Note>>, ApiError> {
+    Ok(Json(
+        history::revert_notes_to(s.backend.as_ref(), &b.note_ids, b.at).await?,
+    ))
+}
+
+fn note_version_dto(v: EntityVersion<Note>) -> NoteVersion {
+    NoteVersion {
+        timestamp: v.timestamp,
+        device_id: v.device_id,
+        note: v.entity,
+    }
+}
+
+fn notebook_version_dto(v: EntityVersion<Notebook>) -> NotebookVersion {
+    NotebookVersion {
+        timestamp: v.timestamp,
+        device_id: v.device_id,
+        notebook: v.entity,
+    }
+}
+
 // ── Notebooks ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -1035,6 +1169,67 @@ mod tests {
         assert_eq!(code, StatusCode::NO_CONTENT);
         let (code, _) = call(&st, "GET", &format!("/api/notes/{id}"), None, None).await;
         assert_eq!(code, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn note_history_and_revert_endpoints() {
+        let st = state(None).await;
+
+        // Create, then edit — two versions in history.
+        let (_, body) = call(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(r#"{"title":"T","body":"v1"}"#),
+            None,
+        )
+        .await;
+        let note: Note = serde_json::from_slice(&body).unwrap();
+        let id = note.id;
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let mut edited = note.clone();
+        edited.body = "v2".into();
+        let (code, _) = call(
+            &st,
+            "PUT",
+            &format!("/api/notes/{id}"),
+            Some(&serde_json::to_string(&edited).unwrap()),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+
+        // History: newest first.
+        let (code, body) = call(&st, "GET", &format!("/api/notes/{id}/history"), None, None).await;
+        assert_eq!(code, StatusCode::OK);
+        let hist: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let versions = hist.as_array().unwrap();
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0]["note"]["body"], "v2");
+        assert_eq!(versions[1]["note"]["body"], "v1");
+
+        // Revert to the first version's instant → body back to v1.
+        let at = versions[1]["timestamp"].as_str().unwrap();
+        let (code, body) = call(
+            &st,
+            "POST",
+            &format!("/api/notes/{id}/revert"),
+            Some(&format!(r#"{{"at":"{at}"}}"#)),
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(serde_json::from_slice::<Note>(&body).unwrap().body, "v1");
+        // The revert is a new version on top (non-destructive).
+        let (_, body) = call(&st, "GET", &format!("/api/notes/{id}/history"), None, None).await;
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
     }
 
     #[tokio::test]
