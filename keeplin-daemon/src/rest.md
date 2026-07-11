@@ -60,6 +60,10 @@ metrics); every other route is behind auth and counted by `status_mw`.
 | `GET /aliases/conflicts` | aliases shared by 2+ live entities (sync collisions) |
 | `GET/POST/PUT/DELETE /notebooks`, `/tags` | notebook / tag CRUD (deleting the Inbox / `Pizarra` → `400`) |
 | `GET/POST /resources`, `GET/PUT/DELETE /resources/:id`, `GET /resources/:id/data` | resource metadata CRUD + raw upload/download (create is capped at `max_body_bytes`) |
+| `GET /contacts`, `POST /contacts/import`, `GET /contacts/:uid/export`, `DELETE /contacts/:uid` | **vCard interop**: list contacts (JSON); import a `text/vcard` body; export one as `text/vcard`; delete by UID. Contacts are resources with mime `text/vcard` — see `keeplin-core/src/interop.md` |
+| `GET /events`, `POST /events/import`, `GET /events/:uid/export`, `DELETE /events/:uid` | **iCalendar VEVENT interop**, same shape (`text/calendar`) |
+| `POST /todos/import` | import an iCalendar `VTODO` body as a Keeplin **to-do note** (to-dos are notes, not resources) |
+| `GET /profile/vcard?email=&name=` | render the account owner's profile vCard (`text/vcard`); the caller supplies the profile, `name` defaults to the email local part |
 | `POST /resources/upload` | **streaming upload** for large attachments: reads the body incrementally up to `max_upload_bytes` (this one route disables the router's body limit); over the cap → `413` |
 | `POST /sync` | run one sync cycle → `{ "applied": n }`, then prune journal rows older than `journal_retention_days` (shared `server::prune_journal_after_sync`) |
 | `GET /ws` | upgrade to the WebSocket live-change feed |
