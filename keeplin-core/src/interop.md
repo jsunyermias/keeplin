@@ -42,12 +42,35 @@ verbatim so a parse→serialise round-trip drops nothing.
 - **Property lines** are `NAME(;PARAM=…)*:VALUE`; parameters are dropped for the modelled
   subset (the raw line is kept in `extra` for anything unmodelled).
 
+## Typed storage over resources
+
+Contacts and events are **typed at the API level** but persist on top of the existing
+**resource** entity — no new entity type, table, protobuf message, or sync `Change`, so they
+ride the sync/encryption/permissions/server-materialisation machinery already built. A contact
+is a resource with mime `text/vcard`; an event, `text/calendar`. **Identity is the format `UID`**
+(not the backing resource id), and since resources have no in-place update, `save_*` is a
+*replace by UID* (delete any resource with that UID, write a fresh one).
+
+| Function | Description |
+|----------|-------------|
+| `save_contact(be, Contact)` / `save_event(be, CalendarEvent)` | upsert by UID (assigns one if empty); returns the stored value |
+| `list_contacts(be)` / `list_events(be)` | parse every backing resource of the right mime type |
+| `get_contact(be, uid)` / `get_event(be, uid)` | fetch one by UID |
+| `delete_contact(be, uid)` / `delete_event(be, uid)` | remove the backing resource(s) |
+| `import_todo(be, ics)` | parse a `VTODO` and create a Keeplin **to-do note** (to-dos are notes, not resources) |
+
+`MIME_VCARD` / `MIME_ICALENDAR` are the marker media types. Listing scans resources and filters
+by (decrypted) mime type client-side — the server only ever sees ciphertext.
+
 ## Design notes
 
 - **No external crate**: a focused, hand-rolled subset avoids adding an iCalendar/vCard
   dependency (and its `cargo audit` surface) for what is a small, stable grammar.
 - **Round-trip fidelity over completeness**: unmodelled properties survive via `extra`, so the
   module can grow its explicit coverage without ever having silently dropped data.
+- **Typed over existing plumbing**: contacts/events reuse resources rather than adding
+  first-class synced entities — smaller and lower-risk, and they inherit all the entity
+  machinery for free. The trade-off is a UID-keyed replace-on-edit instead of in-place update.
 
 ## Related files
 
