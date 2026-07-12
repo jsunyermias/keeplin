@@ -90,6 +90,11 @@ pub struct DbBackend {
     /// HTTP client for the server's REST surface (currently the history endpoints).
     /// Only used when `server_url` is configured.
     http: reqwest::Client,
+    /// Set once the server answers a history request with `404` — the endpoint does not
+    /// exist on this (older) server. Subsequent history reads then skip the wasted server
+    /// round-trip and go straight to the local journal (issue #113). A network error does
+    /// **not** set this (it is transient, not a definitive "no such route").
+    history_unsupported: Arc<std::sync::atomic::AtomicBool>,
     /// Guards access to the shared `libsql::Connection` so that reads and writes are
     /// correctly isolated even though every operation runs on a **single** connection.
     ///
@@ -168,6 +173,7 @@ impl DbBackend {
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
                 .unwrap_or_default(),
+            history_unsupported: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             lock: Arc::new(RwLock::new(())),
         })
     }
@@ -2864,6 +2870,12 @@ impl DbBackend {
         id: Uuid,
         cap: u32,
     ) -> Option<Vec<EntityVersion<T>>> {
+        use std::sync::atomic::Ordering;
+        // A previous request already learned this server has no history endpoint: skip the
+        // wasted round-trip and fall back to the local journal (issue #113).
+        if self.history_unsupported.load(Ordering::Relaxed) {
+            return None;
+        }
         let base = self.server_http_base()?;
         let url = format!("{base}/api/{entity_type}s/{id}/history?limit={cap}");
         let response = match self
@@ -2872,11 +2884,26 @@ impl DbBackend {
             .bearer_auth(&self.auth_token)
             .send()
             .await
-            .and_then(|r| r.error_for_status())
         {
             Ok(r) => r,
             Err(e) => {
-                tracing::debug!(%url, "server history unavailable, using local journal: {e}");
+                // Transient (network) failure — not a definitive "no such route", so do not
+                // latch the flag; just fall back this time.
+                tracing::debug!(%url, "server history unreachable, using local journal: {e}");
+                return None;
+            }
+        };
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            // The endpoint does not exist on this (older) server: latch it so future reads
+            // skip straight to the local journal.
+            self.history_unsupported.store(true, Ordering::Relaxed);
+            tracing::debug!(%url, "server has no history endpoint; using the local journal");
+            return None;
+        }
+        let response = match response.error_for_status() {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(%url, "server history error, using local journal: {e}");
                 return None;
             }
         };

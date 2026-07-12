@@ -105,3 +105,5 @@ connection:
 - `keeplin-daemon/src/rest.md` — the presence/cursor endpoints backed by `CollabHandle`.
 - `keeplin-daemon/src/main.rs` — where the decorator is placed in the stack and `start`ed.
 - `keeplin-core/src/storage/note_log.md` — the version-vector resolution this mirrors client-side.
+
+> `create_note`'s `POST` and `patch_meta`'s `PATCH` check the HTTP **status**, not just transport success: a non-2xx (other than the expected `409` on create) is logged as a rejection rather than silently treated as delivered (issue #112).

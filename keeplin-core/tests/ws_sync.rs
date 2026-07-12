@@ -338,3 +338,42 @@ async fn note_history_falls_back_to_the_local_journal() {
     assert_eq!(hist.len(), 1);
     assert_eq!(hist[0].entity.as_ref().unwrap().body, "v1");
 }
+
+/// After the server answers a history request with 404 (an older server without the
+/// endpoint), the client latches "unsupported" and stops making the wasted round-trip on
+/// subsequent history reads (issue #113).
+#[tokio::test]
+async fn a_404_history_endpoint_is_probed_only_once() {
+    use axum::http::StatusCode;
+    use axum::{routing::get, Router};
+
+    let hits = Arc::new(AtomicU64::new(0));
+    let hits_srv = hits.clone();
+    let app = Router::new().route(
+        "/api/notes/:id/history",
+        get(move || {
+            let hits = hits_srv.clone();
+            async move {
+                hits.fetch_add(1, Ordering::SeqCst);
+                StatusCode::NOT_FOUND
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let be = device(&format!("ws://{addr}/api/sync")).await;
+    let note = be.create_note(Note::new("T", "v1")).await.unwrap();
+
+    // Several history reads; the server is probed at most once, the rest use the local journal.
+    for _ in 0..3 {
+        let hist = be.note_history(note.id, 0).await.unwrap();
+        assert_eq!(hist.len(), 1, "falls back to the local journal");
+    }
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "a 404 endpoint must be probed only once, then skipped"
+    );
+}

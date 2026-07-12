@@ -285,14 +285,21 @@ impl<B: StorageBackend> CollabBackend<B> {
             "todo_due": note.todo_due,
             "todo_completed": note.todo_completed,
         });
-        if let Err(e) = self
+        // Check the HTTP status, not just transport success: a 4xx/5xx means the server
+        // rejected the metadata mirror (e.g. an auth or validation change), which the client
+        // must surface rather than treat as delivered (issue #112).
+        match self
             .shared
             .auth(self.shared.http.patch(url))
             .json(&body)
             .send()
             .await
         {
-            tracing::warn!(error = %e, note = %note.id, "collab: PATCH note failed");
+            Ok(resp) if resp.status().is_success() => {}
+            Ok(resp) => {
+                tracing::warn!(status = %resp.status(), note = %note.id, "collab: PATCH note rejected by server")
+            }
+            Err(e) => tracing::warn!(error = %e, note = %note.id, "collab: PATCH note failed"),
         }
     }
 }
@@ -309,14 +316,23 @@ impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
         // converges through resolution.
         let url = format!("{}/api/notes", self.shared.cfg.api_url);
         let body = serde_json::json!({ "id": created.id, "title": created.title });
-        if let Err(e) = self
+        // 2xx is success; 409 is the expected "already exists" (created on another device) and
+        // is fine. Any other status is a real rejection the client must not treat as success
+        // (issue #112).
+        match self
             .shared
             .auth(self.shared.http.post(url))
             .json(&body)
             .send()
             .await
         {
-            tracing::warn!(error = %e, note = %created.id, "collab: POST note failed");
+            Ok(resp)
+                if resp.status().is_success() || resp.status() == reqwest::StatusCode::CONFLICT => {
+            }
+            Ok(resp) => {
+                tracing::warn!(status = %resp.status(), note = %created.id, "collab: POST note rejected by server")
+            }
+            Err(e) => tracing::warn!(error = %e, note = %created.id, "collab: POST note failed"),
         }
         self.patch_meta(&created).await;
         // Mark the body as pending and Join. The body is pushed when the Join's
