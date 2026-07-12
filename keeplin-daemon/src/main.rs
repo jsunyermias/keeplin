@@ -468,6 +468,25 @@ async fn run_server_with<B: keeplin_core::storage::StorageBackend>(
         hook(backend.clone());
     }
 
+    // Optional background sync loop (issue #111). With `sync_interval_secs = 0` syncing stays
+    // frontend-driven; a positive interval keeps notebooks/tags/resources flowing (and the
+    // watermark advancing) even when no client polls. A cycle that errors is logged and
+    // retried next tick — `run_sync` leaves the watermark untouched on failure.
+    if cfg.sync_interval_secs > 0 {
+        let backend = backend.clone();
+        let period = std::time::Duration::from_secs(cfg.sync_interval_secs);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(period);
+            ticker.tick().await; // consume the immediate first tick
+            loop {
+                ticker.tick().await;
+                if let Err(e) = keeplin_core::sync::run_sync(backend.as_ref(), |_, _| {}).await {
+                    tracing::warn!(error = %e, "background sync cycle failed");
+                }
+            }
+        });
+    }
+
     // One shared backend instance behind every surface: the gRPC service and (optionally)
     // the REST/HTTP server both hold a clone of this `Arc`.
     let (auth_user, auth_pass) = (cfg.auth_username.clone(), cfg.auth_password.clone());

@@ -39,6 +39,22 @@ querying, and sync:
 - `Resource.size`
 - NoteTag associations (the link between a note UUID and a tag UUID)
 
+### Collaborative (server) mode stores note title/body in cleartext on the server
+
+**At-rest encryption does not make note content private from the keeplin-srv server when the
+collaborative channel is in use.** The line-based collaborative protocol merges edits *by
+line*, so the daemon sends — and keeplin-srv stores — note **titles and bodies in plaintext**
+(the server's `notes.title` and `lines.content` columns). Metadata mirrored over REST
+(`PATCH /api/notes/:id`) is likewise plaintext. Encryption still protects the local at-rest
+copy and the notebook/tag/resource entities that sync over the relay, but not note content on
+the collaborative server.
+
+If you need note bodies to be unreadable by the server, do **not** use collaborative mode: run
+in filesystem mode (Syncthing replication, where the encrypted files never reach a central
+server) or a server-mode deployment without `collab_api_url`. This is a known limitation
+(issue #110); a future end-to-end collaborative encryption scheme would let the server merge
+ciphertext lines without reading them.
+
 ## Threat model
 
 Encryption protects **content at rest** against an attacker who gains physical or

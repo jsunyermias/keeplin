@@ -108,6 +108,14 @@ pub struct Config {
     #[serde(default)]
     pub resource_purge_days: u64,
 
+    /// Run a sync cycle automatically every this many seconds. `0` (the default) leaves
+    /// syncing **frontend-driven** — a cycle only runs when a client calls the gRPC `Sync`
+    /// RPC or `POST /api/sync`. Set a positive interval so notebooks/tags/resources (and the
+    /// last-sync watermark) keep flowing even when no frontend polls (issue #111). The
+    /// collaborative channel is independent and always live; this only affects the relay path.
+    #[serde(default)]
+    pub sync_interval_secs: u64,
+
     /// Optional password for at-rest AES-256-GCM encryption (Argon2id key derivation).
     /// Prefer the KEEPLIN_ENCRYPTION_PASSWORD environment variable over storing the
     /// password in this file to avoid accidentally committing it to version control.
@@ -222,6 +230,7 @@ impl Default for Config {
             max_upload_bytes: default_max_upload_bytes(),
             journal_retention_days: default_journal_retention_days(),
             resource_purge_days: 0,
+            sync_interval_secs: 0,
             encryption_password: None,
             key_salt: None,
             auth_username: None,

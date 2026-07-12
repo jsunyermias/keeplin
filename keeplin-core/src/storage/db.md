@@ -280,3 +280,5 @@ only changes that originated on this device, so history keeps working offline.
 - `keeplin-core/src/models.rs` — all types stored by this backend
 - `keeplin-daemon/src/main.rs` — constructs `DbBackend` in server mode
 - `SECURITY.md` — WebSocket auth token security considerations
+
+> The server-history path latches a `404` (endpoint absent on an older server) and thereafter skips straight to the local journal, so history reads against a server without the endpoint do not pay a wasted round-trip each time (issue #113).
