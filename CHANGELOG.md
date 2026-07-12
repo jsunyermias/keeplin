@@ -18,6 +18,10 @@ version and the wire protocol version move independently.
   cadence instead of only when a frontend polls (#111).
 - The client negotiates keeplin-srv capabilities via `GET /version` and skips
   features the server does not advertise (keeplin#114).
+- Collaborative note discovery pages through `GET /api/notes` with
+  `?limit=&cursor=`, following the server's `X-Next-Cursor` header, so a large
+  account is not fetched in a single unbounded response. Back-compatible with a
+  server that predates pagination (keeplin-srv#29).
 
 ### Changed
 - Server-backed note/notebook history in server mode: `DbBackend` fetches the

@@ -13,7 +13,8 @@
 //! - Remote ops and snapshots are applied through the daemon's full decorator
 //!   stack (so links are re-derived and the live feed fires), with an
 //!   in-flight suppression set preventing those writes from echoing back.
-//! - Note discovery (own + shared) is a REST `GET /api/notes` at connect.
+//! - Note discovery (own + shared) is a paged REST `GET /api/notes` at connect
+//!   (follows the server's `X-Next-Cursor` header).
 //! - Note `Change`s are filtered out of the relay sync path: the collab
 //!   channel owns notes; notebooks/tags/resources keep syncing via the relay.
 
@@ -700,30 +701,56 @@ async fn connect_once(
     }
 }
 
+/// Page size for note discovery. The server caps `?limit` at 500 (keeplin-srv
+/// #29); a smaller page keeps each round-trip bounded on large accounts.
+const DISCOVER_PAGE_SIZE: &str = "200";
+
 /// Discover own + shared notes and join the ones this connection has not
 /// joined yet. Unknown notes are created locally (empty body — the Welcome
 /// snapshot fills it in).
+///
+/// Pages through `GET /api/notes?limit=&cursor=`, following the `X-Next-Cursor`
+/// header until the list is exhausted, so an account with thousands of notes
+/// never materialises the whole listing at once. Back-compatible with a server
+/// that predates pagination: it ignores `?limit`, returns every note in one
+/// array with no cursor header, and the loop runs exactly once.
 async fn discover_and_join(
     shared: &Arc<Shared>,
     ws: &mut WsStream,
     joined: &mut HashSet<Uuid>,
 ) -> anyhow::Result<()> {
-    let listing: Vec<ServerNote> = shared
-        .auth(shared.http.get(format!("{}/api/notes", shared.cfg.api_url)))
-        .send()
-        .await?
-        .json()
-        .await?;
-    for server_note in &listing {
-        if joined.contains(&server_note.id) {
-            continue;
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut req = shared
+            .auth(shared.http.get(format!("{}/api/notes", shared.cfg.api_url)))
+            .query(&[("limit", DISCOVER_PAGE_SIZE)]);
+        if let Some(c) = &cursor {
+            req = req.query(&[("cursor", c.as_str())]);
         }
-        ensure_local(shared, server_note).await;
-        let join = serde_json::to_string(&CollabClientMsg::Join {
-            note_id: server_note.id,
-        })?;
-        ws.send(Message::Text(join)).await?;
-        joined.insert(server_note.id);
+        let resp = req.send().await?;
+        let next = resp
+            .headers()
+            .get("x-next-cursor")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let listing: Vec<ServerNote> = resp.json().await?;
+
+        for server_note in &listing {
+            if joined.contains(&server_note.id) {
+                continue;
+            }
+            ensure_local(shared, server_note).await;
+            let join = serde_json::to_string(&CollabClientMsg::Join {
+                note_id: server_note.id,
+            })?;
+            ws.send(Message::Text(join)).await?;
+            joined.insert(server_note.id);
+        }
+
+        match next {
+            Some(c) => cursor = Some(c),
+            None => break,
+        }
     }
     Ok(())
 }
