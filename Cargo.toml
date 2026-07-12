@@ -12,7 +12,7 @@ edition = "2021"
 # `std::fs::File::try_lock` / `TryLockError` API stabilised in Rust 1.89.
 rust-version = "1.89"
 authors = ["Keeplin Contributors"]
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 # Release profile. Cargo only reads `[profile.*]` from a manifest (Cargo.toml),
 # never from `.cargo/config.toml`, so these optimisations must live here to take
