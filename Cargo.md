@@ -22,7 +22,7 @@ without repeating version strings in each crate's own `Cargo.toml`.
 | `edition` | `2021` | Rust edition used by all crates |
 | `rust-version` | `1.89` | Minimum supported Rust (floor set by `std::fs::File::try_lock`) |
 | `authors` | `Keeplin Contributors` | Default author string |
-| `license` | `MIT` | SPDX identifier |
+| `license` | `AGPL-3.0-or-later` | SPDX identifier |
 
 ## Runtime dependencies (shared)
 
