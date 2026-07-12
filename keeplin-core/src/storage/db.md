@@ -282,3 +282,5 @@ only changes that originated on this device, so history keeps working offline.
 - `SECURITY.md` — WebSocket auth token security considerations
 
 > The server-history path latches a `404` (endpoint absent on an older server) and thereafter skips straight to the local journal, so history reads against a server without the endpoint do not pay a wasted round-trip each time (issue #113).
+
+> The client negotiates server capabilities via `GET /version` (cached once): if the server advertises a `/version` without `history`, the history path is skipped straight to the local journal; a server with no `/version` (older) falls back to the request + 404-latch (keeplin#114).
