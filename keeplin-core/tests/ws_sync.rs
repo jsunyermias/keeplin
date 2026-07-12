@@ -377,3 +377,51 @@ async fn a_404_history_endpoint_is_probed_only_once() {
         "a 404 endpoint must be probed only once, then skipped"
     );
 }
+
+/// When the server advertises `/version` **without** the `history` capability, the client
+/// skips the history endpoint entirely — it never even sends the request (keeplin#114).
+#[tokio::test]
+async fn history_is_skipped_when_the_server_capability_is_absent() {
+    use axum::{routing::get, Json, Router};
+
+    let hits = Arc::new(AtomicU64::new(0));
+    let hits_srv = hits.clone();
+    let app = Router::new()
+        .route(
+            "/version",
+            get(|| async {
+                Json(serde_json::json!({
+                    "name": "keeplin-srv",
+                    "version": "0.0.0",
+                    "protocol_version": 1,
+                    "capabilities": ["readiness"], // deliberately no "history"
+                }))
+            }),
+        )
+        .route(
+            "/api/notes/:id/history",
+            get(move || {
+                let hits = hits_srv.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    Json(serde_json::json!([]))
+                }
+            }),
+        );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let be = device(&format!("ws://{addr}/api/sync")).await;
+    let note = be.create_note(Note::new("T", "v1")).await.unwrap();
+
+    for _ in 0..3 {
+        let hist = be.note_history(note.id, 0).await.unwrap();
+        assert_eq!(hist.len(), 1, "uses the local journal");
+    }
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        0,
+        "the history endpoint must never be called when the capability is absent"
+    );
+}

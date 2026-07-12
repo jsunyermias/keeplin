@@ -95,6 +95,9 @@ pub struct DbBackend {
     /// round-trip and go straight to the local journal (issue #113). A network error does
     /// **not** set this (it is transient, not a definitive "no such route").
     history_unsupported: Arc<std::sync::atomic::AtomicBool>,
+    /// Cached result of the `GET /version` capability handshake (keeplin#114): fetched once
+    /// and reused so the client can negotiate behaviour instead of guessing.
+    server_capabilities: Arc<Mutex<CapabilityCache>>,
     /// Guards access to the shared `libsql::Connection` so that reads and writes are
     /// correctly isolated even though every operation runs on a **single** connection.
     ///
@@ -174,6 +177,7 @@ impl DbBackend {
                 .build()
                 .unwrap_or_default(),
             history_unsupported: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            server_capabilities: Arc::new(Mutex::new(CapabilityCache::Unknown)),
             lock: Arc::new(RwLock::new(())),
         })
     }
@@ -2848,6 +2852,16 @@ struct ServerVersion {
     entity: Option<serde_json::Value>,
 }
 
+/// Cached outcome of the `GET /version` capability handshake (keeplin#114).
+enum CapabilityCache {
+    /// Not yet fetched.
+    Unknown,
+    /// Fetched, but the server has no `/version` (older server) — capabilities indeterminate.
+    Unavailable,
+    /// The server's advertised capability list.
+    Known(Vec<String>),
+}
+
 impl DbBackend {
     /// The HTTP base URL of the sync server, derived from the WebSocket `server_url`
     /// (`ws`→`http`, `wss`→`https`, the relay path stripped). `None` in offline mode.
@@ -2859,6 +2873,49 @@ impl DbBackend {
         };
         let rest = rest.strip_suffix("/api/sync").unwrap_or(rest);
         Some(format!("{scheme}{}", rest.trim_end_matches('/')))
+    }
+
+    /// Whether the server advertises `capability` at `GET /version` (keeplin#114). Fetched
+    /// once and cached. Returns:
+    /// - `Some(true)`/`Some(false)` — the server has `/version` and does / does not advertise it;
+    /// - `None` — the server has no `/version` (older server), so the caller cannot rely on
+    ///   capability negotiation and should fall back to feature-specific probing.
+    async fn server_has_capability(&self, capability: &str) -> Option<bool> {
+        let mut cache = self.server_capabilities.lock().await;
+        if let CapabilityCache::Unknown = &*cache {
+            *cache = match self.server_http_base() {
+                Some(base) => {
+                    let url = format!("{base}/version");
+                    match self.http.get(&url).send().await {
+                        Ok(r) if r.status().is_success() => {
+                            match r.json::<serde_json::Value>().await {
+                                Ok(v) => {
+                                    let caps = v
+                                        .get("capabilities")
+                                        .and_then(|c| c.as_array())
+                                        .map(|a| {
+                                            a.iter()
+                                                .filter_map(|x| x.as_str().map(String::from))
+                                                .collect::<Vec<_>>()
+                                        })
+                                        .unwrap_or_default();
+                                    CapabilityCache::Known(caps)
+                                }
+                                Err(_) => CapabilityCache::Unavailable,
+                            }
+                        }
+                        // No /version endpoint (or unreachable): capability negotiation is
+                        // unavailable on this server.
+                        _ => CapabilityCache::Unavailable,
+                    }
+                }
+                None => CapabilityCache::Unavailable,
+            };
+        }
+        match &*cache {
+            CapabilityCache::Known(caps) => Some(caps.iter().any(|c| c == capability)),
+            _ => None,
+        }
     }
 
     /// Fetch an entity's history from the server (the durable, cross-device change record).
@@ -2874,6 +2931,13 @@ impl DbBackend {
         // A previous request already learned this server has no history endpoint: skip the
         // wasted round-trip and fall back to the local journal (issue #113).
         if self.history_unsupported.load(Ordering::Relaxed) {
+            return None;
+        }
+        // Prefer explicit capability negotiation (keeplin#114): if the server advertises a
+        // `/version` without `history`, skip straight to the local journal. `None` (no
+        // `/version`, an older server) falls through to the request + 404-latch path.
+        if self.server_has_capability("history").await == Some(false) {
+            self.history_unsupported.store(true, Ordering::Relaxed);
             return None;
         }
         let base = self.server_http_base()?;
