@@ -311,6 +311,15 @@ impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
         if self.shared.suppressed(created.id).await {
             return Ok(created);
         }
+        // Mark the body as pending BEFORE the note becomes visible on the
+        // server. The moment the POST below lands, the periodic rediscovery can
+        // see the note and Join it on its own; if that early Join's (empty)
+        // `Welcome` arrived while the note was not yet in `pending_push`, the
+        // Welcome handler would take the "cache" branch and overwrite the fresh
+        // local body with the server's empty snapshot — destroying the note's
+        // content. With the flag set first, any Welcome for this note (whoever
+        // triggered the Join) reconciles the local body into ops instead.
+        self.shared.pending_push.lock().await.insert(created.id);
         // Register the note on the server keeping the local id. A 409 means it
         // already exists there (e.g. created on another device); the body still
         // converges through resolution.
@@ -335,11 +344,12 @@ impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
             Err(e) => tracing::warn!(error = %e, note = %created.id, "collab: POST note failed"),
         }
         self.patch_meta(&created).await;
-        // Mark the body as pending and Join. The body is pushed when the Join's
-        // `Welcome` arrives (reconciled against the snapshot), NOT eagerly:
-        // pushing before the `Welcome` lets a late empty snapshot clobber the
-        // local content. See `handle_server_msg`.
-        self.shared.pending_push.lock().await.insert(created.id);
+        // Join. The body is pushed when the Join's `Welcome` arrives
+        // (reconciled against the snapshot), NOT eagerly: pushing before the
+        // `Welcome` lets a late empty snapshot clobber the local content. See
+        // `handle_server_msg`. (The connection task drops this Join if the
+        // rediscovery already joined the note — a duplicate Join would fetch a
+        // second, possibly stale snapshot.)
         let _ = self.shared.out.send(CollabClientMsg::Join {
             note_id: created.id,
         });
@@ -681,7 +691,14 @@ async fn connect_once(
             queued = out.recv() => {
                 let Some(msg) = queued else { return Ok(()) };
                 if let CollabClientMsg::Join { note_id } = &msg {
-                    joined.insert(*note_id);
+                    // Drop a Join for a note this connection already joined
+                    // (the rediscovery got there first): a duplicate Join
+                    // would fetch a second snapshot that may predate ops we
+                    // just sent, and its Welcome would clobber the mirror
+                    // with that stale state.
+                    if !joined.insert(*note_id) {
+                        continue;
+                    }
                 }
                 ws.send(Message::Text(serde_json::to_string(&msg)?)).await?;
             }
