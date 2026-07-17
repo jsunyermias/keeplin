@@ -33,6 +33,36 @@ field fidelity rather than link re-derivation.
 - Notebook membership migrates as-is; the Inbox/ordering placement rules are exercised in the
   `ordering` unit tests, not through `migrate`.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `seed()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `assert_migrated()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `db()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `fs_to_db_round_trip()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `db_to_fs_round_trip()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `encrypted_fs_to_encrypted_db()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `Seeded` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/migrate.rs` — one-shot state copy between backends (EXTRACTED: calls×3; e.g. `migrate()`)
+- `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: references×2; e.g. `StorageBackend`)
+- `keeplin-core/src/storage/db.rs` — DbBackend (LibSQL + WebSocket storage) (EXTRACTED: references×1; e.g. `DbBackend`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Seeds one of every entity type and asserts a faithful copy in the destination — new entity kinds must be added to the seed when introduced.
+- Covers crossing the encryption boundary in both directions.
+
 ## Related files
 
 - `keeplin-core/src/migrate.rs` — the code under test.

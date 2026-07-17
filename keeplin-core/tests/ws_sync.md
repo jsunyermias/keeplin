@@ -37,6 +37,39 @@ the local database — closing the gap the offline tests leave open.
 | `push(dev)` | Runs one `send_changes` for a device's pending local changes |
 | `sync_until(dev, id, want_body)` | Polls `receive_changes` + `apply_change` until the note reaches the expected state (bounded retries) |
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `device()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `push()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `sync_until()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `failed_send_keeps_watermark_and_changes_are_resent_after_recovery()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `spawn_relay()` — defined here (EXTRACTED; file-local)
+- `spawn_relay_on()` — defined here (EXTRACTED; file-local)
+- `epoch()` — defined here (EXTRACTED; file-local)
+- `note_create_syncs_between_two_devices()` — defined here (EXTRACTED; file-local)
+- `update_propagates_and_converges()` — defined here (EXTRACTED; file-local)
+- `send_without_configured_relay_is_a_noop()` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/storage/db.rs` — DbBackend (LibSQL + WebSocket storage) (EXTRACTED: references×3; e.g. `DbBackend`)
+- `keeplin-core/src/sync/engine.rs` — SyncEngine (EXTRACTED: calls×1; e.g. `run_sync()`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Drives the genuine wire protocol against an in-process relay: auth-first frame, `changes` envelopes, no echo to the sender.
+- Undelivered batches must fail the send (watermark unchanged) and be re-sent after reconnect — offline resilience is the point of the suite.
+- The capability-negotiation tests (`/version` without `history`, 404-latch) must keep asserting the probe happens at most once.
+
 ## Related files
 
 - `keeplin-core/src/storage/db.rs` — the WebSocket protocol (`ensure_ws`, `send_changes`, `receive_changes`) under test

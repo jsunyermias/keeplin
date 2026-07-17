@@ -47,6 +47,38 @@ rejected.
 - Sync methods (`get_changes_since`, `apply_change`, `send_changes`, `receive_changes`)
   are not tested here because `EncryptedBackend` passes them through unchanged.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `enc_backend()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `note_round_trips()` — defined here (EXTRACTED; file-local)
+- `storage_contains_ciphertext_not_plaintext()` — defined here (EXTRACTED; file-local)
+- `wrong_password_fails_to_decrypt()` — defined here (EXTRACTED; file-local)
+- `update_note_encrypts_new_content()` — defined here (EXTRACTED; file-local)
+- `list_notes_decrypts_all()` — defined here (EXTRACTED; file-local)
+- `notebook_round_trips()` — defined here (EXTRACTED; file-local)
+- `tag_round_trips()` — defined here (EXTRACTED; file-local)
+- `note_tag_relation_preserved()` — defined here (EXTRACTED; file-local)
+- `resource_round_trips()` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/encryption.rs` — transparent at-rest encryption (EXTRACTED: references×1; e.g. `EncryptedBackend`)
+- `keeplin-core/src/storage/fs.rs` — FsBackend (filesystem storage) (EXTRACTED: references×1; e.g. `FsBackend`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Plaintext must never be readable in the underlying store; wrong passwords must fail loudly, not return garbage.
+- Round-trips return the original plaintext byte-for-byte.
+
 ## Related files
 
 - `keeplin-core/src/encryption.rs` — the code under test

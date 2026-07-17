@@ -51,6 +51,37 @@ That is what lets the server validate an op's authorship and resolve concurrent 
 - Snapshots carry tombstoned lines (`deleted_at: Some`) so a reconnecting client converges on deletes
   it may not have seen; `state.rs` filters them out when materialising the body.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `CollabClientMsg` — defined here (EXTRACTED; 4 cross-file edge(s))
+- `PresenceInfo` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `LineOp` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `Cursor` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `LineSnapshot` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `NoteLinesSnapshot` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `CollabServerMsg` — defined here (EXTRACTED; 1 cross-file edge(s))
+
+**Direct dependencies** (files this one's symbols reference)
+
+- (none in the graph) (EXTRACTED)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- `keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: references×8; e.g. `Shared`, `.presence()`, `.send_cursor()`)
+- `keeplin-core/src/collab/state.rs` — client line state and body↔lines translation (EXTRACTED: references×4; e.g. `NoteLines`, `.from_snapshot()`, `.apply()`)
+- `keeplin-daemon/src/rest.rs` — REST/JSON API + WebSocket feed (axum) (EXTRACTED: references×1; e.g. `note_presence()`)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Pure serde types, no logic; shapes must stay byte-compatible with keeplin-srv's `src/protocol.rs` (messages tagged `type`, ops tagged `op`, PascalCase variants).
+- Every op carries its own `vv`, `last_writer`, `updated_at` — the server resolves each op independently.
+- A breaking change to these shapes requires bumping `PROTOCOL_VERSION` in `compat.rs` and keeplin-srv together.
+
 ## Related files
 
 - `collab/mod.md` — sends `CollabClientMsg`, handles `CollabServerMsg`.

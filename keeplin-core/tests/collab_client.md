@@ -32,6 +32,40 @@ Two layers of the collaborative client (`src/collab/`):
 | `client(addr, device)` | offline `DbBackend` wrapped in `CollabBackend`, `start`ed with itself as stack top (`start` is `Result` since the `/version` handshake; the mock has no `/version`, which is the warn-and-continue path) |
 | `wait_body` | poll a client's local note body until convergence (~5 s bound) |
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `client()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `wait_body()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `token_for()` — defined here (EXTRACTED; file-local)
+- `token_device_id_decodes()` — defined here (EXTRACTED; file-local)
+- `diff_roundtrip_materializes_new_body()` — defined here (EXTRACTED; file-local)
+- `ops_replay_identically_on_another_mirror()` — defined here (EXTRACTED; file-local)
+- `mock_server()` — defined here (EXTRACTED; file-local)
+- `created_note_body_survives_the_join_welcome()` — defined here (EXTRACTED; file-local)
+- `edits_travel_between_two_daemons()` — defined here (EXTRACTED; file-local)
+- `resource_blob_uploads_out_of_band_and_downloads_on_read()` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: references×2; e.g. `CollabBackend`)
+- `keeplin-core/src/collab/state.rs` — client line state and body↔lines translation (EXTRACTED: imports_from×1; e.g. `NoteLines`)
+- `keeplin-core/src/storage/db.rs` — DbBackend (LibSQL + WebSocket storage) (EXTRACTED: references×2; e.g. `DbBackend`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- The state-machine layer is tested pure (no I/O); the e2e layer runs against an in-process mock keeplin-srv — the production server end is covered in keeplin-srv's own e2e suite.
+- Deterministic replay (same ops → identical bodies on every mirror) is the core assertion and must stay covered.
+- The mock has no `/version` route: `start` exercising the warn-and-continue handshake path is intentional.
+
 ## Related files
 
 - `../src/collab/mod.rs` — the decorator under test (push/apply/suppression logic).

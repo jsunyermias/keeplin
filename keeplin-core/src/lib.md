@@ -52,6 +52,28 @@ lib
 - Adding a new backend requires only implementing `StorageBackend` in a new sub-module;
   no changes are needed here.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- (no symbols extracted for this file — it contributes only its file node) (EXTRACTED)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- (none in the graph) (EXTRACTED)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- `lib.rs` declares modules only — no logic; every concrete type lives in a sub-module.
+- Each public module keeps a companion `.md`; adding a module means adding it to `lib.rs`, its doc, and the module map here.
+
 ## Related files
 
 - `keeplin-core/src/storage/backend.rs` — defines the `StorageBackend` trait that every

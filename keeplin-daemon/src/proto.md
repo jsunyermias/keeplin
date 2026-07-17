@@ -48,6 +48,27 @@ The module is annotated with `#[allow(dead_code, clippy::all)]`:
   generated; they are useful for writing integration tests that call the daemon over
   a real gRPC channel.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- (no symbols extracted for this file — it contributes only its file node) (EXTRACTED)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- (none in the graph) (EXTRACTED)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Generated code inclusion only — never edit by hand; regenerate by changing `proto/keeplin.proto` (new fields get new tags; never reuse or renumber).
+
 ## Related files
 
 - `keeplin-daemon/proto/keeplin.proto` — the source of truth for the API

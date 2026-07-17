@@ -73,6 +73,40 @@ smarter: it keeps that reading when `b` resolves to a note, otherwise falls back
 - Because a bookmark's destination is exactly `###` and a link's is `#a…`, the two never
   collide: a bookmark is never mistaken for a link and vice-versa.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `NoteLink` — defined here (EXTRACTED; 4 cross-file edge(s))
+- `Bookmark` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `LinkSource` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `parse_link_ref()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `Reference` — defined here (EXTRACTED; file-local)
+- `.parse()` — defined here (EXTRACTED; file-local)
+- `BookmarkRef` — defined here (EXTRACTED; file-local)
+- `.parse()` — defined here (EXTRACTED; file-local)
+- `LinkTarget` — defined here (EXTRACTED; file-local)
+- `DerivedBookmark` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- (none in the graph) (EXTRACTED)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- `keeplin-core/src/models.rs` — domain data types (EXTRACTED: references×2; e.g. `Note`)
+- `keeplin-core/src/storage/db.rs` — DbBackend (LibSQL + WebSocket storage) (EXTRACTED: references×4; e.g. `bookmarks_to_json()`, `json_to_bookmarks()`, `json_to_links()`)
+- `keeplin-daemon/src/rest.rs` — REST/JSON API + WebSocket feed (axum) (EXTRACTED: calls×1, references×1; e.g. `list_links()`, `add_link()`)
+- `keeplin-daemon/src/server.rs` — gRPC service implementation (EXTRACTED: references×1; e.g. `link_source_str()`)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Pure, I/O-free grammar — anything needing store access lives in `linking.rs`.
+- The `#…` reference and `[t](###)` bookmark grammar is a compatibility surface: changing it changes how existing note bodies parse.
+
 ## Related files
 
 - `keeplin-core/src/linking.rs` — the decorator + resolution that use this grammar.

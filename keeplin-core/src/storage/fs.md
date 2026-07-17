@@ -217,6 +217,49 @@ vector, so existing stores keep working. `list_resources` skips soft-deleted sid
   same store are prevented by the daemon's per-store OS lock (`keeplin-daemon/src/main.rs`),
   not by `FsBackend` itself.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `FsBackend` — defined here (EXTRACTED; 24 cross-file edge(s))
+- `.append_note_op()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `.note_history()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `.notebook_history()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `.read_or_create_device_id()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.write_sidecar()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.read_sidecar()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.read_resource_meta()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.read_note_logs()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.merge_note()` — defined here (EXTRACTED; 2 cross-file edge(s))
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/error.rs` — error types (EXTRACTED: references×75; e.g. `StorageError`)
+- `keeplin-core/src/models.rs` — domain data types (EXTRACTED: calls×1, references×37; e.g. `new_id()`, `Note`, `Notebook`)
+- `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: implements×6, references×12; e.g. `NoteRepository`, `NotebookSortProfile`, `NotebookRepository`)
+- `keeplin-core/src/storage/note_log.rs` — (no companion doc) (EXTRACTED: references×2; e.g. `NoteLogEntry`, `NoteOp`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- `keeplin-core/src/history.rs` — change history reads + forward-revert (EXTRACTED: imports_from×1, references×1; e.g. `history.rs`, `fs()`)
+- `keeplin-core/src/interop.rs` — vCard & iCalendar format compatibility (EXTRACTED: references×1; e.g. `fs()`)
+- `keeplin-core/src/linking.rs` — `LinkingBackend` decorator + reference resolution (EXTRACTED: imports_from×1, references×1; e.g. `linking.rs`, `backend()`)
+- `keeplin-core/src/ordering.rs` — the Inbox, pinning, manual ordering, and starring (EXTRACTED: imports_from×1, references×3; e.g. `ordering.rs`, `backend()`, `create_placed()`)
+- `keeplin-core/tests/encryption.rs` — EncryptedBackend integration tests (EXTRACTED: references×1; e.g. `enc_backend()`)
+- `keeplin-core/tests/fs_backend.rs` — FsBackend integration tests (EXTRACTED: references×2; e.g. `drain_sync()`, `own_log_stats()`)
+- `keeplin-daemon/src/event_backend.rs` — `EventBackend` change-publishing decorator (EXTRACTED: imports_from×1, references×1; e.g. `backend()`, `event_backend.rs`)
+- `keeplin-daemon/src/metrics.rs` — operational metrics (EXTRACTED: imports_from×1, references×1; e.g. `backend()`, `metrics.rs`)
+- `keeplin-daemon/src/server.rs` — gRPC service implementation (EXTRACTED: imports_from×1, references×1; e.g. `server.rs`, `server()`)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Every log file has a single writer (one device), so file replication (Syncthing) can never produce conflict copies.
+- A note's current state is derived by merging the per-device logs with `note_log`; merging is deterministic on every device.
+- Writes are atomic (write-temp + rename) so a crash never leaves a half-written log entry visible.
+
 ## Related files
 
 - `keeplin-core/src/storage/note_log.rs` — the pure version-vector merge this backend calls.

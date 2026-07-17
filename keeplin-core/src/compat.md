@@ -43,6 +43,38 @@ points use this module: `DbBackend::new` (relay, `storage/db.rs`) and `CollabBac
   keeplin-core, bump the pinned `rev` in keeplin-srv's `Cargo.toml` and run its test suite —
   it exercises this real client against the real server.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `compatible_with()` — defined here (EXTRACTED; file-local)
+- `ServerInfo` — defined here (EXTRACTED; file-local)
+- `Handshake` — defined here (EXTRACTED; file-local)
+- `negotiate()` — defined here (EXTRACTED; file-local)
+- `incompatible_message()` — defined here (EXTRACTED; file-local)
+- `exact_match_is_compatible()` — defined here (EXTRACTED; file-local)
+- `incompatible_message_names_the_side_to_upgrade()` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- (none in the graph) (EXTRACTED)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph — the callers use fully-qualified `crate::compat::…` paths the AST pass does not link) (EXTRACTED)
+- `keeplin-core/src/storage/db.rs` — `DbBackend::new` calls `negotiate`/`incompatible_message` for the relay-side startup handshake (INFERRED)
+- `keeplin-core/src/collab/mod.rs` — `CollabBackend::start` calls the same pair for the collab session handshake (INFERRED)
+- `keeplin-core/tests/version_handshake.rs` — imports `PROTOCOL_VERSION` to drive the three fake-server behaviours (INFERRED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- This module is the ONLY place this repo defines server-protocol compatibility (`PROTOCOL_VERSION`, `compatible_with` = exact match); keeplin-srv mirrors it in `src/http.rs` — bump both together.
+- `negotiate` never errors: anything short of a well-formed reply is `Unavailable` (warn-and-continue), so old servers and bare test relays keep working.
+- Only a well-formed, incompatible `/version` answer may block startup — and then the error must name both versions and which side to upgrade.
+
 ## Related files
 
 - `storage/db.rs` — handshake enforced in `DbBackend::new` (relay connect path).

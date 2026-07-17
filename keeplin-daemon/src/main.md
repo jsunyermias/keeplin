@@ -184,6 +184,41 @@ supported deployment.
 - Shutdown uses `tokio::signal::ctrl_c()` which resolves on SIGINT (`Ctrl-C`). Tonic's
   `serve_with_shutdown` drains existing connections gracefully after the signal arrives.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `build_storage()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `collab_config()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `run_server_with()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `load_config()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `serve()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `resolve_key_salt()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `key_salt_path()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `collab_starter()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `run_server()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `cfg_at()` — defined here (EXTRACTED; 1 cross-file edge(s))
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: imports_from×1, references×3; e.g. `CollabConfig`, `CollabHandle`, `CollabBackend`)
+- `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: references×1; e.g. `StorageBackend`)
+- `keeplin-daemon/src/config.rs` — daemon configuration (EXTRACTED: references×9; e.g. `Config`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Decorator order is fixed: `EventBackend(LinkingBackend([EncryptedBackend](Fs|Db)))` (+`MetricsBackend` outermost) — linking needs plaintext, eventing needs final metadata.
+- One daemon per store: the exclusive `daemon.lock` is taken before any I/O; a second daemon must fail fast.
+- Startup must fail loudly on an incompatible sync server (the `DbBackend::new` handshake) and on insecure config without the explicit override.
+- The encryption salt resolution order (config `key_salt` > persisted `.keeplin/key_salt` > derived-from-device-id, then persisted) must not change — it is a data-recovery contract.
+
 ## Related files
 
 - `keeplin-daemon/src/config.rs` — `Config` and `Mode` types (incl. `http_addr`)

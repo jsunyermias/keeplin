@@ -66,6 +66,32 @@ Per-entity counts of what was copied (`Debug`, `Default`, `Copy`, `Eq`).
 The daemon exposes it as `keeplin-daemon migrate --from <a.toml> --to <b.toml>`, building each
 side from its own config (see `keeplin-daemon/src/main.md`).
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `migrate()` — defined here (EXTRACTED; 5 cross-file edge(s))
+- `collect()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `MigrationReport` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/error.rs` — error types (EXTRACTED: references×2; e.g. `StorageError`)
+- `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: references×2; e.g. `StorageBackend`, `T`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- `keeplin-core/tests/migrate.rs` — cross-backend migration tests (EXTRACTED: calls×3; e.g. `db_to_fs_round_trip()`, `encrypted_fs_to_encrypted_db()`, `fs_to_db_round_trip()`)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- One-shot copy of complete current state, in either direction — not live sync; after it runs each backend keeps using its own native representation.
+- Must work across an encryption boundary (plain→encrypted and back) without leaking plaintext to the destination's inner store.
+- Tombstones/soft-deleted entities are not resurrected by a migration.
+
 ## Related files
 
 - `keeplin-core/src/storage/backend.rs` — the `create_*` / `list_*` / `read_resource` methods used.

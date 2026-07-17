@@ -25,6 +25,34 @@ missing → warn and continue (backward compatible with pre-`/version` servers).
 | `fake_token()` | JWT-shaped token with a `device_id` claim (`CollabBackend::new` parses it unverified; only the server verifies signatures) |
 | `db_path()` | fresh LibSQL path in a leaked tempdir |
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `spawn_version_server()` — defined here (EXTRACTED; file-local)
+- `fake_token()` — defined here (EXTRACTED; file-local)
+- `db_path()` — defined here (EXTRACTED; file-local)
+- `compatible_version_connects_and_primes_capabilities()` — defined here (EXTRACTED; file-local)
+- `incompatible_version_fails_construction_loudly()` — defined here (EXTRACTED; file-local)
+- `missing_version_warns_and_continues()` — defined here (EXTRACTED; file-local)
+- `collab_start_applies_the_same_rule()` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- (none in the graph) (EXTRACTED)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Pins the three-way handshake contract (compatible / incompatible / missing) for BOTH connect points; these behaviours are cross-repo API and must not regress.
+- The compatible case must fetch `/version` exactly once (startup priming; no refetch on capability checks).
+
 ## Related files
 
 - `../src/compat.rs` — `PROTOCOL_VERSION`, `compatible_with`, `negotiate`, `incompatible_message`.

@@ -122,6 +122,54 @@ association methods:
   rows/sidecars, `merge` for FS per-device note logs) — re-applying a change the store already
   dominates is a no-op — plus `INSERT OR IGNORE/REPLACE` for the underlying writes.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `StorageBackend` — defined here (EXTRACTED; 56 cross-file edge(s))
+- `EntityVersion` — defined here (EXTRACTED; 21 cross-file edge(s))
+- `T` — defined here (EXTRACTED; 20 cross-file edge(s))
+- `NotebookSortProfile` — defined here (EXTRACTED; 8 cross-file edge(s))
+- `NoteRepository` — defined here (EXTRACTED; 7 cross-file edge(s))
+- `NotebookRepository` — defined here (EXTRACTED; 7 cross-file edge(s))
+- `TagRepository` — defined here (EXTRACTED; 7 cross-file edge(s))
+- `ResourceRepository` — defined here (EXTRACTED; 7 cross-file edge(s))
+- `SyncBackend` — defined here (EXTRACTED; 7 cross-file edge(s))
+- `HistoryRepository` — defined here (EXTRACTED; 7 cross-file edge(s))
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/models.rs` — domain data types (EXTRACTED: references×1; e.g. `Note`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- `keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: implements×6, references×5; e.g. `Shared`, `CollabBackend<B>`, `.start()`)
+- `keeplin-core/src/encryption.rs` — transparent at-rest encryption (EXTRACTED: implements×6, references×3; e.g. `EncryptedBackend<B>`, `.notebook_sort_profile()`, `.note_history()`)
+- `keeplin-core/src/history.rs` — change history reads + forward-revert (EXTRACTED: references×7; e.g. `state_at()`, `revert_note()`, `revert_notebook()`)
+- `keeplin-core/src/interop.rs` — vCard & iCalendar format compatibility (EXTRACTED: imports_from×1, references×15; e.g. `interop.rs`, `resources_with_mime()`, `resource_metas_with_mime()`)
+- `keeplin-core/src/linking.rs` — `LinkingBackend` decorator + reference resolution (EXTRACTED: implements×6, references×16; e.g. `AliasConflict`, `LinkingBackend<B>`, `collect_notes()`)
+- `keeplin-core/src/migrate.rs` — one-shot state copy between backends (EXTRACTED: references×2; e.g. `migrate()`, `collect()`)
+- `keeplin-core/src/ordering.rs` — the Inbox, pinning, manual ordering, and starring (EXTRACTED: references×12; e.g. `ensure_inbox()`, `place_new_note()`, `pin_note()`)
+- `keeplin-core/src/storage/db.rs` — DbBackend (LibSQL + WebSocket storage) (EXTRACTED: implements×6, references×8; e.g. `DbBackend`, `.notebook_sort_profile()`, `.entity_history()`)
+- `keeplin-core/src/storage/fs.rs` — FsBackend (filesystem storage) (EXTRACTED: implements×6, references×12; e.g. `FsBackend`, `.notebook_sort_profile()`, `.note_history()`)
+- `keeplin-core/src/sync/engine.rs` — SyncEngine (EXTRACTED: references×2; e.g. `SyncEngine`, `.new()`)
+- `keeplin-core/tests/migrate.rs` — cross-backend migration tests (EXTRACTED: references×2; e.g. `assert_migrated()`, `seed()`)
+- `keeplin-daemon/src/event_backend.rs` — `EventBackend` change-publishing decorator (EXTRACTED: implements×6, references×3; e.g. `EventBackend<B>`, `.notebook_sort_profile()`, `.note_history()`)
+- `keeplin-daemon/src/main.rs` — daemon entry point (EXTRACTED: references×1; e.g. `build_storage()`)
+- `keeplin-daemon/src/metrics.rs` — operational metrics (EXTRACTED: implements×6, references×4; e.g. `MetricsBackend<B>`, `.notebook_sort_profile()`, `.note_history()`)
+- `keeplin-daemon/src/rest.rs` — REST/JSON API + WebSocket feed (axum) (EXTRACTED: references×4; e.g. `note_version_dto()`, `notebook_version_dto()`, `AppState`)
+- `keeplin-daemon/src/search.rs` — daemon full-text search (EXTRACTED: imports_from×1, references×6; e.g. `apply_change()`, `denormalize()`, `index_note()`)
+- `keeplin-daemon/src/server.rs` — gRPC service implementation (EXTRACTED: references×1; e.g. `ensure_not_deleted()`)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- The rest of the codebase is written against `Arc<dyn StorageBackend>` and never names a concrete backend — backends and decorators must stay freely interchangeable.
+- Trait changes ripple through every backend AND every decorator; default methods are preferred for additive evolution.
+- Repository sub-traits (notes, notebooks, tags, resources, sync, history) compose into the supertrait; implementors must implement all.
+
 ## Related files
 
 - `keeplin-core/src/storage/fs.rs` — filesystem implementation (inherits the default backlinks scan).

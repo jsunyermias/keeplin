@@ -120,6 +120,42 @@ deterministically to the smallest uuid, with a warning — surfaced for cleanup 
   above the encryption boundary, and under encryption the stored alias is per-write ciphertext,
   so a database index could not answer an alias lookup.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `LinkingBackend<B>` — defined here (EXTRACTED; 6 cross-file edge(s))
+- `set_note_alias()` — defined here (EXTRACTED; 4 cross-file edge(s))
+- `AliasConflicts` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `.prepare()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `collect_notes()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `collect_notebooks()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `resolve_ref()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `backlinks()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `read_live_note()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `read_live_notebook()` — defined here (EXTRACTED; 3 cross-file edge(s))
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/error.rs` — error types (EXTRACTED: references×51; e.g. `StorageError`)
+- `keeplin-core/src/models.rs` — domain data types (EXTRACTED: references×52; e.g. `Note`, `Notebook`, `Change`)
+- `keeplin-core/src/ordering.rs` — the Inbox, pinning, manual ordering, and starring (EXTRACTED: calls×7; e.g. `is_inbox()`)
+- `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: implements×6, references×16; e.g. `T`, `NotebookRepository`, `NoteRepository`)
+- `keeplin-core/src/storage/fs.rs` — FsBackend (filesystem storage) (EXTRACTED: imports_from×1, references×1; e.g. `FsBackend`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- `keeplin-daemon/src/rest.rs` — REST/JSON API + WebSocket feed (axum) (EXTRACTED: references×1; e.g. `list_alias_conflicts()`)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- `LinkingBackend` sits OUTSIDE encryption in the stack — it must read plaintext bodies to derive bookmarks/links.
+- Alias uniqueness is enforced here (against decrypted values), not by a DB constraint — a duplicate arriving through sync must not break the sync cycle.
+- Derived links/bookmarks are a projection of the body: rewriting the body re-derives them; they are never edited independently.
+
 ## Related files
 
 - `keeplin-core/src/links.rs` — the pure types/grammar this builds on.

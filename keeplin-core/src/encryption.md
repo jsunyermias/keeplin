@@ -110,6 +110,40 @@ The same round-trip applies to all create/read/update/list methods.
   `decrypt_*` calls will fail with `AES-GCM` authentication errors, surfaced as
   `StorageError::InvalidState`. No silent data corruption occurs.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `EncryptedBackend<B>` — defined here (EXTRACTED; 6 cross-file edge(s))
+- `.note_history()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `.notebook_history()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `.enc_note()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.dec_note()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.enc_notebook()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.dec_notebook()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.enc_tag()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.dec_tag()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.enc_resource()` — defined here (EXTRACTED; 2 cross-file edge(s))
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/error.rs` — error types (EXTRACTED: references×51; e.g. `StorageError`)
+- `keeplin-core/src/models.rs` — domain data types (EXTRACTED: references×34; e.g. `Note`, `Notebook`, `Tag`)
+- `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: implements×6, references×3; e.g. `NotebookRepository`, `NoteRepository`, `ResourceRepository`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- `keeplin-core/tests/encryption.rs` — EncryptedBackend integration tests (EXTRACTED: references×1; e.g. `enc_backend()`)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Encryption is transparent behind the `StorageBackend` trait: callers must never see ciphertext, and the inner backend must never see plaintext for the protected fields.
+- Key derivation is Argon2id from password + salt; the salt must be stable across devices for portable encryption.
+- Encrypted fields produce different ciphertext per write (fresh nonce); equality of stored values must never leak equality of plaintext.
+
 ## Related files
 
 - `keeplin-core/src/storage/backend.rs` — the `StorageBackend` trait this type implements

@@ -41,6 +41,28 @@ tonic_build::configure()
 - Changes to `keeplin.proto` trigger a rebuild of `keeplin-daemon` but not of
   `keeplin-core` (which has no build script and no proto dependency).
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `main()` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- (none in the graph) (EXTRACTED)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Compiles `proto/keeplin.proto` with `tonic-build` at build time; requires `protoc` on PATH.
+- Proto evolution is additive-only: new fields with new tags, never reuse/renumber (old peers ignore unknown fields).
+
 ## Related files
 
 - `keeplin-daemon/proto/keeplin.proto` — the Protocol Buffers service definition that

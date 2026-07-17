@@ -122,6 +122,37 @@ exposed to a network, TLS should always be enabled.
   (`collab/mod.md`) while the rest of the model keeps syncing over `server_url`. Leaving it unset
   falls back to relaying note changes like any other entity.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `Config` — defined here (EXTRACTED; 9 cross-file edge(s))
+- `Mode` — defined here (EXTRACTED; file-local)
+- `default_grpc_addr()` — defined here (EXTRACTED; file-local)
+- `default_max_message_size()` — defined here (EXTRACTED; file-local)
+- `default_max_upload_bytes()` — defined here (EXTRACTED; file-local)
+- `default_journal_retention_days()` — defined here (EXTRACTED; file-local)
+- `.from_file()` — defined here (EXTRACTED; file-local)
+- `.default()` — defined here (EXTRACTED; file-local)
+- `.security_issues()` — defined here (EXTRACTED; file-local)
+- `.auth_enabled()` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- (none in the graph) (EXTRACTED)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- `keeplin-daemon/src/main.rs` — daemon entry point (EXTRACTED: references×9; e.g. `build_storage()`, `cfg_at()`, `collab_config()`)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Config comes from `keeplin.toml` with env-var overrides for the secrets; defaults must keep a bare `keeplin-daemon` runnable offline.
+- Security checks (`security_issues`) refuse insecure combinations at startup unless `insecure = true` explicitly opts in (e.g. non-loopback `ws://`).
+
 ## Related files
 
 - `keeplin-daemon/src/main.rs` — reads `Config`, applies env var overrides, and uses it

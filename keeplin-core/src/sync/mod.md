@@ -26,6 +26,27 @@ pub use engine::SyncEngine;
 - `engine` is declared as a private module (`mod engine`) because its only public surface
   is `SyncEngine`. Private helpers inside `engine.rs` are not accessible to external code.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- (no symbols extracted for this file — it contributes only its file node) (EXTRACTED)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- (none in the graph) (EXTRACTED)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Module root: declares `engine` and re-exports `SyncEngine`; no logic.
+
 ## Related files
 
 - `keeplin-core/src/sync/engine.rs` — full implementation of the sync cycle

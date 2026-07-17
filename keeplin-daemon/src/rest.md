@@ -138,6 +138,48 @@ Because the daemon is a binary crate, integration tests can't reach these intern
 live **inline** (`#[cfg(test)] mod tests`) and drive the router in-process with
 `tower::ServiceExt::oneshot`; the WebSocket test opens a real socket.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `AppState` — defined here (EXTRACTED; 5 cross-file edge(s))
+- `add_link()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `ApiError` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.from()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `list_notes()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `create_note()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `get_note()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `update_note()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `list_note_tags()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `read_live_note()` — defined here (EXTRACTED; 2 cross-file edge(s))
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: references×82; e.g. `Shared`, `CollabHandle`)
+- `keeplin-core/src/collab/protocol.rs` — collaborative channel wire types (EXTRACTED: references×1; e.g. `PresenceInfo`)
+- `keeplin-core/src/error.rs` — error types (EXTRACTED: references×4; e.g. `StorageError`, `SyncError`)
+- `keeplin-core/src/interop.rs` — vCard & iCalendar format compatibility (EXTRACTED: references×4; e.g. `Contact`, `CalendarEvent`)
+- `keeplin-core/src/linking.rs` — `LinkingBackend` decorator + reference resolution (EXTRACTED: references×1; e.g. `AliasConflicts`)
+- `keeplin-core/src/links.rs` — bookmark & link types and pure parsing (EXTRACTED: calls×1, references×1; e.g. `NoteLink`, `parse_link_ref()`)
+- `keeplin-core/src/models.rs` — domain data types (EXTRACTED: references×42; e.g. `Note`, `Notebook`, `Tag`)
+- `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: references×4; e.g. `EntityVersion`, `StorageBackend`, `T`)
+- `keeplin-core/src/sync/engine.rs` — SyncEngine (EXTRACTED: calls×1; e.g. `run_sync()`)
+- `keeplin-daemon/src/metrics.rs` — operational metrics (EXTRACTED: references×1; e.g. `Metrics`)
+- `keeplin-daemon/src/search.rs` — daemon full-text search (EXTRACTED: references×1; e.g. `SearchHandle`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- REST serves the same operations as gRPC over the same shared backend `Arc` and the same auth model — the two surfaces must not diverge in behaviour.
+- The WebSocket live feed streams `EventBackend`'s broadcast; it is notification, not a sync protocol.
+- JSON bodies are the keeplin-core domain models directly (no protobuf translation layer).
+
 ## Related files
 
 - `keeplin-daemon/src/main.rs` — builds `AppState` and serves this router next to gRPC.

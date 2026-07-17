@@ -141,6 +141,53 @@ engine when recording a sync timestamp.
 - `Uuid::new_v4()` produces a random UUID that is globally unique with overwhelming
   probability, so IDs generated on different offline devices will never collide.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `Note` — defined here (EXTRACTED; 140 cross-file edge(s))
+- `Notebook` — defined here (EXTRACTED; 58 cross-file edge(s))
+- `Tag` — defined here (EXTRACTED; 45 cross-file edge(s))
+- `Change` — defined here (EXTRACTED; 44 cross-file edge(s))
+- `Resource` — defined here (EXTRACTED; 34 cross-file edge(s))
+- `NoteTag` — defined here (EXTRACTED; 7 cross-file edge(s))
+- `new_id()` — defined here (EXTRACTED; 5 cross-file edge(s))
+- `now()` — defined here (EXTRACTED; file-local)
+- `de_notebook_id()` — defined here (EXTRACTED; file-local)
+- `.new()` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/links.rs` — bookmark & link types and pure parsing (EXTRACTED: references×2; e.g. `Bookmark`, `NoteLink`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- `keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: references×31; e.g. `.apply_from_server()`, `.push_local_edit()`, `.patch_meta()`)
+- `keeplin-core/src/encryption.rs` — transparent at-rest encryption (EXTRACTED: references×34; e.g. `.enc_note()`, `.dec_note()`, `.enc_notebook()`)
+- `keeplin-core/src/history.rs` — change history reads + forward-revert (EXTRACTED: references×4; e.g. `revert_note()`, `revert_notebook()`, `revert_notes_to()`)
+- `keeplin-core/src/interop.rs` — vCard & iCalendar format compatibility (EXTRACTED: calls×2, imports_from×1, references×9; e.g. `interop.rs`, `.from_note()`, `.apply_to_note()`)
+- `keeplin-core/src/linking.rs` — `LinkingBackend` decorator + reference resolution (EXTRACTED: references×52; e.g. `AliasConflicts`, `.from_snapshots()`, `.upsert_note()`)
+- `keeplin-core/src/ordering.rs` — the Inbox, pinning, manual ordering, and starring (EXTRACTED: references×12; e.g. `create_placed()`, `move_note()`, `pin_note()`)
+- `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: references×1; e.g. `paginate_notes()`)
+- `keeplin-core/src/storage/db.rs` — DbBackend (LibSQL + WebSocket storage) (EXTRACTED: calls×2, references×32; e.g. `.get_or_create_device_id()`, `.send_changes()`, `.create_note()`)
+- `keeplin-core/src/storage/fs.rs` — FsBackend (filesystem storage) (EXTRACTED: calls×1, references×37; e.g. `.read_or_create_device_id()`, `.append_note_op()`, `.create_note()`)
+- `keeplin-core/src/storage/note_log.rs` — (no companion doc) (EXTRACTED: imports_from×1, references×2; e.g. `Merged`, `NoteOp`, `note_log.rs`)
+- `keeplin-core/src/sync/engine.rs` — SyncEngine (EXTRACTED: references×2; e.g. `run_sync()`, `.sync()`)
+- `keeplin-daemon/src/event_backend.rs` — `EventBackend` change-publishing decorator (EXTRACTED: references×30; e.g. `.create_note()`, `.list_notes()`, `.list_notes_in_notebook()`)
+- `keeplin-daemon/src/metrics.rs` — operational metrics (EXTRACTED: references×26; e.g. `.create_note()`, `.list_notes()`, `.list_notes_in_notebook()`)
+- `keeplin-daemon/src/rest.rs` — REST/JSON API + WebSocket feed (axum) (EXTRACTED: references×42; e.g. `add_link()`, `batch_revert_notes_ep()`, `create_note()`)
+- `keeplin-daemon/src/search.rs` — daemon full-text search (EXTRACTED: references×5; e.g. `denormalize()`, `index_note()`, `.upsert()`)
+- `keeplin-daemon/src/server.rs` — gRPC service implementation (EXTRACTED: references×5; e.g. `note_to_proto()`, `proto_to_note()`, `notebook_to_proto()`)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Every entity carries `vv`, `last_writer`, `updated_at`, and soft-delete via `deleted_at` — the conflict-resolution contract every backend relies on.
+- `Change` is serialised with tag `op` in snake_case (v1 aliases kept for old logs); renaming variants or fields breaks stored journals and the server relay — additive evolution only.
+- `Change::ResourceCreate.data` is optional and skipped when `None` (blob-stripped relay form).
+
 ## Related files
 
 - `keeplin-core/src/links.rs` — defines `Bookmark` and `NoteLink` (embedded in `Note`) plus

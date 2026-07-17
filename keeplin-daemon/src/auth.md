@@ -49,6 +49,34 @@ entirely (a no-op), so auth is opt-in but uniform once enabled.
 - **Plain HTTP/gRPC leaks credentials on the wire.** Enable TLS (gRPC) or front the REST/WS
   listener with a TLS proxy in production (see `SECURITY.md`).
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `verify_basic()` — defined here (EXTRACTED; file-local)
+- `basic()` — defined here (EXTRACTED; file-local)
+- `accepts_valid_credentials()` — defined here (EXTRACTED; file-local)
+- `rejects_wrong_password_user_and_missing_header()` — defined here (EXTRACTED; file-local)
+- `password_with_colons_works()` — defined here (EXTRACTED; file-local)
+- `rejects_empty_expected_credentials()` — defined here (EXTRACTED; file-local)
+- `scheme_is_case_and_whitespace_tolerant()` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- (none in the graph) (EXTRACTED)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- gRPC and REST/WebSocket must authenticate IDENTICALLY — both call this one Basic-auth check.
+- When no credentials are configured the check is a no-op (open local daemon); when configured, every request is checked.
+
 ## Related files
 
 - `keeplin-daemon/src/main.rs` — the gRPC interceptor that calls this.

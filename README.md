@@ -487,7 +487,30 @@ cargo fmt --all --check
 The suite includes unit tests for the version‑vector merge, integration tests for both
 backends and the encryption layer, two‑device convergence tests, and an **end‑to‑end
 WebSocket sync test** (`keeplin-core/tests/ws_sync.rs`) that stands up an in‑process relay.
-CI (`.github/workflows/ci.yml`) runs fmt, test, clippy (`--all-targets`), and `cargo audit`.
+CI (`.github/workflows/ci.yml`) runs the companion-docs check, fmt, test, clippy
+(`--all-targets`), and `cargo audit`.
+
+### Navigating this repo (for humans and AI agents)
+
+Two navigation layers, checked in:
+
+1. **LAYER 1 — discovery: the Graphify knowledge graph.** `graphify-out/graph.json` (and the
+   readable `graphify-out/GRAPH_REPORT.md`) is a queryable graph of every symbol, file and
+   relationship. Ask it before reading code: `graphify query "which files depend on
+   storage/note_log.rs?"`, `graphify path "DbBackend" "resolve"`, `graphify explain
+   "CollabBackend"`. After large refactors, refresh it with `graphify update .` (AST-only,
+   no API key needed).
+2. **LAYER 2 — work: the companion `.md` files.** Every `foo.rs` has a contractual `foo.md`
+   next to it, written to be **hyper self-contained**: purpose, API, invariants, and a
+   `## Graph context` section (dependencies/dependents with one-line inline summaries,
+   sourced from the graph; redundancy across companions is intentional). Agents should query
+   the graph first, then read the companion `.md` — not the raw `.rs` — whenever possible.
+
+CI enforces the contract (`scripts/check-docs.sh`): every `.rs` has a companion `.md` and
+every companion carries `## Graph context`. The templates live in `docs/templates/`. To
+enable the optional Graphify Claude Code hooks locally, copy
+`.claude/settings.example.json` to `.claude/settings.local.json` — the example is guarded so
+it no-ops for contributors without Graphify installed (`pip install graphifyy`).
 
 ---
 

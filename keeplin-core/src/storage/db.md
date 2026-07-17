@@ -292,6 +292,48 @@ device still sees the full cross-device history; snapshots come back exactly as 
 local journal). Any fetch failure falls back to the local `entity_changes` journal, which holds
 only changes that originated on this device, so history keeps working offline.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `DbBackend` — defined here (EXTRACTED; 14 cross-file edge(s))
+- `.send_changes()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `.entity_history()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `.note_history()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `.notebook_history()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `.get_or_create_device_id()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.refresh_note_links()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.row_to_note()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.row_to_notebook()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.row_to_tag()` — defined here (EXTRACTED; 2 cross-file edge(s))
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/error.rs` — error types (EXTRACTED: references×69; e.g. `StorageError`)
+- `keeplin-core/src/links.rs` — bookmark & link types and pure parsing (EXTRACTED: references×4; e.g. `Bookmark`, `NoteLink`)
+- `keeplin-core/src/models.rs` — domain data types (EXTRACTED: calls×2, references×32; e.g. `new_id()`, `Note`, `Notebook`)
+- `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: implements×6, references×8; e.g. `NoteRepository`, `NotebookSortProfile`, `NotebookRepository`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- `keeplin-core/tests/collab_client.rs` — collaborative client tests (state machine + mock server e2e) (EXTRACTED: references×2; e.g. `client()`, `wait_body()`)
+- `keeplin-core/tests/db_backend.rs` — DbBackend integration tests (EXTRACTED: references×1; e.g. `in_memory_backend()`)
+- `keeplin-core/tests/migrate.rs` — cross-backend migration tests (EXTRACTED: references×1; e.g. `db()`)
+- `keeplin-core/tests/sync.rs` — cross-device change-propagation tests (EXTRACTED: references×1; e.g. `device()`)
+- `keeplin-core/tests/ws_sync.rs` — end-to-end WebSocket sync test (EXTRACTED: references×3; e.g. `device()`, `push()`, `sync_until()`)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Local writes commit locally first and are journalled in `entity_changes`; the WebSocket is delivery, never the source of truth for local state.
+- A failed `send_changes` must return an error so the sync watermark does not advance (changes are re-collected next cycle, never silently dropped).
+- Conflict resolution is `note_log::resolve` over `(vv, updated_at, last_writer)` — identical decision procedure to `FsBackend`.
+- Schema migrations are versioned via `PRAGMA user_version`, each step atomic with its stamp; a NEWER database version than the build supports is refused.
+- The `/version` handshake in `new` fails construction on an incompatible server (no sync attempted); a missing `/version` warns and continues.
+- All access to the single shared connection goes through the RwLock discipline (writers exclusive for whole transactions; readers shared).
+
 ## Related files
 
 - `keeplin-core/src/storage/backend.rs` — trait that `DbBackend` implements

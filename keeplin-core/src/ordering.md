@@ -123,6 +123,41 @@ their writes keep `sort_key = 0`.
   to reason about (and to store/query/index) than fractional ranks, at the cost of an
   occasional Inbox renumber — which is bounded and rare thanks to the `1000` spacing.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `is_inbox()` — defined here (EXTRACTED; 7 cross-file edge(s))
+- `place_new_note()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `pin_note()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `unpin_note()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `reconcile_notebook_move()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `star_note()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `unstar_note()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `set_starred()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `reorder_note()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `read_live_note()` — defined here (EXTRACTED; 3 cross-file edge(s))
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/error.rs` — error types (EXTRACTED: references×11; e.g. `StorageError`)
+- `keeplin-core/src/models.rs` — domain data types (EXTRACTED: references×12; e.g. `Note`)
+- `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: references×12; e.g. `StorageBackend`, `NotebookSortProfile`)
+- `keeplin-core/src/storage/fs.rs` — FsBackend (filesystem storage) (EXTRACTED: imports_from×1, references×3; e.g. `FsBackend`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- `keeplin-core/src/linking.rs` — `LinkingBackend` decorator + reference resolution (EXTRACTED: calls×7; e.g. `.upsert_note()`, `.resolve_note_seg()`, `.prepare()`)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Free functions over `&dyn StorageBackend` — not a backend or decorator; gRPC and REST must call the same functions for identical behaviour.
+- The Inbox is the system notebook with the nil UUID; every note lives in exactly one notebook, defaulting to the Inbox.
+- Pinned band is `sort_key` 1–999 (max 999 pinned); manual ordering is by numeric `sort_key` within a notebook.
+
 ## Related files
 
 - `keeplin-core/src/models.rs` — the `Note` fields (`is_pinned`, `is_starred`, `sort_key`,
