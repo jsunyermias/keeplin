@@ -114,13 +114,43 @@ impl Shared {
 
     /// Upload a resource's binary payload to keeplin-srv out-of-band, so the
     /// bytes never ride the relay journal (they are stripped from the relayed
-    /// `ResourceCreate`). Best effort: a failure is logged and the metadata
-    /// still syncs; the blob can be re-uploaded by a later read/retry.
+    /// `ResourceCreate`). The server accepts a blob only once the resource's
+    /// metadata has been **materialised** from the relay journal — which
+    /// happens asynchronously after the eager push in `create_resource` — so
+    /// a non-success answer (a `404` while the metadata is still in flight)
+    /// is retried briefly with backoff. Best effort beyond that: a persistent
+    /// failure is logged and the metadata still syncs; the blob can be
+    /// re-uploaded by a later create/replace.
     async fn upload_blob(&self, id: Uuid, data: Vec<u8>) {
         let url = format!("{}/api/resources/{}/data", self.cfg.api_url, id);
-        if let Err(e) = self.auth(self.http.put(url)).body(data).send().await {
-            tracing::warn!(error = %e, resource = %id, "collab: resource blob upload failed");
+        for attempt in 0..5u32 {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(200 * u64::from(attempt))).await;
+            }
+            match self
+                .auth(self.http.put(&url))
+                .body(data.clone())
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => return,
+                Ok(resp) => {
+                    tracing::debug!(
+                        resource = %id,
+                        status = %resp.status(),
+                        attempt,
+                        "collab: blob upload not accepted yet"
+                    );
+                }
+                Err(e) => {
+                    // Transport failure — the server is unreachable; an
+                    // immediate retry cannot help.
+                    tracing::warn!(error = %e, resource = %id, "collab: resource blob upload failed");
+                    return;
+                }
+            }
         }
+        tracing::warn!(resource = %id, "collab: resource blob upload not accepted after retries");
     }
 
     /// Fetch a resource's binary payload from keeplin-srv (the source of truth
@@ -543,8 +573,19 @@ impl<B: StorageBackend> ResourceRepository for CollabBackend<B> {
         data: Vec<u8>,
     ) -> Result<Resource, StorageError> {
         let created = self.inner.create_resource(resource, data.clone()).await?;
-        // Upload the binary to keeplin-srv out-of-band; the metadata syncs over
-        // the relay (with the blob stripped, see `get_changes_since`).
+        // The server accepts a blob only for already-materialised resource
+        // metadata, and the *periodic* relay cycle always loses that race for
+        // a brand-new resource. Eagerly push the (blob-stripped) create over
+        // the relay first, then upload the binary out-of-band. The periodic
+        // cycle may re-send the same change later; server materialisation is
+        // version-vector-idempotent, so the duplicate is harmless.
+        let meta = Change::ResourceCreate {
+            resource: created.clone(),
+            data: None,
+        };
+        if let Err(e) = self.inner.send_changes(vec![meta]).await {
+            tracing::warn!(error = %e, resource = %created.id, "collab: eager resource metadata push failed");
+        }
         self.shared.upload_blob(created.id, data).await;
         Ok(created)
     }

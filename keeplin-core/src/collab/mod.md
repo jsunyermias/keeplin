@@ -65,6 +65,24 @@ drops them and `apply_change` ignores them. The collab channel owns notes; the d
 (`/api/sync`) keeps carrying notebooks, tags and resources. This is the split that keeps a note from
 travelling both paths and double-applying.
 
+### Resource binaries: out-of-band, never in the journal
+
+`get_changes_since` also **strips the binary** from every relayed `ResourceCreate`
+(`strip_resource_blob` → `data: None`): keeplin-srv holds resource blobs, so they must not
+bloat the relay journal. The bytes travel `PUT /api/resources/:id/data` instead:
+
+- `create_resource` first **eagerly pushes the blob-stripped `ResourceCreate` over the relay**
+  (`inner.send_changes`), because the server rejects a blob upload (`404`) until the resource's
+  metadata has been materialised from the journal — the periodic sync cycle would always lose
+  that race for a brand-new resource. The periodic cycle may re-send the same change later;
+  server materialisation is version-vector-idempotent, so the duplicate row is harmless.
+- `upload_blob` then `PUT`s the bytes, retrying briefly with backoff on a non-success status
+  (materialisation is asynchronous after the push). A transport failure or exhausted retries is
+  logged and the metadata still syncs — best effort; the blob can be re-uploaded by a later
+  create/replace.
+- `read_resource` falls back to `GET /api/resources/:id/data` when the local cache has no bytes
+  but the metadata says `size > 0` (blob authored on another device).
+
 ## Echo suppression
 
 Remote state is written through `top` (the full stack) so links re-derive and the live feed fires.
