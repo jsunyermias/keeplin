@@ -249,7 +249,35 @@ impl<B: StorageBackend> CollabBackend<B> {
     /// Start the connection task. `top` must be the outermost backend of the
     /// daemon's stack (this backend wrapped by linking/eventing) so remote
     /// writes flow through every decorator exactly once.
-    pub async fn start(&self, top: Arc<dyn StorageBackend>) {
+    ///
+    /// Performs the `GET /version` protocol handshake first (see
+    /// [`crate::compat`]): an **incompatible** server is a loud error and the
+    /// connection task is never spawned (no sync is attempted); a server
+    /// without a usable `/version` warns and proceeds (backward compatible).
+    pub async fn start(&self, top: Arc<dyn StorageBackend>) -> Result<(), StorageError> {
+        match crate::compat::negotiate(&self.shared.http, &self.shared.cfg.api_url).await {
+            crate::compat::Handshake::Compatible(info) => {
+                tracing::info!(
+                    server = %info.name,
+                    server_version = %info.version,
+                    protocol = info.protocol_version,
+                    capabilities = ?info.capabilities,
+                    "collab: server protocol negotiated"
+                );
+            }
+            crate::compat::Handshake::Incompatible(info) => {
+                return Err(StorageError::InvalidState(
+                    crate::compat::incompatible_message(&info),
+                ));
+            }
+            crate::compat::Handshake::Unavailable => {
+                tracing::warn!(
+                    api_url = %self.shared.cfg.api_url,
+                    "collab: server has no usable GET /version (older keeplin-srv?); \
+                     continuing without protocol negotiation"
+                );
+            }
+        }
         let _ = self.shared.top.set(top);
         let rx = self
             .out_rx
@@ -258,6 +286,7 @@ impl<B: StorageBackend> CollabBackend<B> {
             .take()
             .expect("collab task started twice");
         tokio::spawn(run_connection(self.shared.clone(), rx));
+        Ok(())
     }
 
     /// Diff `note.body` against the mirror and queue the resulting ops.

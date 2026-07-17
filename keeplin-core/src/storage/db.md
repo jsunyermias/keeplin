@@ -108,9 +108,9 @@ so the receiving device can store the file without a separate gRPC call.
 
 ### `DbBackend::new(db_path, server_url, auth_token) -> Result<Self, StorageError>`
 **What it does:** Opens (or creates) a LibSQL database at `db_path`, runs all migrations,
-reads or generates the device ID, and attempts to open a WebSocket connection to
-`server_url`. If `server_url` is empty or the connection fails, the backend starts
-disconnected: all local CRUD operations still work. The two cases then differ for sync:
+reads or generates the device ID, performs the **startup protocol handshake** (below), and
+attempts to open a WebSocket connection to `server_url`. If `server_url` is empty or the
+connection fails, the backend starts disconnected: all local CRUD operations still work. The two cases then differ for sync:
 with an **empty `server_url`** (no relay configured) `send_changes` is a deliberate no-op
 and `receive_changes` returns empty; with a **configured but unreachable relay**,
 `send_changes` of a non-empty batch returns `StorageError::WebSocket` so the sync cycle
@@ -122,8 +122,26 @@ reachable (see "Sending changes" below).
 - `auth_token` — bearer token sent as the first WebSocket message after connecting  
 **Returns:** A ready-to-use backend.  
 **Errors:** `StorageError::Database` if migrations fail; `StorageError::InvalidState` if the
-database's `user_version` is newer than this build supports (see "Migrations"); `StorageError::Io`
-if the path is not writable.
+database's `user_version` is newer than this build supports (see "Migrations") **or if the
+server answered `GET /version` with an incompatible `protocol_version`** (see below);
+`StorageError::Io` if the path is not writable.
+
+#### Startup protocol handshake (`GET /version`)
+
+With a non-empty `server_url`, `new` derives the HTTP base (`http_base_of`: `ws`→`http`,
+`wss`→`https`, `/api/sync` stripped) and calls `compat::negotiate` **before** connecting the
+WebSocket. Three outcomes, per the rule defined once in `src/compat.rs`
+(`PROTOCOL_VERSION` = the version this client speaks, `compatible_with` = exact match;
+keeplin-srv mirrors both in its `src/http.rs`):
+
+- **Compatible** — logs the negotiated protocol + capability list and **primes the
+  capability cache** (`server_capabilities` starts `Known`), so later capability checks
+  (e.g. the history path) never refetch `/version`.
+- **Incompatible** — `StorageError::InvalidState` with an actionable message naming both
+  protocol versions and which side to upgrade. Construction fails; **no sync is attempted**.
+- **Unavailable** (no `/version` route, unreachable, or unparseable — an older keeplin-srv
+  or a bare test relay) — logs a warning and continues exactly as before the handshake
+  existed; the capability cache stays `Unknown` so the lazy probe can retry later.
 
 All other methods implement `StorageBackend` — see `storage/backend.md`.
 
@@ -283,4 +301,4 @@ only changes that originated on this device, so history keeps working offline.
 
 > The server-history path latches a `404` (endpoint absent on an older server) and thereafter skips straight to the local journal, so history reads against a server without the endpoint do not pay a wasted round-trip each time (issue #113).
 
-> The client negotiates server capabilities via `GET /version` (cached once): if the server advertises a `/version` without `history`, the history path is skipped straight to the local journal; a server with no `/version` (older) falls back to the request + 404-latch (keeplin#114).
+> The client negotiates server capabilities via `GET /version` (fetched by the startup handshake when the server answers, else lazily, cached either way): if the server advertises a `/version` without `history`, the history path is skipped straight to the local journal; a server with no `/version` (older) falls back to the request + 404-latch (keeplin#114). The protocol-compatibility side of the same endpoint lives in `src/compat.rs` and is enforced in `DbBackend::new` (see "Startup protocol handshake").

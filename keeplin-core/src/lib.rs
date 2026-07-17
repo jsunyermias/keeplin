@@ -6,6 +6,8 @@
 //!
 //! # Module overview
 //!
+//! - [`compat`] — the `GET /version` protocol/capability handshake against keeplin-srv:
+//!   `PROTOCOL_VERSION`, the `compatible_with` rule, and the startup negotiation.
 //! - [`encryption`] — `EncryptedBackend<B>`: transparent AES-256-GCM at-rest encryption
 //!   decorator that wraps any [`storage::StorageBackend`].
 //! - [`error`] — `StorageError` and `SyncError`: all error types used across the crate.
@@ -20,6 +22,7 @@
 //! - [`sync`] — `SyncEngine`: orchestrates a full push-then-pull sync cycle.
 
 pub mod collab;
+pub mod compat;
 pub mod encryption;
 pub mod error;
 pub mod history;

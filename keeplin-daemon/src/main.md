@@ -56,6 +56,15 @@ The kernel releases the lock on process exit — crashes included — so it can 
 the `migrate` subcommand locks **both** stores for the copy. The lock file lives inside
 `.keeplin/` (per-device, excluded from replication; its contents are irrelevant to the lock).
 
+**Server-protocol handshake (server mode).** Constructing the `DbBackend` performs the
+`GET /version` handshake against the sync server (`keeplin_core::compat`): an **incompatible**
+`protocol_version` fails daemon startup loudly with a message naming which side to upgrade; a
+server without `/version` (older keeplin-srv) warns and continues. When `collab_api_url` is
+set, `collab_starter`'s spawned `CollabBackend::start` runs the same handshake for the
+collaborative channel; an `Err` there is logged as `collaborative channel disabled` and the
+connection task is never spawned (relevant only if the collab URL points at a *different*
+server than `server_url` — the relay handshake has already vetted the shared one).
+
 **Encryption salt (`resolve_key_salt`).** A configured `key_salt` wins. Otherwise the effective
 salt is read from — or on first use derived from the device ID and **persisted to** —
 `{data_dir}/.keeplin/key_salt`, which then takes precedence on later startups. This makes the

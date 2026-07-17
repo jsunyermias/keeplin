@@ -26,7 +26,7 @@ carry collab logic, the rest delegate to `inner`.
 |----------|-------------|
 | `CollabBackend::new(inner, cfg)` | build the decorator; fails if the token has no `device_id` claim |
 | `CollabBackend::handle()` | a cloneable `CollabHandle` for the daemon's surfaces |
-| `CollabBackend::start(top)` | spawn the connection task; `top` must be the **outermost** backend so remote writes flow through every decorator once |
+| `CollabBackend::start(top) -> Result<(), StorageError>` | run the `GET /version` protocol handshake (`src/compat.rs`), then spawn the connection task; `top` must be the **outermost** backend so remote writes flow through every decorator once. **Incompatible server → `Err(StorageError::InvalidState)` with an actionable message and the connection task is never spawned** (no sync attempted); a server without a usable `/version` warns and proceeds (backward compatible); compatible logs the negotiated protocol + capabilities |
 | `CollabHandle::presence(note_id)` | latest presence list the server broadcast (empty if none) |
 | `CollabHandle::send_cursor(note_id, cursor)` | queue this device's caret; server fans it out |
 | `CollabHandle::proxy_request(method, path, body)` | forward a permission-management request (share/transfer/list/revoke) to keeplin-srv (the authority) and return its `(status, json)`; the daemon's REST layer proxies its permission endpoints through this |

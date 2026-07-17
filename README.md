@@ -220,6 +220,21 @@ The server speaks plain `ws://`; terminate TLS at a reverse proxy and use `wss:/
 daemon refuses a non‑loopback `ws://` `server_url`. See the
 [keeplin-srv README](https://github.com/jsunyermias/keeplin-srv#readme).
 
+### Protocol compatibility with keeplin-srv
+
+At startup the client fetches the server's `GET /version` and negotiates: a **compatible**
+`protocol_version` is logged together with the server's capabilities; an **incompatible**
+one fails startup loudly with a message naming which side to upgrade (no sync is
+attempted); a server without `/version` (an older keeplin-srv) produces a warning and the
+pre-handshake behaviour. The rule lives in one place per repo:
+`keeplin-core/src/compat.rs` (`PROTOCOL_VERSION` + `compatible_with()`) here, mirrored by
+`src/http.rs` in keeplin-srv — bump both together on a breaking wire change.
+
+**Version-bump procedure**: to make keeplin-srv adopt a newer keeplin-core, bump the pinned
+`rev` in keeplin-srv's `crates/keeplin-srv/Cargo.toml` and run keeplin-srv's test suite —
+it exercises this real client (`DbBackend`, `CollabBackend`) against the real server, so a
+wire drift fails there instead of in production.
+
 ---
 
 ## Configuration reference
