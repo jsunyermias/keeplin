@@ -57,6 +57,34 @@ their variable-precision text; ordering against them remains chronologically con
 - `db`, `fs`, and `note_log` are `pub mod` so their concrete types/functions are reachable as
   `keeplin_core::storage::{db::DbBackend, fs::FsBackend, note_log::merge}`.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `effective_page_size()` — defined here (EXTRACTED; file-local)
+- `SortableRfc3339` — defined here (EXTRACTED; file-local)
+- `chrono::DateTime<chrono::Utc>` — defined here (EXTRACTED; file-local)
+- `.to_sortable_rfc3339()` — defined here (EXTRACTED; file-local)
+- `effective_page_size_defaults_and_clamps()` — defined here (EXTRACTED; file-local)
+- `sortable_rfc3339_has_fixed_shape()` — defined here (EXTRACTED; file-local)
+- `lexicographic_order_matches_chronological_even_mixed_with_old_format()` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- (none in the graph) (EXTRACTED)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Declares child modules and re-exports the `StorageBackend` supertrait + sub-traits at `storage` level; no logic here.
+- New storage backends/decorators are added as child modules and re-exported here.
+
 ## Related files
 
 - `keeplin-core/src/storage/backend.rs` — supertrait + sub-trait definitions

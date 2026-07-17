@@ -140,6 +140,42 @@ gRPC client → CreateNoteRequest (proto)
   `tonic::Status` is 176 bytes. The functions are called in every RPC handler, so
   suppressing the warning is preferable to boxing the return value.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `ensure_not_deleted()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `link_source_str()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `note_to_proto()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `notebook_to_proto()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `resource_to_proto()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `tag_to_proto()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `storage_err()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `proto_to_note()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `.sync()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `stage_to_proto()` — defined here (EXTRACTED; 1 cross-file edge(s))
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/error.rs` — error types (EXTRACTED: references×2; e.g. `StorageError`)
+- `keeplin-core/src/links.rs` — bookmark & link types and pure parsing (EXTRACTED: references×1; e.g. `LinkSource`)
+- `keeplin-core/src/models.rs` — domain data types (EXTRACTED: references×5; e.g. `Note`, `Notebook`, `Tag`)
+- `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: references×1; e.g. `T`)
+- `keeplin-core/src/storage/fs.rs` — FsBackend (filesystem storage) (EXTRACTED: imports_from×1, references×1; e.g. `FsBackend`)
+- `keeplin-core/src/sync/engine.rs` — SyncEngine (EXTRACTED: calls×1, references×1; e.g. `SyncStage`, `run_sync()`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Pure bridge: protobuf wire types ↔ keeplin-core models, delegating all persistence to the generic `StorageBackend`; no business logic lives here.
+- Ordering/placement operations go through `keeplin_core::ordering` (same functions REST uses), keeping the two surfaces identical.
+
 ## Related files
 
 - `keeplin-daemon/src/proto.rs` — includes the generated `KeeplinService` trait

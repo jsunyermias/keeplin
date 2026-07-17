@@ -59,6 +59,40 @@ frequent probe/scrape traffic does not inflate `keeplin_http_requests_total`. Th
 probe's `list_notes` does flow through the decorator, so a busy readiness schedule contributes
 to the `note`/`list` counter.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `MetricsBackend<B>` — defined here (EXTRACTED; 6 cross-file edge(s))
+- `.note_history()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `.notebook_history()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `.record()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.create_note()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.read_note()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.update_note()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.list_notes()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.note_backlinks()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.list_notes_in_notebook()` — defined here (EXTRACTED; 2 cross-file edge(s))
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/error.rs` — error types (EXTRACTED: references×38; e.g. `StorageError`)
+- `keeplin-core/src/models.rs` — domain data types (EXTRACTED: references×26; e.g. `Note`, `Notebook`, `Tag`)
+- `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: implements×6, references×4; e.g. `NoteRepository`, `NotebookSortProfile`, `NotebookRepository`)
+- `keeplin-core/src/storage/fs.rs` — FsBackend (filesystem storage) (EXTRACTED: imports_from×1, references×1; e.g. `FsBackend`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- `keeplin-daemon/src/rest.rs` — REST/JSON API + WebSocket feed (axum) (EXTRACTED: references×1; e.g. `AppState`)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- `MetricsBackend` is the outermost decorator so it observes every operation exactly once, including those triggered by remote/collab writes.
+- Counters are process-lifetime atomics; recording must never fail or slow a storage operation.
+
 ## Related files
 
 - `keeplin-daemon/src/rest.rs` — the `/health`, `/ready`, `/metrics` routes, the `status_mw`

@@ -88,6 +88,38 @@ the current `user_version`; a pre-framework DB is carried onto the ladder withou
   entity types record changes using the same code path, so explicit tests for each variant
   would be redundant.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `in_memory_backend()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `delete_for_unknown_entity_leaves_a_tombstone_blocking_a_stale_create()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `create_and_read_note()` — defined here (EXTRACTED; file-local)
+- `update_note()` — defined here (EXTRACTED; file-local)
+- `delete_note_soft_deletes()` — defined here (EXTRACTED; file-local)
+- `list_notes_excludes_deleted()` — defined here (EXTRACTED; file-local)
+- `read_nonexistent_returns_not_found()` — defined here (EXTRACTED; file-local)
+- `device_id_is_stable()` — defined here (EXTRACTED; file-local)
+- `sync_state_round_trips()` — defined here (EXTRACTED; file-local)
+- `get_changes_since_returns_updated_notes()` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/storage/db.rs` — DbBackend (LibSQL + WebSocket storage) (EXTRACTED: references×1; e.g. `DbBackend`)
+- `keeplin-core/src/storage/note_log.rs` — (no companion doc) (EXTRACTED: calls×1; e.g. `vv()`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- All tests run offline (`server_url = ""`): they exercise local storage semantics only; the wire path is `ws_sync.rs`.
+- Version-vector conflict semantics asserted here must match `note_log::resolve` exactly.
+
 ## Related files
 
 - `keeplin-core/src/storage/db.rs` — the code under test

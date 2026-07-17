@@ -12,6 +12,7 @@ is to make the sub-modules accessible to dependents.
 | Module | Public | Description |
 |--------|--------|-------------|
 | `collab` | yes | `CollabBackend` decorator — client of keeplin-srv's real-time note channel (line ops, presence, cursors) |
+| `compat` | yes | keeplin-srv `GET /version` handshake: `PROTOCOL_VERSION`, the `compatible_with` rule, `negotiate` — the one place this repo defines server-protocol compatibility |
 | `encryption` | yes | AES-256-GCM transparent encryption decorator for any `StorageBackend` |
 | `error` | yes | All error types used across the crate (`StorageError`, `SyncError`) |
 | `links` | yes | Pure bookmark/link types and the `#…` reference grammar (I/O-free) |
@@ -50,6 +51,28 @@ lib
   origins obvious at a glance.
 - Adding a new backend requires only implementing `StorageBackend` in a new sub-module;
   no changes are needed here.
+
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- (no symbols extracted for this file — it contributes only its file node) (EXTRACTED)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- (none in the graph) (EXTRACTED)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- `lib.rs` declares modules only — no logic; every concrete type lives in a sub-module.
+- Each public module keeps a companion `.md`; adding a module means adding it to `lib.rs`, its doc, and the module map here.
 
 ## Related files
 

@@ -151,6 +151,45 @@ impl DbBackend {
 
         let device_id = Self::get_or_create_device_id(&conn).await?;
 
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_default();
+
+        // Protocol handshake before any sync is attempted (keeplin#114 follow-up):
+        // an incompatible server fails construction loudly with an actionable
+        // message; a server without `/version` (older keeplin-srv, or a bare test
+        // relay) warns and continues exactly as before the handshake existed.
+        let mut startup_capabilities = CapabilityCache::Unknown;
+        if !server_url.is_empty() {
+            if let Some(base) = http_base_of(&server_url) {
+                match crate::compat::negotiate(&http, &base).await {
+                    crate::compat::Handshake::Compatible(info) => {
+                        tracing::info!(
+                            server = %info.name,
+                            server_version = %info.version,
+                            protocol = info.protocol_version,
+                            capabilities = ?info.capabilities,
+                            "sync server protocol negotiated"
+                        );
+                        startup_capabilities = CapabilityCache::Known(info.capabilities);
+                    }
+                    crate::compat::Handshake::Incompatible(info) => {
+                        return Err(StorageError::InvalidState(
+                            crate::compat::incompatible_message(&info),
+                        ));
+                    }
+                    crate::compat::Handshake::Unavailable => {
+                        tracing::warn!(
+                            url = %server_url,
+                            "sync server has no usable GET /version (older keeplin-srv?); \
+                             continuing without protocol negotiation"
+                        );
+                    }
+                }
+            }
+        }
+
         let ws = if !server_url.is_empty() {
             match Self::connect_ws(&server_url, &auth_token, &device_id).await {
                 Ok(stream) => {
@@ -172,12 +211,11 @@ impl DbBackend {
             auth_token,
             ws: Arc::new(Mutex::new(ws)),
             device_id,
-            http: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
-                .build()
-                .unwrap_or_default(),
+            http,
             history_unsupported: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            server_capabilities: Arc::new(Mutex::new(CapabilityCache::Unknown)),
+            // Primed by the startup handshake when the server answered; left
+            // `Unknown` otherwise so the lazy per-capability probe can retry.
+            server_capabilities: Arc::new(Mutex::new(startup_capabilities)),
             lock: Arc::new(RwLock::new(())),
         })
     }
@@ -2862,17 +2900,24 @@ enum CapabilityCache {
     Known(Vec<String>),
 }
 
+/// The HTTP base URL of the sync server, derived from the WebSocket `server_url`
+/// (`ws`→`http`, `wss`→`https`, the relay path stripped). `None` for an empty or
+/// non-WebSocket URL (offline mode). Free function so `DbBackend::new` can run
+/// the `/version` handshake before `self` exists.
+fn http_base_of(server_url: &str) -> Option<String> {
+    let (scheme, rest) = if let Some(rest) = server_url.strip_prefix("wss://") {
+        ("https://", rest)
+    } else {
+        ("http://", server_url.strip_prefix("ws://")?)
+    };
+    let rest = rest.strip_suffix("/api/sync").unwrap_or(rest);
+    Some(format!("{scheme}{}", rest.trim_end_matches('/')))
+}
+
 impl DbBackend {
-    /// The HTTP base URL of the sync server, derived from the WebSocket `server_url`
-    /// (`ws`→`http`, `wss`→`https`, the relay path stripped). `None` in offline mode.
+    /// See [`http_base_of`].
     fn server_http_base(&self) -> Option<String> {
-        let (scheme, rest) = if let Some(rest) = self.server_url.strip_prefix("wss://") {
-            ("https://", rest)
-        } else {
-            ("http://", self.server_url.strip_prefix("ws://")?)
-        };
-        let rest = rest.strip_suffix("/api/sync").unwrap_or(rest);
-        Some(format!("{scheme}{}", rest.trim_end_matches('/')))
+        http_base_of(&self.server_url)
     }
 
     /// Whether the server advertises `capability` at `GET /version` (keeplin#114). Fetched

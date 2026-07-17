@@ -32,6 +32,37 @@ same way through the shared `note_log::resolve`/`merge` primitives.
 | `device()` | Builds a fresh `DbBackend` on a temp `.db` file in offline mode (no server URL) |
 | `tempfile::tempdir()` | Unique temp dir removed when the guard drops |
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `device()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `create_propagates_between_devices()` — defined here (EXTRACTED; file-local)
+- `stale_remote_update_does_not_clobber_newer_local()` — defined here (EXTRACTED; file-local)
+- `db_stale_delete_does_not_override_newer_edit()` — defined here (EXTRACTED; file-local)
+- `db_stale_update_does_not_resurrect_tombstone()` — defined here (EXTRACTED; file-local)
+- `db_concurrent_equal_timestamp_edits_converge()` — defined here (EXTRACTED; file-local)
+- `db_concurrent_notebook_edits_converge()` — defined here (EXTRACTED; file-local)
+- `fs_tombstones_resolve_by_timestamp()` — defined here (EXTRACTED; file-local)
+- `db_concurrent_note_tag_add_remove_converges()` — defined here (EXTRACTED; file-local)
+- `db_resource_delete_propagates_and_converges()` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/storage/db.rs` — DbBackend (LibSQL + WebSocket storage) (EXTRACTED: references×1; e.g. `DbBackend`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Two independent backends converge by exchanging `Change`s via `get_changes_since`/`apply_change` — version-vector semantics (dominance, concurrency tiebreak) are pinned here.
+- Convergence must be order-independent: applying the same change sets in different orders yields the same final state.
+
 ## Related files
 
 - `keeplin-core/src/storage/note_log.rs` — `resolve`/`merge`, the shared version-vector decision under test

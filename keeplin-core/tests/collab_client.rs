@@ -237,7 +237,7 @@ async fn client(addr: SocketAddr, device: &str) -> Arc<CollabBackend<DbBackend>>
         .unwrap(),
     );
     let top: Arc<dyn StorageBackend> = collab.clone();
-    collab.start(top).await;
+    collab.start(top).await.unwrap();
     collab
 }
 

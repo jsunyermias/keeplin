@@ -57,6 +57,39 @@ parameter. With a text query, results are ordered by FTS `rank`; without one, by
 - **Out of scope**: "users with access" (shares) is a keeplin-srv concept not present in the client
   `Note` model, so it is not a filter here.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `denormalize()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `index_note()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `start()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `apply_change()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `.upsert()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `SearchHandle` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `rebuild()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `reindex_id()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `SearchQuery` — defined here (EXTRACTED; file-local)
+- `rfc()` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/models.rs` — domain data types (EXTRACTED: references×5; e.g. `Note`, `Change`)
+- `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: imports_from×1, references×6; e.g. `StorageBackend`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- `keeplin-daemon/src/rest.rs` — REST/JSON API + WebSocket feed (axum) (EXTRACTED: references×1; e.g. `AppState`)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Search runs in the daemon, never on keeplin-srv: the server may only hold ciphertext, so indexing must stay client-side above the encryption layer.
+- The FTS5 index is in-memory and derived: it must be rebuildable from the store at any time and updated on every note write.
+- Queries only ever return live (non-deleted) notes.
+
 ## Related files
 
 - `rest.md` — the `GET /api/search` endpoint and `AppState.search`.

@@ -85,6 +85,40 @@ old bare-`updated_at` last-write-wins, which diverged permanently on equal times
 - The module is intentionally free of filesystem and async code; `fs.rs` reads/writes the
   log files and calls `merge`.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `NoteOp` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `vv()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `NoteLogEntry` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `Merged` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `increment()` — defined here (EXTRACTED; file-local)
+- `dominates()` — defined here (EXTRACTED; file-local)
+- `join()` — defined here (EXTRACTED; file-local)
+- `merge()` — defined here (EXTRACTED; file-local)
+- `compact_own_log()` — defined here (EXTRACTED; file-local)
+- `Winner` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/models.rs` — domain data types (EXTRACTED: imports_from×1, references×2; e.g. `Note`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- `keeplin-core/src/storage/fs.rs` — FsBackend (filesystem storage) (EXTRACTED: references×2; e.g. `.read_note_logs()`, `.append_note_op()`)
+- `keeplin-core/tests/db_backend.rs` — DbBackend integration tests (EXTRACTED: calls×1; e.g. `delete_for_unknown_entity_leaves_a_tombstone_blocking_a_stale_create()`)
+- `keeplin-core/tests/fs_backend.rs` — FsBackend integration tests (EXTRACTED: calls×1; e.g. `delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_create()`)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Pure, I/O-free conflict resolution; must stay deterministic: every device given the same inputs picks the same winner.
+- `resolve` semantics: a dominated write loses; true concurrency falls to the `(updated_at, last_writer)` tiebreak.
+- This is the SINGLE resolution procedure shared by `FsBackend` (log merge), `DbBackend` (state resolve), and keeplin-srv's line model — do not fork its semantics.
+
 ## Related files
 
 - `keeplin-core/src/storage/fs.rs` — reads the per-device logs, calls `merge`, and writes

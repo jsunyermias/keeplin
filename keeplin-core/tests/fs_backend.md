@@ -99,6 +99,38 @@ Most tests create their own `FsBackend` on a fresh temp dir. Two-device and inde
   design); single-note `read_note` freshness is covered by `read_does_not_rewrite_projection`
   and the two-device tests.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `drain_sync()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `own_log_stats()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_create()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `create_and_read_note()` — defined here (EXTRACTED; file-local)
+- `update_note()` — defined here (EXTRACTED; file-local)
+- `delete_note_soft_deletes()` — defined here (EXTRACTED; file-local)
+- `list_notes_excludes_deleted()` — defined here (EXTRACTED; file-local)
+- `read_nonexistent_note_returns_not_found()` — defined here (EXTRACTED; file-local)
+- `device_id_is_stable_across_instances()` — defined here (EXTRACTED; file-local)
+- `sync_state_persists()` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/storage/fs.rs` — FsBackend (filesystem storage) (EXTRACTED: references×2; e.g. `FsBackend`)
+- `keeplin-core/src/storage/note_log.rs` — (no companion doc) (EXTRACTED: calls×1; e.g. `vv()`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Each test gets a fresh tempdir and a fresh `FsBackend`; tests must not share state.
+- Asserts the single-writer log layout and merge-on-read semantics that make file replication safe.
+
 ## Related files
 
 - `keeplin-core/src/storage/fs.rs` — the code under test

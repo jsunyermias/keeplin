@@ -220,6 +220,21 @@ The server speaks plain `ws://`; terminate TLS at a reverse proxy and use `wss:/
 daemon refuses a non‑loopback `ws://` `server_url`. See the
 [keeplin-srv README](https://github.com/jsunyermias/keeplin-srv#readme).
 
+### Protocol compatibility with keeplin-srv
+
+At startup the client fetches the server's `GET /version` and negotiates: a **compatible**
+`protocol_version` is logged together with the server's capabilities; an **incompatible**
+one fails startup loudly with a message naming which side to upgrade (no sync is
+attempted); a server without `/version` (an older keeplin-srv) produces a warning and the
+pre-handshake behaviour. The rule lives in one place per repo:
+`keeplin-core/src/compat.rs` (`PROTOCOL_VERSION` + `compatible_with()`) here, mirrored by
+`src/http.rs` in keeplin-srv — bump both together on a breaking wire change.
+
+**Version-bump procedure**: to make keeplin-srv adopt a newer keeplin-core, bump the pinned
+`rev` in keeplin-srv's `crates/keeplin-srv/Cargo.toml` and run keeplin-srv's test suite —
+it exercises this real client (`DbBackend`, `CollabBackend`) against the real server, so a
+wire drift fails there instead of in production.
+
 ---
 
 ## Configuration reference
@@ -472,7 +487,30 @@ cargo fmt --all --check
 The suite includes unit tests for the version‑vector merge, integration tests for both
 backends and the encryption layer, two‑device convergence tests, and an **end‑to‑end
 WebSocket sync test** (`keeplin-core/tests/ws_sync.rs`) that stands up an in‑process relay.
-CI (`.github/workflows/ci.yml`) runs fmt, test, clippy (`--all-targets`), and `cargo audit`.
+CI (`.github/workflows/ci.yml`) runs the companion-docs check, fmt, test, clippy
+(`--all-targets`), and `cargo audit`.
+
+### Navigating this repo (for humans and AI agents)
+
+Two navigation layers, checked in:
+
+1. **LAYER 1 — discovery: the Graphify knowledge graph.** `graphify-out/graph.json` (and the
+   readable `graphify-out/GRAPH_REPORT.md`) is a queryable graph of every symbol, file and
+   relationship. Ask it before reading code: `graphify query "which files depend on
+   storage/note_log.rs?"`, `graphify path "DbBackend" "resolve"`, `graphify explain
+   "CollabBackend"`. After large refactors, refresh it with `graphify update .` (AST-only,
+   no API key needed).
+2. **LAYER 2 — work: the companion `.md` files.** Every `foo.rs` has a contractual `foo.md`
+   next to it, written to be **hyper self-contained**: purpose, API, invariants, and a
+   `## Graph context` section (dependencies/dependents with one-line inline summaries,
+   sourced from the graph; redundancy across companions is intentional). Agents should query
+   the graph first, then read the companion `.md` — not the raw `.rs` — whenever possible.
+
+CI enforces the contract (`scripts/check-docs.sh`): every `.rs` has a companion `.md` and
+every companion carries `## Graph context`. The templates live in `docs/templates/`. To
+enable the optional Graphify Claude Code hooks locally, copy
+`.claude/settings.example.json` to `.claude/settings.local.json` — the example is guarded so
+it no-ops for contributors without Graphify installed (`pip install graphifyy`).
 
 ---
 

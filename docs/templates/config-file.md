@@ -34,6 +34,32 @@ pipeline steps.}}
 - {{A compatibility rule that must not be broken (e.g. "add new proto fields with new tags;
   never reuse or renumber; old peers ignore unknown fields").}}
 
+## Graph context
+
+<!-- MANDATORY section (CI-enforced). Data source: the committed Graphify graph —
+     `graphify query "<file or symbol>"` / `graphify explain "<concept>"` against
+     graphify-out/graph.json. Label every relationship: EXTRACTED when it comes
+     mechanically from the graph/AST, INFERRED when you concluded it yourself —
+     never present inference as fact. The one-line inline summaries are the
+     hyper-redundancy requirement: a small model given ONLY this .md must be able
+     to work on the paired file safely, without following any pointer. -->
+
+**Nodes/edges this file contributes**
+
+- `{{Entity}}` — {{what it is; the relationships the graph holds for it, labelled EXTRACTED/INFERRED}}
+
+**Direct dependencies** (what this file uses; one line each on what it is and why it matters here)
+
+- `{{path}}` — {{ONE-LINE summary}} (EXTRACTED|INFERRED)
+
+**Direct dependents** (who breaks if this file changes; one line each)
+
+- `{{path}}` — {{ONE-LINE summary}} (EXTRACTED|INFERRED)
+
+**Invariants** (the rules this file must keep true — restated here even if stated elsewhere)
+
+- {{invariant}}
+
 ## Related files
 
 - `{{path}}` — {{one-line reason}}

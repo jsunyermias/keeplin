@@ -65,6 +65,37 @@ see keeplin-srv PR #90).
   simply skipped by `materialize` and `live`.
 - The `device` argument is the vv actor — the **device** id, matching the protocol's authorship rule.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `NoteLines` — defined here (EXTRACTED; 4 cross-file edge(s))
+- `.from_snapshot()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `.apply()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `.diff_body()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `.materialize()` — defined here (EXTRACTED; file-local)
+- `.live()` — defined here (EXTRACTED; file-local)
+- `merge_into()` — defined here (EXTRACTED; file-local)
+- `bump()` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/collab/protocol.rs` — collaborative channel wire types (EXTRACTED: references×4; e.g. `LineSnapshot`, `NoteLinesSnapshot`, `LineOp`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- `keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: imports_from×1, references×1; e.g. `mod.rs`, `Shared`)
+- `keeplin-core/tests/collab_client.rs` — collaborative client tests (state machine + mock server e2e) (EXTRACTED: imports_from×1; e.g. `collab_client.rs`)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- Pure logic, no I/O — must stay unit-testable in isolation.
+- Applying the same ops in the same order on any mirror must materialise byte-identical bodies (deterministic replay).
+- Diffing a body then applying the resulting ops to the mirror must reproduce exactly that body.
+
 ## Related files
 
 - `collab/protocol.md` — `LineOp`, `LineSnapshot`, `NoteLinesSnapshot`, `VersionVector`.

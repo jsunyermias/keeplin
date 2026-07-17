@@ -40,6 +40,32 @@ public modules, or building the process and starting the servers.}}
 - {{A convention this crate enforces (e.g. "no re-exports at the crate root, so import
   origins are explicit"; "one daemon per store, enforced before any I/O").}}
 
+## Graph context
+
+<!-- MANDATORY section (CI-enforced). Data source: the committed Graphify graph —
+     `graphify query "<file or symbol>"` / `graphify explain "<concept>"` against
+     graphify-out/graph.json. Label every relationship: EXTRACTED when it comes
+     mechanically from the graph/AST, INFERRED when you concluded it yourself —
+     never present inference as fact. The one-line inline summaries are the
+     hyper-redundancy requirement: a small model given ONLY this .md must be able
+     to work on the paired file safely, without following any pointer. -->
+
+**Nodes/edges this file contributes**
+
+- `{{Entity}}` — {{what it is; the relationships the graph holds for it, labelled EXTRACTED/INFERRED}}
+
+**Direct dependencies** (what this file uses; one line each on what it is and why it matters here)
+
+- `{{path}}` — {{ONE-LINE summary}} (EXTRACTED|INFERRED)
+
+**Direct dependents** (who breaks if this file changes; one line each)
+
+- `{{path}}` — {{ONE-LINE summary}} (EXTRACTED|INFERRED)
+
+**Invariants** (the rules this file must keep true — restated here even if stated elsewhere)
+
+- {{invariant}}
+
 ## Related files
 
 - `{{path}}` — {{one-line reason}}

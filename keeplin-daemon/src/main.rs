@@ -423,7 +423,15 @@ fn collab_starter<B: keeplin_core::storage::StorageBackend>(
 ) -> StackHook {
     let collab = collab.clone();
     Box::new(move |top| {
-        tokio::spawn(async move { collab.start(top).await });
+        tokio::spawn(async move {
+            // An incompatible server refuses the session (no sync is
+            // attempted). The relay handshake in `DbBackend::new` already
+            // failed the daemon's startup for the same server, so here — for
+            // a collab-only drift — a loud error log is the surface.
+            if let Err(e) = collab.start(top).await {
+                tracing::error!(error = %e, "collaborative channel disabled");
+            }
+        });
     })
 }
 

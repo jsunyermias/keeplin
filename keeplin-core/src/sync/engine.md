@@ -69,6 +69,37 @@ The cycle executes six steps in sequence:
   and retrying sync cycles; a simple approach is to call `sync()` periodically or on
   reconnect.
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `run_sync()` — defined here (EXTRACTED; 5 cross-file edge(s))
+- `.sync()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `SyncStage` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `SyncEngine` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `.new()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `SyncEngine<T>` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/error.rs` — error types (EXTRACTED: references×2; e.g. `SyncError`)
+- `keeplin-core/src/models.rs` — domain data types (EXTRACTED: references×2; e.g. `Change`)
+- `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: references×2; e.g. `T`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- `keeplin-core/tests/ws_sync.rs` — end-to-end WebSocket sync test (EXTRACTED: calls×1; e.g. `failed_send_keeps_watermark_and_changes_are_resent_after_recovery()`)
+- `keeplin-daemon/src/rest.rs` — REST/JSON API + WebSocket feed (axum) (EXTRACTED: calls×1; e.g. `sync()`)
+- `keeplin-daemon/src/server.rs` — gRPC service implementation (EXTRACTED: calls×1, references×1; e.g. `stage_to_proto()`, `.sync()`)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- The engine only sequences push-then-pull and maintains the watermark; all real work is delegated to the backend.
+- The last-sync watermark advances only after a fully successful cycle — a failed push/pull must leave it unchanged so changes are re-sent.
+
 ## Related files
 
 - `keeplin-core/src/storage/backend.rs` — `StorageBackend` trait that `T` must satisfy

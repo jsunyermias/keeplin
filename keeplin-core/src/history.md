@@ -66,6 +66,41 @@ notebook back to before a bad change) fall out of the same primitive.
 The read side is [`HistoryRepository::note_history`] / `notebook_history` (newest first,
 `limit = 0` → `DEFAULT_HISTORY_LIMIT`).
 
+## Graph context
+
+<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
+
+**Nodes/edges this file contributes** (top symbols by cross-file degree)
+
+- `revert_note()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `revert_notebook()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `revert_notes_to()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `revert_notebook_notes_to()` — defined here (EXTRACTED; 3 cross-file edge(s))
+- `state_at()` — defined here (EXTRACTED; 2 cross-file edge(s))
+- `ver()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `fs()` — defined here (EXTRACTED; 1 cross-file edge(s))
+- `state_at_picks_newest_at_or_before()` — defined here (EXTRACTED; file-local)
+- `note_history_lists_versions_newest_first()` — defined here (EXTRACTED; file-local)
+- `revert_restores_an_earlier_version()` — defined here (EXTRACTED; file-local)
+
+**Direct dependencies** (files this one's symbols reference)
+
+- `keeplin-core/src/error.rs` — error types (EXTRACTED: references×4; e.g. `StorageError`)
+- `keeplin-core/src/models.rs` — domain data types (EXTRACTED: references×4; e.g. `Note`, `Notebook`)
+- `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: references×7; e.g. `EntityVersion`, `T`, `StorageBackend`)
+- `keeplin-core/src/storage/fs.rs` — FsBackend (filesystem storage) (EXTRACTED: imports_from×1, references×1; e.g. `FsBackend`)
+
+**Direct dependents** (files whose symbols reference this one)
+
+- (none in the graph) (EXTRACTED)
+
+**Invariants** (restated on purpose; a change to this file must keep these true)
+
+- History is derived from the change journal — there is no separate history store; every journalled change carries a full entity snapshot.
+- Revert is forward-only: rolling back writes a NEW change on top (with a fresh vv advance), never rewrites or deletes journal entries.
+- In server mode the server journal is preferred (cross-device history); the local journal is the offline fallback.
+
 ## Related files
 
 - `keeplin-core/src/storage/backend.rs` — the `HistoryRepository` trait and `EntityVersion<T>`.

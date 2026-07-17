@@ -35,12 +35,32 @@ how), update its companion in the same change — a stale companion is worse tha
   better than prose lists.
 - **Fence real snippets** (`rust`, `sql`, `toml`, …) when a signature or SQL statement makes
   the point faster than a sentence. Keep them short and copied faithfully from the source.
+- **Include `## Graph context`** (mandatory, CI-enforced): the file's nodes/edges in the
+  committed Graphify graph (`graphify query` output is the data source), its direct
+  dependencies and dependents each with a **one-line inline summary**, and the file's
+  invariants restated. Label every relationship `EXTRACTED` (mechanically from the
+  graph/AST) or `INFERRED` (your conclusion) — never present inference as fact.
 - **Close with `## Related files`**: the handful of files a reader will jump to next, each
   with a one-line reason.
 - **Keep it current.** Prefer describing behaviour and invariants (which age slowly) over
-  line numbers or exact code (which age fast).
-- **Cross-reference, don't duplicate.** Link to `ARCHITECTURE.md` / `SECURITY.md` for shared
-  concepts (version-vector convergence, the decorator stack) instead of re-deriving them.
+  line numbers or exact code (which age fast). After large refactors run `graphify update .`
+  and refresh the affected `## Graph context` sections.
+- **Be hyper self-contained; redundancy is intentional.** A small model given ONLY this
+  `.md` must be able to work on the paired `.rs` safely, without reading any other file.
+  Restate the invariants and summarise every referenced file inline — never "deduplicate"
+  that redundancy away. Links to `ARCHITECTURE.md` / `SECURITY.md` are for *deeper*
+  treatment, not a substitute for the inline summary.
+
+## The two-layer navigation model
+
+Agents working on this repo have two layers:
+
+1. **LAYER 1 — discovery (the graph)**: `graphify query "<question>"` /
+   `graphify path "A" "B"` / `graphify explain "X"` against the committed
+   `graphify-out/graph.json` route you to the right files without reading the whole repo.
+2. **LAYER 2 — work (these companions)**: once routed, read the companion `.md`, not the
+   raw `.rs`, whenever possible; each companion is contractually self-contained for safe
+   editing of its paired file.
 
 ## Placeholders in the templates
 
