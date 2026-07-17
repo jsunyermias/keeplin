@@ -10,6 +10,30 @@ version and the wire protocol version move independently.
 
 ## [Unreleased]
 
+### 2026-07 production-readiness audit follow-up
+
+- **Protocol handshake** (`keeplin-core/src/compat.rs`): the single place
+  this repo defines server compatibility — `PROTOCOL_VERSION` +
+  `compatible_with()` (exact match), mirrored by keeplin-srv's
+  `src/http.rs`. `DbBackend::new` and `CollabBackend::start` now check
+  `GET /version` at startup: compatible → negotiated protocol +
+  capabilities logged (and the capability cache primed); incompatible →
+  loud actionable failure naming which side to upgrade, no sync
+  attempted; missing `/version` (old server) → warn and continue.
+  `CollabBackend::start` now returns `Result`.
+- **Out-of-band resource blobs actually land**: `create_resource` eagerly
+  relays the blob-stripped `ResourceCreate` before uploading, and
+  `upload_blob` checks the HTTP status with a short retry — previously
+  the immediate `PUT` always lost the race against metadata
+  materialisation and the blob was silently dropped (keeplin-srv 404s
+  uploads for unknown resources).
+- **Graphify integration**: committed knowledge graph
+  (`graphify-out/graph.json` + `GRAPH_REPORT.md`), mandatory
+  `## Graph context` section in every companion `.md` (dependencies /
+  dependents with inline summaries + restated invariants), CI-enforced by
+  `scripts/check-docs.sh`, extended doc templates, and a README section
+  on the two-layer (graph → companion docs) navigation model.
+
 ### Added
 - iCalendar import reads **every** `VEVENT`/`VTODO` in a file, not just the
   first (`from_ics_all`, `import_todos`); the daemon import endpoints accept a
