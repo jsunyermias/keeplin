@@ -1,24 +1,21 @@
-//! Wire types of the keeplin-srv collaborative channel (`GET /api/ws?token=`),
-//! mirroring the server's `protocol.rs`. JSON messages tagged with `type`;
-//! line operations tagged with `op`.
-
+// md:Overview
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::storage::note_log::VersionVector;
 
+// md:LineId
 pub type LineId = Uuid;
 
-/// A caret position inside a note (presence).
+// md:Cursor
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cursor {
     pub line_id: LineId,
     pub column: usize,
 }
 
-/// One line as carried in snapshots: the full versioned entity, tombstones
-/// included.
+// md:LineSnapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LineSnapshot {
     pub id: LineId,
@@ -30,7 +27,7 @@ pub struct LineSnapshot {
     pub last_writer: String,
 }
 
-/// Full note state sent in `Welcome`: the versioned order plus every line.
+// md:NoteLinesSnapshot
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NoteLinesSnapshot {
     pub note_id: Uuid,
@@ -41,8 +38,7 @@ pub struct NoteLinesSnapshot {
     pub lines: Vec<LineSnapshot>,
 }
 
-/// One line-level operation. `last_writer` and the vv component that advances
-/// are this **device**'s id (the concurrency actor in server mode).
+// md:LineOp
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "PascalCase")]
 pub enum LineOp {
@@ -77,6 +73,7 @@ pub enum LineOp {
     },
 }
 
+// md:PresenceInfo
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresenceInfo {
     pub user_id: String,
@@ -84,7 +81,7 @@ pub struct PresenceInfo {
     pub cursor: Option<Cursor>,
 }
 
-/// Client → server.
+// md:CollabClientMsg
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "PascalCase")]
 pub enum CollabClientMsg {
@@ -95,7 +92,7 @@ pub enum CollabClientMsg {
     Ack { server_seq: u64 },
 }
 
-/// Server → client.
+// md:CollabServerMsg
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "PascalCase")]
 pub enum CollabServerMsg {

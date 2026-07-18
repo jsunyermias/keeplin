@@ -129,7 +129,7 @@ carry no alias, emit no links, and are never a link target.
 A note-organisation layer, all **stored on the note** (so it rides the normal `Change` sync
 path — no new `Change` variants):
 
-- **The Inbox** ("Pizarra") — a system notebook with the fixed **nil UUID**, auto-created at
+- **The Inbox** — a system notebook with the fixed **nil UUID**, auto-created at
   startup and protected from deletion. A note created without choosing a notebook lands here.
   Inbox notes are a scratch space outside the linking graph: they carry **no alias**, emit
   **no links**, and are **never a link target** (moving a note into the Inbox clears its alias

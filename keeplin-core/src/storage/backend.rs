@@ -1,16 +1,4 @@
-//! The `StorageBackend` supertrait and its five focused sub-traits.
-//!
-//! Rather than exposing a single 30-method trait, the storage layer is split into
-//! five cohesive interfaces — [`NoteRepository`], [`NotebookRepository`],
-//! [`TagRepository`], [`ResourceRepository`], and [`SyncBackend`] — each covering
-//! one domain of responsibility. [`StorageBackend`] is then a supertrait that requires
-//! all five, giving call-sites a single bound while keeping each domain independently
-//! testable and mockable.
-//!
-//! A blanket impl automatically satisfies [`StorageBackend`] for any type that
-//! implements all five sub-traits, so adding a new backend only requires writing the
-//! five focused `impl` blocks — no additional glue code is needed.
-
+// md:Overview
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -22,56 +10,23 @@ use crate::{
 
 use super::SortableRfc3339;
 
-// ── NoteRepository ────────────────────────────────────────────────────────────
-
-/// CRUD operations for [`Note`] entities.
-///
-/// Implementations must treat `delete_note` as a **soft delete**: the note's
-/// `deleted_at` field is set to the current time and the record is retained in
-/// storage. `list_notes` must exclude soft-deleted notes from its results.
+// md:trait NoteRepository
 #[async_trait]
 pub trait NoteRepository: Send + Sync + 'static {
-    /// Persists a new note and returns the stored copy.
-    ///
-    /// The returned `Note` may differ from the input if the backend sets extra fields
-    /// (e.g. `EncryptedBackend` returns the decrypted copy after storing the
-    /// encrypted one).
     async fn create_note(&self, note: Note) -> Result<Note, StorageError>;
 
-    /// Fetches a note by its UUID.
-    ///
-    /// Returns [`StorageError::NotFound`] if no note with the given `id` exists or if
-    /// the note has been soft-deleted.
     async fn read_note(&self, id: Uuid) -> Result<Note, StorageError>;
 
-    /// Overwrites all fields of an existing note and returns the updated copy.
-    ///
-    /// Returns [`StorageError::NotFound`] if no note with the same `id` is stored.
     async fn update_note(&self, note: Note) -> Result<Note, StorageError>;
 
-    /// Soft-deletes a note by setting its `deleted_at` timestamp to now.
-    ///
-    /// Returns [`StorageError::NotFound`] if no note with the given `id` exists.
     async fn delete_note(&self, id: Uuid) -> Result<(), StorageError>;
 
-    /// Returns a page of notes that have not been soft-deleted, ordered by
-    /// `(created_at ASC, id ASC)`.
-    ///
-    /// `page_size = 0` uses [`super::DEFAULT_PAGE_SIZE`]; values above
-    /// [`super::MAX_PAGE_SIZE`] are clamped to it. `page_token = None` starts
-    /// from the beginning. The returned `Option<String>` is the opaque cursor for the
-    /// next page; `None` means there are no further pages.
     async fn list_notes(
         &self,
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError>;
 
-    /// Returns a page of the live notes of one notebook, ordered by
-    /// `(`[`Note::effective_sort_key`]` ASC, id ASC)` — the notebook's manual order, with
-    /// pinned notes (`sort_key 1..=999`) first. Pagination semantics match
-    /// [`list_notes`](Self::list_notes); the cursor is `"<sort_key>|<uuid>"` over the
-    /// *effective* key.
     async fn list_notes_in_notebook(
         &self,
         notebook_id: Uuid,
@@ -79,34 +34,17 @@ pub trait NoteRepository: Send + Sync + 'static {
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError>;
 
-    /// Returns a page of every live **starred** note, across all notebooks (the Inbox
-    /// included), ordered by `(created_at ASC, id ASC)`. Pagination semantics match
-    /// [`list_notes`](Self::list_notes).
     async fn list_starred_notes(
         &self,
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError>;
 
-    /// A compact ordering summary of one notebook's live notes, consumed by the placement
-    /// rules in [`crate::ordering`] (new-note position, pin, unpin) so they never have to
-    /// materialize the notebook. All keys are *effective* keys (the legacy `0` sentinel
-    /// already mapped — see [`Note::effective_sort_key`]).
     async fn notebook_sort_profile(
         &self,
         notebook_id: Uuid,
     ) -> Result<NotebookSortProfile, StorageError>;
 
-    /// Returns a page of the live notes that link **to** `target_id` (its backlinks), ordered
-    /// by `(created_at ASC, id ASC)`. Pagination semantics match [`list_notes`](Self::list_notes):
-    /// `page_size = 0` uses the backend default of 100, and the returned cursor (or `None`)
-    /// drives the next page.
-    ///
-    /// The default implementation scans all notes, filters by each link's `target_note_id`,
-    /// and paginates in memory — correct but `O(N)`. Backends that maintain a link index
-    /// (e.g. `DbBackend`) override this with an indexed lookup. **Decorators must delegate to
-    /// their inner backend** (rather than inheriting this default) so the indexed override is
-    /// actually reached; see `EncryptedBackend`/`LinkingBackend`.
     async fn note_backlinks(
         &self,
         target_id: Uuid,
@@ -131,28 +69,21 @@ pub trait NoteRepository: Send + Sync + 'static {
                 None => break,
             }
         }
-        // `matches` is already in (created_at, id) order because `list_notes` is.
         Ok(paginate_notes(matches, page_size, page_token.as_deref()))
     }
 }
 
-/// A compact summary of one notebook's live-note ordering, computed natively by each
-/// backend (an indexed scan of sort keys — never the note bodies). All keys are
-/// *effective* keys: the legacy `0` sentinel is already mapped to
-/// [`Note::DEFAULT_SORT_KEY`].
+// md:NotebookSortProfile
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NotebookSortProfile {
-    /// The keys currently used in the pinned band (`1..=999`), sorted ascending.
     pub pinned_keys: Vec<u32>,
-    /// The smallest effective key in the notebook, or `None` when it has no live notes.
     pub min_key: Option<u32>,
-    /// The largest effective key in the normal band (`>= 1000`), or `None` when the
-    /// normal band is empty.
     pub max_normal_key: Option<u32>,
 }
 
+// md:impl NotebookSortProfile
 impl NotebookSortProfile {
-    /// Build a profile from an iterator of the notebook's live effective sort keys.
+    // md:impl NotebookSortProfile > fn from_effective_keys
     pub fn from_effective_keys(keys: impl IntoIterator<Item = u32>) -> Self {
         let mut profile = Self::default();
         for key in keys {
@@ -169,9 +100,7 @@ impl NotebookSortProfile {
     }
 }
 
-/// Paginate an already-`(created_at, id)`-ordered slice of notes with a `"created_at|id"`
-/// cursor (the same format used by the backends' `list_*` methods). Used by the default
-/// [`NoteRepository::note_backlinks`] implementation.
+// md:fn paginate_notes
 fn paginate_notes(
     items: Vec<Note>,
     page_size: u32,
@@ -204,29 +133,17 @@ fn paginate_notes(
     (page, next)
 }
 
-// ── NotebookRepository ────────────────────────────────────────────────────────
-
-/// CRUD operations for [`Notebook`] entities.
-///
-/// The same soft-delete semantics as [`NoteRepository`] apply: `delete_notebook`
-/// sets `deleted_at` rather than removing the record, and `list_notebooks` omits
-/// soft-deleted notebooks.
+// md:trait NotebookRepository
 #[async_trait]
 pub trait NotebookRepository: Send + Sync + 'static {
-    /// Persists a new notebook and returns the stored copy.
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError>;
 
-    /// Fetches a notebook by its UUID. Returns [`StorageError::NotFound`] if absent.
     async fn read_notebook(&self, id: Uuid) -> Result<Notebook, StorageError>;
 
-    /// Overwrites a notebook's fields. Returns [`StorageError::NotFound`] if absent.
     async fn update_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError>;
 
-    /// Soft-deletes a notebook. Returns [`StorageError::NotFound`] if absent.
     async fn delete_notebook(&self, id: Uuid) -> Result<(), StorageError>;
 
-    /// Returns a page of notebooks that have not been soft-deleted, ordered by
-    /// `(created_at ASC, id ASC)`. Pagination semantics match [`NoteRepository::list_notes`].
     async fn list_notebooks(
         &self,
         page_size: u32,
@@ -234,58 +151,27 @@ pub trait NotebookRepository: Send + Sync + 'static {
     ) -> Result<(Vec<Notebook>, Option<String>), StorageError>;
 }
 
-// ── TagRepository ─────────────────────────────────────────────────────────────
-
-/// CRUD operations for [`Tag`] entities and the note–tag association table.
-///
-/// Note–tag links (`add_note_tag`, `remove_note_tag`) are included here rather
-/// than in a separate trait because they are always used together with tag reads
-/// and the association has no independent lifecycle beyond the tags themselves.
-///
-/// Both `add_note_tag` and `remove_note_tag` must be **idempotent**: adding a tag
-/// that is already attached, or removing one that is not attached, must succeed
-/// without returning an error.
+// md:trait TagRepository
 #[async_trait]
 pub trait TagRepository: Send + Sync + 'static {
-    /// Persists a new tag and returns the stored copy.
     async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError>;
 
-    /// Fetches a tag by its UUID. Returns [`StorageError::NotFound`] if absent.
     async fn read_tag(&self, id: Uuid) -> Result<Tag, StorageError>;
 
-    /// Overwrites a tag's fields. Returns [`StorageError::NotFound`] if absent.
     async fn update_tag(&self, tag: Tag) -> Result<Tag, StorageError>;
 
-    /// Soft-deletes a tag. Returns [`StorageError::NotFound`] if absent.
     async fn delete_tag(&self, id: Uuid) -> Result<(), StorageError>;
 
-    /// Returns a page of tags that have not been soft-deleted, ordered by
-    /// `(created_at ASC, id ASC)`. Pagination semantics match [`NoteRepository::list_notes`].
     async fn list_tags(
         &self,
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Tag>, Option<String>), StorageError>;
 
-    /// Attaches `note_tag.tag_id` to `note_tag.note_id`.
-    ///
-    /// Must be idempotent: attaching a tag that is already attached must not
-    /// return an error.
-    ///
-    /// Returns [`StorageError::NotFound`] when the note or the tag does not exist or is
-    /// soft-deleted — the API must not create dangling associations. (`apply_change`
-    /// deliberately skips this validation: sync delivery order is not guaranteed, so an
-    /// association may arrive before its note or tag.)
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError>;
 
-    /// Detaches the tag identified by `tag_id` from the note identified by `note_id`.
-    ///
-    /// Returns successfully even if the association did not exist (idempotent).
     async fn remove_note_tag(&self, note_id: Uuid, tag_id: Uuid) -> Result<(), StorageError>;
 
-    /// Returns a page of tags currently attached to the note identified by `note_id`,
-    /// ordered by `(created_at ASC, id ASC)`. Pagination semantics match
-    /// [`NoteRepository::list_notes`].
     async fn list_note_tags(
         &self,
         note_id: Uuid,
@@ -294,192 +180,69 @@ pub trait TagRepository: Send + Sync + 'static {
     ) -> Result<(Vec<Tag>, Option<String>), StorageError>;
 }
 
-// ── ResourceRepository ────────────────────────────────────────────────────────
-
-/// CRUD operations for binary [`Resource`] attachments.
-///
-/// Resources use a **soft-delete tombstone** (`deleted_at` + version vector), like every
-/// other entity, so a concurrent delete-vs-recreate converges. The binary payload is retained
-/// on disk / in the database after a soft delete (the tombstone must persist for convergence);
-/// reclaiming that space is left to out-of-band maintenance.
+// md:trait ResourceRepository
 #[async_trait]
 pub trait ResourceRepository: Send + Sync + 'static {
-    /// Stores resource metadata alongside its binary payload and returns the metadata.
-    ///
-    /// `data` is the raw binary content of the file (e.g. PNG bytes, PDF bytes).
     async fn create_resource(
         &self,
         resource: Resource,
         data: Vec<u8>,
     ) -> Result<Resource, StorageError>;
 
-    /// Returns both the metadata and the binary payload for a resource.
-    ///
-    /// Returns [`StorageError::NotFound`] if no resource with the given `id` exists.
     async fn read_resource(&self, id: Uuid) -> Result<(Resource, Vec<u8>), StorageError>;
 
-    /// Soft-deletes a resource: stamps a `deleted_at` tombstone plus a bumped version vector so
-    /// the delete competes in conflict resolution. The resource then reads as
-    /// [`StorageError::NotFound`] and is excluded from listings; the binary payload is retained.
-    ///
-    /// Returns [`StorageError::NotFound`] if no resource with the given `id` exists.
     async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError>;
 
-    /// Returns a page of resource metadata records, without their binary payloads,
-    /// ordered by `(created_at ASC, id ASC)`. Pagination semantics match
-    /// [`NoteRepository::list_notes`]. To read the binary payload for a specific
-    /// resource, call `read_resource` with that resource's UUID.
     async fn list_resources(
         &self,
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Resource>, Option<String>), StorageError>;
 
-    /// Reclaim the binary payloads of resources whose soft-delete tombstone is older
-    /// than `older_than`, returning how many payloads were freed.
-    ///
-    /// The tombstone **metadata is always retained** — it must keep competing in conflict
-    /// resolution so the deletion converges — only the dead bytes are released. Reads of
-    /// a tombstoned resource were already `NotFound`, so no read path changes.
-    ///
-    /// The cutoff exists because a *concurrent* revive on a peer that has not synced yet
-    /// can still win resolution and legitimately need the payload; purging only
-    /// tombstones older than a generous window (the daemon uses days, mirroring journal
-    /// retention) makes that race practically closed, and a revive that does land after a
-    /// purge is made whole by the revive itself, which always carries (or replicates) a
-    /// fresh payload.
     async fn purge_deleted_resources(&self, older_than: DateTime<Utc>)
         -> Result<u64, StorageError>;
 }
 
-// ── SyncBackend ───────────────────────────────────────────────────────────────
-
-/// Device identification and change-journal synchronisation operations.
-///
-/// All methods in this trait are used by [`crate::sync::SyncEngine`] to coordinate
-/// state between devices. The six-step sync cycle is:
-/// 1. [`get_changes_since`](Self::get_changes_since) — collect local changes since last sync.
-/// 2. [`send_changes`](Self::send_changes) — push them to the remote peer.
-/// 3. [`receive_changes`](Self::receive_changes) — pull changes from the remote peer.
-/// 4. [`apply_change`](Self::apply_change) (repeated) — apply each incoming change locally.
-/// 5. [`update_sync_time`](Self::update_sync_time) — record the completion timestamp.
-/// 6. [`prune_change_journal`](Self::prune_change_journal) (optional) — trim old journal rows.
-///
-/// ## Idempotency requirement
-///
-/// `apply_change` **must** be idempotent: applying the same `Change` twice must produce
-/// the same result as applying it once. All built-in implementations satisfy this by
-/// using `INSERT OR IGNORE` / `INSERT OR REPLACE` for creates and no-op deletes.
+// md:trait SyncBackend
 #[async_trait]
 pub trait SyncBackend: Send + Sync + 'static {
-    /// Returns the stable string identifier for this device installation.
-    ///
-    /// The device ID is generated once and persisted to disk. It is used as the Argon2id
-    /// salt when deriving the AES encryption key, and as the file name for this device's
-    /// change log (`logs/{device_id}.log`).
     async fn get_device_id(&self) -> Result<String, StorageError>;
 
-    /// Returns the UTC timestamp of the most recent successful sync cycle.
-    ///
-    /// Returns the Unix epoch (1970-01-01T00:00:00Z) if no sync has ever completed
-    /// on this device.
     async fn get_last_sync_time(&self) -> Result<DateTime<Utc>, StorageError>;
 
-    /// Overwrites the stored last-sync timestamp with `ts`.
-    ///
-    /// Called at the end of a successful sync cycle by [`crate::sync::SyncEngine`].
     async fn update_sync_time(&self, ts: DateTime<Utc>) -> Result<(), StorageError>;
 
-    /// Returns all [`Change`] events recorded on this device after `since`.
-    ///
-    /// The `since` parameter is typically the value returned by the previous call to
-    /// [`get_last_sync_time`](Self::get_last_sync_time). The returned list is ordered
-    /// by the time each change was recorded.
     async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError>;
 
-    /// Applies a single incoming change from another device to the local store.
-    ///
-    /// Must be idempotent: applying the same change twice produces the same result as
-    /// applying it once. This allows the sync engine to safely retry after a partial
-    /// failure without risking data corruption.
-    ///
-    /// Conflict resolution is **unified on version vectors** across both backends: every entity
-    /// is resolved by [`crate::storage::note_log`]'s `resolve` (state-based, for `DbBackend`'s
-    /// rows and `FsBackend`'s sidecars) or `merge` (for `FsBackend`'s per-note logs), which share
-    /// the same domination test and `(timestamp, device_id)` tiebreak, so every device converges
-    /// on the same winner. The storage shape differs (current-state rows vs. append-only
-    /// per-device logs) but the decision does not. See `SECURITY.md`
-    /// ("Conflict resolution is unified on version vectors") for the implications.
     async fn apply_change(&self, change: Change) -> Result<(), StorageError>;
 
-    /// Transmits the given list of local changes to the remote peer.
-    ///
-    /// In `DbBackend`, this sends the changes over the WebSocket connection with
-    /// exponential-backoff retry. In `FsBackend`, this is a no-op because Syncthing
-    /// replicates the log files independently.
     async fn send_changes(&self, changes: Vec<Change>) -> Result<(), StorageError>;
 
-    /// Retrieves all changes that the remote peer has for this device since the last pull.
-    ///
-    /// In `DbBackend`, this drains available messages from the WebSocket connection.
-    /// In `FsBackend`, this is a no-op that returns an empty list (changes are discovered
-    /// by scanning other devices' log files in `get_changes_since`).
     async fn receive_changes(&self) -> Result<Vec<Change>, StorageError>;
 
-    /// Permanently removes change-journal entries older than `older_than`.
-    ///
-    /// Returns the number of rows removed. Call this periodically (for example once per
-    /// day after a successful sync cycle) to prevent the `entity_changes` table in
-    /// `DbBackend` from growing indefinitely.
-    ///
-    /// `FsBackend` always returns `Ok(0)` without modifying any files, because pruning
-    /// per-device NDJSON log files could cause remote devices that have not yet processed
-    /// the removed entries to miss changes permanently.
     async fn prune_change_journal(&self, older_than: DateTime<Utc>) -> Result<u64, StorageError>;
 }
 
-// ── HistoryRepository ─────────────────────────────────────────────────────────
-
-/// Default cap on the number of versions a `*_history` call returns when the caller passes
-/// `limit = 0`. Bounds a single reply regardless of how deep the journal retains history.
+// md:DEFAULT_HISTORY_LIMIT
 pub const DEFAULT_HISTORY_LIMIT: u32 = 100;
 
-/// One past version of an entity, reconstructed from the change journal.
-///
-/// The journal already stores a **full snapshot** per change (a `NoteUpdate` carries the
-/// whole `Note`), so history is *derived* from it rather than kept in a parallel store.
-/// `entity` is `None` when this version is a **tombstone** (the entity was soft-deleted at
-/// this point); a later version may revive it. Versions are decrypted on the way up through
-/// [`crate::encryption::EncryptedBackend`], so the payload here is always plaintext.
+// md:EntityVersion
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntityVersion<T> {
-    /// Wall-clock time this version was written (the edit's `updated_at`/`deleted_at`).
     pub timestamp: DateTime<Utc>,
-    /// The device that authored the version.
     pub device_id: String,
-    /// The entity as of this version, or `None` for a tombstone.
     pub entity: Option<T>,
 }
 
-/// Read-only access to an entity's past versions, and the raw material for
-/// [`crate::history`]'s forward-revert helpers.
-///
-/// History is **derived from the change journal** (per-device op logs in `FsBackend`, the
-/// `entity_changes` table in `DbBackend`), newest-first and bounded by `limit` (0 = the
-/// backend's default cap). What survives is governed by the journal's retention policy
-/// (version count and, unless disabled, age) — see [`crate::config`].
+// md:trait HistoryRepository
 #[async_trait]
 pub trait HistoryRepository: Send + Sync + 'static {
-    /// Past versions of a note, newest first (index 0 is the current state). An unknown id
-    /// yields an empty list rather than `NotFound`, so callers can treat "no history" and
-    /// "no such note" uniformly.
     async fn note_history(
         &self,
         id: Uuid,
         limit: u32,
     ) -> Result<Vec<EntityVersion<Note>>, StorageError>;
 
-    /// Past versions of a notebook, newest first. See [`note_history`](Self::note_history).
     async fn notebook_history(
         &self,
         id: Uuid,
@@ -487,25 +250,7 @@ pub trait HistoryRepository: Send + Sync + 'static {
     ) -> Result<Vec<EntityVersion<Notebook>>, StorageError>;
 }
 
-// ── StorageBackend supertrait ─────────────────────────────────────────────────
-
-/// Unified async storage interface.
-///
-/// This supertrait requires all five domain-specific sub-traits:
-/// [`NoteRepository`], [`NotebookRepository`], [`TagRepository`],
-/// [`ResourceRepository`], and [`SyncBackend`]. Any type that implements all five
-/// automatically satisfies `StorageBackend` via the blanket impl below — no
-/// additional code is required.
-///
-/// Code that works with any backend uses `T: StorageBackend` as a single bound.
-/// Methods from all five sub-traits are available on `T` because supertrait
-/// bounds are transitive.
-///
-/// ## Implemented by
-///
-/// - [`crate::storage::fs::FsBackend`] — JSON files + Syncthing replication.
-/// - [`crate::storage::db::DbBackend`] — LibSQL database + WebSocket sync.
-/// - [`crate::encryption::EncryptedBackend<B>`] — transparent AES-256-GCM decorator.
+// md:trait StorageBackend
 pub trait StorageBackend:
     NoteRepository
     + NotebookRepository
@@ -516,14 +261,7 @@ pub trait StorageBackend:
 {
 }
 
-/// Blanket implementation: any type satisfying all five sub-traits automatically
-/// satisfies `StorageBackend`. This means adding a new backend only requires
-/// writing the five focused `impl` blocks — no additional glue code is needed.
-///
-/// The `T: ?Sized` bound also lets the trait object `dyn StorageBackend` itself satisfy
-/// `StorageBackend` (it auto-implements all five object-safe sub-traits), so an
-/// `Arc<dyn StorageBackend>` can be passed where a `B: StorageBackend` bound is expected —
-/// for example to [`crate::sync::run_sync`] from the daemon's type-erased REST layer.
+// md:impl StorageBackend for T
 impl<T: ?Sized> StorageBackend for T where
     T: NoteRepository
         + NotebookRepository

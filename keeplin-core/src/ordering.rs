@@ -1,43 +1,4 @@
-//! The Inbox system notebook, pinning, manual ordering, and starring.
-//!
-//! # The model
-//!
-//! Every note belongs to exactly one notebook (`Note::notebook_id` is never "none"); a
-//! note created without choosing one lands in the **Inbox** — a system notebook with the
-//! fixed nil UUID and the title "Pizarra", auto-created at daemon startup and protected
-//! from user deletion by the API surfaces.
-//!
-//! Within a notebook, notes order by `(effective sort_key ASC, id ASC)`:
-//!
-//! - **Normal notebooks** have two bands: `1..=999` is the **pinned** band (rendered
-//!   `0.001–0.999`, shown at the top, at most [`MAX_PINNED`] notes) and `>= 1000` the
-//!   **normal** band. New notes enter the normal band after its current last note.
-//! - **The Inbox** is one flat band with no pinning; new notes are inserted at the
-//!   **top** (`min(existing) - 1`, resequencing first if the space above is exhausted).
-//! - `sort_key == 0` is the legacy "never positioned" sentinel, ordered as
-//!   [`Note::DEFAULT_SORT_KEY`] (the start of the normal band).
-//!
-//! **Starring** ([`star_note`]/[`unstar_note`]) is a global flag, fully orthogonal to
-//! pinning and to the notebook — it never moves the note.
-//!
-//! # Where the logic lives
-//!
-//! Like [`crate::linking`]'s alias helpers, the operations here are free functions over
-//! `&dyn StorageBackend` doing read-modify-write through the normal `update_note` path,
-//! so version vectors, encryption, link derivation, and the live-change feed all apply
-//! unchanged and the resulting state syncs like any other edit. Placement decisions read
-//! one [`NotebookSortProfile`] — a compact per-notebook summary each backend computes
-//! natively — instead of materializing the notebook's notes.
-//!
-//! # Concurrency and sync
-//!
-//! Sort keys are plain note fields, so concurrent edits resolve like any other note
-//! conflict (whole-note version-vector resolution with the deterministic tiebreak). Two
-//! devices pinning concurrently can pick the same key; ordering stays deterministic
-//! (`id` breaks ties) and the next reorder can separate them. Old peers ignore the new
-//! fields (serde/protobuf defaults), and notes they write keep `sort_key = 0`, which
-//! orders them at the start of the normal band.
-
+// md:Overview
 use uuid::Uuid;
 
 use crate::{
@@ -46,29 +7,25 @@ use crate::{
     storage::{NotebookSortProfile, StorageBackend},
 };
 
-/// The Inbox's fixed identity: the nil UUID on every device, so it never needs to sync
-/// an id and can be addressed before it exists.
+// md:INBOX_ID
 pub const INBOX_ID: Uuid = Uuid::nil();
 
-/// The Inbox's title.
-pub const INBOX_TITLE: &str = "Pizarra";
+// md:INBOX_TITLE
+pub const INBOX_TITLE: &str = "Inbox";
 
-/// Highest sort key of the pinned band (`1..=PIN_MAX`), and therefore also the maximum
-/// number of pinned notes per notebook.
+// md:PIN_MAX
 pub const PIN_MAX: u32 = 999;
 
-/// Maximum pinned notes per notebook (the pinned band simply has no more keys).
+// md:MAX_PINNED
 pub const MAX_PINNED: usize = PIN_MAX as usize;
 
-/// First sort key of the normal (unpinned) band.
+// md:NORMAL_START
 pub const NORMAL_START: u32 = Note::DEFAULT_SORT_KEY;
 
-/// Spacing used when the Inbox is resequenced (leaves room above and between notes).
+// md:RESEQUENCE_STEP
 const RESEQUENCE_STEP: u32 = 1000;
 
-/// Create the Inbox system notebook if this store does not have it yet. Idempotent —
-/// call it at every startup. Two devices creating it concurrently converge like any
-/// other notebook conflict (both sides write the same fixed id).
+// md:fn ensure_inbox
 pub async fn ensure_inbox(backend: &dyn StorageBackend) -> Result<(), StorageError> {
     match backend.read_notebook(INBOX_ID).await {
         Ok(_) => Ok(()),
@@ -83,22 +40,12 @@ pub async fn ensure_inbox(backend: &dyn StorageBackend) -> Result<(), StorageErr
     }
 }
 
-/// Whether `id` names the Inbox. The API surfaces use this to refuse deleting it, and
-/// [`crate::linking::LinkingBackend`] uses it to keep Inbox notes out of the linking graph
-/// (they carry no alias, emit no links, and are never a link target).
+// md:fn is_inbox
 pub fn is_inbox(id: Uuid) -> bool {
     id == INBOX_ID
 }
 
-/// Assign a brand-new note its initial position, honouring a caller-chosen `sort_key`
-/// when one was set (`!= 0`). Call before `create_note` (the daemon does, on every
-/// create surface):
-///
-/// - In the **Inbox**, the note is inserted at the **top**: `min(existing) - 1`. When
-///   the space above is exhausted (the minimum would fall to the `0` sentinel), the
-///   Inbox is resequenced first (see [`resequence_inbox`]).
-/// - In a **normal notebook**, the note enters the **normal band** after its current
-///   last note: `max(normal band) + 1`, or [`NORMAL_START`] in an empty band.
+// md:fn place_new_note
 pub async fn place_new_note(
     backend: &dyn StorageBackend,
     note: &mut Note,
@@ -109,7 +56,6 @@ pub async fn place_new_note(
     let profile = backend.notebook_sort_profile(note.notebook_id).await?;
     note.sort_key = if is_inbox(note.notebook_id) {
         match profile.min_key {
-            // `min - 1` must never reach the 0 sentinel; make room first.
             Some(min) if min <= 1 => resequence_inbox(backend).await? - 1,
             Some(min) => min - 1,
             None => NORMAL_START,
@@ -120,12 +66,7 @@ pub async fn place_new_note(
     Ok(())
 }
 
-/// Pin a note: move it into its notebook's pinned band at the lowest free key.
-///
-/// Returns the updated note. Fails with [`StorageError::InvalidInput`] on an Inbox note
-/// (the Inbox has no pinning) and with [`StorageError::Conflict`] when the notebook
-/// already has [`MAX_PINNED`] pinned notes. Pinning an already-pinned note is a no-op
-/// that returns it unchanged.
+// md:fn pin_note
 pub async fn pin_note(backend: &dyn StorageBackend, id: Uuid) -> Result<Note, StorageError> {
     let mut note = read_live_note(backend, id).await?;
     if is_inbox(note.notebook_id) {
@@ -148,8 +89,7 @@ pub async fn pin_note(backend: &dyn StorageBackend, id: Uuid) -> Result<Note, St
     backend.update_note(note).await
 }
 
-/// Unpin a note: move it to the end of its notebook's normal band. Returns the updated
-/// note; unpinning a note that is not pinned is a no-op that returns it unchanged.
+// md:fn unpin_note
 pub async fn unpin_note(backend: &dyn StorageBackend, id: Uuid) -> Result<Note, StorageError> {
     let mut note = read_live_note(backend, id).await?;
     if !note.is_pinned {
@@ -161,20 +101,7 @@ pub async fn unpin_note(backend: &dyn StorageBackend, id: Uuid) -> Result<Note, 
     backend.update_note(note).await
 }
 
-/// Reconcile a user-facing note update whose `notebook_id` differs from where the note
-/// currently lives. A note's position (`sort_key`) and pinned state belong to a specific
-/// notebook — the pinned band is per-notebook, and a sort key is only meaningful among the
-/// notebook's own notes — so on a move both are reset and the note is re-placed in the
-/// destination via [`place_new_note`] (the top of the Inbox, or the end of a normal
-/// notebook's normal band). Moving out of the Inbox into a normal notebook therefore
-/// converts the note to the pinned/normal band system, and moving into the Inbox clears any
-/// pinned state (the Inbox has no pinning).
-///
-/// A no-op when `note.notebook_id == current_notebook_id`, so a plain edit keeps the note's
-/// manual position. `current_notebook_id` is the notebook the stored note is in **now** (the
-/// caller has just read it). Call from the generic "user edits a note" update path only:
-/// the pin/unpin/reorder ops set `sort_key`/`is_pinned` deliberately and call `update_note`
-/// directly, so they must **not** go through here.
+// md:fn reconcile_notebook_move
 pub async fn reconcile_notebook_move(
     backend: &dyn StorageBackend,
     current_notebook_id: Uuid,
@@ -188,16 +115,17 @@ pub async fn reconcile_notebook_move(
     place_new_note(backend, note).await
 }
 
-/// Star a note (a global flag; the note's position never changes). Idempotent.
+// md:fn star_note
 pub async fn star_note(backend: &dyn StorageBackend, id: Uuid) -> Result<Note, StorageError> {
     set_starred(backend, id, true).await
 }
 
-/// Remove a note's star. Idempotent.
+// md:fn unstar_note
 pub async fn unstar_note(backend: &dyn StorageBackend, id: Uuid) -> Result<Note, StorageError> {
     set_starred(backend, id, false).await
 }
 
+// md:fn set_starred
 async fn set_starred(
     backend: &dyn StorageBackend,
     id: Uuid,
@@ -211,15 +139,7 @@ async fn set_starred(
     backend.update_note(note).await
 }
 
-/// Give a note a new manual position **within its current band**. Returns the updated
-/// note.
-///
-/// - A **pinned** note accepts keys in `1..=`[`PIN_MAX`]; anything else is
-///   [`StorageError::InvalidInput`] (unpin it instead of renumbering it out).
-/// - A **normal** note accepts keys `>= `[`NORMAL_START`].
-/// - An **Inbox** note accepts any key `>= 1` (`0` is the legacy sentinel).
-///
-/// Duplicate keys are allowed — ordering stays deterministic (`id` breaks ties).
+// md:fn reorder_note
 pub async fn reorder_note(
     backend: &dyn StorageBackend,
     id: Uuid,
@@ -252,10 +172,7 @@ pub async fn reorder_note(
     backend.update_note(note).await
 }
 
-/// Renumber every live Inbox note to `1000, 2000, 3000, …` in its current order,
-/// returning the new minimum key. Called when top-insertion has consumed all the room
-/// above the first note; the wide spacing makes the next resequence far away. Each
-/// renumbered note goes through `update_note`, so the moves version and sync normally.
+// md:fn resequence_inbox
 pub async fn resequence_inbox(backend: &dyn StorageBackend) -> Result<u32, StorageError> {
     let mut token = None;
     let mut next = RESEQUENCE_STEP;
@@ -276,8 +193,7 @@ pub async fn resequence_inbox(backend: &dyn StorageBackend) -> Result<u32, Stora
     Ok(RESEQUENCE_STEP)
 }
 
-/// The lowest key in `1..=PIN_MAX` not present in `used` (which the profile returns
-/// sorted ascending), or `None` when the band is full.
+// md:fn lowest_free_pinned_key
 fn lowest_free_pinned_key(used: &[u32]) -> Option<u32> {
     let mut candidate = 1u32;
     for &key in used {
@@ -291,8 +207,7 @@ fn lowest_free_pinned_key(used: &[u32]) -> Option<u32> {
     (candidate <= PIN_MAX).then_some(candidate)
 }
 
-/// The key after the last note of the normal band: `max + 1`, or [`NORMAL_START`] when
-/// the band is empty.
+// md:fn next_normal_key
 fn next_normal_key(profile: &NotebookSortProfile) -> u32 {
     profile
         .max_normal_key
@@ -300,8 +215,7 @@ fn next_normal_key(profile: &NotebookSortProfile) -> u32 {
         .unwrap_or(NORMAL_START)
 }
 
-/// Read a note for a user-facing read-modify-write, rejecting a tombstone as `NotFound`
-/// (mirrors `linking`'s helper: ordering edits must never revive a deleted note).
+// md:fn read_live_note
 async fn read_live_note(backend: &dyn StorageBackend, id: Uuid) -> Result<Note, StorageError> {
     let note = backend.read_note(id).await?;
     if note.deleted_at.is_some() {
@@ -310,12 +224,14 @@ async fn read_live_note(backend: &dyn StorageBackend, id: Uuid) -> Result<Note, 
     Ok(note)
 }
 
+// md:mod tests
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::storage::fs::FsBackend;
     use crate::storage::{NoteRepository, NotebookRepository};
 
+    // md:mod tests > fn backend
     async fn backend() -> FsBackend {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_path_buf();
@@ -323,7 +239,7 @@ mod tests {
         FsBackend::new(&path).await.unwrap()
     }
 
-    /// Create a note through the daemon's placement rule (what every API create does).
+    // md:mod tests > fn create_placed
     async fn create_placed(be: &FsBackend, title: &str, notebook: Uuid) -> Note {
         let mut note = Note::new(title, "");
         note.notebook_id = notebook;
@@ -331,8 +247,7 @@ mod tests {
         be.create_note(note).await.unwrap()
     }
 
-    /// Move a note to `dest` through the daemon's generic-update path (read → reconcile →
-    /// update), the sequence both API surfaces run.
+    // md:mod tests > fn move_note
     async fn move_note(be: &FsBackend, id: Uuid, dest: Uuid) -> Note {
         let mut note = be.read_note(id).await.unwrap();
         let current = note.notebook_id;
@@ -343,10 +258,12 @@ mod tests {
         be.update_note(note).await.unwrap()
     }
 
+    // md:mod tests > fn titles
     fn titles(page: &[Note]) -> Vec<&str> {
         page.iter().map(|n| n.title.as_str()).collect()
     }
 
+    // md:mod tests > fn ensure_inbox_is_idempotent_and_fixed
     #[tokio::test]
     async fn ensure_inbox_is_idempotent_and_fixed() {
         let be = backend().await;
@@ -357,20 +274,18 @@ mod tests {
         assert_eq!(inbox.id, INBOX_ID);
     }
 
-    /// New Inbox notes go to the top; new notebook notes go to the end of the normal band.
+    // md:mod tests > fn placement_inbox_top_notebook_bottom
     #[tokio::test]
     async fn placement_inbox_top_notebook_bottom() {
         let be = backend().await;
         ensure_inbox(&be).await.unwrap();
 
-        // Inbox: each new note lands above the previous one.
         create_placed(&be, "first", INBOX_ID).await;
         create_placed(&be, "second", INBOX_ID).await;
         create_placed(&be, "third", INBOX_ID).await;
         let (page, _) = be.list_notes_in_notebook(INBOX_ID, 0, None).await.unwrap();
         assert_eq!(titles(&page), ["third", "second", "first"]);
 
-        // Normal notebook: each new note lands below the previous one.
         let nb = be.create_notebook(Notebook::new("nb")).await.unwrap();
         let a = create_placed(&be, "a", nb.id).await;
         let b = create_placed(&be, "b", nb.id).await;
@@ -380,8 +295,7 @@ mod tests {
         assert_eq!(titles(&page), ["a", "b"]);
     }
 
-    /// Pinning moves a note into the pinned band (listed first); unpinning appends it to
-    /// the normal band. Inbox notes cannot be pinned.
+    // md:mod tests > fn pin_unpin_round_trip_and_inbox_rejection
     #[tokio::test]
     async fn pin_unpin_round_trip_and_inbox_rejection() {
         let be = backend().await;
@@ -411,7 +325,7 @@ mod tests {
         assert!(matches!(err, StorageError::InvalidInput(_)), "got: {err:?}");
     }
 
-    /// Reordering stays inside the note's band and rejects keys outside it.
+    // md:mod tests > fn reorder_respects_bands
     #[tokio::test]
     async fn reorder_respects_bands() {
         let be = backend().await;
@@ -420,13 +334,11 @@ mod tests {
         let a = create_placed(&be, "a", nb.id).await;
         let b = create_placed(&be, "b", nb.id).await;
 
-        // Normal band: move b above a.
         reorder_note(&be, b.id, NORMAL_START).await.unwrap();
         reorder_note(&be, a.id, NORMAL_START + 5).await.unwrap();
         let (page, _) = be.list_notes_in_notebook(nb.id, 0, None).await.unwrap();
         assert_eq!(titles(&page), ["b", "a"]);
 
-        // A normal note cannot take a pinned-band key, and vice versa.
         let err = reorder_note(&be, a.id, 5).await.unwrap_err();
         assert!(matches!(err, StorageError::InvalidInput(_)));
         let pinned = pin_note(&be, a.id).await.unwrap();
@@ -438,8 +350,7 @@ mod tests {
         assert_eq!(be.read_note(a.id).await.unwrap().sort_key, 42);
     }
 
-    /// Starring is global and orthogonal: the starred list spans notebooks, and the
-    /// note's position never changes.
+    // md:mod tests > fn starring_is_global_and_never_moves_the_note
     #[tokio::test]
     async fn starring_is_global_and_never_moves_the_note() {
         let be = backend().await;
@@ -463,14 +374,12 @@ mod tests {
         assert_eq!(titles(&page), ["nb note"]);
     }
 
-    /// When top-insertion exhausts the space above the first Inbox note, the Inbox is
-    /// resequenced and insertion keeps working — order preserved throughout.
+    // md:mod tests > fn inbox_top_insert_survives_underflow_by_resequencing
     #[tokio::test]
     async fn inbox_top_insert_survives_underflow_by_resequencing() {
         let be = backend().await;
         ensure_inbox(&be).await.unwrap();
         let first = create_placed(&be, "old-top", INBOX_ID).await;
-        // Simulate a long history of top-inserts: manually push the head to key 1.
         reorder_note(&be, first.id, 1).await.unwrap();
 
         let newcomer = create_placed(&be, "new-top", INBOX_ID).await;
@@ -479,9 +388,7 @@ mod tests {
         assert_eq!(titles(&page), ["new-top", "old-top"]);
     }
 
-    /// Moving a note to another notebook re-places it in the destination's normal band —
-    /// even when its old Inbox key (`999`, from top-insertion) fell inside the pinned
-    /// numeric range, which a naive move would leave sitting in the pinned zone.
+    // md:mod tests > fn moving_a_note_replaces_it_in_the_destination_band
     #[tokio::test]
     async fn moving_a_note_replaces_it_in_the_destination_band() {
         let be = backend().await;
@@ -510,7 +417,7 @@ mod tests {
         assert_eq!(titles(&inbox_page), ["first"], "gone from the Inbox");
     }
 
-    /// Moving a pinned note into the Inbox clears its pinned state (the Inbox has none).
+    // md:mod tests > fn moving_a_pinned_note_into_the_inbox_unpins_it
     #[tokio::test]
     async fn moving_a_pinned_note_into_the_inbox_unpins_it() {
         let be = backend().await;
@@ -526,7 +433,7 @@ mod tests {
         assert_eq!(titles(&inbox_page), ["n"]);
     }
 
-    /// A same-notebook edit is a no-op for placement: the manual position is preserved.
+    // md:mod tests > fn a_same_notebook_edit_keeps_the_position
     #[tokio::test]
     async fn a_same_notebook_edit_keeps_the_position() {
         let be = backend().await;
@@ -551,6 +458,7 @@ mod tests {
         assert_eq!(titles(&page), ["a-edited", "b"]);
     }
 
+    // md:mod tests > fn lowest_free_pinned_key_fills_gaps_and_detects_full
     #[test]
     fn lowest_free_pinned_key_fills_gaps_and_detects_full() {
         assert_eq!(lowest_free_pinned_key(&[]), Some(1));

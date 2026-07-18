@@ -1,72 +1,168 @@
 # `migrate.rs` — one-shot state copy between backends
 
-## Purpose
+Self-contained companion for `keeplin-core/src/migrate.rs`. It documents **every code
+block of the source file, in source order** — a reader with only this file must be able
+to understand it without opening anything else, so project-wide conventions are
+deliberately re-explained here (hyper-redundancy is intended).
 
-Copy the **complete current state** of one `StorageBackend` into another, in either
-direction, so a store can be moved between the filesystem backend (`FsBackend`) and the
-database backend (`DbBackend`) — including across an encryption boundary. It is a one-shot
-migration, **not** live sync: after it runs, each backend keeps using its own native
-replication (Syncthing for FS, WebSocket for DB).
+**How to navigate**: every block carries exactly one marker comment
+`// md:<Header> > … > <Block header>` whose path is the header chain of its section
+here; grep it in either direction. Each section covers **Identification**,
+**What it does**, **Dependencies**, **Used by**, **Repeated context**.
 
-## Why a dedicated path (not `get_changes_since`/`apply_change`)
+---
 
-The two backends have **asymmetric** sync channels, so the raw `Change` interface is not
-interchangeable between them:
+## Overview
 
-- `FsBackend::get_changes_since` reads only the global NDJSON journal (notebooks/tags/
-  resources) — notes live in per-note version-vector logs and are **not** emitted there.
-- `FsBackend::apply_change` for a note **ignores the payload** and only re-materializes logs
-  already on disk (the Syncthing assumption), so importing a note it hasn't already received
-  is a silent no-op.
-- `EncryptedBackend` passes `apply_change` through **without encrypting**, so it can't be the
-  destination of a raw change either.
+**Identification** — file-level block: the imports. Marker `// md:Overview`.
 
-`migrate` sidesteps all three by copying through the typed **`create_*` methods**, which every
-layer implements correctly (real VV log on FS, indexed row on DB, encrypt-on-write when wrapped).
+```rust
+use crate::{
+    error::StorageError,
+    models::{NoteTag, Resource},
+    storage::StorageBackend,
+};
+```
 
-## Public API
+**What it does** — One-shot state migration between any two `StorageBackend`s, in
+either direction (`FsBackend ↔ DbBackend`), including across an encryption boundary.
+Why a dedicated path instead of a raw `get_changes_since → apply_change` bridge: the
+two backends have **asymmetric** sync channels, so their `Change` streams are not
+interchangeable —
 
-### `fn migrate(src: &dyn StorageBackend, dst: &dyn StorageBackend) -> Result<MigrationReport>`
+- `FsBackend::get_changes_since` reads only the global NDJSON journal
+  (notebooks/tags/resources); notes live in per-note version-vector logs and are not
+  emitted there.
+- `FsBackend::apply_change` for a note ignores the payload and only re-materialises
+  logs already on disk (the Syncthing assumption), so importing an unseen note is a
+  silent no-op.
+- `EncryptedBackend` passes `apply_change` through **without encrypting**, so it
+  can't be a raw-change destination either.
 
-Copies every live entity from `src` to `dst`, in dependency order so references resolve as
-entities land:
+`migrate` sidesteps all three by copying the **current live state** through the typed
+`create_*` methods, which every layer implements correctly: verbatim
+ids/timestamps/`alias`/`bookmarks`/`links`, a native per-device VV log on FS, the
+rebuilt `note_links` backlink index on DB, decrypt-on-read/encrypt-on-write when a
+side is wrapped in `EncryptedBackend` (each side uses its own key). Deliberate
+limitations: live state only (no tombstones — `list_*` excludes soft-deleted rows; a
+migration is a fresh start), empty destination required (original ids are inserted;
+an existing id errors, e.g. `DbBackend::create_note` is a plain `INSERT`), and it is
+a one-shot copy, not live sync.
+
+**Dependencies** — `crate::error::StorageError`, `crate::models::{NoteTag,
+Resource}`, `crate::storage::StorageBackend`.
+
+**Used by** — the daemon's `keeplin-daemon migrate --from <a.toml> --to <b.toml>`
+subcommand (`keeplin-daemon/src/main.rs`, which builds each side from its own
+config); `keeplin-core/tests/migrate.rs`.
+
+**Repeated context** — Soft-delete-always is a project premise everywhere *except*
+here by design: a migration intentionally leaves tombstones behind. Dyn-trait
+(`&dyn StorageBackend`) parameters are the project norm for backend-agnostic code.
+
+---
+
+## PAGE
+
+**Identification** — `const PAGE: u32 = 500;` marker `// md:PAGE`.
+
+**What it does** — How many entities to request per page while exhausting the
+paginated `list_*` methods. Any value in `1..=MAX_PAGE_SIZE` (1000, from
+`storage/mod.rs`) is correct; 500 balances round-trips against per-page memory.
+
+**Dependencies** — none.
+
+**Used by** — every `collect(…)` call in `migrate`.
+
+**Repeated context** — all list APIs in the project are cursor-paginated; passing
+`0` would mean "backend default" (100).
+
+---
+
+## MigrationReport
+
+**Identification** — struct deriving `Debug, Default, Clone, Copy, PartialEq, Eq`;
+marker `// md:MigrationReport`.
+
+**What it does** — Per-entity counts of what a `migrate` run copied, for reporting
+to the operator: `notebooks`, `tags`, `notes`, `note_tags` (note↔tag associations),
+`resources` (metadata + binary payload). Plain data, `Default` starts at zero.
+
+**Dependencies** — none.
+
+**Used by** — returned by `migrate`; printed by the daemon's `migrate` subcommand;
+asserted on in `keeplin-core/tests/migrate.rs`.
+
+**Repeated context** — none.
+
+---
+
+## fn migrate
+
+**Identification** —
+`pub async fn migrate(src: &dyn StorageBackend, dst: &dyn StorageBackend) -> Result<MigrationReport, StorageError>`;
+marker `// md:fn migrate`.
+
+**What it does** — Copies every live entity from `src` into `dst`. Order matters so
+references resolve as entities land:
 
 | Order | Entity | How |
 |-------|--------|-----|
-| 1 | notebooks | `list_notebooks` → `dst.create_notebook` |
-| 2 | tags | `list_tags` → `dst.create_tag` |
-| 3 | notes | `list_notes` → `dst.create_note` (`alias`/`bookmarks`/`links` ride along as fields) |
-| 4 | note↔tag | per note, `src.list_note_tags` → `dst.add_note_tag` |
-| 5 | resources | `list_resources` + `src.read_resource` (bytes) → `dst.create_resource` |
+| 1 | notebooks | `list_notebooks` → `dst.create_notebook` (before notes: a note carries a `notebook_id`) |
+| 2 | tags | `list_tags` → `dst.create_tag` (before note↔tag associations) |
+| 3 | notes | `list_notes` → `dst.create_note(note.clone())` — `alias`/`bookmarks`/`links` ride along as note fields; the destination rebuilds any backlink index from them |
+| 4 | note↔tag | per note, `src.list_note_tags` → `dst.add_note_tag(NoteTag { note_id, tag_id })` |
+| 5 | resources | `list_resources` (metadata) + `src.read_resource` (bytes) → `dst.create_resource` |
 
-Returns a `MigrationReport { notebooks, tags, notes, note_tags, resources }` of per-entity
-counts. On the DB destination, `create_note` rebuilds the `note_links` backlink index from the
-copied `links`; when either side is an `EncryptedBackend`, reads decrypt and writes encrypt, so
-each side uses its own key.
+Each write uses the same typed call the API surfaces use, so the destination stores
+the entity exactly as if a client had created it — including its own indexes and its
+own at-rest encryption. Returns the `MigrationReport` counts. **Fails fast** on the
+first error, leaving whatever was already written in place (hence the
+empty-destination expectation: a re-run after fixing the cause starts fresh).
 
-### `struct MigrationReport`
+**Dependencies** — `collect` (below), `PAGE`, `StorageBackend`'s
+`list_*`/`create_*`/`add_note_tag`/`read_resource`, `NoteTag`, `Resource`.
 
-Per-entity counts of what was copied (`Debug`, `Default`, `Copy`, `Eq`).
+**Used by** — `keeplin-daemon/src/main.rs` (the `migrate` subcommand);
+`keeplin-core/tests/migrate.rs` (`fs_to_db_round_trip`, `db_to_fs_round_trip`,
+`encrypted_fs_to_encrypted_db`).
 
-## Helper
+**Repeated context** — Notes are the only entity with per-note VV logs on FS;
+`create_note` on `FsBackend` writes a proper per-device log so the note enters the
+filesystem model natively — this is the property that makes the typed-copy approach
+correct where the raw-change bridge is not.
 
-`collect` exhausts any paginated `list_*` closure (`Option<token> -> (items, next)`) into a
-`Vec`, so one helper drives all five entity kinds.
+---
 
-## Scope (deliberate limitations)
+## fn collect
 
-- **Live state only.** `list_*` exclude soft-deleted rows, so tombstones are not carried — a
-  migration is a fresh start.
-- **Fresh destination.** Entities keep their original ids; `DbBackend::create_note` is a plain
-  `INSERT`, so importing an existing id errors. Migrate into an empty destination.
-- Fails fast on the first error, leaving already-written entities in place.
+**Identification** — `async fn collect<T, F, Fut>(mut page: F) -> Result<Vec<T>, StorageError>`
+where `F: FnMut(Option<String>) -> Fut`,
+`Fut: Future<Output = Result<(Vec<T>, Option<String>), StorageError>>`; marker
+`// md:fn collect`.
 
-## How it's invoked
+**What it does** — Exhausts a paginated `list_*` call into a single `Vec`: starts
+with `token = None`, calls `page(token)` in a loop, extends the output with each
+page's items, follows `next_token` until it is `None`. `page` is any closure
+matching every `list_*` method's `(page_size-bound) Option<token> → (items,
+next_token)` shape, so one helper drives notebooks, tags, notes, note-tags, and
+resources alike. Propagates the first `StorageError`.
 
-The daemon exposes it as `keeplin-daemon migrate --from <a.toml> --to <b.toml>`, building each
-side from its own config (see `keeplin-daemon/src/main.md`).
+**Dependencies** — only the closure it is given.
+
+**Used by** — `migrate` (its only caller; the function is file-private).
+
+**Repeated context** — an empty `next_token` (`None`) is the universal
+end-of-listing signal in this project's pagination contract.
+
+---
 
 ## Graph context
+
+Repo-tooling metadata, not a code block (no marker in the source). Kept in every
+companion because CI (`scripts/check-docs.sh`) enforces it: this file is LAYER 2 of
+the navigation model, the Graphify graph (`graphify-out/graph.json`) is LAYER 1;
+refresh with `graphify update .` after refactors.
 
 <!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
      EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
@@ -86,16 +182,12 @@ side from its own config (see `keeplin-daemon/src/main.md`).
 
 - `keeplin-core/tests/migrate.rs` — cross-backend migration tests (EXTRACTED: calls×3; e.g. `db_to_fs_round_trip()`, `encrypted_fs_to_encrypted_db()`, `fs_to_db_round_trip()`)
 
-**Invariants** (restated on purpose; a change to this file must keep these true)
+## Coverage checklist
 
-- One-shot copy of complete current state, in either direction — not live sync; after it runs each backend keeps using its own native representation.
-- Must work across an encryption boundary (plain→encrypted and back) without leaking plaintext to the destination's inner store.
-- Tombstones/soft-deleted entities are not resurrected by a migration.
-
-## Related files
-
-- `keeplin-core/src/storage/backend.rs` — the `create_*` / `list_*` / `read_resource` methods used.
-- `keeplin-core/src/storage/{fs,db}.rs` — the two backends being bridged.
-- `keeplin-core/src/encryption.rs` — the decorator that makes encrypted↔plaintext copies work.
-- `keeplin-daemon/src/main.rs` — the `migrate` subcommand and `build_storage`.
-- `keeplin-core/tests/migrate.rs` — FS↔DB round-trips and the encrypted case.
+| # | Block (source order) | Marker in code |
+|---|----------------------|----------------|
+| 1 | imports (`use …`) | `// md:Overview` |
+| 2 | `const PAGE` | `// md:PAGE` |
+| 3 | `struct MigrationReport` | `// md:MigrationReport` |
+| 4 | `fn migrate` | `// md:fn migrate` |
+| 5 | `fn collect` | `// md:fn collect` |

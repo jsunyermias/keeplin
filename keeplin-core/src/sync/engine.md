@@ -1,75 +1,194 @@
 # `sync/engine.rs` — SyncEngine
 
-## Purpose
+Self-contained companion for `keeplin-core/src/sync/engine.rs`. It documents **every
+code block of the source file, in source order** — a reader with only this file must be
+able to understand it without opening anything else, so project-wide conventions are
+deliberately re-explained here (hyper-redundancy is intended).
 
-This module implements `SyncEngine<T>`, which orchestrates a complete synchronisation
-cycle for any backend that implements `StorageBackend`. It is deliberately thin: all the
-real work (collecting changes, sending, receiving, applying) is delegated to the backend.
-`SyncEngine` only sequences these operations and handles the sync timestamp bookkeeping.
+**How to navigate**: every block carries exactly one marker comment
+`// md:<Header> > … > <Block header>` whose path is the header chain of its section
+here; grep it in either direction. Each section covers **Identification**,
+**What it does**, **Dependencies**, **Used by**, **Repeated context**.
 
-## Key types
+---
 
-| Type | Kind | Description |
-|------|------|-------------|
-| `SyncEngine<T>` | struct | Holds a backend and exposes a `sync()` method |
+## Overview
 
-## Public API
+**Identification** — file-level block: the imports. Marker `// md:Overview`.
 
-### `SyncEngine::new(backend: T) -> Self`
-**What it does:** Constructs a new engine wrapping the given backend.  
-**Parameters:** `backend` — any value implementing `StorageBackend + Send + Sync + 'static`.  
-**Returns:** A ready-to-use engine. The `backend` field is `pub` for direct access.
+```rust
+use crate::{
+    error::SyncError,
+    models::{now, Change},
+    storage::StorageBackend,
+};
+```
 
-### `async fn sync(&self) -> Result<Vec<Change>, SyncError>`
-**What it does:** Runs one complete push/pull synchronisation cycle and returns the list
-of remote changes that were applied locally during this cycle.  
-**Returns:** `Ok(remote_changes)` — the changes received from the remote peer and applied.  
-**Errors:** `SyncError::Storage` if any storage operation fails; `SyncError::Conflict` if
-the backend detects a write conflict.
+**What it does** — Drives a complete push-then-pull synchronisation cycle. The
+module is intentionally thin: it sequences six operations against a
+`StorageBackend` and handles the sync-timestamp bookkeeping; all real work
+(collecting, sending, receiving, applying changes) is delegated to the backend. The
+cycle lives in the free function `run_sync`, which takes a progress callback so
+callers that surface per-stage progress (the gRPC daemon's streaming `Sync` RPC)
+and callers that don't (`SyncEngine::sync`) share one implementation — the
+watermark and ordering logic exists in exactly one place.
 
-## Data flow
+**Dependencies** — `crate::error::SyncError`, `crate::models::{now, Change}`,
+`crate::storage::StorageBackend`; `tracing` for structured logs.
 
-The cycle lives in the free function `run_sync(backend, report)`; `SyncEngine::sync`
-is a thin wrapper that calls it with a no-op `report` callback, and the daemon's
-streaming `Sync` RPC calls it with a callback that emits a `SyncStage` progress update
-before each step. This keeps the watermark/ordering logic in exactly one place.
+**Used by** — `sync/mod.rs` re-exports `run_sync`, `SyncEngine`, `SyncStage`;
+`keeplin-daemon/src/server.rs` (streaming `Sync` RPC),
+`keeplin-daemon/src/rest.rs` (sync endpoint), `keeplin-core/tests/ws_sync.rs`.
 
-The cycle executes six steps in sequence:
+**Repeated context** — The engine never resolves conflicts itself: each remote
+`Change` goes to `apply_change`, and every backend resolves it with version vectors
+plus the deterministic `(timestamp, device_id)` last-writer-wins tiebreak
+(`storage::note_log::resolve`/`merge`). That decision is order-independent, so all
+devices converge regardless of arrival order.
 
-1. **Retrieve last-sync timestamp** — `get_last_sync_time()` returns the UTC timestamp
-   of the most recent successful sync, or the Unix epoch if this is the first sync. The
-   new watermark `sync_ts = now()` is captured **here, before** any changes are read.
-2. **Collect local changes** — `get_changes_since(last_sync)` returns all `Change`
-   events recorded on this device since the previous sync.
-3. **Push local changes** — `send_changes(local_changes)` transmits the changes to the
-   remote peer (WebSocket for `DbBackend`, no-op for `FsBackend` which relies on
-   Syncthing to replicate its log files).
-4. **Pull remote changes** — `receive_changes()` retrieves changes that other devices
-   sent to the remote peer since the last pull.
-5. **Apply remote changes locally** — each `Change` from the remote is applied in
-   order via `apply_change(change)`. All `apply_change` implementations are idempotent,
-   so re-running a cycle after a partial failure is safe.
-6. **Record new sync timestamp** — `update_sync_time(sync_ts)` persists the watermark
-   captured in step 1 (not a fresh `now()`). Using the start-of-cycle time guarantees
-   that any change recorded *while* the cycle ran is still collected on the next cycle,
-   rather than being silently skipped.
+---
 
-## Design notes
+## SyncStage
 
-- `SyncEngine` is generic over `T: StorageBackend`. This means there is no dynamic
-  dispatch and no `Box<dyn StorageBackend>` indirection. The compiler monomorphises a
-  separate sync function for each concrete backend type.
-- The `SyncEngine` does not itself resolve conflicts: it collects and hands each remote
-  `Change` to `apply_change`, and every backend resolves it with **version vectors** (see
-  `note_log::resolve`/`merge`). Because that decision is order-independent and deterministic —
-  a strictly-dominating write wins, and a genuine concurrent conflict is broken by the shared
-  `(timestamp, device_id)` tiebreak — the outcome across all devices converges to the same state
-  regardless of the order changes arrive in.
-- The `SyncEngine` does not retry on failure. The caller is responsible for scheduling
-  and retrying sync cycles; a simple approach is to call `sync()` periodically or on
-  reconnect.
+**Identification** — enum deriving `Debug, Clone, Copy, PartialEq, Eq`; marker
+`// md:SyncStage`.
+
+**What it does** — The stage a synchronisation cycle has reached, reported through
+the `run_sync` progress callback: `Collecting` (about to collect local changes
+since the last sync), `Sending` (about to push them), `Receiving` (about to pull
+the remote's changes), `Applying` (about to apply them locally), `Done` (cycle
+finished successfully). Variants mirror the natural ordering of the cycle so a UI
+can render a determinate progress bar.
+
+**Dependencies** — none.
+
+**Used by** — the `report` callback in `run_sync`;
+`keeplin-daemon/src/server.rs::stage_to_proto` maps it onto the gRPC streaming
+progress message.
+
+**Repeated context** — none.
+
+---
+
+## fn run_sync
+
+**Identification** —
+`pub async fn run_sync<B, F>(backend: &B, mut report: F) -> Result<Vec<Change>, SyncError>`
+where `B: StorageBackend + ?Sized`, `F: FnMut(SyncStage, usize)`; marker
+`// md:fn run_sync`.
+
+**What it does** — Runs one complete push-then-pull cycle against `backend`,
+invoking `report(stage, count)` immediately before each stage begins (and once more
+with `SyncStage::Done` on success). The six steps:
+
+1. `get_last_sync_time()` — read the timestamp of the most recent successful sync
+   (Unix epoch on a first sync), defining which local changes are "new".
+2. Capture the new watermark `sync_ts = now()` **before** collecting. Any mutation
+   recorded while the cycle runs has `changed_at > sync_ts`, so it is guaranteed to
+   be collected next cycle; capturing at the end would silently drop changes
+   written during the cycle from every future sync.
+3. `report(Collecting, 0)`; `get_changes_since(last_sync)` — collect local changes
+   other devices haven't seen.
+4. `report(Sending, local.len())`; `send_changes(local)` — push to the remote peer
+   (WebSocket journal for `DbBackend`; a no-op for `FsBackend`, which relies on
+   Syncthing replicating its log files).
+5. `report(Receiving, 0)`; `receive_changes()` — pull everything the remote
+   accumulated since the last pull.
+6. `report(Applying, remote.len())`; `apply_change(change)` for each remote change
+   **in arrival order** — every implementation is idempotent, so re-running after a
+   partial failure is safe. Then `update_sync_time(sync_ts)` persists the
+   start-of-cycle watermark.
+
+`count` is the number of changes relevant to the stage (local for `Sending`, remote
+for `Applying`/`Done`, `0` otherwise). Returns the remote changes applied this
+cycle. Errors as `SyncError::Storage` if any storage call fails; a failed cycle
+leaves the last-sync timestamp unchanged, so the next cycle re-collects and
+re-applies everything missed — the caller schedules retries.
+
+**Dependencies** — `StorageBackend`'s
+`get_last_sync_time`/`get_changes_since`/`send_changes`/`receive_changes`/
+`apply_change`/`update_sync_time`; `models::now` (UTC); `SyncStage`; `tracing`.
+
+**Used by** — `SyncEngine::sync` (no-op callback);
+`keeplin-daemon/src/server.rs` and `rest.rs` (progress-reporting callers);
+`tests/ws_sync.rs`
+(`failed_send_keeps_watermark_and_changes_are_resent_after_recovery` asserts the
+watermark invariant).
+
+**Repeated context** — Watermark invariant (restated because it is the file's core
+guarantee): the last-sync timestamp advances **only after a fully successful
+cycle**, and always to the time the cycle *started* — never a fresh `now()` at the
+end. Idempotent `apply_change` everywhere is the project convention that makes
+at-least-once delivery safe.
+
+---
+
+## SyncEngine
+
+**Identification** — `pub struct SyncEngine<T: StorageBackend>` with a single
+`pub backend: T` field; marker `// md:SyncEngine`.
+
+**What it does** — Orchestrates a single synchronisation cycle for any
+`StorageBackend`. Generic over `T`, so the compiler produces a monomorphised,
+zero-cost implementation per concrete backend — no runtime dispatch, no
+`Box<dyn StorageBackend>`. The `backend` field is `pub` so callers can perform CRUD
+directly between sync cycles without going through the engine.
+
+**Dependencies** — `StorageBackend`.
+
+**Used by** — the daemon (holds one per configured backend); tests.
+
+**Repeated context** — none.
+
+---
+
+## impl SyncEngine
+
+**Identification** — `impl<T: StorageBackend> SyncEngine<T>`; marker
+`// md:impl SyncEngine`. Two methods, each with its own marker below.
+
+**What it does** — Constructor and the cycle entry point.
+
+**Dependencies / Used by / Repeated context** — per method.
+
+### fn new
+
+**Identification** — `pub fn new(backend: T) -> Self`; marker
+`// md:impl SyncEngine > fn new`.
+
+**What it does** — Wraps `backend` in a new engine. No validation, no I/O.
+
+**Dependencies** — none.
+
+**Used by** — daemon startup and tests constructing engines.
+
+**Repeated context** — none.
+
+### fn sync
+
+**Identification** — `pub async fn sync(&self) -> Result<Vec<Change>, SyncError>`;
+marker `// md:impl SyncEngine > fn sync`.
+
+**What it does** — Runs one complete push-then-pull cycle: a thin wrapper over
+`run_sync(&self.backend, |_, _| {})` with a no-op progress callback. Same return
+value (remote changes applied) and same error behaviour (failed cycle leaves the
+watermark unchanged; no built-in retry — callers re-invoke periodically or on
+reconnect).
+
+**Dependencies** — `run_sync`.
+
+**Used by** — `keeplin-daemon/src/rest.rs` and `server.rs`; `tests/ws_sync.rs`.
+
+**Repeated context** — none beyond `run_sync`'s.
+
+---
 
 ## Graph context
+
+Repo-tooling metadata, not a code block (no marker in the source). Kept in every
+companion because CI (`scripts/check-docs.sh`) enforces it: this file is LAYER 2 of
+the navigation model, the Graphify graph (`graphify-out/graph.json`) is LAYER 1;
+refresh with `graphify update .` after refactors.
 
 <!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
      EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
@@ -95,14 +214,14 @@ The cycle executes six steps in sequence:
 - `keeplin-daemon/src/rest.rs` — REST/JSON API + WebSocket feed (axum) (EXTRACTED: calls×1; e.g. `sync()`)
 - `keeplin-daemon/src/server.rs` — gRPC service implementation (EXTRACTED: calls×1, references×1; e.g. `stage_to_proto()`, `.sync()`)
 
-**Invariants** (restated on purpose; a change to this file must keep these true)
+## Coverage checklist
 
-- The engine only sequences push-then-pull and maintains the watermark; all real work is delegated to the backend.
-- The last-sync watermark advances only after a fully successful cycle — a failed push/pull must leave it unchanged so changes are re-sent.
-
-## Related files
-
-- `keeplin-core/src/storage/backend.rs` — `StorageBackend` trait that `T` must satisfy
-- `keeplin-core/src/sync/mod.rs` — re-exports `SyncEngine`
-- `keeplin-daemon/src/server.rs` — the gRPC `Sync` RPC drives the same sequence directly
-  against the backend (without going through `SyncEngine`)
+| # | Block (source order) | Marker in code |
+|---|----------------------|----------------|
+| 1 | imports (`use …`) | `// md:Overview` |
+| 2 | `enum SyncStage` | `// md:SyncStage` |
+| 3 | `fn run_sync` | `// md:fn run_sync` |
+| 4 | `struct SyncEngine` | `// md:SyncEngine` |
+| 5 | `impl SyncEngine` | `// md:impl SyncEngine` |
+| 6 | `fn new` | `// md:impl SyncEngine > fn new` |
+| 7 | `fn sync` | `// md:impl SyncEngine > fn sync` |

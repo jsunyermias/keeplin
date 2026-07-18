@@ -1,26 +1,4 @@
-//! Root of the `keeplin-core` library crate.
-//!
-//! This file declares the public sub-modules that make up the complete Keeplin storage and
-//! synchronisation layer. It contains no logic itself; every concrete type and trait lives
-//! in one of the sub-modules below.
-//!
-//! # Module overview
-//!
-//! - [`compat`] — the `GET /version` protocol/capability handshake against keeplin-srv:
-//!   `PROTOCOL_VERSION`, the `compatible_with` rule, and the startup negotiation.
-//! - [`encryption`] — `EncryptedBackend<B>`: transparent AES-256-GCM at-rest encryption
-//!   decorator that wraps any [`storage::StorageBackend`].
-//! - [`error`] — `StorageError` and `SyncError`: all error types used across the crate.
-//! - [`links`] — bookmark/link types and the pure `#…` reference + `[t](###)` bookmark grammar.
-//! - [`linking`] — `LinkingBackend<B>`: decorator that derives bookmarks/links from each
-//!   note body, resolves references, and enforces alias uniqueness.
-//! - [`migrate`] — one-shot state copy between any two backends (e.g. `FsBackend ↔ DbBackend`).
-//! - [`models`] — Domain types (`Note`, `Notebook`, `Tag`, `Resource`, `Change`, …).
-//! - [`ordering`] — the Inbox system notebook, pinning, manual sort keys, and starring:
-//!   pure placement rules plus the read-modify-write operations the API surfaces call.
-//! - [`storage`] — `StorageBackend` trait plus `FsBackend` and `DbBackend` implementations.
-//! - [`sync`] — `SyncEngine`: orchestrates a full push-then-pull sync cycle.
-
+// md:Overview
 pub mod collab;
 pub mod compat;
 pub mod encryption;

@@ -1,39 +1,16 @@
-//! Standards-format interop: vCard (RFC 6350) and iCalendar VTODO/VEVENT (RFC 5545).
-//!
-//! Keeplin is not a WebDAV/CalDAV server; this module makes it **compatible** with those
-//! formats — parsing them in and serialising them back out — so contacts and calendar items
-//! move losslessly between Keeplin and other apps. It is pure (no I/O, no storage): the
-//! backends and the daemon build on these types.
-//!
-//! # Scope
-//!
-//! - [`Contact`] ⇄ a vCard 4.0 card.
-//! - [`CalendarEvent`] ⇄ a `VEVENT`.
-//! - [`CalendarTodo`] ⇄ a `VTODO`, which additionally maps to/from a Keeplin to-do
-//!   [`Note`](crate::models::Note) ([`CalendarTodo::from_note`] / [`CalendarTodo::apply_to_note`]).
-//! - [`user_vcard`] renders a profile card for an account (name + email).
-//!
-//! # Fidelity
-//!
-//! A pragmatic, widely-interoperable subset of each RFC is modelled explicitly; the rest of a
-//! parsed card/component is preserved verbatim in `extra` lines so a round-trip does not drop
-//! properties it does not understand.
-
+// md:Overview
 use chrono::{DateTime, TimeZone, Utc};
 
 use crate::error::StorageError;
 use crate::models::{new_id, now, Note, Resource};
 use crate::storage::StorageBackend;
 
-/// IANA media type marking a resource that backs a [`Contact`] (a vCard).
+// md:MIME_VCARD
 pub const MIME_VCARD: &str = "text/vcard";
-/// IANA media type marking a resource that backs a [`CalendarEvent`] (an iCalendar object).
+// md:MIME_ICALENDAR
 pub const MIME_ICALENDAR: &str = "text/calendar";
 
-// ── Low-level line handling (shared by vCard and iCalendar) ─────────────────────
-
-/// Unfold RFC 5545/6350 continuation lines: a CRLF (or LF) followed by a single space or tab
-/// is a line fold and is removed, rejoining the wrapped value.
+// md:fn unfold
 fn unfold(input: &str) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for raw in input.split('\n') {
@@ -46,15 +23,13 @@ fn unfold(input: &str) -> Vec<String> {
         }
         lines.push(line.to_string());
     }
-    // Drop a trailing empty line from a final newline.
     if lines.last().is_some_and(|l| l.is_empty()) {
         lines.pop();
     }
     lines
 }
 
-/// Fold a content line at 75 octets with CRLF + space, per the RFCs. Folding on a char
-/// boundary (not mid-UTF-8) keeps the output valid; most consumers are lenient anyway.
+// md:fn fold_line
 fn fold_line(line: &str, out: &mut String) {
     const LIMIT: usize = 75;
     if line.len() <= LIMIT {
@@ -80,8 +55,7 @@ fn fold_line(line: &str, out: &mut String) {
     }
 }
 
-/// Escape a TEXT value: `\`, `,`, `;` and newlines are backslash-escaped (RFC 5545 §3.3.11 /
-/// RFC 6350 §3.4).
+// md:fn escape_text
 fn escape_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -97,7 +71,7 @@ fn escape_text(s: &str) -> String {
     out
 }
 
-/// Reverse [`escape_text`].
+// md:fn unescape_text
 fn unescape_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
@@ -115,27 +89,21 @@ fn unescape_text(s: &str) -> String {
     out
 }
 
-/// Split a content line into its property **name** (upper-cased, params dropped) and its raw
-/// value. `SUMMARY;LANGUAGE=en:Hi` → `("SUMMARY", "Hi")`. Returns `None` for a line with no
-/// colon.
+// md:fn split_prop
 fn split_prop(line: &str) -> Option<(String, &str)> {
     let colon = line.find(':')?;
     let (head, value) = (&line[..colon], &line[colon + 1..]);
-    // The name ends at the first ';' (start of params), if any.
     let name_end = head.find(';').unwrap_or(head.len());
     Some((head[..name_end].to_ascii_uppercase(), value))
 }
 
-/// Format an instant as an RFC 5545 UTC date-time (`YYYYMMDDTHHMMSSZ`).
+// md:fn format_dt
 fn format_dt(dt: DateTime<Utc>) -> String {
     dt.format("%Y%m%dT%H%M%SZ").to_string()
 }
 
-/// Parse an RFC 5545 date-time or date. Accepts `YYYYMMDDTHHMMSSZ` (UTC), `YYYYMMDDTHHMMSS`
-/// (treated as UTC), and a bare `YYYYMMDD` date (midnight UTC).
+// md:fn parse_dt
 fn parse_dt(value: &str) -> Option<DateTime<Utc>> {
-    // The `Z` designates UTC but is a literal here (not a `%z` offset), so parse the naive
-    // wall-clock and stamp it UTC. A form without `Z` is also read as UTC.
     let v = value.trim();
     for fmt in ["%Y%m%dT%H%M%SZ", "%Y%m%dT%H%M%S"] {
         if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(v, fmt) {
@@ -148,35 +116,26 @@ fn parse_dt(value: &str) -> Option<DateTime<Utc>> {
     None
 }
 
-/// The Keeplin product id stamped on emitted calendars.
+// md:PRODID
 const PRODID: &str = "-//Keeplin//Keeplin//EN";
 
-// ── vCard ───────────────────────────────────────────────────────────────────────
-
-/// A contact, modelling the widely-used subset of vCard 4.0.
+// md:Contact
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Contact {
-    /// `UID` — a stable identifier (generated on export if empty).
     pub uid: String,
-    /// `FN` — the formatted display name (required by the spec).
     pub formatted_name: String,
-    /// `N` structured name: (family, given).
     pub family_name: Option<String>,
     pub given_name: Option<String>,
-    /// `EMAIL` values, in order.
     pub emails: Vec<String>,
-    /// `TEL` values, in order.
     pub phones: Vec<String>,
-    /// `ORG` — organisation.
     pub org: Option<String>,
-    /// `NOTE` — free text.
     pub note: Option<String>,
-    /// Properties this module does not model, kept verbatim for a lossless round-trip.
     pub extra: Vec<String>,
 }
 
+// md:impl Contact
 impl Contact {
-    /// Serialise to a vCard 4.0 card.
+    // md:impl Contact > fn to_vcard
     pub fn to_vcard(&self) -> String {
         let mut out = String::new();
         fold_line("BEGIN:VCARD", &mut out);
@@ -218,7 +177,7 @@ impl Contact {
         out
     }
 
-    /// Parse the first `VCARD` in `input`. Unknown properties are preserved in `extra`.
+    // md:impl Contact > fn from_vcard
     pub fn from_vcard(input: &str) -> Option<Contact> {
         let lines = unfold(input);
         let mut in_card = false;
@@ -255,7 +214,6 @@ impl Contact {
             }
         }
         if in_card {
-            // A card with no FN still round-trips (FN defaults to empty).
             Some(c)
         } else {
             None
@@ -263,7 +221,7 @@ impl Contact {
     }
 }
 
-/// Render a profile vCard for an account owner from their display name and email.
+// md:fn user_vcard
 pub fn user_vcard(display_name: &str, email: &str) -> String {
     Contact {
         formatted_name: display_name.to_string(),
@@ -273,9 +231,7 @@ pub fn user_vcard(display_name: &str, email: &str) -> String {
     .to_vcard()
 }
 
-// ── iCalendar VEVENT / VTODO ─────────────────────────────────────────────────────
-
-/// A calendar event, modelling the common subset of `VEVENT`.
+// md:CalendarEvent
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CalendarEvent {
     pub uid: String,
@@ -287,7 +243,7 @@ pub struct CalendarEvent {
     pub extra: Vec<String>,
 }
 
-/// A calendar to-do, modelling the common subset of `VTODO`.
+// md:CalendarTodo
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CalendarTodo {
     pub uid: String,
@@ -298,8 +254,9 @@ pub struct CalendarTodo {
     pub extra: Vec<String>,
 }
 
+// md:impl CalendarEvent
 impl CalendarEvent {
-    /// Serialise as a full `VCALENDAR` wrapping one `VEVENT`.
+    // md:impl CalendarEvent > fn to_ics
     pub fn to_ics(&self) -> String {
         let mut out = String::new();
         write_calendar_open(&mut out);
@@ -326,13 +283,12 @@ impl CalendarEvent {
         out
     }
 
-    /// Parse the first `VEVENT` found in `input`. See [`from_ics_all`](Self::from_ics_all)
-    /// for whole-calendar import.
+    // md:impl CalendarEvent > fn from_ics
     pub fn from_ics(input: &str) -> Option<CalendarEvent> {
         Self::from_ics_all(input).into_iter().next()
     }
 
-    /// Parse **every** `VEVENT` in `input`, in document order (empty when there is none).
+    // md:impl CalendarEvent > fn from_ics_all
     pub fn from_ics_all(input: &str) -> Vec<CalendarEvent> {
         split_components(input, "VEVENT")
             .into_iter()
@@ -354,8 +310,9 @@ impl CalendarEvent {
     }
 }
 
+// md:impl CalendarTodo
 impl CalendarTodo {
-    /// Serialise as a full `VCALENDAR` wrapping one `VTODO`.
+    // md:impl CalendarTodo > fn to_ics
     pub fn to_ics(&self) -> String {
         let mut out = String::new();
         write_calendar_open(&mut out);
@@ -381,13 +338,12 @@ impl CalendarTodo {
         out
     }
 
-    /// Parse the first `VTODO` found in `input`. See [`from_ics_all`](Self::from_ics_all)
-    /// for whole-calendar import.
+    // md:impl CalendarTodo > fn from_ics
     pub fn from_ics(input: &str) -> Option<CalendarTodo> {
         Self::from_ics_all(input).into_iter().next()
     }
 
-    /// Parse **every** `VTODO` in `input`, in document order (empty when there is none).
+    // md:impl CalendarTodo > fn from_ics_all
     pub fn from_ics_all(input: &str) -> Vec<CalendarTodo> {
         split_components(input, "VTODO")
             .into_iter()
@@ -407,8 +363,7 @@ impl CalendarTodo {
             .collect()
     }
 
-    /// Build a `VTODO` view of a Keeplin to-do note (`title`→`SUMMARY`, `body`→`DESCRIPTION`,
-    /// `todo_due`→`DUE`, `todo_completed`→`COMPLETED`; the note id becomes the `UID`).
+    // md:impl CalendarTodo > fn from_note
     pub fn from_note(note: &Note) -> CalendarTodo {
         CalendarTodo {
             uid: note.id.to_string(),
@@ -420,8 +375,7 @@ impl CalendarTodo {
         }
     }
 
-    /// Apply this `VTODO` onto `note`, marking it a to-do. The note's id is **not** changed
-    /// (the caller owns identity); only the to-do fields, title and body are set.
+    // md:impl CalendarTodo > fn apply_to_note
     pub fn apply_to_note(&self, note: &mut Note) {
         note.title = self.summary.clone();
         note.body = self.description.clone().unwrap_or_default();
@@ -431,14 +385,14 @@ impl CalendarTodo {
     }
 }
 
+// md:fn write_calendar_open
 fn write_calendar_open(out: &mut String) {
     fold_line("BEGIN:VCALENDAR", out);
     fold_line("VERSION:2.0", out);
     fold_line(&format!("PRODID:{PRODID}"), out);
 }
 
-/// Write `UID` (generating one when empty) and a `DTSTAMP` of now — both required on a
-/// calendar component.
+// md:fn write_uid_dtstamp
 fn write_uid_dtstamp(out: &mut String, uid: &str) {
     let uid = if uid.is_empty() {
         crate::models::new_id().to_string()
@@ -449,10 +403,7 @@ fn write_uid_dtstamp(out: &mut String, uid: &str) {
     fold_line(&format!("DTSTAMP:{}", format_dt(now())), out);
 }
 
-/// Split `input` into the property lines of **every** `BEGIN:<kind>` … `END:<kind>`
-/// component, in document order. A component left open by a truncated input is still
-/// yielded with the lines seen so far (leniency preserved from the single-component
-/// parser). Real `.ics` exports routinely bundle many components in one `VCALENDAR`.
+// md:fn split_components
 fn split_components(input: &str, kind: &str) -> Vec<Vec<String>> {
     let mut out = Vec::new();
     let mut current: Option<Vec<String>> = None;
@@ -481,7 +432,7 @@ fn split_components(input: &str, kind: &str) -> Vec<Vec<String>> {
     out
 }
 
-/// Drive `f(name, value, raw_line)` over one component's property lines.
+// md:fn parse_component_lines
 fn parse_component_lines(lines: &[String], mut f: impl FnMut(&str, &str, &str)) {
     for line in lines {
         if let Some((name, value)) = split_prop(line) {
@@ -490,22 +441,7 @@ fn parse_component_lines(lines: &[String], mut f: impl FnMut(&str, &str, &str)) 
     }
 }
 
-// ── Typed contact/event storage over resources ─────────────────────────────────
-//
-// "Native" contacts and events are typed at the API level but persist on top of the existing
-// **resource** entity, so they ride the sync, encryption, permissions and server-materialisation
-// machinery already built — no new entity type, table, protobuf message, or sync `Change`. A
-// contact is a resource with mime `text/vcard`; an event, `text/calendar`. The stable identity is
-// the format `UID` (not the backing resource id), so an edit is a *replace* of the resource: a
-// soft-delete of the old backing resource plus a fresh one. The tombstones this leaves behind
-// are reclaimed by the periodic `purge_deleted_resources` pass (`resource_purge_days`).
-//
-// `save_*` always names the backing file `<uid>.vcf` / `<uid>.ics`, so every by-UID operation
-// finds its resource from **metadata alone** (no blob reads); resources written before this
-// convention fall back to parsing the payloads. Listing all contacts/events inherently reads
-// every payload of that mime.
-
-/// Read every live resource with `mime`, paired with its bytes.
+// md:fn resources_with_mime
 async fn resources_with_mime(
     backend: &dyn StorageBackend,
     mime: &str,
@@ -519,7 +455,7 @@ async fn resources_with_mime(
     Ok(out)
 }
 
-/// List every live resource with `mime` — metadata only, no payload reads.
+// md:fn resource_metas_with_mime
 async fn resource_metas_with_mime(
     backend: &dyn StorageBackend,
     mime: &str,
@@ -537,14 +473,12 @@ async fn resource_metas_with_mime(
     Ok(out)
 }
 
-/// The canonical backing file name `save_*` writes for a UID — the metadata-level key every
-/// by-UID lookup uses first.
+// md:fn uid_file_name
 fn uid_file_name(uid: &str, ext: &str) -> String {
     format!("{uid}.{ext}")
 }
 
-/// Find the backing resources of `uid`: the metadata fast path (canonical file name) when it
-/// hits, otherwise the legacy fallback of parsing every payload of that mime with `uid_of`.
+// md:fn resources_with_uid
 async fn resources_with_uid(
     backend: &dyn StorageBackend,
     mime: &str,
@@ -573,9 +507,7 @@ async fn resources_with_uid(
     Ok(matched)
 }
 
-/// Persist `contact` (upsert by its vCard `UID`, generating one when empty): any existing
-/// contact resource carrying the same UID is removed and a fresh vCard resource is written.
-/// Returns the stored contact (with its UID populated).
+// md:fn save_contact
 pub async fn save_contact(
     backend: &dyn StorageBackend,
     mut contact: Contact,
@@ -585,7 +517,6 @@ pub async fn save_contact(
     }
     delete_contact(backend, &contact.uid).await?;
     let vcard = contact.to_vcard();
-    // The canonical file name is load-bearing: by-UID lookups key on it (metadata only).
     let res = Resource::new(
         contact.formatted_name.clone(),
         MIME_VCARD,
@@ -596,7 +527,7 @@ pub async fn save_contact(
     Ok(contact)
 }
 
-/// Every stored contact, parsed from its backing vCard resource.
+// md:fn list_contacts
 pub async fn list_contacts(backend: &dyn StorageBackend) -> Result<Vec<Contact>, StorageError> {
     let mut contacts = Vec::new();
     for (_, data) in resources_with_mime(backend, MIME_VCARD).await? {
@@ -607,7 +538,7 @@ pub async fn list_contacts(backend: &dyn StorageBackend) -> Result<Vec<Contact>,
     Ok(contacts)
 }
 
-/// The backing resources of the contact `uid` (metadata only; usually one).
+// md:fn contact_resources
 async fn contact_resources(
     backend: &dyn StorageBackend,
     uid: &str,
@@ -618,7 +549,7 @@ async fn contact_resources(
     .await
 }
 
-/// The stored contact with `uid`, if any. Reads only that contact's backing resource.
+// md:fn get_contact
 pub async fn get_contact(
     backend: &dyn StorageBackend,
     uid: &str,
@@ -635,7 +566,7 @@ pub async fn get_contact(
     Ok(None)
 }
 
-/// Delete every contact resource carrying `uid` (usually one). A no-op if none match.
+// md:fn delete_contact
 pub async fn delete_contact(backend: &dyn StorageBackend, uid: &str) -> Result<(), StorageError> {
     for meta in contact_resources(backend, uid).await? {
         backend.delete_resource(meta.id).await?;
@@ -643,8 +574,7 @@ pub async fn delete_contact(backend: &dyn StorageBackend, uid: &str) -> Result<(
     Ok(())
 }
 
-/// Persist `event` (upsert by its iCalendar `UID`, generating one when empty). See
-/// [`save_contact`].
+// md:fn save_event
 pub async fn save_event(
     backend: &dyn StorageBackend,
     mut event: CalendarEvent,
@@ -654,7 +584,6 @@ pub async fn save_event(
     }
     delete_event(backend, &event.uid).await?;
     let ics = event.to_ics();
-    // The canonical file name is load-bearing: by-UID lookups key on it (metadata only).
     let res = Resource::new(
         event.summary.clone(),
         MIME_ICALENDAR,
@@ -665,7 +594,7 @@ pub async fn save_event(
     Ok(event)
 }
 
-/// Every stored event, parsed from its backing iCalendar resource.
+// md:fn list_events
 pub async fn list_events(backend: &dyn StorageBackend) -> Result<Vec<CalendarEvent>, StorageError> {
     let mut events = Vec::new();
     for (_, data) in resources_with_mime(backend, MIME_ICALENDAR).await? {
@@ -676,7 +605,7 @@ pub async fn list_events(backend: &dyn StorageBackend) -> Result<Vec<CalendarEve
     Ok(events)
 }
 
-/// The backing resources of the event `uid` (metadata only; usually one).
+// md:fn event_resources
 async fn event_resources(
     backend: &dyn StorageBackend,
     uid: &str,
@@ -687,7 +616,7 @@ async fn event_resources(
     .await
 }
 
-/// The stored event with `uid`, if any. Reads only that event's backing resource.
+// md:fn get_event
 pub async fn get_event(
     backend: &dyn StorageBackend,
     uid: &str,
@@ -704,7 +633,7 @@ pub async fn get_event(
     Ok(None)
 }
 
-/// Delete every event resource carrying `uid`. A no-op if none match.
+// md:fn delete_event
 pub async fn delete_event(backend: &dyn StorageBackend, uid: &str) -> Result<(), StorageError> {
     for meta in event_resources(backend, uid).await? {
         backend.delete_resource(meta.id).await?;
@@ -712,9 +641,7 @@ pub async fn delete_event(backend: &dyn StorageBackend, uid: &str) -> Result<(),
     Ok(())
 }
 
-/// Import an iCalendar `VTODO` as a Keeplin **to-do note** (the native mapping), returning the
-/// created note. Unlike contacts/events, a to-do is a first-class note, not a resource. Only
-/// the first `VTODO` is read; use [`import_todos`] to import a whole calendar.
+// md:fn import_todo
 pub async fn import_todo(backend: &dyn StorageBackend, ics: &str) -> Result<Note, StorageError> {
     let todo = CalendarTodo::from_ics(ics)
         .ok_or_else(|| StorageError::InvalidInput("no VTODO in input".into()))?;
@@ -723,8 +650,7 @@ pub async fn import_todo(backend: &dyn StorageBackend, ics: &str) -> Result<Note
     backend.create_note(note).await
 }
 
-/// Import **every** `VTODO` in an iCalendar file as Keeplin to-do notes, returning the created
-/// notes in document order. Errors when the input carries no `VTODO` at all.
+// md:fn import_todos
 pub async fn import_todos(
     backend: &dyn StorageBackend,
     ics: &str,
@@ -742,11 +668,13 @@ pub async fn import_todos(
     Ok(notes)
 }
 
+// md:mod tests
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::Note;
 
+    // md:mod tests > fn contact_round_trips_through_vcard
     #[test]
     fn contact_round_trips_through_vcard() {
         let c = Contact {
@@ -764,6 +692,7 @@ mod tests {
         assert_eq!(parsed, c, "vCard round-trip must be lossless");
     }
 
+    // md:mod tests > fn vcard_escaping_survives
     #[test]
     fn vcard_escaping_survives() {
         let c = Contact {
@@ -774,6 +703,7 @@ mod tests {
         assert_eq!(parsed.formatted_name, "A, B; C\\D");
     }
 
+    // md:mod tests > fn user_vcard_carries_name_and_email
     #[test]
     fn user_vcard_carries_name_and_email() {
         let card = user_vcard("Grace Hopper", "grace@navy.mil");
@@ -782,6 +712,7 @@ mod tests {
         assert_eq!(parsed.emails, vec!["grace@navy.mil".to_string()]);
     }
 
+    // md:mod tests > fn event_round_trips_through_ics
     #[test]
     fn event_round_trips_through_ics() {
         let ev = CalendarEvent {
@@ -797,6 +728,7 @@ mod tests {
         assert_eq!(parsed, ev);
     }
 
+    // md:mod tests > fn todo_round_trips_and_marks_completion
     #[test]
     fn todo_round_trips_and_marks_completion() {
         let td = CalendarTodo {
@@ -813,6 +745,7 @@ mod tests {
         assert_eq!(parsed, td);
     }
 
+    // md:mod tests > fn todo_maps_to_and_from_a_note
     #[test]
     fn todo_maps_to_and_from_a_note() {
         let mut note = Note::new("Buy milk", "2%");
@@ -823,7 +756,6 @@ mod tests {
         assert_eq!(td.uid, note.id.to_string());
         assert_eq!(td.due, note.todo_due);
 
-        // Apply a VTODO onto a blank note.
         let mut target = Note::new("", "");
         td.apply_to_note(&mut target);
         assert!(target.is_todo);
@@ -832,9 +764,9 @@ mod tests {
         assert_eq!(target.todo_due, note.todo_due);
     }
 
+    // md:mod tests > fn unfolds_wrapped_lines
     #[test]
     fn unfolds_wrapped_lines() {
-        // A DESCRIPTION long enough to fold must rejoin on parse.
         let long = "x".repeat(200);
         let ev = CalendarEvent {
             summary: "s".into(),
@@ -845,6 +777,7 @@ mod tests {
         assert_eq!(parsed.description, Some(long));
     }
 
+    // md:mod tests > fn missing_component_yields_none
     #[test]
     fn missing_component_yields_none() {
         assert!(CalendarEvent::from_ics("not a calendar").is_none());
@@ -852,7 +785,7 @@ mod tests {
         assert!(CalendarEvent::from_ics_all("not a calendar").is_empty());
     }
 
-    /// A whole exported calendar bundles many components; every one must import.
+    // md:mod tests > fn multi_component_calendar_parses_every_event_and_todo
     #[test]
     fn multi_component_calendar_parses_every_event_and_todo() {
         let a = CalendarEvent {
@@ -870,7 +803,6 @@ mod tests {
             summary: "Task".into(),
             ..Default::default()
         };
-        // Splice the three components into one VCALENDAR (strip the per-file wrappers).
         let inner = |ics: String, begin: &str, end: &str| -> String {
             let start = ics.find(begin).unwrap();
             let stop = ics.find(end).unwrap() + end.len();
@@ -887,7 +819,6 @@ mod tests {
         assert_eq!(events.len(), 2, "both VEVENTs import");
         assert_eq!(events[0].uid, "e1");
         assert_eq!(events[1].uid, "e2");
-        // `from_ics` keeps its first-component behaviour.
         assert_eq!(CalendarEvent::from_ics(&calendar).unwrap().uid, "e1");
 
         let todos = CalendarTodo::from_ics_all(&calendar);
@@ -895,12 +826,14 @@ mod tests {
         assert_eq!(todos[0].uid, "t1");
     }
 
+    // md:mod tests > fn fs
     async fn fs() -> crate::storage::fs::FsBackend {
         crate::storage::fs::FsBackend::new(tempfile::tempdir().unwrap().keep())
             .await
             .unwrap()
     }
 
+    // md:mod tests > fn contact_save_list_get_delete_over_storage
     #[tokio::test]
     async fn contact_save_list_get_delete_over_storage() {
         let be = fs().await;
@@ -917,7 +850,6 @@ mod tests {
         assert!(!saved.uid.is_empty(), "a uid is assigned");
         assert_eq!(list_contacts(&be).await.unwrap().len(), 1);
 
-        // Editing upserts by uid — replaces, never duplicates.
         let mut edit = saved.clone();
         edit.formatted_name = "Ada Lovelace".into();
         save_contact(&be, edit).await.unwrap();
@@ -930,6 +862,7 @@ mod tests {
         assert!(list_contacts(&be).await.unwrap().is_empty());
     }
 
+    // md:mod tests > fn event_round_trips_through_storage
     #[tokio::test]
     async fn event_round_trips_through_storage() {
         let be = fs().await;
@@ -948,6 +881,7 @@ mod tests {
         assert_eq!(got.start, parse_dt("20260101T100000Z"));
     }
 
+    // md:mod tests > fn import_todo_creates_a_todo_note
     #[tokio::test]
     async fn import_todo_creates_a_todo_note() {
         let be = fs().await;
