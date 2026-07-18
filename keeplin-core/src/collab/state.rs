@@ -1,7 +1,4 @@
-//! Client-side line state for one collaborative note, plus the body↔lines
-//! translation: materialising the flat markdown body frontends see, applying
-//! server ops, and diffing a locally edited body into [`LineOp`]s.
-
+// md:Overview
 use std::collections::HashMap;
 
 use chrono::Utc;
@@ -10,8 +7,7 @@ use uuid::Uuid;
 use super::protocol::{LineOp, LineSnapshot, NoteLinesSnapshot};
 use crate::storage::note_log::VersionVector;
 
-/// In-memory mirror of a note's server-side line entities. Rebuilt from the
-/// `Welcome` snapshot on every (re)connect — nothing here is durable.
+// md:NoteLines
 #[derive(Debug, Clone, Default)]
 pub struct NoteLines {
     pub order: Vec<Uuid>,
@@ -19,7 +15,9 @@ pub struct NoteLines {
     pub vv: VersionVector,
 }
 
+// md:impl NoteLines
 impl NoteLines {
+    // md:impl NoteLines > fn from_snapshot
     pub fn from_snapshot(snapshot: NoteLinesSnapshot) -> Self {
         Self {
             order: snapshot.order,
@@ -28,7 +26,7 @@ impl NoteLines {
         }
     }
 
-    /// The flat body frontends see: live lines, in order, joined with '\n'.
+    // md:impl NoteLines > fn materialize
     pub fn materialize(&self) -> String {
         self.order
             .iter()
@@ -39,7 +37,7 @@ impl NoteLines {
             .join("\n")
     }
 
-    /// Live line ids in order (the rows a body edit diffs against).
+    // md:impl NoteLines > fn live
     fn live(&self) -> Vec<Uuid> {
         self.order
             .iter()
@@ -48,9 +46,7 @@ impl NoteLines {
             .collect()
     }
 
-    /// Apply one already-resolved server op to the mirror. The server is the
-    /// source of truth: ops arrive validated and in `server_seq` order, so
-    /// they are applied directly without re-resolving.
+    // md:impl NoteLines > fn apply
     pub fn apply(&mut self, op: &LineOp) {
         match op {
             LineOp::Insert {
@@ -136,11 +132,7 @@ impl NoteLines {
         }
     }
 
-    /// Diff the current live lines against a newly edited flat `body` and
-    /// return the ops that turn one into the other, applying them to the
-    /// mirror as they are generated (optimistic local echo). Uses a common
-    /// prefix/suffix trim; the middle is paired positionally (`Update`), with
-    /// surplus old lines deleted and surplus new lines inserted.
+    // md:impl NoteLines > fn diff_body
     pub fn diff_body(&mut self, body: &str, device: &str) -> Vec<LineOp> {
         let now = Utc::now();
         let new_lines: Vec<&str> = if body.is_empty() {
@@ -178,7 +170,6 @@ impl NoteLines {
         let mut ops = Vec::new();
         let paired = old_mid.len().min(new_mid.len());
 
-        // Positionally paired lines become updates.
         for i in 0..paired {
             let id = old_mid[i];
             if self.lines[&id].content != new_mid[i] {
@@ -193,7 +184,6 @@ impl NoteLines {
                 });
             }
         }
-        // Surplus old lines are tombstoned.
         for id in &old_mid[paired..] {
             let mut vv = self.lines[id].vv.clone();
             bump(&mut vv, device);
@@ -205,11 +195,6 @@ impl NoteLines {
                 updated_at: now,
             });
         }
-        // Surplus new lines are inserted after the last paired/prefix line.
-        // Inserts resolve against the ORDER entity, so each one must advance
-        // the device's component past the previous — a single edit that adds
-        // several lines carries strictly increasing vectors (the server would
-        // drop the second insert as a replay otherwise).
         let mut anchor = if paired > 0 {
             Some(old_mid[paired - 1])
         } else if prefix > 0 {
@@ -240,6 +225,7 @@ impl NoteLines {
     }
 }
 
+// md:fn merge_into
 fn merge_into(target: &mut VersionVector, other: &VersionVector) {
     for (k, v) in other {
         let entry = target.entry(k.clone()).or_insert(0);
@@ -249,6 +235,7 @@ fn merge_into(target: &mut VersionVector, other: &VersionVector) {
     }
 }
 
+// md:fn bump
 fn bump(vv: &mut VersionVector, device: &str) {
     *vv.entry(device.to_string()).or_insert(0) += 1;
 }
