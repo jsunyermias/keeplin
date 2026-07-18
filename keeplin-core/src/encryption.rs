@@ -1,24 +1,4 @@
-//! Transparent at-rest encryption decorator for any [`StorageBackend`].
-//!
-//! [`EncryptedBackend<B>`] wraps any `B: StorageBackend` and automatically encrypts
-//! sensitive fields before they are written to the inner backend, then decrypts them
-//! on the way back out. Callers interact with the encrypted backend through the same
-//! `StorageBackend` trait as a plain backend — encryption is completely transparent.
-//!
-//! # Encryption scheme
-//!
-//! - Cipher: **AES-256-GCM** (authenticated encryption; any tampering is detected).
-//! - Key derivation: **Argon2id** (memory = 64 MiB, iterations = 3, parallelism = 1).
-//! - Salt: supplied by the caller (see [`EncryptedBackend::new`]). The salt is not
-//!   secret but must be **stable** and **identical on every device that needs to read
-//!   the same data**. Passing a per-device value (such as the device ID) keeps data
-//!   local to one installation; passing a shared, configured value makes the derived key
-//!   — and therefore the encrypted data — portable across devices that sync with one
-//!   another.
-//! - Nonce: 12 random bytes generated fresh for **every** encryption call.
-//! - Wire format (strings): `base64(nonce ‖ ciphertext)`.
-//! - Wire format (bytes): raw `nonce ‖ ciphertext` bytes (no Base64 for binary data).
-
+// md:Overview
 use aes_gcm::{
     aead::{Aead, AeadCore, KeyInit, OsRng},
     Aes256Gcm, Key, Nonce,
@@ -38,78 +18,38 @@ use crate::{
     },
 };
 
-/// Length in bytes of the AES-GCM nonce. AES-GCM is specified with a 96-bit (12-byte)
-/// nonce; this value must not be changed without also changing the cipher.
+// md:NONCE_LEN
 const NONCE_LEN: usize = 12;
 
-/// Transparent AES-256-GCM encryption wrapper around any [`StorageBackend`].
-///
-/// Sensitive string fields (`Note.title`, `Note.body`, `Notebook.title`, `Tag.title`,
-/// `Resource.title`, `Resource.mime_type`, `Resource.file_name`) and binary resource
-/// payloads are encrypted before being passed to the inner backend. All other fields
-/// (UUIDs, timestamps, sizes, association tables) are stored in plaintext because they
-/// are needed for queries and contain no user-supplied content that requires protection.
+// md:EncryptedBackend
 pub struct EncryptedBackend<B: StorageBackend> {
-    /// The underlying backend that stores (encrypted) data. All read/write operations
-    /// ultimately go through this field.
     inner: B,
-    /// The AES-256-GCM cipher instance, initialised once with the Argon2id-derived key.
     cipher: Aes256Gcm,
 }
 
+// md:impl EncryptedBackend
 impl<B: StorageBackend> EncryptedBackend<B> {
-    /// Constructs an `EncryptedBackend` wrapping `inner`, deriving the AES-256 key from
-    /// `password` and `salt` via Argon2id.
-    ///
-    /// `salt` must be **stable** across restarts and **identical on every device that
-    /// needs to decrypt the same data**. Pass a per-device value (e.g. the device ID)
-    /// to keep data readable only on the device that wrote it, or a shared configured
-    /// value to make encrypted data portable across synced devices. Argon2id requires
-    /// the salt to be at least 8 bytes long.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StorageError::InvalidState` if Argon2id parameter construction or key
-    /// derivation fails (for example, if `salt` is shorter than 8 bytes).
+    // md:impl EncryptedBackend > fn new
     pub async fn new(inner: B, password: &str, salt: &[u8]) -> Result<Self, StorageError> {
         let key = derive_key(password, salt)?;
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
         Ok(Self { inner, cipher })
     }
 
-    /// Encrypts a plaintext string and returns `base64(nonce ‖ ciphertext)`.
-    ///
-    /// A fresh 12-byte random nonce is generated for every call so that the same
-    /// plaintext encrypted twice produces two different ciphertexts. This is required
-    /// for semantic security under AES-GCM.
+    // md:impl EncryptedBackend > fn encrypt_str
     fn encrypt_str(&self, plaintext: &str) -> Result<String, StorageError> {
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let ct = self
             .cipher
             .encrypt(&nonce, plaintext.as_bytes())
             .map_err(|e| StorageError::InvalidState(format!("encrypt: {e}")))?;
-        // Prepend the nonce to the ciphertext so the decrypt function can extract it
-        // without storing it separately. Then Base64-encode the combined buffer so the
-        // result is a plain ASCII string that can be stored in a JSON field.
         let mut combined = nonce.to_vec();
         combined.extend_from_slice(&ct);
         Ok(STANDARD.encode(&combined))
     }
 
-    /// Decrypts a string previously produced by [`encrypt_str`].
-    ///
-    /// Decodes Base64, extracts the 12-byte nonce from the front of the buffer,
-    /// decrypts the remaining bytes with AES-GCM, and interprets the result as UTF-8.
-    ///
-    /// Returns `StorageError::CorruptedData` if the Base64, the AES-GCM authentication
-    /// tag, or the UTF-8 conversion fails. A wrong decryption key causes the AES-GCM
-    /// authentication tag to fail, which surfaces here as `CorruptedData`.
+    // md:impl EncryptedBackend > fn decrypt_str
     fn decrypt_str(&self, encoded: &str) -> Result<String, StorageError> {
-        // Every failure here means the stored ciphertext cannot be recovered — whether
-        // because the Base64 wrapper is malformed, the buffer is too short to contain a
-        // nonce, the AES-GCM authentication tag does not verify (wrong key or tampering),
-        // or the decrypted bytes are not valid UTF-8. They all map to `CorruptedData` so
-        // callers (and the daemon's gRPC layer) handle them uniformly.
         let combined = STANDARD
             .decode(encoded)
             .map_err(|e| StorageError::CorruptedData(format!("base64: {e}")))?;
@@ -124,10 +64,7 @@ impl<B: StorageBackend> EncryptedBackend<B> {
         String::from_utf8(plain).map_err(|e| StorageError::CorruptedData(format!("utf8: {e}")))
     }
 
-    /// Encrypts raw bytes and returns `nonce ‖ ciphertext` as a byte vector.
-    ///
-    /// Unlike `encrypt_str`, the result is not Base64-encoded because the caller
-    /// stores the bytes directly in a binary column or file.
+    // md:impl EncryptedBackend > fn encrypt_bytes
     fn encrypt_bytes(&self, data: &[u8]) -> Result<Vec<u8>, StorageError> {
         let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
         let ct = self
@@ -139,9 +76,7 @@ impl<B: StorageBackend> EncryptedBackend<B> {
         Ok(combined)
     }
 
-    /// Decrypts bytes previously produced by [`encrypt_bytes`].
-    ///
-    /// Extracts the 12-byte nonce from the front of the slice and decrypts the rest.
+    // md:impl EncryptedBackend > fn decrypt_bytes
     fn decrypt_bytes(&self, data: &[u8]) -> Result<Vec<u8>, StorageError> {
         if data.len() < NONCE_LEN {
             return Err(StorageError::CorruptedData("ciphertext too short".into()));
@@ -152,12 +87,10 @@ impl<B: StorageBackend> EncryptedBackend<B> {
             .map_err(|e| StorageError::CorruptedData(format!("decrypt: {e}")))
     }
 
+    // md:impl EncryptedBackend > fn enc_note
     fn enc_note(&self, mut n: Note) -> Result<Note, StorageError> {
         n.title = self.encrypt_str(&n.title)?;
         n.body = self.encrypt_str(&n.body)?;
-        // Alias, bookmarks and links are derived from / describe the (sensitive) body, so
-        // they are encrypted too. UUIDs (`target_note_id`, `notebook_id`) stay plaintext,
-        // consistent with the existing field-level policy.
         n.alias = n.alias.map(|a| self.encrypt_str(&a)).transpose()?;
         for b in &mut n.bookmarks {
             b.text = self.encrypt_str(&b.text)?;
@@ -169,6 +102,7 @@ impl<B: StorageBackend> EncryptedBackend<B> {
         Ok(n)
     }
 
+    // md:impl EncryptedBackend > fn dec_note
     fn dec_note(&self, mut n: Note) -> Result<Note, StorageError> {
         n.title = self.decrypt_str(&n.title)?;
         n.body = self.decrypt_str(&n.body)?;
@@ -183,28 +117,33 @@ impl<B: StorageBackend> EncryptedBackend<B> {
         Ok(n)
     }
 
+    // md:impl EncryptedBackend > fn enc_notebook
     fn enc_notebook(&self, mut nb: Notebook) -> Result<Notebook, StorageError> {
         nb.title = self.encrypt_str(&nb.title)?;
         nb.alias = nb.alias.map(|a| self.encrypt_str(&a)).transpose()?;
         Ok(nb)
     }
 
+    // md:impl EncryptedBackend > fn dec_notebook
     fn dec_notebook(&self, mut nb: Notebook) -> Result<Notebook, StorageError> {
         nb.title = self.decrypt_str(&nb.title)?;
         nb.alias = nb.alias.map(|a| self.decrypt_str(&a)).transpose()?;
         Ok(nb)
     }
 
+    // md:impl EncryptedBackend > fn enc_tag
     fn enc_tag(&self, mut t: Tag) -> Result<Tag, StorageError> {
         t.title = self.encrypt_str(&t.title)?;
         Ok(t)
     }
 
+    // md:impl EncryptedBackend > fn dec_tag
     fn dec_tag(&self, mut t: Tag) -> Result<Tag, StorageError> {
         t.title = self.decrypt_str(&t.title)?;
         Ok(t)
     }
 
+    // md:impl EncryptedBackend > fn enc_resource
     fn enc_resource(&self, mut r: Resource) -> Result<Resource, StorageError> {
         r.title = self.encrypt_str(&r.title)?;
         r.mime_type = self.encrypt_str(&r.mime_type)?;
@@ -212,6 +151,7 @@ impl<B: StorageBackend> EncryptedBackend<B> {
         Ok(r)
     }
 
+    // md:impl EncryptedBackend > fn dec_resource
     fn dec_resource(&self, mut r: Resource) -> Result<Resource, StorageError> {
         r.title = self.decrypt_str(&r.title)?;
         r.mime_type = self.decrypt_str(&r.mime_type)?;
@@ -220,18 +160,7 @@ impl<B: StorageBackend> EncryptedBackend<B> {
     }
 }
 
-/// Derives a 32-byte (256-bit) AES key from a password and a salt using Argon2id.
-///
-/// Parameters chosen for a balance between security and performance on typical
-/// desktop hardware (approximately 300 ms on a modern laptop):
-/// - Memory: 64 MiB (`65536` KiB)
-/// - Iterations: 3
-/// - Parallelism: 1 (single-threaded)
-/// - Output length: 32 bytes
-///
-/// `salt` must be a stable, per-installation byte sequence (e.g. the device ID string)
-/// so that the derived key is different on every device even when the same password is
-/// used. The salt does not need to be secret, but it must be persisted across restarts.
+// md:fn derive_key
 fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32], StorageError> {
     let params = Params::new(65536, 3, 1, Some(32))
         .map_err(|e| StorageError::InvalidState(format!("argon2 params: {e}")))?;
@@ -243,6 +172,7 @@ fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32], StorageError> {
     Ok(key)
 }
 
+// md:impl NoteRepository for EncryptedBackend
 #[async_trait]
 impl<B: StorageBackend> NoteRepository for EncryptedBackend<B> {
     async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
@@ -280,8 +210,6 @@ impl<B: StorageBackend> NoteRepository for EncryptedBackend<B> {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
-        // Delegate so an inner indexed backend is reached (`target_note_id` is stored in
-        // plaintext, so the index works under encryption), then decrypt the page.
         let (notes, next) = self
             .inner
             .note_backlinks(target_id, page_size, page_token)
@@ -297,8 +225,6 @@ impl<B: StorageBackend> NoteRepository for EncryptedBackend<B> {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
-        // `notebook_id` and `sort_key` are plaintext, so the inner backend can order
-        // natively; only the returned page needs decrypting.
         let (notes, next) = self
             .inner
             .list_notes_in_notebook(notebook_id, page_size, page_token)
@@ -323,11 +249,11 @@ impl<B: StorageBackend> NoteRepository for EncryptedBackend<B> {
         &self,
         notebook_id: Uuid,
     ) -> Result<crate::storage::NotebookSortProfile, StorageError> {
-        // Pure plaintext metadata — nothing to decrypt.
         self.inner.notebook_sort_profile(notebook_id).await
     }
 }
 
+// md:impl NotebookRepository for EncryptedBackend
 #[async_trait]
 impl<B: StorageBackend> NotebookRepository for EncryptedBackend<B> {
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
@@ -368,6 +294,7 @@ impl<B: StorageBackend> NotebookRepository for EncryptedBackend<B> {
     }
 }
 
+// md:impl TagRepository for EncryptedBackend
 #[async_trait]
 impl<B: StorageBackend> TagRepository for EncryptedBackend<B> {
     async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
@@ -423,6 +350,7 @@ impl<B: StorageBackend> TagRepository for EncryptedBackend<B> {
     }
 }
 
+// md:impl ResourceRepository for EncryptedBackend
 #[async_trait]
 impl<B: StorageBackend> ResourceRepository for EncryptedBackend<B> {
     async fn create_resource(
@@ -465,14 +393,11 @@ impl<B: StorageBackend> ResourceRepository for EncryptedBackend<B> {
         &self,
         older_than: DateTime<Utc>,
     ) -> Result<u64, StorageError> {
-        // Pure storage reclamation of (encrypted) dead bytes — nothing to decrypt.
         self.inner.purge_deleted_resources(older_than).await
     }
 }
 
-// Synchronisation methods pass through without any transformation. The data that
-// travels over the sync channel is already in the encrypted form that the inner
-// backend stored on disk, so no additional encryption or decryption step is needed.
+// md:impl SyncBackend for EncryptedBackend
 #[async_trait]
 impl<B: StorageBackend> SyncBackend for EncryptedBackend<B> {
     async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError> {
@@ -508,6 +433,7 @@ impl<B: StorageBackend> SyncBackend for EncryptedBackend<B> {
     }
 }
 
+// md:impl HistoryRepository for EncryptedBackend
 #[async_trait]
 impl<B: StorageBackend> HistoryRepository for EncryptedBackend<B> {
     async fn note_history(
@@ -515,8 +441,6 @@ impl<B: StorageBackend> HistoryRepository for EncryptedBackend<B> {
         id: Uuid,
         limit: u32,
     ) -> Result<Vec<EntityVersion<Note>>, StorageError> {
-        // The journal stores ciphertext snapshots; decrypt each version's entity on the way
-        // up, exactly as `read_note` does for the current state. Tombstones carry no entity.
         self.inner
             .note_history(id, limit)
             .await?

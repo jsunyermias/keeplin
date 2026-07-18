@@ -32,7 +32,7 @@ content can be **encrypted at rest** with AES‑256‑GCM.
 - **At‑rest encryption:** AES‑256‑GCM with an Argon2id‑derived key (opt‑in).
 - **gRPC API** with HTTP Basic Auth (constant‑time check) and optional TLS.
 - **Pinning, manual ordering, starring, and the Inbox**: every note lives in exactly one
-  notebook (unfiled notes land in the **Inbox**, "Pizarra", auto‑created with the nil
+  notebook (unfiled notes land in the **Inbox**, auto‑created with the nil
   UUID); notebooks order manually by `sort_key` with a pinned band (`1–999`, max 999) above
   the normal band (`≥ 1000`), the Inbox is a flat top‑insert list, and a global star flag
   is queryable across notebooks — see [Pinning, ordering & the Inbox](#pinning-ordering--the-inbox).
@@ -274,7 +274,7 @@ encryption is on without `key_salt`.
 ## Pinning, ordering & the Inbox
 
 Every note belongs to exactly one notebook: a note created without choosing one lands in
-the **Inbox** — a system notebook titled **"Pizarra"** with the fixed nil UUID
+the **Inbox** — a system notebook titled **"Inbox"** with the fixed nil UUID
 (`00000000-0000-0000-0000-000000000000`), auto‑created at startup and protected from
 deletion. Old data migrates transparently: notes stored without a notebook read as Inbox
 notes on every backend.
@@ -434,7 +434,7 @@ aliases are globally unique** (a duplicate is rejected with `409`/`ALREADY_EXIST
 referencing note's own notebook. Concurrent cross‑device edits can still introduce a same‑notebook
 collision through sync, in which case resolution deterministically picks the smallest‑uuid match
 and logs a warning, and the collision is listed by `GET /api/aliases/conflicts` (or
-`ListAliasConflicts`) so it can be cleaned up. **Inbox (`Pizarra`) notes stand apart from the
+`ListAliasConflicts`) so it can be cleaned up. **Inbox notes stand apart from the
 linking graph entirely**: they carry no alias, emit no links, and are never a link target —
 setting an alias on one is rejected with `400`. Each link records a best‑effort `target_note_id`;
 `GET /api/links/resolve` (or the
