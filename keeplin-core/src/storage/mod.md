@@ -1,63 +1,243 @@
 # `storage/mod.rs` — storage module root
 
-## Purpose
+Self-contained companion for `keeplin-core/src/storage/mod.rs`. It documents **every
+code block of the source file, in source order** — a reader with only this file must be
+able to understand it without opening anything else, so project-wide conventions are
+deliberately re-explained here (hyper-redundancy is intended).
 
-This file is the root of the `storage` sub-module. It declares the child modules that
-together provide the complete storage layer and re-exports the `StorageBackend` supertrait
-(and its five sub-traits) at the `storage` level so callers can write
-`use keeplin_core::storage::StorageBackend` instead of the longer `…::backend::StorageBackend`.
+**How to navigate**: every block carries exactly one marker comment
+`// md:<Header> > … > <Block header>` whose path is the header chain of its section
+here; grep it in either direction. Each section covers **Identification**,
+**What it does**, **Dependencies**, **Used by**, **Repeated context**.
 
-## Module map
+---
 
-| Module | Visibility | Description |
-|--------|------------|-------------|
-| `backend` | private (re-exported) | `StorageBackend` supertrait + the five sub-traits |
-| `note_log` | public | Pure version-vector merge for FS per-note logs (I/O-free, unit-tested) |
-| `db` | public | `DbBackend` — LibSQL local cache + WebSocket sync |
-| `fs` | public | `FsBackend` — files on disk (msgpack sidecars + per-note VV logs), Syncthing replication |
+## Overview
 
-## Re-exports
+**Identification** — file-level block: the child-module declarations and the
+`backend` re-exports. Marker `// md:Overview`.
 
 ```rust
+mod backend;
+pub mod db;
+pub mod fs;
+pub mod note_log;
+
 pub use backend::{
-    StorageBackend, NoteRepository, NotebookRepository, TagRepository,
-    ResourceRepository, SyncBackend, NotebookSortProfile,
+    EntityVersion, HistoryRepository, NoteRepository, NotebookRepository, NotebookSortProfile,
+    ResourceRepository, StorageBackend, SyncBackend, TagRepository, DEFAULT_HISTORY_LIMIT,
 };
 ```
 
-`NotebookSortProfile` is the compact per-notebook ordering summary (`pinned_keys`, `min_key`,
-`max_normal_key`) the `ordering` placement rules read; each backend builds it natively.
+**What it does** — The root of Keeplin's storage layer: the `StorageBackend` trait
+family plus two concrete implementations. Module map:
 
-## Page-size clamping — `effective_page_size`
+| Module | Visibility | Role |
+|--------|------------|------|
+| `backend` | private (re-exported) | `StorageBackend` supertrait + its five sub-traits (`NoteRepository`, `NotebookRepository`, `TagRepository`, `ResourceRepository`, `SyncBackend`), `HistoryRepository`, `EntityVersion`, `NotebookSortProfile`, `DEFAULT_HISTORY_LIMIT` |
+| `db` | public | `DbBackend` — local LibSQL (SQLite-compatible) database, synchronises with a central server over WebSocket |
+| `fs` | public | `FsBackend` — JSON files on disk with per-device NDJSON change logs that Syncthing (or any compatible tool) replicates across devices |
+| `note_log` | public | pure version-vector merge/resolution for the per-note logs (I/O-free, unit-tested); home of the LWW `(timestamp, device_id)` tiebreak used across the project |
 
-Every list method sizes its page through `effective_page_size(page_size)`: `0` means the
-`DEFAULT_PAGE_SIZE` (100), and any value above `MAX_PAGE_SIZE` (1000) is clamped down to it.
-`page_size` arrives from the network as an arbitrary `u32`, so the cap stops a single request
-for `u32::MAX` rows from making a backend materialize the whole store in one response (a
-memory-exhaustion DoS); the reply's cursor lets a well-behaved client keep paging.
+`backend` is `mod` (not `pub mod`) so its private helpers stay off the public path;
+its trait family is re-exported here, letting callers write
+`keeplin_core::storage::StorageBackend`. `NotebookSortProfile` is the compact
+per-notebook ordering summary (`pinned_keys`, `min_key`, `max_normal_key`) that the
+`ordering` placement rules read; each backend builds it natively.
 
-## `SortableRfc3339` — fixed-precision timestamps for text comparison
+**Dependencies** — the four child modules.
 
-The backends store timestamps as RFC 3339 TEXT and order them lexicographically (SQLite
-`WHERE created_at > ?` / `ORDER BY`, and the `"<ts>|<id>"` keyset cursors). Plain
-`DateTime::to_rfc3339()` emits a *variable* number of fractional digits (3/6/9, whatever
-the instant needs — platform clock precision leaks into the format), so equal instants can
-be unequal strings and the cursor's `created_at = ?` equality branch silently fails across
-precisions. The crate-private `SortableRfc3339::to_sortable_rfc3339` extension pins the
-shape — always nine fractional digits, `+00:00` offset — and is what `db.rs`, `fs.rs`, and
-`backend.rs` use for every stored/compared timestamp. Rows written before this existed keep
-their variable-precision text; ordering against them remains chronologically consistent
-(proven by the `lexicographic_order_matches_chronological_even_mixed_with_old_format` test).
+**Used by** — every consumer of storage: the decorators (`encryption::EncryptedBackend`,
+`linking::LinkingBackend`, `collab::CollabBackend`, daemon-side `EventBackend`/
+`MetricsBackend`), `sync::engine`, `history`, `interop`, `migrate`, `ordering`, the
+daemon (`server.rs`, `rest.rs`, `main.rs`), and the backend test suites.
 
-## Design notes
+**Repeated context** — Crate convention: new storage backends or decorators are added
+as child modules implementing `StorageBackend`; nothing else here changes. No
+re-exports at the *crate* root — `storage` is the shallowest public path.
 
-- `backend` is declared `mod backend` (not `pub mod`) because its public surface is just the
-  trait family, re-exported here. This keeps `backend.rs`'s private helpers (e.g.
-  `paginate_notes`) out of the public path.
-- `db`, `fs`, and `note_log` are `pub mod` so their concrete types/functions are reachable as
-  `keeplin_core::storage::{db::DbBackend, fs::FsBackend, note_log::merge}`.
+---
+
+## DEFAULT_PAGE_SIZE
+
+**Identification** — `pub const DEFAULT_PAGE_SIZE: u32 = 100;` marker
+`// md:DEFAULT_PAGE_SIZE`.
+
+**What it does** — Page size used when a list call passes `page_size = 0` (the
+"caller has no opinion" sentinel).
+
+**Dependencies** — none.
+
+**Used by** — `effective_page_size` below; documented contract of every backend list
+method (`fs.rs`, `db.rs`) and of the daemon's list endpoints.
+
+**Repeated context** — All list APIs in the project are cursor-paginated: reply
+carries an opaque cursor; `page_size = 0` means "default".
+
+---
+
+## MAX_PAGE_SIZE
+
+**Identification** — `pub const MAX_PAGE_SIZE: u32 = 1000;` marker
+`// md:MAX_PAGE_SIZE`.
+
+**What it does** — Hard upper bound applied to every list call's `page_size`.
+`page_size` arrives from the network (gRPC/REST) as an arbitrary `u32`; without a cap
+a single request for `u32::MAX` rows would make the server materialise the entire
+store in one response (memory-exhaustion DoS). Requests above the cap are **silently
+clamped**, not rejected — the reply's cursor lets a well-behaved client keep paging.
+
+**Dependencies** — none.
+
+**Used by** — `effective_page_size` below.
+
+**Repeated context** — clamp-don't-reject is the project's stance for out-of-range
+paging inputs; domain-rule violations (e.g. pinning an inbox note) reject with
+`StorageError::InvalidInput` instead.
+
+---
+
+## fn effective_page_size
+
+**Identification** — `pub(crate) fn effective_page_size(page_size: u32) -> u32`;
+marker `// md:fn effective_page_size`.
+
+**What it does** — Resolves a caller-supplied `page_size` to the limit actually
+used: `0` → `DEFAULT_PAGE_SIZE` (100); anything above `MAX_PAGE_SIZE` (1000) clamps
+down to it; everything in between passes through. Pure, total, no errors.
+
+**Dependencies** — the two constants above.
+
+**Used by** — every list implementation in `storage/fs.rs` and `storage/db.rs`
+(notes, notebooks, tags, resources, history listings).
+
+**Repeated context** — crate-private (`pub(crate)`) on purpose: callers outside the
+crate see only the *effect* (default + clamp), which the constants document.
+
+---
+
+## trait SortableRfc3339
+
+**Identification** — `pub(crate) trait SortableRfc3339` with one method
+`fn to_sortable_rfc3339(&self) -> String`; marker `// md:trait SortableRfc3339`.
+
+**What it does** — Fixed-precision RFC 3339 formatting for timestamps that are
+**compared as text**. The backends store timestamps as RFC 3339 TEXT and order them
+lexicographically — SQLite `WHERE created_at > ?` / `ORDER BY`, and the `"<ts>|<id>"`
+keyset cursors. Lexicographic order only matches chronological order when every value
+has the same shape, but `DateTime::to_rfc3339()` emits a *variable* number of
+fractional digits (3/6/9, whatever the instant needs — platform clock precision leaks
+into the format). Two representations of comparable instants can then order
+incorrectly, and the `created_at = cursor` equality branch of keyset pagination
+silently fails across precisions. `to_sortable_rfc3339` pins the shape: always nine
+fractional digits and the `+00:00` offset, so equal instants are equal strings and
+lexicographic = chronological. Rows written before this existed keep their
+variable-precision text; ordering against them stays chronologically consistent (the
+shorter fraction sorts exactly where its value belongs) — only their cursor-equality
+match remains best-effort, the same situation mixed-precision writers were already in.
+
+**Dependencies** — none (trait definition only).
+
+**Used by** — `storage/db.rs`, `storage/fs.rs`, and `storage/backend.rs` for every
+stored/compared timestamp; the `impl` below provides the only implementation.
+
+**Repeated context** — Timestamps-as-TEXT is a deliberate project convention (keeps
+FS files human-readable and SQLite schema simple); this trait is the invariant that
+makes it safe.
+
+---
+
+## impl SortableRfc3339 for DateTime Utc
+
+**Identification** — the sole implementation, for `chrono::DateTime<chrono::Utc>`;
+marker `// md:impl SortableRfc3339 for DateTime Utc`.
+
+**What it does** — Delegates to
+`self.to_rfc3339_opts(chrono::SecondsFormat::Nanos, false)`: `Nanos` forces exactly
+nine fractional digits; `use_z: false` keeps the `+00:00` offset form (matching the
+strings `to_rfc3339()` already produced, so old and new rows share the offset shape).
+
+**Dependencies** — `chrono`.
+
+**Used by** — call sites in `db.rs` / `fs.rs` / `backend.rs` via the trait.
+
+**Repeated context** — none beyond the trait's.
+
+---
+
+## mod tests
+
+**Identification** — `#[cfg(test)]` unit-test module; marker `// md:mod tests`.
+Three tests.
+
+**What it does** — Compile-time-gated unit tests for the two pure pieces of this
+file (page-size clamping and timestamp shape). They run with `cargo test -p
+keeplin-core` and never touch I/O.
+
+**Dependencies** — `super::*` items, `chrono`.
+
+**Used by** — CI (`cargo test --workspace`).
+
+**Repeated context** — Project test convention: pure logic gets in-file
+`#[cfg(test)]` unit tests; anything needing a running backend lives in
+`keeplin-core/tests/`.
+
+### fn effective_page_size_defaults_and_clamps
+
+**Identification** — unit test; marker
+`// md:mod tests > fn effective_page_size_defaults_and_clamps`.
+
+**What it does** — Asserts the three regimes of `effective_page_size`: `0` →
+`DEFAULT_PAGE_SIZE`; in-range values (7, `MAX_PAGE_SIZE`) pass through;
+`u32::MAX` clamps to `MAX_PAGE_SIZE`.
+
+**Dependencies** — `effective_page_size`, the constants.
+
+**Used by** — CI only.
+
+**Repeated context** — none.
+
+### fn sortable_rfc3339_has_fixed_shape
+
+**Identification** — unit test; marker
+`// md:mod tests > fn sortable_rfc3339_has_fixed_shape`.
+
+**What it does** — Formats a second-aligned instant (worst case: `to_rfc3339()`
+would emit *zero* fractional digits) and asserts the output ends with `+00:00` and
+carries exactly nine fractional digits (`000000000`).
+
+**Dependencies** — `SortableRfc3339`, `chrono`.
+
+**Used by** — CI only.
+
+**Repeated context** — none.
+
+### fn lexicographic_order_matches_chronological_even_mixed_with_old_format
+
+**Identification** — unit test; marker
+`// md:mod tests > fn lexicographic_order_matches_chronological_even_mixed_with_old_format`.
+
+**What it does** — Builds a set of instants straddling second and sub-second
+boundaries, renders each in **both** the legacy variable-precision `to_rfc3339()`
+format and the fixed `to_sortable_rfc3339()` format, sorts the combined list once by
+string and once by instant, and asserts the two orders agree — proving stores mixing
+old- and new-format rows still order chronologically.
+
+**Dependencies** — `SortableRfc3339`, `chrono`.
+
+**Used by** — CI only.
+
+**Repeated context** — this is the invariant that lets old rows keep their text
+untouched (project premise: clean breaks, no data migrations).
+
+---
 
 ## Graph context
+
+Repo-tooling metadata, not a code block (no marker in the source). Kept in every
+companion because CI (`scripts/check-docs.sh`) enforces it: this file is LAYER 2 of
+the navigation model, the Graphify graph (`graphify-out/graph.json`) is LAYER 1;
+refresh with `graphify update .` after refactors.
 
 <!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
      EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
@@ -80,14 +260,17 @@ their variable-precision text; ordering against them remains chronologically con
 
 - (none in the graph) (EXTRACTED)
 
-**Invariants** (restated on purpose; a change to this file must keep these true)
+## Coverage checklist
 
-- Declares child modules and re-exports the `StorageBackend` supertrait + sub-traits at `storage` level; no logic here.
-- New storage backends/decorators are added as child modules and re-exported here.
-
-## Related files
-
-- `keeplin-core/src/storage/backend.rs` — supertrait + sub-trait definitions
-- `keeplin-core/src/storage/note_log.rs` — pure merge logic
-- `keeplin-core/src/storage/fs.rs` — filesystem backend
-- `keeplin-core/src/storage/db.rs` — database backend
+| # | Block (source order) | Marker in code |
+|---|----------------------|----------------|
+| 1 | module declarations + re-exports | `// md:Overview` |
+| 2 | `DEFAULT_PAGE_SIZE` | `// md:DEFAULT_PAGE_SIZE` |
+| 3 | `MAX_PAGE_SIZE` | `// md:MAX_PAGE_SIZE` |
+| 4 | `fn effective_page_size` | `// md:fn effective_page_size` |
+| 5 | `trait SortableRfc3339` | `// md:trait SortableRfc3339` |
+| 6 | `impl SortableRfc3339 for DateTime<Utc>` | `// md:impl SortableRfc3339 for DateTime Utc` |
+| 7 | `mod tests` | `// md:mod tests` |
+| 8 | `fn effective_page_size_defaults_and_clamps` | `// md:mod tests > fn effective_page_size_defaults_and_clamps` |
+| 9 | `fn sortable_rfc3339_has_fixed_shape` | `// md:mod tests > fn sortable_rfc3339_has_fixed_shape` |
+| 10 | `fn lexicographic_order_matches_chronological_even_mixed_with_old_format` | `// md:mod tests > fn lexicographic_order_matches_chronological_even_mixed_with_old_format` |

@@ -1,32 +1,53 @@
 # `sync/mod.rs` — sync module root
 
-## Purpose
+Self-contained companion for `keeplin-core/src/sync/mod.rs`. It documents **every code
+block of the source file, in source order** — a reader with only this file must be able
+to understand it without opening anything else, so project-wide conventions are
+deliberately re-explained here (hyper-redundancy is intended).
 
-This file is the root of the `sync` sub-module. It declares the `engine` child module
-and re-exports `SyncEngine` so that callers can write
-`use keeplin_core::sync::SyncEngine` instead of
-`use keeplin_core::sync::engine::SyncEngine`.
+**How to navigate**: every block carries exactly one marker comment
+`// md:<Header> > … > <Block header>` whose path is the header chain of its section
+here; grep it in either direction. Each section covers **Identification**,
+**What it does**, **Dependencies**, **Used by**, **Repeated context**.
 
-## Module map
+---
 
-| Module | Visibility | Description |
-|--------|------------|-------------|
-| `engine` | private (re-exported) | `SyncEngine` — orchestrates a full push/pull sync cycle |
+## Overview
 
-## Re-exports
+**Identification** — the file's single block: the child-module declaration and
+re-exports. Marker `// md:Overview`.
 
 ```rust
-pub use engine::SyncEngine;
+mod engine;
+
+pub use engine::{run_sync, SyncEngine, SyncStage};
 ```
 
-## Design notes
+**What it does** — The root of the `sync` sub-module: the synchronisation engine for
+Keeplin. It declares the private `engine` child module and re-exports its public
+surface — `SyncEngine` (orchestrates a complete push-then-pull synchronisation cycle
+for any `crate::storage::StorageBackend`: collect local changes, push to the remote
+peer, pull remote changes, apply locally, update the last-sync timestamp), the
+`run_sync` free function, and the `SyncStage` progress enum — so callers write
+`keeplin_core::sync::SyncEngine` instead of reaching into `engine`.
 
-- The module is intentionally minimal. Future sync strategies (e.g. peer-to-peer, CRDTs)
-  could be added as sibling modules here without changing the public interface.
-- `engine` is declared as a private module (`mod engine`) because its only public surface
-  is `SyncEngine`. Private helpers inside `engine.rs` are not accessible to external code.
+**Dependencies** — `engine` (this module's child, `sync/engine.rs`).
+
+**Used by** — the daemon (`keeplin-daemon`) and any embedder driving a manual sync
+cycle; `sync/engine.rs` is otherwise private.
+
+**Repeated context** — Module-root convention of the crate: root files declare and
+re-export, never implement. Deliberately minimal so future sync strategies (e.g.
+peer-to-peer) can be added as sibling modules without changing the public interface.
+
+---
 
 ## Graph context
+
+Repo-tooling metadata, not a code block (no marker in the source). Kept in every
+companion because CI (`scripts/check-docs.sh`) enforces it: this file is LAYER 2 of
+the navigation model, the Graphify graph (`graphify-out/graph.json`) is LAYER 1;
+refresh with `graphify update .` after refactors.
 
 <!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
      EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
@@ -43,12 +64,8 @@ pub use engine::SyncEngine;
 
 - (none in the graph) (EXTRACTED)
 
-**Invariants** (restated on purpose; a change to this file must keep these true)
+## Coverage checklist
 
-- Module root: declares `engine` and re-exports `SyncEngine`; no logic.
-
-## Related files
-
-- `keeplin-core/src/sync/engine.rs` — full implementation of the sync cycle
-- `keeplin-core/src/storage/backend.rs` — the `StorageBackend` trait that `SyncEngine`
-  depends on
+| # | Block (source order) | Marker in code |
+|---|----------------------|----------------|
+| 1 | `mod engine;` + re-exports | `// md:Overview` |

@@ -1,49 +1,235 @@
 # `compat.rs` — keeplin-srv protocol/capability handshake (`GET /version`)
 
-## Purpose
+Self-contained companion for `keeplin-core/src/compat.rs`. It documents **every code
+block of the source file, in source order** — a reader with only this file must be able
+to understand it without opening anything else, so project-wide conventions are
+deliberately re-explained here (hyper-redundancy is intended).
 
-The **single place in this repository** that defines which keeplin-srv wire protocol this
-client speaks and how the startup handshake against `GET /version` is classified. keeplin and
-keeplin-srv evolve in separate repositories (keeplin-srv pins a keeplin-core git `rev`), so a
-protocol drift would otherwise fail silently or with confusing mid-sync errors. Both connect
-points use this module: `DbBackend::new` (relay, `storage/db.rs`) and `CollabBackend::start`
-(collaborative channel, `collab/mod.rs`). keeplin-srv mirrors the rule around its own
-`PROTOCOL_VERSION` constant in its `src/http.rs`.
+**How to navigate**: every block carries exactly one marker comment
+`// md:<Header> > … > <Block header>` whose path is the header chain of its section
+here; grep it in either direction. Each section covers **Identification**,
+**What it does**, **Dependencies**, **Used by**, **Repeated context**.
 
-## Key types
+---
 
-| Type | Kind | Description |
-|------|------|-------------|
-| `PROTOCOL_VERSION` | `pub const u32` | the sync/collab protocol this client speaks (currently `1`). Bump together with keeplin-srv's constant on a breaking wire change. |
-| `ServerInfo` | struct | deserialised `GET /version` body: `name`, `version`, `protocol_version` (required), `capabilities` (defaulted). Unknown fields ignored. |
-| `Handshake` | enum | `Compatible(ServerInfo)` / `Incompatible(ServerInfo)` / `Unavailable` |
+## Overview
 
-## Public API
+**Identification** — file-level block: the import. Marker `// md:Overview`.
 
-| Function | Description |
-|----------|-------------|
-| `compatible_with(server_protocol) -> bool` | **The** compatibility rule: exact equality with `PROTOCOL_VERSION`. Capabilities cover additive evolution, so a version bump is reserved for breaking changes — hence equality, not a range. |
-| `negotiate(http, http_base) -> Handshake` | `GET {base}/version`. Never errors: non-2xx, network failure, or unparseable JSON (including a missing `protocol_version`) → `Unavailable`. |
-| `incompatible_message(&ServerInfo) -> String` | The actionable startup error: names both protocol versions and which side to upgrade (server newer → upgrade this client/daemon; client newer → bump keeplin-srv's pinned keeplin-core `rev` / upgrade keeplin-srv). |
+```rust
+use serde::Deserialize;
+```
 
-## The three-way contract (identical at both connect points)
+**What it does** — The client side of the keeplin-srv protocol/capability handshake
+(`GET /version`; issues keeplin-srv#39 / keeplin#114), and the **single place in this
+repository** that defines which server protocol this client speaks. keeplin and
+keeplin-srv evolve in separate repositories (keeplin-srv pins a keeplin-core git
+`rev`), so a wire-protocol drift would otherwise fail silently or with confusing
+mid-sync errors; keeplin-srv mirrors the same rule around its own `PROTOCOL_VERSION`
+constant in its `src/http.rs`. The three-way contract, applied identically at both
+connect points (`DbBackend::new` for the relay, `CollabBackend::start` for the
+collaborative channel):
 
-- **Compatible** → log negotiated protocol + capabilities, proceed (and `DbBackend` primes
-  its capability cache from the reply).
-- **Incompatible** → fail loudly at startup (`StorageError::InvalidState` with
-  `incompatible_message`); **no sync is attempted**.
-- **Unavailable** → warn and continue — an old keeplin-srv without `/version`, or a bare test
-  relay, must keep working exactly as before the handshake existed (backward compatible).
+- `/version` answers a **compatible** `protocol_version` → log negotiated version +
+  capabilities and proceed (DbBackend primes its capability cache from the reply).
+- `/version` answers an **incompatible** `protocol_version` → fail loudly at startup
+  (`StorageError::InvalidState` with `incompatible_message`); sync is not attempted.
+- `/version` is **missing/unreachable/unparseable** (older keeplin-srv, or a bare
+  fake relay in tests) → warn and continue; behaviour unchanged from before the
+  handshake existed (backward compatible).
 
-## Design notes
+**Dependencies** — `serde` (deserialising `ServerInfo`); `reqwest` appears in
+`negotiate`'s signature.
 
-- `negotiate` is infallible by design: only a *well-formed, incompatible* answer may block
-  startup. Anything ambiguous degrades to the pre-handshake behaviour.
-- The version-bump procedure is documented in both repos' READMEs: to adopt a newer
-  keeplin-core, bump the pinned `rev` in keeplin-srv's `Cargo.toml` and run its test suite —
-  it exercises this real client against the real server.
+**Used by** — `storage/db.rs` (`DbBackend::new`), `collab/mod.rs`
+(`CollabBackend::start`), `keeplin-core/tests/version_handshake.rs`.
+
+**Repeated context** — Version-bump procedure (documented in both repos' READMEs):
+to adopt a newer keeplin-core, bump the pinned `rev` in keeplin-srv's `Cargo.toml`
+and run its test suite — it exercises this real client against the real server.
+
+---
+
+## PROTOCOL_VERSION
+
+**Identification** — `pub const PROTOCOL_VERSION: u32 = 1;` marker
+`// md:PROTOCOL_VERSION`.
+
+**What it does** — The sync/collab wire-protocol version this client speaks.
+Mirrors keeplin-srv's `PROTOCOL_VERSION` (its `src/http.rs`); bump **both sides
+together** on any breaking change to the relay or collab message shapes.
+
+**Dependencies** — none.
+
+**Used by** — `compatible_with`, `incompatible_message`,
+`tests/version_handshake.rs` (drives its fake servers).
+
+**Repeated context** — Project premise: clean breaks, no migrations — a breaking
+wire change is expressed only as a version bump, never as dual-format support.
+
+---
+
+## fn compatible_with
+
+**Identification** — `pub fn compatible_with(server_protocol: u32) -> bool`; marker
+`// md:fn compatible_with`.
+
+**What it does** — The compatibility rule, in one place: **exact protocol match**
+(`server_protocol == PROTOCOL_VERSION`). Capabilities cover additive evolution (a
+client probes them instead of guessing), so a `protocol_version` bump is reserved
+for breaking changes — hence equality, not a range.
+
+**Dependencies** — `PROTOCOL_VERSION`.
+
+**Used by** — `negotiate` (classification), unit test `exact_match_is_compatible`.
+
+**Repeated context** — keeplin-srv applies the identical equality check on its side
+of the handshake; both must change in lockstep.
+
+---
+
+## ServerInfo
+
+**Identification** — struct deriving `Debug, Clone, Deserialize`; marker
+`// md:ServerInfo`.
+
+**What it does** — What `GET /version` advertises: `name` and `version`
+(`#[serde(default)]` — informational, may be absent/empty), `protocol_version`
+(required `u32` — a body missing it fails deserialisation and classifies as
+`Unavailable`), `capabilities` (defaulted `Vec<String>` of additive feature flags a
+client probes, e.g. collab support). Unknown fields are ignored (serde default), so
+an older client keeps working against a newer server's additions.
+
+**Dependencies** — `serde`.
+
+**Used by** — `negotiate` (deserialisation target), `Handshake`'s payload,
+`incompatible_message`, callers logging capabilities.
+
+**Repeated context** — additive evolution goes in `capabilities`; breaking
+evolution goes in `protocol_version` — never infer features from `version` strings.
+
+---
+
+## Handshake
+
+**Identification** — enum deriving `Debug, Clone`; marker `// md:Handshake`.
+
+**What it does** — Outcome of the startup handshake:
+`Compatible(ServerInfo)` (server speaks our protocol; capabilities known),
+`Incompatible(ServerInfo)` (server answered with a protocol we do not speak — the
+caller must fail startup), `Unavailable` (no usable `/version`: older server,
+unreachable, or not an HTTP endpoint at all — the caller warns and continues).
+
+**Dependencies** — `ServerInfo`.
+
+**Used by** — returned by `negotiate`; matched in `storage/db.rs` and
+`collab/mod.rs`.
+
+**Repeated context** — only `Incompatible` may block startup; ambiguity always
+degrades to the pre-handshake behaviour.
+
+---
+
+## fn negotiate
+
+**Identification** —
+`pub async fn negotiate(http: &reqwest::Client, http_base: &str) -> Handshake`;
+marker `// md:fn negotiate`.
+
+**What it does** — Fetches `GET {http_base}/version` (trailing `/` on the base is
+trimmed before joining) and classifies the answer. **Never errors**: non-2xx status
+or a network failure → `Unavailable`; a 2xx body that parses as `ServerInfo` →
+`Compatible`/`Incompatible` per `compatible_with`; unparseable JSON →
+`Unavailable`. Anything short of a well-formed reply must leave the pre-handshake
+behaviour intact against old servers and test relays.
+
+**Dependencies** — `reqwest` (caller supplies the client — connection pooling and
+TLS config stay the caller's concern), `ServerInfo`, `compatible_with`.
+
+**Used by** — `DbBackend::new` (relay connect), `CollabBackend::start` (collab
+session start).
+
+**Repeated context** — async convention of the crate: all I/O is `async` on tokio;
+pure logic (like `compatible_with`) stays sync and unit-testable.
+
+---
+
+## fn incompatible_message
+
+**Identification** — `pub fn incompatible_message(info: &ServerInfo) -> String`;
+marker `// md:fn incompatible_message`.
+
+**What it does** — Builds the actionable startup error for an incompatible server:
+names the server (falling back to `"server"` / `"(unknown version)"` for empty
+fields), states both protocol versions, and says **which side to upgrade** — server
+newer (`info.protocol_version > PROTOCOL_VERSION`) → upgrade this keeplin
+client/daemon; client newer → upgrade keeplin-srv (bump its pinned keeplin-core
+`rev`, run its test suite) or downgrade this client. Ends with "Sync is disabled
+until the versions match."
+
+**Dependencies** — `ServerInfo`, `PROTOCOL_VERSION`.
+
+**Used by** — the failure paths in `storage/db.rs` and `collab/mod.rs`; unit test
+`incompatible_message_names_the_side_to_upgrade`.
+
+**Repeated context** — error-message convention: operator-facing errors must be
+actionable (say what to do), and must never contain sensitive data.
+
+---
+
+## mod tests
+
+**Identification** — `#[cfg(test)]` unit-test module; marker `// md:mod tests`.
+Two tests.
+
+**What it does** — Unit tests for the pure pieces (the equality rule and the
+message direction); the network path is covered end-to-end by
+`tests/version_handshake.rs` with fake HTTP servers.
+
+**Dependencies** — `super::*`.
+
+**Used by** — CI (`cargo test --workspace`).
+
+**Repeated context** — project test convention: pure logic in in-file
+`#[cfg(test)]` tests; anything needing sockets in `keeplin-core/tests/`.
+
+### fn exact_match_is_compatible
+
+**Identification** — unit test; marker
+`// md:mod tests > fn exact_match_is_compatible`.
+
+**What it does** — Asserts `compatible_with(PROTOCOL_VERSION)` is true and both a
+higher (`+1`) and lower (`0`) version are rejected.
+
+**Dependencies** — `compatible_with`, `PROTOCOL_VERSION`.
+
+**Used by** — CI only.
+
+**Repeated context** — none.
+
+### fn incompatible_message_names_the_side_to_upgrade
+
+**Identification** — unit test; marker
+`// md:mod tests > fn incompatible_message_names_the_side_to_upgrade`.
+
+**What it does** — Builds a newer-server `ServerInfo` (`PROTOCOL_VERSION + 1`) and
+asserts the message says to upgrade this keeplin client; builds an older-server one
+(`0`) and asserts it says to upgrade keeplin-srv.
+
+**Dependencies** — `incompatible_message`, `ServerInfo`.
+
+**Used by** — CI only.
+
+**Repeated context** — none.
+
+---
 
 ## Graph context
+
+Repo-tooling metadata, not a code block (no marker in the source). Kept in every
+companion because CI (`scripts/check-docs.sh`) enforces it: this file is LAYER 2 of
+the navigation model, the Graphify graph (`graphify-out/graph.json`) is LAYER 1;
+refresh with `graphify update .` after refactors.
 
 <!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
      EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
@@ -69,15 +255,17 @@ points use this module: `DbBackend::new` (relay, `storage/db.rs`) and `CollabBac
 - `keeplin-core/src/collab/mod.rs` — `CollabBackend::start` calls the same pair for the collab session handshake (INFERRED)
 - `keeplin-core/tests/version_handshake.rs` — imports `PROTOCOL_VERSION` to drive the three fake-server behaviours (INFERRED)
 
-**Invariants** (restated on purpose; a change to this file must keep these true)
+## Coverage checklist
 
-- This module is the ONLY place this repo defines server-protocol compatibility (`PROTOCOL_VERSION`, `compatible_with` = exact match); keeplin-srv mirrors it in `src/http.rs` — bump both together.
-- `negotiate` never errors: anything short of a well-formed reply is `Unavailable` (warn-and-continue), so old servers and bare test relays keep working.
-- Only a well-formed, incompatible `/version` answer may block startup — and then the error must name both versions and which side to upgrade.
-
-## Related files
-
-- `storage/db.rs` — handshake enforced in `DbBackend::new` (relay connect path).
-- `collab/mod.rs` — handshake enforced in `CollabBackend::start` (session start).
-- `tests/version_handshake.rs` — fake `/version` servers asserting the three behaviours.
-- keeplin-srv `src/http.rs` — the mirrored `PROTOCOL_VERSION` + `compatible_with` and the `/version` endpoint itself.
+| # | Block (source order) | Marker in code |
+|---|----------------------|----------------|
+| 1 | imports (`use …`) | `// md:Overview` |
+| 2 | `PROTOCOL_VERSION` | `// md:PROTOCOL_VERSION` |
+| 3 | `fn compatible_with` | `// md:fn compatible_with` |
+| 4 | `struct ServerInfo` | `// md:ServerInfo` |
+| 5 | `enum Handshake` | `// md:Handshake` |
+| 6 | `fn negotiate` | `// md:fn negotiate` |
+| 7 | `fn incompatible_message` | `// md:fn incompatible_message` |
+| 8 | `mod tests` | `// md:mod tests` |
+| 9 | `fn exact_match_is_compatible` | `// md:mod tests > fn exact_match_is_compatible` |
+| 10 | `fn incompatible_message_names_the_side_to_upgrade` | `// md:mod tests > fn incompatible_message_names_the_side_to_upgrade` |

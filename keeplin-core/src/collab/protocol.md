@@ -1,57 +1,238 @@
 # `collab/protocol.rs` — collaborative channel wire types
 
-## Purpose
+Self-contained companion for `keeplin-core/src/collab/protocol.rs`. It documents
+**every code block of the source file, in source order** — a reader with only this
+file must be able to understand it without opening anything else, so project-wide
+conventions are deliberately re-explained here (hyper-redundancy is intended).
 
-The JSON wire types of keeplin-srv's collaborative channel (`GET /api/ws`), mirroring the server's
-own `protocol.rs`. Pure type definitions (serde `Serialize`/`Deserialize`) — no logic. Messages are
-tagged with `type`; line operations with `op`; both use `PascalCase` variant names to match the
-server.
+**How to navigate**: every block carries exactly one marker comment
+`// md:<Header> > … > <Block header>` whose path is the header chain of its section
+here; grep it in either direction. Each section covers **Identification**,
+**What it does**, **Dependencies**, **Used by**, **Repeated context**.
 
-## Key types
+---
 
-| Type | Kind | Description |
-|------|------|-------------|
-| `LineId` | type alias | `Uuid` — a line's stable identity |
-| `Cursor` | struct | a caret: `{ line_id, column }` |
-| `LineSnapshot` | struct | one line as a full versioned entity (content, timestamps, `deleted_at` tombstone, `vv`, `last_writer`) |
-| `NoteLinesSnapshot` | struct | full note state in `Welcome`: the versioned `order` + every `LineSnapshot` |
-| `LineOp` | enum | one line operation: `Insert` / `Update` / `Delete` / `Move` |
-| `PresenceInfo` | struct | a participant: `{ user_id, display_name, cursor }` |
-| `CollabClientMsg` | enum | client → server: `Join` / `Leave` / `Op` / `Cursor` / `Ack` |
-| `CollabServerMsg` | enum | server → client: `Welcome` / `Op` / `Presence` / `Error` |
+## Overview
 
-## The op model
+**Identification** — file-level block: the imports. Marker `// md:Overview`.
 
-A note is a set of independently versioned **lines** plus a separately versioned **order**. Each
-`LineOp` carries a version vector (`vv`) and a `last_writer` — and both the vv component that advances
-and `last_writer` are this **device's** id (the concurrency actor in server mode), *not* the user id.
-That is what lets the server validate an op's authorship and resolve concurrent edits deterministically.
+```rust
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-- `Insert { after_line_id, line_id, content, … }` — a new line after an anchor (or at the head when
-  `after_line_id` is `None`). Resolves against the **order** entity.
-- `Update { line_id, content, … }` — new content for an existing line.
-- `Delete { line_id, deleted_at, … }` — tombstone a line (kept for convergence).
-- `Move { line_ids, after_line_id, … }` — reorder lines; resolves against the order entity.
+use crate::storage::note_log::VersionVector;
+```
 
-## Message flow
+**What it does** — The JSON wire types of keeplin-srv's collaborative channel
+(`GET /api/ws?token=`), **mirroring the server's own `protocol.rs`**. Pure serde
+type definitions, no logic. Messages are tagged with `type`, line operations with
+`op`, both with `PascalCase` variant names — those `#[serde(...)]` attributes *are*
+the wire contract. Message flow: client `Join` → server `Welcome` (full snapshot, no
+incremental catch-up); client `Op` → server validates/resolves/persists and fans out
+`Op` with a `server_seq` to every participant, sender included; `Cursor` →
+rebroadcast `Presence`; `Error` reports a rejected op.
 
-1. Client sends `Join { note_id }`; server replies `Welcome { note_id, snapshot }` — the client
-   rebuilds its mirror from the snapshot (no incremental catch-up).
-2. Client sends `Op { note_id, ops }`; server validates, resolves, persists, and fans out
-   `Op { server_seq, note_id, user_id, ops }` to every participant (sender included) in `server_seq`
-   order.
-3. `Cursor { note_id, cursor }` → server rebroadcasts `Presence { note_id, users }`.
-4. `Error { code, message }` reports a rejected op (e.g. `forbidden`, `bad_writer`).
+**Dependencies** — `chrono`, `serde`, `uuid`;
+`crate::storage::note_log::VersionVector` (the same version-vector type used for
+whole-note sync — one resolution primitive across the project).
 
-## Design notes
+**Used by** — `collab/mod.rs` (sends `CollabClientMsg`, handles `CollabServerMsg`),
+`collab/state.rs` (consumes ops/snapshots to maintain the line mirror),
+`keeplin-daemon/src/rest.rs` (`PresenceInfo` in `note_presence`).
 
-- This file is a **faithful mirror** of the server's `protocol.rs`; the two must stay in lockstep, so
-  changes here are meaningless unless the server agrees. The `#[serde(tag = …, rename_all =
-  "PascalCase")]` attributes are the contract.
-- Snapshots carry tombstoned lines (`deleted_at: Some`) so a reconnecting client converges on deletes
-  it may not have seen; `state.rs` filters them out when materialising the body.
+**Repeated context** — This file and keeplin-srv's `src/protocol.rs` must stay in
+lockstep; a breaking change to any shape requires bumping `PROTOCOL_VERSION` in
+`compat.rs` **and** on the server together (the `GET /version` handshake is an
+exact-match check).
+
+---
+
+## LineId
+
+**Identification** — `pub type LineId = Uuid;` marker `// md:LineId`.
+
+**What it does** — Type alias giving a line's stable identity a name. Lines keep
+their `LineId` across edits and even across deletion (tombstones), which is what
+lets concurrent ops target "the same line" unambiguously.
+
+**Dependencies** — `uuid::Uuid`.
+
+**Used by** — every struct/enum below; `collab/state.rs` keys its mirror by it.
+
+**Repeated context** — Project-wide, all entity identities are UUIDs generated by
+the creating device (no server-assigned ids), so ids never collide across offline
+devices.
+
+---
+
+## Cursor
+
+**Identification** — struct deriving `Debug, Clone, PartialEq, Eq, Serialize,
+Deserialize`; marker `// md:Cursor`.
+
+**What it does** — A caret position inside a note, for presence: `line_id` (the
+line the caret is on) + `column` (a `usize` character offset). `Eq` lets callers
+skip re-sending an unchanged cursor.
+
+**Dependencies** — `LineId`.
+
+**Used by** — `CollabClientMsg::Cursor`, `PresenceInfo`; `collab/mod.rs`'s
+`send_cursor`.
+
+**Repeated context** — Presence is ephemeral: never persisted, never versioned —
+only rebroadcast to current participants.
+
+---
+
+## LineSnapshot
+
+**Identification** — struct deriving `Debug, Clone, Serialize, Deserialize`; marker
+`// md:LineSnapshot`.
+
+**What it does** — One line as carried in snapshots: the full versioned entity —
+`id`, `content`, `created_at`/`updated_at`, the `deleted_at` tombstone (`Some` =
+deleted but kept for convergence), the line's `VersionVector` `vv`, and
+`last_writer` (device id of the last edit). Snapshots include tombstoned lines so a
+reconnecting client converges on deletes it never saw; `collab/state.rs` filters
+them out when materialising the note body.
+
+**Dependencies** — `LineId`, `chrono`, `VersionVector`.
+
+**Used by** — `NoteLinesSnapshot::lines`; `collab/state.rs::from_snapshot`.
+
+**Repeated context** — Soft-delete-always is a project premise: entities are
+tombstoned (`deleted_at: Some`), never physically removed, so deletion is just
+another versioned write that version vectors can order.
+
+---
+
+## NoteLinesSnapshot
+
+**Identification** — struct deriving `Debug, Clone, Serialize, Deserialize`; marker
+`// md:NoteLinesSnapshot`.
+
+**What it does** — Full note state sent in `CollabServerMsg::Welcome`: `note_id`,
+the **order** as its own versioned entity (`order: Vec<LineId>` + `updated_at` +
+`vv` + `last_writer`), and every `LineSnapshot`. The order lists only live lines;
+the `lines` vec also carries tombstones. A client always rebuilds its whole mirror
+from this — there is no incremental catch-up protocol.
+
+**Dependencies** — `LineId`, `LineSnapshot`, `VersionVector`, `uuid`, `chrono`.
+
+**Used by** — `CollabServerMsg::Welcome`; `collab/state.rs::from_snapshot`.
+
+**Repeated context** — The line/order split is the core of the collab model: each
+line is independently versioned, and the *sequence* of lines is a separate entity
+with its own vv, so `Insert`/`Move` (order edits) and `Update`/`Delete` (line
+edits) never falsely conflict with each other.
+
+---
+
+## LineOp
+
+**Identification** — enum deriving `Debug, Clone, Serialize, Deserialize` with
+`#[serde(tag = "op", rename_all = "PascalCase")]`; marker `// md:LineOp`.
+
+**What it does** — One line-level operation. Every variant carries its own `vv`,
+`last_writer`, and `updated_at` so the server resolves each op independently;
+`last_writer` and the vv component that advances are this **device**'s id — the
+concurrency actor in server mode — *not* the user id, which is what lets the server
+validate authorship (`bad_writer` otherwise) and resolve concurrent edits
+deterministically. Variants:
+
+| Variant | Payload | Resolves against |
+|---------|---------|------------------|
+| `Insert` | `after_line_id` (`None` = head), new `line_id`, `content` | the **order** entity |
+| `Update` | `line_id`, new `content` | that line |
+| `Delete` | `line_id`, `deleted_at` (tombstone) | that line |
+| `Move` | `line_ids` (contiguous run), `after_line_id` | the **order** entity |
+
+**Dependencies** — `LineId`, `VersionVector`, `chrono`.
+
+**Used by** — `CollabClientMsg::Op` / `CollabServerMsg::Op`;
+`collab/state.rs::apply` and the diff producer in `collab/state.rs`.
+
+**Repeated context** — Conflict resolution everywhere in Keeplin is version
+vectors first, then the deterministic `(timestamp, device_id)` last-writer-wins
+tiebreak (`storage::note_log::resolve`); collab ops are resolved by the server with
+exactly that rule.
+
+---
+
+## PresenceInfo
+
+**Identification** — struct deriving `Debug, Clone, Serialize, Deserialize`; marker
+`// md:PresenceInfo`.
+
+**What it does** — One participant as reported in `CollabServerMsg::Presence`:
+`user_id`, human-readable `display_name`, and their optional `Cursor` (absent until
+the participant first reports one).
+
+**Dependencies** — `Cursor`.
+
+**Used by** — `CollabServerMsg::Presence`; `collab/mod.rs::presence` (which
+`keeplin-daemon/src/rest.rs::note_presence` exposes over REST).
+
+**Repeated context** — presence identifies the *user* (for display), while ops
+identify the *device* (for versioning) — the two id spaces are deliberately
+distinct.
+
+---
+
+## CollabClientMsg
+
+**Identification** — enum deriving `Debug, Clone, Serialize, Deserialize` with
+`#[serde(tag = "type", rename_all = "PascalCase")]`; marker
+`// md:CollabClientMsg`.
+
+**What it does** — Every client → server message: `Join { note_id }` (enter a
+note's session; server replies `Welcome`), `Leave { note_id }`, `Op { note_id, ops }`
+(a batch of `LineOp`s applied atomically in order), `Cursor { note_id, cursor }`
+(presence update), `Ack { server_seq }` (client confirms delivery up to that
+sequence number, letting the server trim its replay buffer).
+
+**Dependencies** — `LineOp`, `Cursor`, `uuid`.
+
+**Used by** — `collab/mod.rs` (serialises these onto the WebSocket); mirrored by
+keeplin-srv's `CollabClientMsg` which deserialises them.
+
+**Repeated context** — one WebSocket carries all notes a device participates in;
+every message names its `note_id` (except `Ack`, which is per-connection).
+
+---
+
+## CollabServerMsg
+
+**Identification** — enum deriving `Debug, Clone, Serialize, Deserialize` with
+`#[serde(tag = "type", rename_all = "PascalCase")]`; marker
+`// md:CollabServerMsg`.
+
+**What it does** — Every server → client message: `Welcome { note_id, snapshot }`
+(reply to `Join`; full `NoteLinesSnapshot`), `Op { server_seq, note_id, user_id,
+ops }` (a resolved op batch fanned out to every participant *including the sender*,
+in strictly increasing `server_seq` order — the sender uses the echo to confirm its
+own ops), `Presence { note_id, users }` (full participant list after any
+join/leave/cursor change — not a delta), `Error { code, message }` (a rejected
+message, e.g. `forbidden`, `bad_writer`; the connection stays open).
+
+**Dependencies** — `NoteLinesSnapshot`, `LineOp`, `PresenceInfo`, `uuid`.
+
+**Used by** — `collab/mod.rs` (deserialises and dispatches); mirrored by
+keeplin-srv's `CollabServerMsg` which serialises them.
+
+**Repeated context** — `server_seq` is the total order authority: clients apply
+server `Op`s in `server_seq` order and treat the stream as the source of truth over
+their own optimistic state.
+
+---
 
 ## Graph context
+
+Repo-tooling metadata, not a code block (no marker in the source). Kept in every
+companion because CI (`scripts/check-docs.sh`) enforces it: this file is LAYER 2 of
+the navigation model, the Graphify graph (`graphify-out/graph.json`) is LAYER 1;
+refresh with `graphify update .` after refactors.
 
 <!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
      EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
@@ -76,14 +257,16 @@ That is what lets the server validate an op's authorship and resolve concurrent 
 - `keeplin-core/src/collab/state.rs` — client line state and body↔lines translation (EXTRACTED: references×4; e.g. `NoteLines`, `.from_snapshot()`, `.apply()`)
 - `keeplin-daemon/src/rest.rs` — REST/JSON API + WebSocket feed (axum) (EXTRACTED: references×1; e.g. `note_presence()`)
 
-**Invariants** (restated on purpose; a change to this file must keep these true)
+## Coverage checklist
 
-- Pure serde types, no logic; shapes must stay byte-compatible with keeplin-srv's `src/protocol.rs` (messages tagged `type`, ops tagged `op`, PascalCase variants).
-- Every op carries its own `vv`, `last_writer`, `updated_at` — the server resolves each op independently.
-- A breaking change to these shapes requires bumping `PROTOCOL_VERSION` in `compat.rs` and keeplin-srv together.
-
-## Related files
-
-- `collab/mod.md` — sends `CollabClientMsg`, handles `CollabServerMsg`.
-- `collab/state.md` — consumes `LineOp`/snapshots to maintain the body.
-- `keeplin-core/src/storage/note_log.md` — `VersionVector`, the shared resolution primitive.
+| # | Block (source order) | Marker in code |
+|---|----------------------|----------------|
+| 1 | imports (`use …`) | `// md:Overview` |
+| 2 | `type LineId` | `// md:LineId` |
+| 3 | `struct Cursor` | `// md:Cursor` |
+| 4 | `struct LineSnapshot` | `// md:LineSnapshot` |
+| 5 | `struct NoteLinesSnapshot` | `// md:NoteLinesSnapshot` |
+| 6 | `enum LineOp` | `// md:LineOp` |
+| 7 | `struct PresenceInfo` | `// md:PresenceInfo` |
+| 8 | `enum CollabClientMsg` | `// md:CollabClientMsg` |
+| 9 | `enum CollabServerMsg` | `// md:CollabServerMsg` |
