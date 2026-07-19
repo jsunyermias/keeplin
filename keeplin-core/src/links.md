@@ -1,14 +1,15 @@
 # `links.rs` — bookmark & link types + the pure `#…` grammar
 
-Self-contained companion for `keeplin-core/src/links.rs`. It documents **every code
-block of the source file, in source order** — a reader with only this file must be able
+Self-contained companion for `keeplin-core/src/links.rs`. It documents **every code block of
+the source file, in source order, with its complete code embedded** — a reader with only this file must be able
 to understand it without opening anything else, so project-wide conventions are
 deliberately re-explained here (hyper-redundancy is intended).
 
 **How to navigate**: every block carries exactly one marker comment
 `// md:<Header> > … > <Block header>` whose path is the header chain of its section
-here; grep it in either direction. Each section covers **Identification**,
-**What it does**, **Dependencies**, **Used by**, **Repeated context**.
+here; grep it in either direction. Each block section covers, in this fixed order:
+**Identification**, **Code**, **What it does**, **Dependencies**, **Used by**,
+**Repeated context**.
 
 ---
 
@@ -16,7 +17,10 @@ here; grep it in either direction. Each section covers **Identification**,
 
 **Identification** — file-level block: the imports. Marker `// md:Overview`.
 
+**Code** — complete and verbatim:
+
 ```rust
+// md:Overview
 use std::sync::OnceLock;
 
 use regex::Regex;
@@ -65,6 +69,18 @@ collide.
 **Identification** — enum deriving `Debug, Clone, PartialEq, Eq, Hash, Serialize,
 Deserialize` with `#[serde(rename_all = "snake_case")]`; marker `// md:Reference`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:Reference
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reference {
+    Id(Uuid),
+    Alias(String),
+}
+```
+
 **What it does** — One note-or-notebook reference segment: `Id(Uuid)` (the segment
 parsed as a valid UUID) or `Alias(String)` (anything else). Aliases are the
 human-assigned names enforced unique per entity type by `LinkingBackend`
@@ -83,12 +99,26 @@ for enums.
 
 **Identification** — inherent impl; marker `// md:impl Reference`. One method.
 
+**Code** — container: members documented as sub-blocks below: fn parse.
+
 **What it does** — Parsing for a single segment.
 
 ### fn parse
 
 **Identification** — `pub fn parse(segment: &str) -> Self`; marker
 `// md:impl Reference > fn parse`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl Reference > fn parse
+    pub fn parse(segment: &str) -> Self {
+        match Uuid::parse_str(segment) {
+            Ok(id) => Reference::Id(id),
+            Err(_) => Reference::Alias(segment.to_string()),
+        }
+    }
+```
 
 **What it does** — A valid UUID becomes `Reference::Id`, anything else
 `Reference::Alias`. Total — never fails.
@@ -107,6 +137,18 @@ for enums.
 Deserialize` with `#[serde(rename_all = "snake_case")]`; marker
 `// md:BookmarkRef`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:BookmarkRef
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BookmarkRef {
+    Number(u32),
+    Alias(String),
+}
+```
+
 **What it does** — The optional third segment of a link: `Number(u32)` (a bookmark
 by its 1-based position in the note) or `Alias(String)` (by its default or edited
 alias).
@@ -123,12 +165,26 @@ alias).
 
 **Identification** — inherent impl; marker `// md:impl BookmarkRef`. One method.
 
+**Code** — container: members documented as sub-blocks below: fn parse.
+
 **What it does** — Parsing for the bookmark segment.
 
 ### fn parse
 
 **Identification** — `pub fn parse(segment: &str) -> Self`; marker
 `// md:impl BookmarkRef > fn parse`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl BookmarkRef > fn parse
+    pub fn parse(segment: &str) -> Self {
+        match segment.parse::<u32>() {
+            Ok(n) if n >= 1 => BookmarkRef::Number(n),
+            _ => BookmarkRef::Alias(segment.to_string()),
+        }
+    }
+```
 
 **What it does** — An unsigned integer ≥ 1 becomes `Number`; anything else —
 including `"0"`, because bookmark numbering is 1-based — an `Alias`. Total.
@@ -146,6 +202,20 @@ including `"0"`, because bookmark numbering is 1-based — an `Alias`. Total.
 
 **Identification** — struct deriving `Debug, Clone, PartialEq, Eq, Serialize,
 Deserialize`; marker `// md:LinkTarget`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:LinkTarget
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkTarget {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notebook: Option<Reference>,
+    pub note: Reference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bookmark: Option<BookmarkRef>,
+}
+```
 
 **What it does** — A fully parsed `#…` reference: `notebook: Option<Reference>`
 (present with two or more segments), `note: Reference` (always present),
@@ -169,6 +239,18 @@ stay minimal.
 Serialize, Deserialize` with `#[serde(rename_all = "snake_case")]`; marker
 `// md:LinkSource`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:LinkSource
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkSource {
+    Content,
+    Manual,
+}
+```
+
 **What it does** — Where a `NoteLink` came from: `Content` (derived from a
 markdown link in the body; recomputed on every write, so deleting the markdown
 deletes the link) or `Manual` (added directly via the API; not present in the body
@@ -187,6 +269,18 @@ and preserved across body edits).
 
 **Identification** — struct deriving `Debug, Clone, PartialEq, Eq, Hash,
 Serialize, Deserialize`; marker `// md:Bookmark`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:Bookmark
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Bookmark {
+    pub number: u32,
+    pub text: String,
+    pub alias: String,
+}
+```
 
 **What it does** — A bookmark anchor within a note, as persisted on
 `Note.bookmarks`: `number` (1-based position by order of appearance in the body),
@@ -209,6 +303,17 @@ recomputed on every note write, never edited directly.
 **Identification** — struct deriving `Debug, Clone, PartialEq, Eq` (not serde —
 never persisted); marker `// md:DerivedBookmark`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:DerivedBookmark
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DerivedBookmark {
+    pub text: String,
+    pub alias: Option<String>,
+}
+```
+
 **What it does** — A bookmark as parsed from a body: `text` plus the optional
 inline `alias` (the link title). The caller assigns the 1-based `number` by order
 of appearance and defaults the alias to `text` when `None` — that's the step that
@@ -226,6 +331,19 @@ turns a `DerivedBookmark` into a persisted `Bookmark`.
 
 **Identification** — struct deriving `Debug, Clone, PartialEq, Eq, Hash,
 Serialize, Deserialize`; marker `// md:NoteLink`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:NoteLink
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct NoteLink {
+    pub source: LinkSource,
+    pub raw: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_note_id: Option<Uuid>,
+}
+```
 
 **What it does** — A link from one note to a target note (optionally scoped by
 notebook and bookmark), as persisted on `Note.links`: `source` (`Content`/
@@ -252,6 +370,8 @@ content but leaves entity UUIDs plaintext so indexes and joins keep working.
 
 **Identification** — inherent impl; marker `// md:impl NoteLink`. Two methods.
 
+**Code** — container: members documented as sub-blocks below: fn from_raw, fn target.
+
 **What it does** — Validated construction and on-demand parsing.
 
 ### fn from_raw
@@ -259,6 +379,20 @@ content but leaves entity UUIDs plaintext so indexes and joins keep working.
 **Identification** —
 `pub fn from_raw(raw: &str, source: LinkSource) -> Option<Self>`; marker
 `// md:impl NoteLink > fn from_raw`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl NoteLink > fn from_raw
+    pub fn from_raw(raw: &str, source: LinkSource) -> Option<Self> {
+        parse_link_ref(raw)?;
+        Some(NoteLink {
+            source,
+            raw: raw.to_string(),
+            target_note_id: None,
+        })
+    }
+```
 
 **What it does** — Validates `raw` with `parse_link_ref` (returns `None` for an
 invalid reference) and builds a `NoteLink` with `target_note_id: None` —
@@ -274,6 +408,15 @@ resolution happens later in `linking.rs`.
 
 **Identification** — `pub fn target(&self) -> Option<LinkTarget>`; marker
 `// md:impl NoteLink > fn target`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl NoteLink > fn target
+    pub fn target(&self) -> Option<LinkTarget> {
+        parse_link_ref(&self.raw)
+    }
+```
 
 **What it does** — Re-parses the persisted `raw` into its `LinkTarget`
 components. `None` only if `raw` was corrupted after construction (construction
@@ -291,6 +434,37 @@ validates).
 
 **Identification** — `pub fn parse_link_ref(s: &str) -> Option<LinkTarget>`;
 marker `// md:fn parse_link_ref`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn parse_link_ref
+pub fn parse_link_ref(s: &str) -> Option<LinkTarget> {
+    let body = s.strip_prefix('#')?;
+    let segments: Vec<&str> = body.split('#').collect();
+    if segments.iter().any(|seg| seg.is_empty()) {
+        return None;
+    }
+    match segments.as_slice() {
+        [note] => Some(LinkTarget {
+            notebook: None,
+            note: Reference::parse(note),
+            bookmark: None,
+        }),
+        [notebook, note] => Some(LinkTarget {
+            notebook: Some(Reference::parse(notebook)),
+            note: Reference::parse(note),
+            bookmark: None,
+        }),
+        [notebook, note, bookmark] => Some(LinkTarget {
+            notebook: Some(Reference::parse(notebook)),
+            note: Reference::parse(note),
+            bookmark: Some(BookmarkRef::parse(bookmark)),
+        }),
+        _ => None,
+    }
+}
+```
 
 **What it does** — Parses a `#…` reference string: strips the leading `#`
 (`None` without it), splits the rest on `#`, rejects any empty segment, and maps
@@ -315,6 +489,16 @@ two-segment refs is applied at resolution time in `linking.rs`, never here.
 **Identification** — `fn bookmark_re() -> &'static Regex` over a
 `static OnceLock<Regex>`; marker `// md:fn bookmark_re`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:fn bookmark_re
+fn bookmark_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"\[([^\]]*)\]\(\s*###\s*(?:"([^"]*)")?\s*\)"#).unwrap())
+}
+```
+
 **What it does** — The compiled bookmark-declaration regex:
 `\[([^\]]*)\]\(\s*###\s*(?:"([^"]*)")?\s*\)` — a markdown link whose destination
 is exactly `###`, group 1 = link text, group 2 = optional quoted title (the
@@ -334,6 +518,16 @@ around it) — see test `extracts_bookmarks_with_and_without_alias_in_order`.
 **Identification** — `fn content_link_re() -> &'static Regex` over a
 `static OnceLock<Regex>`; marker `// md:fn content_link_re`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:fn content_link_re
+fn content_link_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\[[^\]]*\]\(\s*(#[^)\s]+)\s*\)").unwrap())
+}
+```
+
 **What it does** — The compiled content-link regex:
 `\[[^\]]*\]\(\s*(#[^)\s]+)\s*\)` — a markdown link whose destination starts with
 `#` (at least one non-space, non-`)` char after it), capturing the destination.
@@ -351,6 +545,21 @@ Compiled once per process.
 
 **Identification** — `pub fn parse_bookmarks(body: &str) -> Vec<DerivedBookmark>`;
 marker `// md:fn parse_bookmarks`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn parse_bookmarks
+pub fn parse_bookmarks(body: &str) -> Vec<DerivedBookmark> {
+    bookmark_re()
+        .captures_iter(body)
+        .map(|c| DerivedBookmark {
+            text: c[1].to_string(),
+            alias: c.get(2).map(|m| m.as_str().to_string()),
+        })
+        .collect()
+}
+```
 
 **What it does** — Extracts every `[text](### "alias")` bookmark declaration in
 `body`, in order of appearance. The 1-based number of each bookmark is its index
@@ -372,6 +581,19 @@ there is no bookmark CRUD API.
 **Identification** — `pub fn parse_content_links(body: &str) -> Vec<String>`;
 marker `// md:fn parse_content_links`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:fn parse_content_links
+pub fn parse_content_links(body: &str) -> Vec<String> {
+    content_link_re()
+        .captures_iter(body)
+        .map(|c| c[1].to_string())
+        .filter(|dest| dest != "###")
+        .collect()
+}
+```
+
 **What it does** — Extracts the raw `#…` destinations of every markdown link in
 `body`, in order of appearance. Non-`#` destinations never match the regex; a
 destination equal to `###` is filtered out because it is a bookmark declaration,
@@ -391,6 +613,8 @@ not a link.
 **Identification** — `#[cfg(test)]` unit-test module; marker `// md:mod tests`.
 Six tests, all pure.
 
+**Code** — container: members documented as sub-blocks below: fn parses_one_two_three_segments, fn parses_uuid_segments_as_ids, fn rejects_malformed_refs, fn bookmark_ref_zero_is_alias, fn extracts_bookmarks_with_and_without_alias_in_order, fn extracts_content_links_excluding_bookmarks.
+
 **What it does** — Pins the grammar: segment shapes, uuid detection, malformed
 rejections, the 1-based-number rule, and both extraction functions.
 
@@ -406,6 +630,29 @@ the contract — change them only with a deliberate format break.
 **Identification** — unit test; marker
 `// md:mod tests > fn parses_one_two_three_segments`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn parses_one_two_three_segments
+    #[test]
+    fn parses_one_two_three_segments() {
+        let one = parse_link_ref("#note3").unwrap();
+        assert_eq!(one.note, Reference::Alias("note3".into()));
+        assert!(one.notebook.is_none() && one.bookmark.is_none());
+
+        let two = parse_link_ref("#notebook1#note3").unwrap();
+        assert_eq!(two.notebook, Some(Reference::Alias("notebook1".into())));
+        assert_eq!(two.note, Reference::Alias("note3".into()));
+        assert!(two.bookmark.is_none());
+
+        let three = parse_link_ref("#notebook1#note3#anchor5").unwrap();
+        assert_eq!(three.bookmark, Some(BookmarkRef::Alias("anchor5".into())));
+
+        let numbered = parse_link_ref("#notebook1#note3#5").unwrap();
+        assert_eq!(numbered.bookmark, Some(BookmarkRef::Number(5)));
+    }
+```
+
 **What it does** — `#note3` → note-only alias; `#notebook1#note3` → notebook +
 note; `#notebook1#note3#anchor5` → bookmark alias; `#notebook1#note3#5` →
 bookmark `Number(5)`.
@@ -415,6 +662,20 @@ bookmark `Number(5)`.
 **Identification** — unit test; marker
 `// md:mod tests > fn parses_uuid_segments_as_ids`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn parses_uuid_segments_as_ids
+    #[test]
+    fn parses_uuid_segments_as_ids() {
+        let id = Uuid::new_v4();
+        let nb = Uuid::new_v4();
+        let t = parse_link_ref(&format!("#{nb}#{id}")).unwrap();
+        assert_eq!(t.notebook, Some(Reference::Id(nb)));
+        assert_eq!(t.note, Reference::Id(id));
+    }
+```
+
 **What it does** — Fresh UUID segments parse as `Reference::Id` for both notebook
 and note positions.
 
@@ -422,6 +683,19 @@ and note positions.
 
 **Identification** — unit test; marker
 `// md:mod tests > fn rejects_malformed_refs`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn rejects_malformed_refs
+    #[test]
+    fn rejects_malformed_refs() {
+        assert!(parse_link_ref("note3").is_none());
+        assert!(parse_link_ref("#").is_none());
+        assert!(parse_link_ref("#a##b").is_none());
+        assert!(parse_link_ref("#a#b#c#d").is_none());
+    }
+```
 
 **What it does** — Rejects a missing leading `#` (`note3`), an empty single
 segment (`#`), an empty middle segment (`#a##b`), and four segments (`#a#b#c#d`).
@@ -431,6 +705,17 @@ segment (`#`), an empty middle segment (`#a##b`), and four segments (`#a#b#c#d`)
 **Identification** — unit test; marker
 `// md:mod tests > fn bookmark_ref_zero_is_alias`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn bookmark_ref_zero_is_alias
+    #[test]
+    fn bookmark_ref_zero_is_alias() {
+        assert_eq!(BookmarkRef::parse("0"), BookmarkRef::Alias("0".into()));
+        assert_eq!(BookmarkRef::parse("1"), BookmarkRef::Number(1));
+    }
+```
+
 **What it does** — `"0"` parses as `Alias("0")` (numbering is 1-based); `"1"` as
 `Number(1)`.
 
@@ -438,6 +723,31 @@ segment (`#`), an empty middle segment (`#a##b`), and four segments (`#a#b#c#d`)
 
 **Identification** — unit test; marker
 `// md:mod tests > fn extracts_bookmarks_with_and_without_alias_in_order`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn extracts_bookmarks_with_and_without_alias_in_order
+    #[test]
+    fn extracts_bookmarks_with_and_without_alias_in_order() {
+        let body =
+            "Intro [Bookmark1](###) mid\n### not a bookmark (heading)\n[Other](### \"Alias\") end";
+        let marks = parse_bookmarks(body);
+        assert_eq!(
+            marks,
+            vec![
+                DerivedBookmark {
+                    text: "Bookmark1".to_string(),
+                    alias: None,
+                },
+                DerivedBookmark {
+                    text: "Other".to_string(),
+                    alias: Some("Alias".to_string()),
+                },
+            ]
+        );
+    }
+```
 
 **What it does** — A body with `[Bookmark1](###)`, a `### heading` line (not a
 bookmark), and `[Other](### "Alias")` yields exactly the two declarations, in
@@ -447,6 +757,22 @@ order, with `alias: None` and `alias: Some("Alias")` respectively.
 
 **Identification** — unit test; marker
 `// md:mod tests > fn extracts_content_links_excluding_bookmarks`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn extracts_content_links_excluding_bookmarks
+    #[test]
+    fn extracts_content_links_excluding_bookmarks() {
+        let body =
+            "see [a](#note3) and [b](#notebook1#note3#5), a bookmark [c](###), but not [d](http://x) or [e](#)";
+        let links = parse_content_links(body);
+        assert_eq!(
+            links,
+            vec!["#note3".to_string(), "#notebook1#note3#5".to_string()]
+        );
+    }
+```
 
 **What it does** — From a body with `[a](#note3)`, `[b](#notebook1#note3#5)`, a
 bookmark `[c](###)`, an http link `[d](http://x)`, and `[e](#)` (matches nothing —
