@@ -1,20 +1,4 @@
-//! REST/JSON API served by [axum] on a separate HTTP port.
-//!
-//! This module exposes the same operations as the gRPC service over plain HTTP with JSON
-//! bodies, serialised straight from the `keeplin-core` domain models (no protobuf). The
-//! state holds the backend as a trait object (`Arc<dyn StorageBackend>`) so handlers are
-//! not generic over the concrete backend type; the gRPC server shares the same backend
-//! instance. Authentication reuses the shared constant-time Basic-Auth check in
-//! [`crate::auth`]. `GET /api/ws` upgrades to a WebSocket that streams every [`Change`]
-//! published by the daemon's `EventBackend`, and `POST /api/sync` runs one sync cycle.
-//!
-//! Three **operational** endpoints — `GET /api/health` (liveness), `/api/ready` (readiness),
-//! and `/api/metrics` (Prometheus, see [`crate::metrics`]) — sit outside the auth middleware
-//! and the HTTP-status counter so orchestrator probes and metric scrapers work without
-//! credentials and do not inflate the request metrics.
-//!
-//! The HTTP listener is plain HTTP — terminate TLS at a reverse proxy in production, as
-//! noted in `SECURITY.md`.
+// md:Overview
 
 use std::sync::Arc;
 
@@ -50,50 +34,26 @@ use serde_json::json;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-/// Shared state for every HTTP handler.
+// md:AppState
 pub struct AppState {
-    /// The storage backend, shared (as a trait object) with the gRPC server.
     pub backend: Arc<dyn StorageBackend>,
-    /// Presence/cursor view of the collaborative session (server mode with
-    /// `collab_api_url` set); `None` when collaboration is disabled.
     pub collab: Option<keeplin_core::collab::CollabHandle>,
-    /// Full-text search index query view; `None` when the index could not be
-    /// created (search then responds `503`).
     pub search: Option<crate::search::SearchHandle>,
-    /// Sender for the live change feed. Each WebSocket connection subscribes to a fresh
-    /// receiver; mutations published here by the daemon's `EventBackend` are streamed out.
     pub events: broadcast::Sender<Change>,
-    /// Operational counters, shared with the outermost `MetricsBackend` decorator so
-    /// `GET /api/metrics` exports the same registry the storage layer writes to.
     pub metrics: Arc<crate::metrics::Metrics>,
-    /// Maximum request body size in bytes. Mirrors the gRPC `max_message_size` so a large
-    /// resource upload (`POST /api/resources`) is not silently capped at axum's 2 MiB default.
     pub max_body_bytes: usize,
-    /// Maximum assembled size, in bytes, of a **streamed** upload (`POST /api/resources/upload`).
-    /// That route bypasses `max_body_bytes` and streams the body incrementally up to this cap,
-    /// so attachments larger than `max_message_size` can be uploaded. `0` means no limit.
     pub max_upload_bytes: usize,
-    /// How many days of change-journal history to retain; `POST /api/sync` prunes older
-    /// entries after a successful cycle, exactly like the gRPC `Sync` RPC (both call
-    /// [`crate::server::prune_journal_after_sync`]). `0` disables pruning.
     pub journal_retention_days: u64,
-    /// After each successful sync, reclaim payloads of resources tombstoned longer than
-    /// this many days ago (`0` disables; see `Config::resource_purge_days`).
     pub resource_purge_days: u64,
-    /// Basic-Auth credentials; when both are `Some`, every request must authenticate.
     pub auth_username: Option<String>,
     pub auth_password: Option<String>,
 }
 
-/// Handler-facing shared state. `Arc` makes it cheaply cloneable for axum's `State`.
+// md:Shared
 pub type Shared = Arc<AppState>;
 
-/// Build the `/api` router: unauthenticated operational probes plus the auth-gated data API.
+// md:fn router
 pub fn router(state: Shared) -> Router {
-    // Operational endpoints carry no user data and must be reachable by liveness/readiness
-    // probes and metrics scrapers that cannot present Basic-Auth credentials, so they sit
-    // **outside** the auth middleware — and outside the HTTP-status counter, so frequent
-    // probe/scrape traffic does not drown out the request metrics that matter.
     let ops = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -122,7 +82,6 @@ pub fn router(state: Shared) -> Router {
         .route("/notes/:id/backlinks", get(list_backlinks))
         .route("/notes/:id/history", get(note_history))
         .route("/notes/:id/revert", post(revert_note_ep))
-        // Permission management proxies to keeplin-srv (server mode only).
         .route(
             "/notes/:id/share",
             post(proxy_note_share).get(proxy_note_shares),
@@ -166,7 +125,6 @@ pub fn router(state: Shared) -> Router {
         .route("/history/revert", post(batch_revert_notes_ep))
         .route("/tags", get(list_tags).post(create_tag))
         .route("/tags/:id", get(get_tag).put(update_tag).delete(delete_tag))
-        // Standards-format interop (vCard / iCalendar) — see keeplin-core `interop`.
         .route("/contacts", get(list_contacts_ep))
         .route("/contacts/import", post(import_contact_ep))
         .route("/contacts/:uid", axum::routing::delete(delete_contact_ep))
@@ -178,9 +136,6 @@ pub fn router(state: Shared) -> Router {
         .route("/todos/import", post(import_todo_ep))
         .route("/profile/vcard", get(profile_vcard_ep))
         .route("/resources", get(list_resources).post(create_resource))
-        // Streaming upload for large attachments: the request body is read incrementally up to
-        // `max_upload_bytes` instead of being capped at `max_body_bytes`, so this one route
-        // disables the router-wide body limit and enforces its own larger cap.
         .route(
             "/resources/upload",
             post(upload_resource).layer(DefaultBodyLimit::disable()),
@@ -189,11 +144,7 @@ pub fn router(state: Shared) -> Router {
         .route("/resources/:id/data", get(get_resource_data))
         .route("/sync", post(sync))
         .route("/ws", get(ws_handler))
-        // Raise the request-body cap from axum's 2 MiB default to the configured size so REST
-        // resource uploads match what gRPC accepts.
         .layer(axum::extract::DefaultBodyLimit::max(state.max_body_bytes))
-        // Layers apply outermost-last: auth runs inside the status counter, so a rejected
-        // request is still counted (as a 4xx) by `status_mw`.
         .layer(middleware::from_fn_with_state(state.clone(), auth_mw))
         .layer(middleware::from_fn_with_state(state.clone(), status_mw))
         .with_state(state);
@@ -201,17 +152,12 @@ pub fn router(state: Shared) -> Router {
     Router::new().nest("/api", ops.merge(api))
 }
 
-// ── Full-text search ─────────────────────────────────────────────────────────────
-
-/// Query parameters for `GET /api/search`. All are optional; timestamps are
-/// RFC3339, booleans `true`/`false`.
+// md:SearchParams
 #[derive(Debug, Deserialize)]
 struct SearchParams {
-    /// Free text, matched against title, body, tag names and notebook name.
     q: Option<String>,
     notebook: Option<Uuid>,
     todo: Option<bool>,
-    /// `true` = open to-dos only, `false` = completed only.
     open: Option<bool>,
     starred: Option<bool>,
     pinned: Option<bool>,
@@ -222,8 +168,7 @@ struct SearchParams {
     limit: Option<usize>,
 }
 
-/// `GET /api/search` — full-text search over the daemon's index, returning the
-/// matching notes (best match first). `503` when the index is unavailable.
+// md:fn search_notes
 async fn search_notes(State(s): State<Shared>, Query(p): Query<SearchParams>) -> Response {
     let Some(search) = &s.search else {
         return (StatusCode::SERVICE_UNAVAILABLE, "search unavailable").into_response();
@@ -245,8 +190,6 @@ async fn search_notes(State(s): State<Shared>, Query(p): Query<SearchParams>) ->
         Ok(ids) => ids,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
-    // Resolve ids to full notes through the backend (plaintext); skip any that
-    // raced a deletion between the index query and the read.
     let mut notes = Vec::with_capacity(ids.len());
     for id in ids {
         if let Ok(note) = s.backend.read_note(id).await {
@@ -256,10 +199,7 @@ async fn search_notes(State(s): State<Shared>, Query(p): Query<SearchParams>) ->
     Json(notes).into_response()
 }
 
-// ── Auth middleware ─────────────────────────────────────────────────────────────
-
-/// Reject requests that fail Basic Auth when credentials are configured; a no-op
-/// otherwise (mirrors the gRPC interceptor).
+// md:fn auth_mw
 async fn auth_mw(State(state): State<Shared>, req: Request, next: Next) -> Response {
     if let (Some(user), Some(pass)) = (&state.auth_username, &state.auth_password) {
         let header = req
@@ -278,47 +218,40 @@ async fn auth_mw(State(state): State<Shared>, req: Request, next: Next) -> Respo
     next.run(req).await
 }
 
-/// Record every response's status class into the shared metrics registry
-/// (`keeplin_http_requests_total`). Applied only to the data API, not the operational
-/// probes, so scrape/probe traffic does not inflate the request counts.
+// md:fn status_mw
 async fn status_mw(State(state): State<Shared>, req: Request, next: Next) -> Response {
     let resp = next.run(req).await;
     state.metrics.record_http_status(resp.status().as_u16());
     resp
 }
 
-// ── Error mapping ───────────────────────────────────────────────────────────────
-
-/// Wraps a [`StorageError`] so it can be returned from a handler as an HTTP response.
+// md:ApiError
 struct ApiError(StorageError);
 
+// md:impl From StorageError for ApiError
 impl From<StorageError> for ApiError {
     fn from(e: StorageError) -> Self {
         ApiError(e)
     }
 }
 
+// md:impl From SyncError for ApiError
 impl From<SyncError> for ApiError {
     fn from(e: SyncError) -> Self {
         match e {
-            // A storage failure during sync keeps its precise mapping (e.g. NotFound → 404).
             SyncError::Storage(s) => ApiError(s),
-            // Conflict/Failed are transport- or protocol-level sync failures; surface them
-            // as a 500 with the underlying message rather than inventing a finer status.
             other => ApiError(StorageError::InvalidState(other.to_string())),
         }
     }
 }
 
+// md:impl IntoResponse for ApiError
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let code = match &self.0 {
             StorageError::NotFound(_) => StatusCode::NOT_FOUND,
             StorageError::CorruptedData(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            // A duplicate alias (uniqueness violation) is a client conflict, not a server bug.
             StorageError::Conflict(_) => StatusCode::CONFLICT,
-            // Domain-rule rejections (pin an Inbox note, out-of-band sort key, delete the
-            // Inbox) are the caller's mistake.
             StorageError::InvalidInput(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -326,9 +259,7 @@ impl IntoResponse for ApiError {
     }
 }
 
-// ── Shared request/response shapes ──────────────────────────────────────────────
-
-/// `?page_size=&page_token=` for every list endpoint.
+// md:Pagination
 #[derive(Debug, Deserialize)]
 struct Pagination {
     #[serde(default)]
@@ -337,7 +268,7 @@ struct Pagination {
     page_token: Option<String>,
 }
 
-/// A page of results: the items plus the opaque cursor for the next page.
+// md:Page
 #[derive(Debug, Serialize)]
 struct Page<T> {
     items: Vec<T>,
@@ -345,6 +276,7 @@ struct Page<T> {
     next_page_token: Option<String>,
 }
 
+// md:fn page
 fn page<T>((items, next): (Vec<T>, Option<String>)) -> Json<Page<T>> {
     Json(Page {
         items,
@@ -352,20 +284,12 @@ fn page<T>((items, next): (Vec<T>, Option<String>)) -> Json<Page<T>> {
     })
 }
 
-// ── Health ──────────────────────────────────────────────────────────────────────
-
-/// Liveness probe: the process is up and serving. Always `200 ok`; it does not touch the
-/// backend, so it stays green even if storage is momentarily unavailable (that is what
-/// `ready` is for).
+// md:fn health
 async fn health() -> &'static str {
     "ok"
 }
 
-/// Readiness probe: can the daemon actually serve requests? Issues one cheap backend read
-/// (`list_notes` with a page size of 1). `200 ready` when storage answers, `503` with the
-/// error otherwise — so an orchestrator stops routing traffic to an instance whose database
-/// is locked or unreachable. (This read flows through the metrics decorator, so a busy
-/// readiness schedule contributes to the `note`/`list` counter.)
+// md:fn ready
 async fn ready(State(s): State<Shared>) -> Response {
     match s.backend.list_notes(1, None).await {
         Ok(_) => (StatusCode::OK, "ready").into_response(),
@@ -377,9 +301,7 @@ async fn ready(State(s): State<Shared>) -> Response {
     }
 }
 
-/// Prometheus metrics exposition (`text/plain; version=0.0.4`). Renders the shared registry
-/// the `MetricsBackend` decorator and the HTTP middleware write to. Unauthenticated: the
-/// counters carry only fixed-label aggregates, no user content.
+// md:fn metrics
 async fn metrics(State(s): State<Shared>) -> Response {
     (
         [(CONTENT_TYPE, "text/plain; version=0.0.4")],
@@ -388,8 +310,7 @@ async fn metrics(State(s): State<Shared>) -> Response {
         .into_response()
 }
 
-// ── Notes ───────────────────────────────────────────────────────────────────────
-
+// md:CreateNote
 #[derive(Debug, Deserialize)]
 struct CreateNote {
     title: String,
@@ -403,6 +324,7 @@ struct CreateNote {
     todo_due: Option<DateTime<Utc>>,
 }
 
+// md:fn list_notes
 async fn list_notes(
     State(s): State<Shared>,
     Query(p): Query<Pagination>,
@@ -410,6 +332,7 @@ async fn list_notes(
     Ok(page(s.backend.list_notes(p.page_size, p.page_token).await?))
 }
 
+// md:fn create_note
 async fn create_note(
     State(s): State<Shared>,
     Json(req): Json<CreateNote>,
@@ -418,39 +341,33 @@ async fn create_note(
     note.notebook_id = req.notebook_id.unwrap_or_else(Uuid::nil);
     note.is_todo = req.is_todo;
     note.todo_due = req.todo_due;
-    // Initial manual position: top of the Inbox, or the end of a normal notebook's
-    // unpinned band.
     ordering::place_new_note(s.backend.as_ref(), &mut note).await?;
     Ok(Json(s.backend.create_note(note).await?))
 }
 
+// md:fn get_note
 async fn get_note(State(s): State<Shared>, Path(id): Path<Uuid>) -> Result<Json<Note>, ApiError> {
     let note = s.backend.read_note(id).await?;
-    // The backend retains soft-deleted entities as tombstones (for sync); the REST surface
-    // presents a clean lifecycle, so a deleted note reads as 404.
     if note.deleted_at.is_some() {
         return Err(StorageError::NotFound(id.to_string()).into());
     }
     Ok(Json(note))
 }
 
+// md:fn update_note
 async fn update_note(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
     Json(mut note): Json<Note>,
 ) -> Result<Json<Note>, ApiError> {
-    // A tombstoned note reads as 404 on this surface, so updating one is a 404 too —
-    // otherwise a PUT (whose body defaults `deleted_at` to null) would silently revive
-    // it. Revival is reserved for the sync path (`apply_change`).
     let stored = read_live_note(&s, id).await?;
     note.id = id;
-    // Moving the note to a different notebook re-places it (its old position and pinned
-    // state belonged to the source notebook); a plain edit keeps its position.
     ordering::reconcile_notebook_move(s.backend.as_ref(), stored.notebook_id, &mut note).await?;
     note.updated_at = now();
     Ok(Json(s.backend.update_note(note).await?))
 }
 
+// md:fn delete_note
 async fn delete_note(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -459,6 +376,7 @@ async fn delete_note(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// md:fn list_note_tags
 async fn list_note_tags(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -471,6 +389,7 @@ async fn list_note_tags(
     ))
 }
 
+// md:fn add_note_tag
 async fn add_note_tag(
     State(s): State<Shared>,
     Path((note_id, tag_id)): Path<(Uuid, Uuid)>,
@@ -479,6 +398,7 @@ async fn add_note_tag(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// md:fn remove_note_tag
 async fn remove_note_tag(
     State(s): State<Shared>,
     Path((note_id, tag_id)): Path<(Uuid, Uuid)>,
@@ -487,16 +407,14 @@ async fn remove_note_tag(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ── Aliases & links ───────────────────────────────────────────────────────────────
-
-/// `{ "alias": "…" | null }` body shared by the alias-setting endpoints.
+// md:AliasBody
 #[derive(Debug, Deserialize)]
 struct AliasBody {
     #[serde(default)]
     alias: Option<String>,
 }
 
-/// Read a live note or return 404 for a missing or soft-deleted one (mirrors `get_note`).
+// md:fn read_live_note
 async fn read_live_note(s: &Shared, id: Uuid) -> Result<Note, ApiError> {
     let note = s.backend.read_note(id).await?;
     if note.deleted_at.is_some() {
@@ -505,6 +423,7 @@ async fn read_live_note(s: &Shared, id: Uuid) -> Result<Note, ApiError> {
     Ok(note)
 }
 
+// md:fn set_note_alias
 async fn set_note_alias(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -515,6 +434,7 @@ async fn set_note_alias(
     ))
 }
 
+// md:fn list_links
 async fn list_links(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -522,18 +442,18 @@ async fn list_links(
     Ok(Json(read_live_note(&s, id).await?.links))
 }
 
-/// `{ "raw": "#notebook1#note3#5" }` body for adding a manual (global) link.
+// md:AddLinkBody
 #[derive(Debug, Deserialize)]
 struct AddLinkBody {
     raw: String,
 }
 
+// md:fn add_link
 async fn add_link(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
     Json(b): Json<AddLinkBody>,
 ) -> Result<Json<Note>, ApiError> {
-    // Validate the reference syntax up front so a bad body is a 422, not a 500.
     if parse_link_ref(&b.raw).is_none() {
         return Err(
             StorageError::CorruptedData(format!("invalid link reference '{}'", b.raw)).into(),
@@ -544,6 +464,7 @@ async fn add_link(
     ))
 }
 
+// md:fn remove_link
 async fn remove_link(
     State(s): State<Shared>,
     Path((id, index)): Path<(Uuid, usize)>,
@@ -553,6 +474,7 @@ async fn remove_link(
     ))
 }
 
+// md:fn list_backlinks
 async fn list_backlinks(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -563,8 +485,7 @@ async fn list_backlinks(
     ))
 }
 
-/// `GET /api/notebooks/:id/notes` — the notebook's notes in their manual order (pinned
-/// band first). Use the nil UUID for the Inbox.
+// md:fn list_notes_in_notebook
 async fn list_notes_in_notebook(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -577,7 +498,7 @@ async fn list_notes_in_notebook(
     ))
 }
 
-/// `GET /api/notes/starred` — every live starred note, across all notebooks.
+// md:fn list_starred_notes
 async fn list_starred_notes(
     State(s): State<Shared>,
     Query(p): Query<Pagination>,
@@ -589,22 +510,22 @@ async fn list_starred_notes(
     ))
 }
 
-/// `POST /api/notes/:id/pin` — move the note into its notebook's pinned band.
+// md:fn pin_note
 async fn pin_note(State(s): State<Shared>, Path(id): Path<Uuid>) -> Result<Json<Note>, ApiError> {
     Ok(Json(ordering::pin_note(s.backend.as_ref(), id).await?))
 }
 
-/// `DELETE /api/notes/:id/pin` — move the note back to the end of the normal band.
+// md:fn unpin_note
 async fn unpin_note(State(s): State<Shared>, Path(id): Path<Uuid>) -> Result<Json<Note>, ApiError> {
     Ok(Json(ordering::unpin_note(s.backend.as_ref(), id).await?))
 }
 
-/// `POST /api/notes/:id/star` — set the global star (never moves the note).
+// md:fn star_note
 async fn star_note(State(s): State<Shared>, Path(id): Path<Uuid>) -> Result<Json<Note>, ApiError> {
     Ok(Json(ordering::star_note(s.backend.as_ref(), id).await?))
 }
 
-/// `DELETE /api/notes/:id/star` — clear the global star.
+// md:fn unstar_note
 async fn unstar_note(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -612,14 +533,13 @@ async fn unstar_note(
     Ok(Json(ordering::unstar_note(s.backend.as_ref(), id).await?))
 }
 
-/// `{ "sort_key": … }` body for `PUT /api/notes/:id/sort-key`.
+// md:ReorderBody
 #[derive(Deserialize)]
 struct ReorderBody {
     sort_key: u32,
 }
 
-/// `PUT /api/notes/:id/sort-key` — give the note a new manual position within its
-/// current band (pinned `1..=999`, normal `>= 1000`, Inbox `>= 1`).
+// md:fn reorder_note
 async fn reorder_note(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -630,13 +550,14 @@ async fn reorder_note(
     ))
 }
 
-/// `?ref=#notebook1#note3#5` query for resolving a reference to a note (+ bookmark number).
+// md:ResolveQuery
 #[derive(Debug, Deserialize)]
 struct ResolveQuery {
     #[serde(rename = "ref")]
     reference: String,
 }
 
+// md:fn resolve_reference
 async fn resolve_reference(
     State(s): State<Shared>,
     Query(q): Query<ResolveQuery>,
@@ -651,25 +572,21 @@ async fn resolve_reference(
     }))
 }
 
-/// `GET /api/aliases/conflicts` — list note/notebook aliases shared by two or more live
-/// entities (the residue of a cross-device alias collision), so a human can rename one side.
+// md:fn list_alias_conflicts
 async fn list_alias_conflicts(
     State(s): State<Shared>,
 ) -> Result<Json<linking::AliasConflicts>, ApiError> {
     Ok(Json(linking::alias_conflicts(s.backend.as_ref()).await?))
 }
 
-// ── History & revert ──────────────────────────────────────────────────────────────
-
-/// `?limit=` for the history endpoints; `0` (absent) uses the backend's default cap.
+// md:HistoryQuery
 #[derive(Debug, Default, Deserialize)]
 struct HistoryQuery {
     #[serde(default)]
     limit: u32,
 }
 
-/// One past version of a note, as returned by `GET /notes/:id/history`. `note` is absent when
-/// the version is a tombstone (the note was deleted at that point).
+// md:NoteVersion
 #[derive(Debug, Serialize)]
 struct NoteVersion {
     timestamp: DateTime<Utc>,
@@ -678,7 +595,7 @@ struct NoteVersion {
     note: Option<Note>,
 }
 
-/// One past version of a notebook. See [`NoteVersion`].
+// md:NotebookVersion
 #[derive(Debug, Serialize)]
 struct NotebookVersion {
     timestamp: DateTime<Utc>,
@@ -687,14 +604,13 @@ struct NotebookVersion {
     notebook: Option<Notebook>,
 }
 
-/// `{ "at": "<RFC-3339>" }` — the instant to roll an entity back to (the newest version at or
-/// before it).
+// md:RevertBody
 #[derive(Debug, Deserialize)]
 struct RevertBody {
     at: DateTime<Utc>,
 }
 
-/// `{ "at": …, "note_ids": [ … ] }` — batch forward-revert of the listed notes.
+// md:BatchRevertBody
 #[derive(Debug, Deserialize)]
 struct BatchRevertBody {
     at: DateTime<Utc>,
@@ -702,7 +618,7 @@ struct BatchRevertBody {
     note_ids: Vec<Uuid>,
 }
 
-/// `GET /api/notes/:id/history` — a note's past versions, newest first.
+// md:fn note_history
 async fn note_history(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -712,7 +628,7 @@ async fn note_history(
     Ok(Json(versions.into_iter().map(note_version_dto).collect()))
 }
 
-/// `GET /api/notebooks/:id/history` — a notebook's past versions, newest first.
+// md:fn notebook_history
 async fn notebook_history(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -724,7 +640,7 @@ async fn notebook_history(
     ))
 }
 
-/// `POST /api/notes/:id/revert` — forward-revert a note to its state as of `at`.
+// md:fn revert_note_ep
 async fn revert_note_ep(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -735,7 +651,7 @@ async fn revert_note_ep(
     ))
 }
 
-/// `POST /api/notebooks/:id/revert` — forward-revert a notebook to its state as of `at`.
+// md:fn revert_notebook_ep
 async fn revert_notebook_ep(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -746,8 +662,7 @@ async fn revert_notebook_ep(
     ))
 }
 
-/// `POST /api/notebooks/:id/notes/revert` — batch-revert every note currently in the notebook
-/// to its state as of `at` (the roll-back companion to a destructive notebook-wide change).
+// md:fn revert_notebook_notes_ep
 async fn revert_notebook_notes_ep(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -758,7 +673,7 @@ async fn revert_notebook_notes_ep(
     ))
 }
 
-/// `POST /api/history/revert` — batch forward-revert of an explicit note-id list to `at`.
+// md:fn batch_revert_notes_ep
 async fn batch_revert_notes_ep(
     State(s): State<Shared>,
     Json(b): Json<BatchRevertBody>,
@@ -768,6 +683,7 @@ async fn batch_revert_notes_ep(
     ))
 }
 
+// md:fn note_version_dto
 fn note_version_dto(v: EntityVersion<Note>) -> NoteVersion {
     NoteVersion {
         timestamp: v.timestamp,
@@ -776,6 +692,7 @@ fn note_version_dto(v: EntityVersion<Note>) -> NoteVersion {
     }
 }
 
+// md:fn notebook_version_dto
 fn notebook_version_dto(v: EntityVersion<Notebook>) -> NotebookVersion {
     NotebookVersion {
         timestamp: v.timestamp,
@@ -784,13 +701,7 @@ fn notebook_version_dto(v: EntityVersion<Notebook>) -> NotebookVersion {
     }
 }
 
-// ── Permission management (proxied to keeplin-srv) ──────────────────────────────
-//
-// Permissions are enforced server-side (the authority). The daemon does not store or enforce
-// them; it forwards these requests to keeplin-srv over the collab channel's authenticated REST
-// client and relays the response, so a frontend can view/manage shares on demand. In fs/offline
-// mode there is no server, so these routes return `503`.
-
+// md:fn proxy_perm
 async fn proxy_perm(
     s: &Shared,
     method: &str,
@@ -817,6 +728,7 @@ async fn proxy_perm(
     }
 }
 
+// md:fn proxy_note_share
 async fn proxy_note_share(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -825,10 +737,12 @@ async fn proxy_note_share(
     proxy_perm(&s, "POST", format!("/api/notes/{id}/share"), Some(body)).await
 }
 
+// md:fn proxy_note_shares
 async fn proxy_note_shares(State(s): State<Shared>, Path(id): Path<Uuid>) -> Response {
     proxy_perm(&s, "GET", format!("/api/notes/{id}/share"), None).await
 }
 
+// md:fn proxy_note_unshare
 async fn proxy_note_unshare(
     State(s): State<Shared>,
     Path((id, user_id)): Path<(Uuid, Uuid)>,
@@ -842,6 +756,7 @@ async fn proxy_note_unshare(
     .await
 }
 
+// md:fn proxy_note_transfer
 async fn proxy_note_transfer(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -850,6 +765,7 @@ async fn proxy_note_transfer(
     proxy_perm(&s, "POST", format!("/api/notes/{id}/transfer"), Some(body)).await
 }
 
+// md:fn proxy_notebook_share
 async fn proxy_notebook_share(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -858,10 +774,12 @@ async fn proxy_notebook_share(
     proxy_perm(&s, "POST", format!("/api/notebooks/{id}/share"), Some(body)).await
 }
 
+// md:fn proxy_notebook_shares
 async fn proxy_notebook_shares(State(s): State<Shared>, Path(id): Path<Uuid>) -> Response {
     proxy_perm(&s, "GET", format!("/api/notebooks/{id}/share"), None).await
 }
 
+// md:fn proxy_notebook_unshare
 async fn proxy_notebook_unshare(
     State(s): State<Shared>,
     Path((id, user_id)): Path<(Uuid, Uuid)>,
@@ -875,6 +793,7 @@ async fn proxy_notebook_unshare(
     .await
 }
 
+// md:fn proxy_notebook_transfer
 async fn proxy_notebook_transfer(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -889,9 +808,7 @@ async fn proxy_notebook_transfer(
     .await
 }
 
-// ── Standards-format interop (vCard / iCalendar) ────────────────────────────────
-
-/// A contact as JSON (a serialisable view of `keeplin_core::interop::Contact`).
+// md:ContactDto
 #[derive(Debug, Serialize)]
 struct ContactDto {
     uid: String,
@@ -908,6 +825,7 @@ struct ContactDto {
     note: Option<String>,
 }
 
+// md:impl From Contact for ContactDto
 impl From<Contact> for ContactDto {
     fn from(c: Contact) -> Self {
         Self {
@@ -923,7 +841,7 @@ impl From<Contact> for ContactDto {
     }
 }
 
-/// A calendar event as JSON.
+// md:EventDto
 #[derive(Debug, Serialize)]
 struct EventDto {
     uid: String,
@@ -938,6 +856,7 @@ struct EventDto {
     description: Option<String>,
 }
 
+// md:impl From CalendarEvent for EventDto
 impl From<CalendarEvent> for EventDto {
     fn from(e: CalendarEvent) -> Self {
         Self {
@@ -951,17 +870,18 @@ impl From<CalendarEvent> for EventDto {
     }
 }
 
-/// Build a raw `text/vcard` or `text/calendar` body response.
+// md:fn text_body
 fn text_body(mime: &'static str, body: String) -> Response {
     ([(CONTENT_TYPE, mime)], body).into_response()
 }
 
+// md:fn list_contacts_ep
 async fn list_contacts_ep(State(s): State<Shared>) -> Result<Json<Vec<ContactDto>>, ApiError> {
     let contacts = interop::list_contacts(s.backend.as_ref()).await?;
     Ok(Json(contacts.into_iter().map(ContactDto::from).collect()))
 }
 
-/// `POST /api/contacts/import` — body is a vCard; parse it, store it, return the stored contact.
+// md:fn import_contact_ep
 async fn import_contact_ep(
     State(s): State<Shared>,
     body: String,
@@ -972,7 +892,7 @@ async fn import_contact_ep(
     Ok(Json(saved.into()))
 }
 
-/// `GET /api/contacts/:uid/export` — the contact as a `text/vcard` body.
+// md:fn export_contact_ep
 async fn export_contact_ep(
     State(s): State<Shared>,
     Path(uid): Path<String>,
@@ -983,6 +903,7 @@ async fn export_contact_ep(
     Ok(text_body(interop::MIME_VCARD, contact.to_vcard()))
 }
 
+// md:fn delete_contact_ep
 async fn delete_contact_ep(
     State(s): State<Shared>,
     Path(uid): Path<String>,
@@ -991,14 +912,13 @@ async fn delete_contact_ep(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// md:fn list_events_ep
 async fn list_events_ep(State(s): State<Shared>) -> Result<Json<Vec<EventDto>>, ApiError> {
     let events = interop::list_events(s.backend.as_ref()).await?;
     Ok(Json(events.into_iter().map(EventDto::from).collect()))
 }
 
-/// `POST /api/events/import` — body is an iCalendar file; **every** `VEVENT` in it is
-/// parsed and stored, and the stored events are returned in document order (so a whole
-/// exported calendar imports in one call).
+// md:fn import_event_ep
 async fn import_event_ep(
     State(s): State<Shared>,
     body: String,
@@ -1016,6 +936,7 @@ async fn import_event_ep(
     Ok(Json(saved))
 }
 
+// md:fn export_event_ep
 async fn export_event_ep(
     State(s): State<Shared>,
     Path(uid): Path<String>,
@@ -1026,6 +947,7 @@ async fn export_event_ep(
     Ok(text_body(interop::MIME_ICALENDAR, event.to_ics()))
 }
 
+// md:fn delete_event_ep
 async fn delete_event_ep(
     State(s): State<Shared>,
     Path(uid): Path<String>,
@@ -1034,8 +956,7 @@ async fn delete_event_ep(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /api/todos/import` — body is an iCalendar file; a Keeplin to-do note is created
-/// from **every** `VTODO` in it, returned in document order.
+// md:fn import_todo_ep
 async fn import_todo_ep(
     State(s): State<Shared>,
     body: String,
@@ -1045,7 +966,7 @@ async fn import_todo_ep(
     ))
 }
 
-/// `?name=&email=` for the profile-vCard endpoint.
+// md:ProfileVcardQuery
 #[derive(Debug, Deserialize)]
 struct ProfileVcardQuery {
     #[serde(default)]
@@ -1053,9 +974,7 @@ struct ProfileVcardQuery {
     email: String,
 }
 
-/// `GET /api/profile/vcard?email=&name=` — render the account owner's profile vCard. The caller
-/// supplies the profile (the daemon does not own user identity); `name` defaults to the email's
-/// local part.
+// md:fn profile_vcard_ep
 async fn profile_vcard_ep(Query(q): Query<ProfileVcardQuery>) -> Response {
     let name = q
         .name
@@ -1064,13 +983,13 @@ async fn profile_vcard_ep(Query(q): Query<ProfileVcardQuery>) -> Response {
     text_body(interop::MIME_VCARD, interop::user_vcard(&name, &q.email))
 }
 
-// ── Notebooks ───────────────────────────────────────────────────────────────────
-
+// md:TitleOnly
 #[derive(Debug, Deserialize)]
 struct TitleOnly {
     title: String,
 }
 
+// md:fn list_notebooks
 async fn list_notebooks(
     State(s): State<Shared>,
     Query(p): Query<Pagination>,
@@ -1080,6 +999,7 @@ async fn list_notebooks(
     ))
 }
 
+// md:fn create_notebook
 async fn create_notebook(
     State(s): State<Shared>,
     Json(req): Json<TitleOnly>,
@@ -1089,7 +1009,7 @@ async fn create_notebook(
     ))
 }
 
-/// Read a live notebook or return 404 for a missing or soft-deleted one.
+// md:fn read_live_notebook
 async fn read_live_notebook(s: &Shared, id: Uuid) -> Result<Notebook, ApiError> {
     let nb = s.backend.read_notebook(id).await?;
     if nb.deleted_at.is_some() {
@@ -1098,6 +1018,7 @@ async fn read_live_notebook(s: &Shared, id: Uuid) -> Result<Notebook, ApiError> 
     Ok(nb)
 }
 
+// md:fn get_notebook
 async fn get_notebook(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -1105,18 +1026,19 @@ async fn get_notebook(
     Ok(Json(read_live_notebook(&s, id).await?))
 }
 
+// md:fn update_notebook
 async fn update_notebook(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
     Json(mut nb): Json<Notebook>,
 ) -> Result<Json<Notebook>, ApiError> {
-    // Updating a tombstoned notebook is a 404, like reading one (see `update_note`).
     read_live_notebook(&s, id).await?;
     nb.id = id;
     nb.updated_at = now();
     Ok(Json(s.backend.update_notebook(nb).await?))
 }
 
+// md:fn delete_notebook
 async fn delete_notebook(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -1131,6 +1053,7 @@ async fn delete_notebook(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// md:fn set_notebook_alias
 async fn set_notebook_alias(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -1141,8 +1064,7 @@ async fn set_notebook_alias(
     ))
 }
 
-// ── Tags ────────────────────────────────────────────────────────────────────────
-
+// md:fn list_tags
 async fn list_tags(
     State(s): State<Shared>,
     Query(p): Query<Pagination>,
@@ -1150,6 +1072,7 @@ async fn list_tags(
     Ok(page(s.backend.list_tags(p.page_size, p.page_token).await?))
 }
 
+// md:fn create_tag
 async fn create_tag(
     State(s): State<Shared>,
     Json(req): Json<TitleOnly>,
@@ -1157,7 +1080,7 @@ async fn create_tag(
     Ok(Json(s.backend.create_tag(Tag::new(req.title)).await?))
 }
 
-/// Read a live tag or return 404 for a missing or soft-deleted one.
+// md:fn read_live_tag
 async fn read_live_tag(s: &Shared, id: Uuid) -> Result<Tag, ApiError> {
     let tag = s.backend.read_tag(id).await?;
     if tag.deleted_at.is_some() {
@@ -1166,29 +1089,30 @@ async fn read_live_tag(s: &Shared, id: Uuid) -> Result<Tag, ApiError> {
     Ok(tag)
 }
 
+// md:fn get_tag
 async fn get_tag(State(s): State<Shared>, Path(id): Path<Uuid>) -> Result<Json<Tag>, ApiError> {
     Ok(Json(read_live_tag(&s, id).await?))
 }
 
+// md:fn update_tag
 async fn update_tag(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
     Json(mut tag): Json<Tag>,
 ) -> Result<Json<Tag>, ApiError> {
-    // Updating a tombstoned tag is a 404, like reading one (see `update_note`).
     read_live_tag(&s, id).await?;
     tag.id = id;
     tag.updated_at = now();
     Ok(Json(s.backend.update_tag(tag).await?))
 }
 
+// md:fn delete_tag
 async fn delete_tag(State(s): State<Shared>, Path(id): Path<Uuid>) -> Result<StatusCode, ApiError> {
     s.backend.delete_tag(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ── Resources ───────────────────────────────────────────────────────────────────
-
+// md:ResourceMeta
 #[derive(Debug, Deserialize)]
 struct ResourceMeta {
     #[serde(default)]
@@ -1197,6 +1121,7 @@ struct ResourceMeta {
     file_name: String,
 }
 
+// md:fn list_resources
 async fn list_resources(
     State(s): State<Shared>,
     Query(p): Query<Pagination>,
@@ -1206,8 +1131,7 @@ async fn list_resources(
     ))
 }
 
-/// Upload a resource: raw request body is the payload, `?title=&file_name=` carry the
-/// metadata, and the `Content-Type` header is recorded as the MIME type.
+// md:fn create_resource
 async fn create_resource(
     State(s): State<Shared>,
     Query(meta): Query<ResourceMeta>,
@@ -1224,10 +1148,7 @@ async fn create_resource(
     Ok(Json(s.backend.create_resource(resource, data).await?))
 }
 
-/// Streaming upload: `POST /api/resources/upload?title=&file_name=` with the raw file bytes as
-/// the body and `Content-Type` as the MIME type. The body is read incrementally up to
-/// `max_upload_bytes` (this route bypasses the router's `max_body_bytes` cap), so an attachment
-/// larger than `max_message_size` can be uploaded. A body over the cap is rejected with `413`.
+// md:fn upload_resource
 async fn upload_resource(
     State(s): State<Shared>,
     Query(meta): Query<ResourceMeta>,
@@ -1239,8 +1160,6 @@ async fn upload_resource(
     } else {
         s.max_upload_bytes
     };
-    // `to_bytes` reads the body incrementally and errors once it passes `limit`, so an
-    // oversized upload never fully materialises in memory.
     let data = match axum::body::to_bytes(body, limit).await {
         Ok(bytes) => bytes.to_vec(),
         Err(_) => {
@@ -1265,6 +1184,7 @@ async fn upload_resource(
     }
 }
 
+// md:fn get_resource
 async fn get_resource(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -1273,7 +1193,7 @@ async fn get_resource(
     Ok(Json(meta))
 }
 
-/// Download the raw bytes of a resource, served with its stored MIME type.
+// md:fn get_resource_data
 async fn get_resource_data(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -1282,6 +1202,7 @@ async fn get_resource_data(
     Ok(([(CONTENT_TYPE, meta.mime_type)], data).into_response())
 }
 
+// md:fn delete_resource
 async fn delete_resource(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -1290,22 +1211,13 @@ async fn delete_resource(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ── Sync ────────────────────────────────────────────────────────────────────────
-
-/// JSON summary returned by `POST /api/sync`: how many remote changes were applied.
+// md:SyncSummary
 #[derive(Debug, Serialize)]
 struct SyncSummary {
     applied: usize,
 }
 
-/// Run one synchronisation cycle on the shared backend and report how many remote
-/// changes were applied. Mirrors the gRPC `Sync` RPC, minus the streaming progress —
-/// including the post-sync journal prune, so `journal_retention_days` is honoured no
-/// matter which surface drives the sync.
-///
-/// The backend is passed as `&dyn StorageBackend`; `run_sync` accepts it because
-/// `dyn StorageBackend` itself satisfies `StorageBackend` (see the `?Sized` blanket impl
-/// in `keeplin-core`).
+// md:fn sync
 async fn sync(State(s): State<Shared>) -> Result<Json<SyncSummary>, ApiError> {
     let applied = run_sync(s.backend.as_ref(), |_stage, _count| {}).await?;
     crate::server::prune_journal_after_sync(s.backend.as_ref(), s.journal_retention_days).await;
@@ -1315,21 +1227,13 @@ async fn sync(State(s): State<Shared>) -> Result<Json<SyncSummary>, ApiError> {
     }))
 }
 
-// ── WebSocket live-change feed ────────────────────────────────────────────────────
-
-/// `GET /api/ws` — upgrade to a WebSocket and stream every [`Change`] as a JSON text
-/// frame. The upgrade request passes through the same Basic-Auth middleware as the REST
-/// routes. Each connection gets its own broadcast receiver created at upgrade time, so it
-/// sees changes from the moment it connects onward.
+// md:fn ws_handler
 async fn ws_handler(State(s): State<Shared>, ws: WebSocketUpgrade) -> Response {
     let rx = s.events.subscribe();
     ws.on_upgrade(move |socket| stream_changes(socket, rx))
 }
 
-/// Forward broadcast changes to one connected client until it disconnects or the channel
-/// closes. Serialises each [`Change`] to JSON; on `Lagged` (the client fell behind the
-/// channel capacity) it sends a `{"type":"resync"}` hint so the client can reload state
-/// rather than silently miss events.
+// md:fn stream_changes
 async fn stream_changes(mut socket: WebSocket, mut rx: broadcast::Receiver<Change>) {
     loop {
         tokio::select! {
@@ -1338,7 +1242,7 @@ async fn stream_changes(mut socket: WebSocket, mut rx: broadcast::Receiver<Chang
                     let text = serde_json::to_string(&change)
                         .unwrap_or_else(|_| r#"{"type":"error"}"#.to_string());
                     if socket.send(Message::Text(text)).await.is_err() {
-                        break; // client went away
+                        break;
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {
@@ -1349,17 +1253,16 @@ async fn stream_changes(mut socket: WebSocket, mut rx: broadcast::Receiver<Chang
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
-            // Drive the receive side so client pings get pongs and a close frame ends the
-            // loop promptly instead of waiting for the next failed send.
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Close(_))) | None => break,
                 Some(Err(_)) => break,
-                Some(Ok(_)) => {} // ignore data/ping/pong frames from the client
+                Some(Ok(_)) => {}
             },
         }
     }
 }
 
+// md:mod tests
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1369,8 +1272,7 @@ mod tests {
     use keeplin_core::storage::fs::FsBackend;
     use tower::ServiceExt;
 
-    /// Build an `AppState` over a fresh `FsBackend` in a leaked temp dir (kept alive for
-    /// the test), optionally with Basic-Auth credentials configured.
+    // md:mod tests > fn state
     async fn state(auth: Option<(&str, &str)>) -> Shared {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_path_buf();
@@ -1392,8 +1294,7 @@ mod tests {
         })
     }
 
-    /// Like [`state`] but wraps the backend in `LinkingBackend`, so writes derive bookmarks
-    /// and links and resolve references — required by the bookmark/link endpoint tests.
+    // md:mod tests > fn linking_state
     async fn linking_state() -> Shared {
         use keeplin_core::linking::LinkingBackend;
         let dir = tempfile::tempdir().unwrap();
@@ -1416,8 +1317,7 @@ mod tests {
         })
     }
 
-    /// Issue one request against a fresh router over the shared state and return
-    /// `(status, body bytes)`.
+    // md:mod tests > fn call
     async fn call(
         st: &Shared,
         method: &str,
@@ -1447,11 +1347,11 @@ mod tests {
         (status, bytes)
     }
 
+    // md:mod tests > fn note_crud_round_trip
     #[tokio::test]
     async fn note_crud_round_trip() {
         let st = state(None).await;
 
-        // Create.
         let (code, body) = call(
             &st,
             "POST",
@@ -1465,27 +1365,24 @@ mod tests {
         assert_eq!(note.title, "T");
         let id = note.id;
 
-        // Read.
         let (code, body) = call(&st, "GET", &format!("/api/notes/{id}"), None, None).await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(serde_json::from_slice::<Note>(&body).unwrap().body, "B");
 
-        // List.
         let (code, body) = call(&st, "GET", "/api/notes", None, None).await;
         assert_eq!(code, StatusCode::OK);
         let pagev: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(pagev["items"].as_array().unwrap().len(), 1);
 
-        // Delete, then 404.
         let (code, _) = call(&st, "DELETE", &format!("/api/notes/{id}"), None, None).await;
         assert_eq!(code, StatusCode::NO_CONTENT);
         let (code, _) = call(&st, "GET", &format!("/api/notes/{id}"), None, None).await;
         assert_eq!(code, StatusCode::NOT_FOUND);
     }
 
+    // md:mod tests > fn permission_endpoints_require_server_mode
     #[tokio::test]
     async fn permission_endpoints_require_server_mode() {
-        // In fs/offline mode (collab: None) the permission proxies must 503, not panic.
         let st = state(None).await;
         let (_, body) = call(
             &st,
@@ -1519,6 +1416,7 @@ mod tests {
         }
     }
 
+    // md:mod tests > fn contact_import_list_export_delete_endpoints
     #[tokio::test]
     async fn contact_import_list_export_delete_endpoints() {
         let st = state(None).await;
@@ -1550,10 +1448,10 @@ mod tests {
             .is_empty());
     }
 
+    // md:mod tests > fn todo_import_and_profile_vcard_endpoints
     #[tokio::test]
     async fn todo_import_and_profile_vcard_endpoints() {
         let st = state(None).await;
-        // Two VTODOs in one calendar: the import creates a note per component.
         let ics = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:t1\r\nSUMMARY:Task\r\nEND:VTODO\r\n\
                    BEGIN:VTODO\r\nUID:t2\r\nSUMMARY:Other\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
         let (code, body) = call(&st, "POST", "/api/todos/import", Some(ics), None).await;
@@ -1574,11 +1472,11 @@ mod tests {
         assert!(text.contains("EMAIL:me@x.com"));
     }
 
+    // md:mod tests > fn note_history_and_revert_endpoints
     #[tokio::test]
     async fn note_history_and_revert_endpoints() {
         let st = state(None).await;
 
-        // Create, then edit — two versions in history.
         let (_, body) = call(
             &st,
             "POST",
@@ -1602,7 +1500,6 @@ mod tests {
         .await;
         assert_eq!(code, StatusCode::OK);
 
-        // History: newest first.
         let (code, body) = call(&st, "GET", &format!("/api/notes/{id}/history"), None, None).await;
         assert_eq!(code, StatusCode::OK);
         let hist: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -1611,7 +1508,6 @@ mod tests {
         assert_eq!(versions[0]["note"]["body"], "v2");
         assert_eq!(versions[1]["note"]["body"], "v1");
 
-        // Revert to the first version's instant → body back to v1.
         let at = versions[1]["timestamp"].as_str().unwrap();
         let (code, body) = call(
             &st,
@@ -1623,7 +1519,6 @@ mod tests {
         .await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(serde_json::from_slice::<Note>(&body).unwrap().body, "v1");
-        // The revert is a new version on top (non-destructive).
         let (_, body) = call(&st, "GET", &format!("/api/notes/{id}/history"), None, None).await;
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&body)
@@ -1635,11 +1530,11 @@ mod tests {
         );
     }
 
+    // md:mod tests > fn updates_on_deleted_entities_are_404
     #[tokio::test]
     async fn updates_on_deleted_entities_are_404() {
         let st = state(None).await;
 
-        // Note: create → delete → PUT must be a 404, not a silent revival.
         let (_, body) = call(
             &st,
             "POST",
@@ -1658,7 +1553,7 @@ mod tests {
         )
         .await;
 
-        let update = serde_json::to_string(&note).unwrap(); // deleted_at: null
+        let update = serde_json::to_string(&note).unwrap();
         let (code, _) = call(
             &st,
             "PUT",
@@ -1677,11 +1572,9 @@ mod tests {
         )
         .await;
         assert_eq!(code, StatusCode::NOT_FOUND, "alias PUT on deleted note");
-        // Still deleted afterwards.
         let (code, _) = call(&st, "GET", &format!("/api/notes/{}", note.id), None, None).await;
         assert_eq!(code, StatusCode::NOT_FOUND, "note must remain deleted");
 
-        // Notebook.
         let (_, body) = call(
             &st,
             "POST",
@@ -1709,7 +1602,6 @@ mod tests {
         .await;
         assert_eq!(code, StatusCode::NOT_FOUND, "PUT on deleted notebook");
 
-        // Tag.
         let (_, body) = call(&st, "POST", "/api/tags", Some(r#"{"title":"t"}"#), None).await;
         let tag: Tag = serde_json::from_slice(&body).unwrap();
         call(&st, "DELETE", &format!("/api/tags/{}", tag.id), None, None).await;
@@ -1724,11 +1616,9 @@ mod tests {
         assert_eq!(code, StatusCode::NOT_FOUND, "PUT on deleted tag");
     }
 
+    // md:mod tests > fn sync_endpoint_prunes_journal_within_retention
     #[tokio::test]
     async fn sync_endpoint_prunes_journal_within_retention() {
-        // A DbBackend state (empty server_url → local-only sync) exercises the pruning
-        // path that FsBackend no-ops: after POST /api/sync, fresh journal rows must
-        // survive a 30-day retention window (the prune ran, and respected the window).
         use keeplin_core::storage::db::DbBackend;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("rest.db");
@@ -1764,16 +1654,14 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["applied"], 0, "no relay → nothing applied");
 
-        // The fresh create is younger than the retention cutoff, so it must survive.
         let epoch = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap();
         let journal = st.backend.get_changes_since(epoch).await.unwrap();
         assert_eq!(journal.len(), 1, "recent journal rows survive the prune");
     }
 
+    // md:mod tests > fn operational_endpoints_bypass_auth
     #[tokio::test]
     async fn operational_endpoints_bypass_auth() {
-        // With auth configured, the data API requires credentials but the operational
-        // probes must remain reachable without them (orchestrators cannot authenticate).
         let st = state(Some(("alice", "s3cr3t"))).await;
 
         for path in ["/api/health", "/api/ready", "/api/metrics"] {
@@ -1788,10 +1676,7 @@ mod tests {
         assert_eq!(code, StatusCode::UNAUTHORIZED, "data API still gated");
     }
 
-    /// Build an `AppState` whose backend is a `MetricsBackend` over a fresh `FsBackend`
-    /// sharing the state's own `Arc<Metrics>` — mirroring how `main` wires the outermost
-    /// decorator — so storage operations issued through the router move the same counters
-    /// `GET /api/metrics` renders.
+    // md:mod tests > fn metrics_state
     async fn metrics_state() -> Shared {
         use crate::metrics::{Metrics, MetricsBackend};
         let dir = tempfile::tempdir().unwrap();
@@ -1815,11 +1700,11 @@ mod tests {
         })
     }
 
+    // md:mod tests > fn metrics_reflect_operations_and_http_status
     #[tokio::test]
     async fn metrics_reflect_operations_and_http_status() {
         let st = metrics_state().await;
 
-        // One successful create, then one 404 (GET a missing note).
         let (code, _) = call(
             &st,
             "POST",
@@ -1846,8 +1731,6 @@ mod tests {
             text.contains("keeplin_storage_operations_total{entity=\"note\",op=\"create\"} 1"),
             "create counted:\n{text}"
         );
-        // The create was a 2xx and the missing-note GET a 4xx; the /metrics scrape itself is
-        // not counted (operational routes bypass the status middleware).
         assert!(
             text.contains("keeplin_http_requests_total{status=\"2xx\"} 1"),
             "one 2xx:\n{text}"
@@ -1858,6 +1741,7 @@ mod tests {
         );
     }
 
+    // md:mod tests > fn invalid_uuid_is_bad_request
     #[tokio::test]
     async fn invalid_uuid_is_bad_request() {
         let st = state(None).await;
@@ -1865,6 +1749,7 @@ mod tests {
         assert_eq!(code, StatusCode::BAD_REQUEST);
     }
 
+    // md:mod tests > fn auth_is_enforced_when_configured
     #[tokio::test]
     async fn auth_is_enforced_when_configured() {
         let st = state(Some(("alice", "s3cr3t"))).await;
@@ -1881,6 +1766,7 @@ mod tests {
         assert_eq!(code, StatusCode::OK, "valid credentials → 200");
     }
 
+    // md:mod tests > fn resource_upload_and_download
     #[tokio::test]
     async fn resource_upload_and_download() {
         let st = state(None).await;
@@ -1909,10 +1795,9 @@ mod tests {
         assert_eq!(data, b"not really json but raw bytes");
     }
 
+    // md:mod tests > fn resource_upload_above_axum_default_limit
     #[tokio::test]
     async fn resource_upload_above_axum_default_limit() {
-        // A 3 MiB body exceeds axum's 2 MiB default; it must succeed because the router
-        // raises the limit to `max_body_bytes` (32 MiB in the test state).
         let st = state(None).await;
         let big = "x".repeat(3 * 1024 * 1024);
         let (code, body) = call(
@@ -1928,6 +1813,7 @@ mod tests {
         assert_eq!(res.size, big.len() as u64);
     }
 
+    // md:mod tests > fn streaming_upload_round_trips
     #[tokio::test]
     async fn streaming_upload_round_trips() {
         let st = state(None).await;
@@ -1945,7 +1831,6 @@ mod tests {
         assert_eq!(res.title, "vid");
         assert_eq!(res.size, payload.len() as u64);
 
-        // The uploaded bytes download intact.
         let (code, data) = call(
             &st,
             "GET",
@@ -1958,9 +1843,9 @@ mod tests {
         assert_eq!(data, payload.as_bytes());
     }
 
+    // md:mod tests > fn streaming_upload_over_cap_is_413
     #[tokio::test]
     async fn streaming_upload_over_cap_is_413() {
-        // A state with a tiny 8-byte upload cap rejects a larger streamed body.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_path_buf();
         std::mem::forget(dir);
@@ -1990,11 +1875,11 @@ mod tests {
         assert_eq!(code, StatusCode::PAYLOAD_TOO_LARGE);
     }
 
+    // md:mod tests > fn alias_and_links_endpoints
     #[tokio::test]
     async fn alias_and_links_endpoints() {
         let st = linking_state().await;
 
-        // Create a note whose body declares a bookmark (with an inline alias) and a link.
         let (code, body) = call(
             &st,
             "POST",
@@ -2007,14 +1892,11 @@ mod tests {
         let note: Note = serde_json::from_slice(&body).unwrap();
         let id = note.id;
 
-        // The bookmark was derived from the body and is returned inline on the note
-        // (there is no dedicated bookmark endpoint — the body is the source of truth).
         assert_eq!(note.bookmarks.len(), 1);
         assert_eq!(note.bookmarks[0].number, 1);
         assert_eq!(note.bookmarks[0].text, "Anchor1");
         assert_eq!(note.bookmarks[0].alias, "Custom");
 
-        // Content link present; add a manual link and then remove it.
         let (code, body) = call(&st, "GET", &format!("/api/notes/{id}/links"), None, None).await;
         assert_eq!(code, StatusCode::OK);
         assert_eq!(
@@ -2038,7 +1920,6 @@ mod tests {
             2
         );
 
-        // A malformed link reference is rejected (422).
         let (code, _) = call(
             &st,
             "POST",
@@ -2050,13 +1931,12 @@ mod tests {
         assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
     }
 
+    // md:mod tests > fn alias_backlinks_and_resolve_endpoints
     #[tokio::test]
     async fn alias_backlinks_and_resolve_endpoints() {
         let st = linking_state().await;
-        // Aliases live in a real notebook (Inbox notes carry none), so place both notes there.
         let nb = Uuid::from_u128(0xa11a5).to_string();
 
-        // Target note, then give it an alias via the alias endpoint.
         let (_, body) = call(
             &st,
             "POST",
@@ -2085,7 +1965,6 @@ mod tests {
             Some("note3")
         );
 
-        // Source note links to the target by alias.
         let (_, body) = call(
             &st,
             "POST",
@@ -2098,7 +1977,6 @@ mod tests {
         .await;
         let src: Note = serde_json::from_slice(&body).unwrap();
 
-        // Backlinks of the target include the source.
         let (code, body) = call(
             &st,
             "GET",
@@ -2113,7 +1991,6 @@ mod tests {
         assert_eq!(back.len(), 1);
         assert_eq!(back[0]["id"], serde_json::json!(src.id.to_string()));
 
-        // Resolve a 3-segment reference to the target note + bookmark number 1.
         let (code, body) = call(
             &st,
             "GET",
@@ -2128,14 +2005,10 @@ mod tests {
         assert_eq!(v["bookmark_number"], serde_json::json!(1));
     }
 
+    // md:mod tests > fn alias_conflicts_endpoint
     #[tokio::test]
     async fn alias_conflicts_endpoint() {
-        // A plain FsBackend state (no LinkingBackend) has no write-time uniqueness check, so
-        // the same alias can be planted on two notes — the way a cross-device sync collision
-        // would appear.
         let st = state(None).await;
-        // Aliases only exist outside the Inbox, so plant both notes in a real notebook — the
-        // collision is grouped by (alias, notebook_id), so they must share one.
         let nb = Uuid::from_u128(0xc0111de).to_string();
         let (_, b1) = call(
             &st,
@@ -2181,15 +2054,11 @@ mod tests {
         assert!(v["notebooks"].as_array().unwrap().is_empty());
     }
 
-    // ── WebSocket feed (real socket, end to end) ─────────────────────────────────
-
     use crate::event_backend::EventBackend;
     use futures_util::StreamExt;
     use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-    /// Build an `AppState` whose backend is an `EventBackend` over a fresh `FsBackend`, so
-    /// mutations made through the router publish to the same `events` channel the WebSocket
-    /// route subscribes to. Returns the state and a clone of the sender.
+    // md:mod tests > fn state_with_events
     async fn state_with_events() -> Shared {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_path_buf();
@@ -2212,11 +2081,11 @@ mod tests {
         })
     }
 
+    // md:mod tests > fn websocket_streams_note_create
     #[tokio::test]
     async fn websocket_streams_note_create() {
         let st = state_with_events().await;
 
-        // Serve the real router on an ephemeral port.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let app = router(st.clone());
@@ -2224,14 +2093,10 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
 
-        // Connect a WebSocket client. The handler subscribes synchronously before the
-        // upgrade response is sent, so no event created after this point can be missed.
         let (mut ws, _resp) = tokio_tungstenite::connect_async(format!("ws://{addr}/api/ws"))
             .await
             .expect("ws connect");
 
-        // Create a note through the same shared backend (in-process is fine; it still flows
-        // through the EventBackend and publishes to the broadcast channel).
         let (code, _) = call(
             &st,
             "POST",
@@ -2242,7 +2107,6 @@ mod tests {
         .await;
         assert_eq!(code, StatusCode::OK);
 
-        // The client should receive a NoteCreate frame whose note matches.
         let frame = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
             .await
             .expect("timed out waiting for change frame")
@@ -2263,10 +2127,7 @@ mod tests {
     }
 }
 
-// ── Collaborative presence (design §7.3) ─────────────────────────────────────
-
-/// `GET /api/notes/:id/presence` — who is inside the note's live session and
-/// where their caret is. Empty when collaboration is disabled or nobody is in.
+// md:fn note_presence
 async fn note_presence(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
@@ -2277,15 +2138,14 @@ async fn note_presence(
     }
 }
 
+// md:CursorBody
 #[derive(Deserialize)]
 struct CursorBody {
     line_id: Uuid,
     column: usize,
 }
 
-/// `PUT /api/notes/:id/cursor` — publish this device's caret position; the
-/// server fans the updated presence out to every participant. 503 when
-/// collaboration is disabled.
+// md:fn set_cursor
 async fn set_cursor(
     State(s): State<Shared>,
     Path(id): Path<Uuid>,
