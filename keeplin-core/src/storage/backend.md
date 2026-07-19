@@ -7,8 +7,9 @@ conventions are deliberately re-explained here (hyper-redundancy is intended).
 
 **How to navigate**: every block carries exactly one marker comment
 `// md:<Header> > … > <Block header>` whose path is the header chain of its section
-here; grep it in either direction. Each section covers **Identification**,
-**What it does**, **Dependencies**, **Used by**, **Repeated context**.
+here; grep it in either direction. Each block section covers, in this fixed order:
+**Identification**, **Code**, **What it does**, **Dependencies**, **Used by**,
+**Repeated context**.
 
 ---
 
@@ -16,7 +17,10 @@ here; grep it in either direction. Each section covers **Identification**,
 
 **Identification** — file-level block: the imports. Marker `// md:Overview`.
 
+**Code** — complete and verbatim:
+
 ```rust
+// md:Overview
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
@@ -66,6 +70,73 @@ ripples through every backend *and* every decorator.
 **Identification** — `#[async_trait] pub trait NoteRepository: Send + Sync + 'static`;
 marker `// md:trait NoteRepository`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:trait NoteRepository
+#[async_trait]
+pub trait NoteRepository: Send + Sync + 'static {
+    async fn create_note(&self, note: Note) -> Result<Note, StorageError>;
+
+    async fn read_note(&self, id: Uuid) -> Result<Note, StorageError>;
+
+    async fn update_note(&self, note: Note) -> Result<Note, StorageError>;
+
+    async fn delete_note(&self, id: Uuid) -> Result<(), StorageError>;
+
+    async fn list_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError>;
+
+    async fn list_notes_in_notebook(
+        &self,
+        notebook_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError>;
+
+    async fn list_starred_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError>;
+
+    async fn notebook_sort_profile(
+        &self,
+        notebook_id: Uuid,
+    ) -> Result<NotebookSortProfile, StorageError>;
+
+    async fn note_backlinks(
+        &self,
+        target_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        let mut matches = Vec::new();
+        let mut token = None;
+        loop {
+            let (page, next) = self.list_notes(0, token).await?;
+            for note in page {
+                if note
+                    .links
+                    .iter()
+                    .any(|l| l.target_note_id == Some(target_id))
+                {
+                    matches.push(note);
+                }
+            }
+            match next {
+                Some(t) => token = Some(t),
+                None => break,
+            }
+        }
+        Ok(paginate_notes(matches, page_size, page_token.as_deref()))
+    }
+}
+```
+
 **What it does** — CRUD for `Note` entities. `delete_note` is a **soft delete**
 (sets `deleted_at`, keeps the record); `list_notes` excludes soft-deleted notes.
 Methods:
@@ -108,6 +179,18 @@ further pages.
 **Identification** — struct deriving `Debug, Clone, Default, PartialEq, Eq`;
 marker `// md:NotebookSortProfile`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:NotebookSortProfile
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NotebookSortProfile {
+    pub pinned_keys: Vec<u32>,
+    pub min_key: Option<u32>,
+    pub max_normal_key: Option<u32>,
+}
+```
+
 **What it does** — A compact summary of one notebook's live-note ordering,
 computed natively by each backend (an indexed scan of sort keys — never the note
 bodies): `pinned_keys` (keys currently used in the pinned band `1..=999`,
@@ -132,11 +215,33 @@ O(keys), not O(notes×bodies).
 **Identification** — inherent impl; marker `// md:impl NotebookSortProfile`. One
 method.
 
+**Code** — container: members documented as sub-blocks below: fn from_effective_keys.
+
 ### fn from_effective_keys
 
 **Identification** —
 `pub fn from_effective_keys(keys: impl IntoIterator<Item = u32>) -> Self`; marker
 `// md:impl NotebookSortProfile > fn from_effective_keys`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl NotebookSortProfile > fn from_effective_keys
+    pub fn from_effective_keys(keys: impl IntoIterator<Item = u32>) -> Self {
+        let mut profile = Self::default();
+        for key in keys {
+            profile.min_key = Some(profile.min_key.map_or(key, |min| min.min(key)));
+            if (1..1000).contains(&key) {
+                profile.pinned_keys.push(key);
+            } else {
+                profile.max_normal_key =
+                    Some(profile.max_normal_key.map_or(key, |max| max.max(key)));
+            }
+        }
+        profile.pinned_keys.sort_unstable();
+        profile
+    }
+```
 
 **What it does** — Builds a profile from an iterator of the notebook's live
 effective sort keys: tracks the global minimum, routes `1..1000` keys into
@@ -157,6 +262,43 @@ effective sort keys: tracks the global minimum, routes `1..1000` keys into
 **Identification** —
 `fn paginate_notes(items: Vec<Note>, page_size: u32, token: Option<&str>) -> (Vec<Note>, Option<String>)`;
 marker `// md:fn paginate_notes`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn paginate_notes
+fn paginate_notes(
+    items: Vec<Note>,
+    page_size: u32,
+    token: Option<&str>,
+) -> (Vec<Note>, Option<String>) {
+    let limit = super::effective_page_size(page_size) as usize;
+    let start = match token.filter(|t| !t.is_empty()) {
+        Some(cursor) => match cursor.split_once('|') {
+            Some((ts, id_str)) => {
+                let cursor_id = Uuid::parse_str(id_str).ok();
+                items.partition_point(|n| {
+                    let item_ts = n.created_at.to_sortable_rfc3339();
+                    item_ts.as_str() < ts
+                        || (item_ts.as_str() == ts && cursor_id.is_some_and(|c| n.id <= c))
+                })
+            }
+            None => 0,
+        },
+        None => 0,
+    };
+    let remaining: Vec<Note> = items.into_iter().skip(start).collect();
+    let has_more = remaining.len() > limit;
+    let page: Vec<Note> = remaining.into_iter().take(limit).collect();
+    let next = if has_more {
+        page.last()
+            .map(|n| format!("{}|{}", n.created_at.to_sortable_rfc3339(), n.id))
+    } else {
+        None
+    };
+    (page, next)
+}
+```
 
 **What it does** — Paginates an already-`(created_at, id)`-ordered vec of notes
 with the same `"created_at|id"` cursor format the backends' `list_*` methods use.
@@ -182,6 +324,28 @@ sides of the comparison use the fixed nine-fractional-digit
 **Identification** — `#[async_trait] pub trait NotebookRepository: Send + Sync + 'static`;
 marker `// md:trait NotebookRepository`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:trait NotebookRepository
+#[async_trait]
+pub trait NotebookRepository: Send + Sync + 'static {
+    async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError>;
+
+    async fn read_notebook(&self, id: Uuid) -> Result<Notebook, StorageError>;
+
+    async fn update_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError>;
+
+    async fn delete_notebook(&self, id: Uuid) -> Result<(), StorageError>;
+
+    async fn list_notebooks(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Notebook>, Option<String>), StorageError>;
+}
+```
+
 **What it does** — CRUD for `Notebook` entities with the same soft-delete
 semantics as notes: `create_notebook` (persist, return stored copy),
 `read_notebook` (`NotFound` when absent), `update_notebook` (`NotFound` when
@@ -202,6 +366,39 @@ layer, not by these signatures.
 
 **Identification** — `#[async_trait] pub trait TagRepository: Send + Sync + 'static`;
 marker `// md:trait TagRepository`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:trait TagRepository
+#[async_trait]
+pub trait TagRepository: Send + Sync + 'static {
+    async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError>;
+
+    async fn read_tag(&self, id: Uuid) -> Result<Tag, StorageError>;
+
+    async fn update_tag(&self, tag: Tag) -> Result<Tag, StorageError>;
+
+    async fn delete_tag(&self, id: Uuid) -> Result<(), StorageError>;
+
+    async fn list_tags(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError>;
+
+    async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError>;
+
+    async fn remove_note_tag(&self, note_id: Uuid, tag_id: Uuid) -> Result<(), StorageError>;
+
+    async fn list_note_tags(
+        &self,
+        note_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError>;
+}
+```
 
 **What it does** — CRUD for `Tag` entities plus the note–tag association table
 (kept here, not a separate trait: associations are always used together with tag
@@ -232,6 +429,33 @@ migration re-runs safe.
 
 **Identification** — `#[async_trait] pub trait ResourceRepository: Send + Sync + 'static`;
 marker `// md:trait ResourceRepository`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:trait ResourceRepository
+#[async_trait]
+pub trait ResourceRepository: Send + Sync + 'static {
+    async fn create_resource(
+        &self,
+        resource: Resource,
+        data: Vec<u8>,
+    ) -> Result<Resource, StorageError>;
+
+    async fn read_resource(&self, id: Uuid) -> Result<(Resource, Vec<u8>), StorageError>;
+
+    async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError>;
+
+    async fn list_resources(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Resource>, Option<String>), StorageError>;
+
+    async fn purge_deleted_resources(&self, older_than: DateTime<Utc>)
+        -> Result<u64, StorageError>;
+}
+```
 
 **What it does** — CRUD for binary `Resource` attachments. Resources use the same
 soft-delete tombstone (`deleted_at` + version vector) as every other entity so a
@@ -269,6 +493,30 @@ out-of-band maintenance reclaims space, never the delete itself.
 
 **Identification** — `#[async_trait] pub trait SyncBackend: Send + Sync + 'static`;
 marker `// md:trait SyncBackend`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:trait SyncBackend
+#[async_trait]
+pub trait SyncBackend: Send + Sync + 'static {
+    async fn get_device_id(&self) -> Result<String, StorageError>;
+
+    async fn get_last_sync_time(&self) -> Result<DateTime<Utc>, StorageError>;
+
+    async fn update_sync_time(&self, ts: DateTime<Utc>) -> Result<(), StorageError>;
+
+    async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError>;
+
+    async fn apply_change(&self, change: Change) -> Result<(), StorageError>;
+
+    async fn send_changes(&self, changes: Vec<Change>) -> Result<(), StorageError>;
+
+    async fn receive_changes(&self) -> Result<Vec<Change>, StorageError>;
+
+    async fn prune_change_journal(&self, older_than: DateTime<Utc>) -> Result<u64, StorageError>;
+}
+```
 
 **What it does** — Device identification and change-journal synchronisation — the
 operations `crate::sync::SyncEngine` sequences (collect → send → receive → apply
@@ -310,6 +558,13 @@ The storage shape differs; the decision does not (see `SECURITY.md`).
 **Identification** — `pub const DEFAULT_HISTORY_LIMIT: u32 = 100;` marker
 `// md:DEFAULT_HISTORY_LIMIT`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:DEFAULT_HISTORY_LIMIT
+pub const DEFAULT_HISTORY_LIMIT: u32 = 100;
+```
+
 **What it does** — Default cap on the number of versions a `*_history` call
 returns when the caller passes `limit = 0`. Bounds a single reply regardless of
 how deep the journal retains history.
@@ -328,6 +583,18 @@ how deep the journal retains history.
 
 **Identification** — `pub struct EntityVersion<T>` deriving `Debug, Clone,
 PartialEq, Eq`; marker `// md:EntityVersion`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:EntityVersion
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntityVersion<T> {
+    pub timestamp: DateTime<Utc>,
+    pub device_id: String,
+    pub entity: Option<T>,
+}
+```
 
 **What it does** — One past version of an entity, reconstructed from the change
 journal: `timestamp` (wall-clock time the version was written — the edit's
@@ -351,6 +618,26 @@ the revert helpers; the daemon's version DTOs.
 
 **Identification** — `#[async_trait] pub trait HistoryRepository: Send + Sync + 'static`;
 marker `// md:trait HistoryRepository`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:trait HistoryRepository
+#[async_trait]
+pub trait HistoryRepository: Send + Sync + 'static {
+    async fn note_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<EntityVersion<Note>>, StorageError>;
+
+    async fn notebook_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<EntityVersion<Notebook>>, StorageError>;
+}
+```
 
 **What it does** — Read-only access to an entity's past versions, the raw
 material for `crate::history`'s forward-revert helpers: `note_history(id, limit)`
@@ -376,6 +663,21 @@ separate history store to migrate or corrupt.
 `pub trait StorageBackend: NoteRepository + NotebookRepository + TagRepository + ResourceRepository + SyncBackend + HistoryRepository {}`;
 marker `// md:trait StorageBackend`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:trait StorageBackend
+pub trait StorageBackend:
+    NoteRepository
+    + NotebookRepository
+    + TagRepository
+    + ResourceRepository
+    + SyncBackend
+    + HistoryRepository
+{
+}
+```
+
 **What it does** — The unified async storage interface: an empty supertrait whose
 bounds pull in every sub-trait. Generic code writes `T: StorageBackend` once; all
 sub-trait methods are available because supertrait bounds are transitive.
@@ -397,6 +699,21 @@ in `history.rs`/`migrate.rs`, `Arc<dyn StorageBackend>` in the daemon).
 **Identification** — blanket impl
 `impl<T: ?Sized> StorageBackend for T where T: NoteRepository + … + HistoryRepository {}`;
 marker `// md:impl StorageBackend for T`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:impl StorageBackend for T
+impl<T: ?Sized> StorageBackend for T where
+    T: NoteRepository
+        + NotebookRepository
+        + TagRepository
+        + ResourceRepository
+        + SyncBackend
+        + HistoryRepository
+{
+}
+```
 
 **What it does** — Any type satisfying all sub-traits automatically satisfies
 `StorageBackend`: a new backend writes only the focused `impl` blocks, no glue.
