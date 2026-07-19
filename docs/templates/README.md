@@ -17,9 +17,8 @@ how), update its companion in the same change — a stale companion is worse tha
 
 | You are documenting… | Template | Lives at |
 |----------------------|----------|----------|
-| A library/daemon source module (`.rs` with logic) | [`source-module.md`](source-module.md) | next to the `.rs`, same basename |
+| Any `.rs` file with logic — library/daemon module, binary, build script, **or an integration/unit test file** (`tests/*.rs`; each `#[test] fn` is a block) | [`source-module.md`](source-module.md) (v2.3, block-complete) | next to the `.rs`, same basename |
 | A crate root (`lib.rs` / `main.rs` that mostly wires modules) | [`crate-root.md`](crate-root.md) | next to the root `.rs` |
-| An integration/unit test file (`tests/*.rs`, or a big `#[cfg(test)]` module) | [`test-file.md`](test-file.md) | next to the `.rs` |
 | A build script, config, or schema (`build.rs`, `*.toml`, `*.proto`, `*.yml`, `*.sh`) | [`config-file.md`](config-file.md) | `<file>.md` next to it |
 | A cross-cutting design or policy doc (architecture, security, threat model) | [`design-doc.md`](design-doc.md) | repository root |
 

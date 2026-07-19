@@ -13,7 +13,7 @@ user's own device and are replicated between the user's devices — either by co
 an external tool (Syncthing) or by talking to a sync server over WebSocket. Clients talk to the
 daemon through **gRPC**, a **REST/JSON** API, and a **WebSocket live-change feed**.
 
-Three crates:
+Two crates:
 
 | Crate | Kind | Contains |
 |-------|------|----------|
