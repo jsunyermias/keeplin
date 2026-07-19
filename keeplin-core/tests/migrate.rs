@@ -1,5 +1,4 @@
-//! Integration tests for [`keeplin_core::migrate::migrate`] — a one-shot copy of all live
-//! state between any two backends, in both directions and with encryption on both sides.
+// md:Overview
 
 use keeplin_core::{
     encryption::EncryptedBackend,
@@ -10,8 +9,7 @@ use keeplin_core::{
 };
 use tempfile::tempdir;
 
-/// Fixed dataset written into a source backend, then asserted on the destination after a
-/// migration. Returns the ids needed to check the round-trip.
+// md:Seeded
 struct Seeded {
     notebook_id: uuid::Uuid,
     tag_id: uuid::Uuid,
@@ -21,12 +19,7 @@ struct Seeded {
     data: Vec<u8>,
 }
 
-/// Populate `src` with a notebook, a tag, two notes (one carrying an alias, a bookmark, and a
-/// resolved link to the other), a note↔tag association, and a resource with binary data.
-///
-/// Notes are written with their navigation fields (`alias`/`bookmarks`/`links`) pre-populated
-/// so the test exercises verbatim field fidelity without needing a `LinkingBackend` in the
-/// stack — which is exactly how `migrate` copies them.
+// md:fn seed
 async fn seed(src: &dyn StorageBackend) -> Seeded {
     let notebook = Notebook::new("Work");
     let notebook_id = notebook.id;
@@ -36,7 +29,6 @@ async fn seed(src: &dyn StorageBackend) -> Seeded {
     let tag_id = tag.id;
     src.create_tag(tag).await.unwrap();
 
-    // Note B is the link target; create it first so A can point at it.
     let note_b = Note::new("Target", "the destination note");
     let note_b_id = note_b.id;
     src.create_note(note_b).await.unwrap();
@@ -82,7 +74,7 @@ async fn seed(src: &dyn StorageBackend) -> Seeded {
     }
 }
 
-/// Assert that `dst` faithfully reproduces everything [`seed`] wrote into the source.
+// md:fn assert_migrated
 async fn assert_migrated(dst: &dyn StorageBackend, s: &Seeded) {
     let nb = dst.read_notebook(s.notebook_id).await.unwrap();
     assert_eq!(nb.title, "Work");
@@ -101,27 +93,25 @@ async fn assert_migrated(dst: &dyn StorageBackend, s: &Seeded) {
     assert_eq!(a.links[0].raw, "#target");
     assert_eq!(a.links[0].target_note_id, Some(s.note_b));
 
-    // The note↔tag association survives.
     let (tags, _) = dst.list_note_tags(s.note_a, 0, None).await.unwrap();
     assert!(tags.iter().any(|t| t.id == s.tag_id));
 
-    // The resource metadata and its exact bytes survive.
     let (meta, bytes) = dst.read_resource(s.resource_id).await.unwrap();
     assert_eq!(meta.file_name, "img.png");
     assert_eq!(bytes, s.data);
 
-    // Backlinks resolve on the destination (built from the copied `links`).
     let (back, _) = dst.note_backlinks(s.note_b, 0, None).await.unwrap();
     assert!(back.iter().any(|n| n.id == s.note_a));
 }
 
-/// Build a fresh offline `DbBackend` under a temp dir (no server URL → no WebSocket).
+// md:fn db
 async fn db(dir: &std::path::Path) -> DbBackend {
     DbBackend::new(dir.join("keeplin.db"), "", "")
         .await
         .unwrap()
 }
 
+// md:fn fs_to_db_round_trip
 #[tokio::test]
 async fn fs_to_db_round_trip() {
     let src_dir = tempdir().unwrap();
@@ -140,6 +130,7 @@ async fn fs_to_db_round_trip() {
     assert_migrated(&dst, &seeded).await;
 }
 
+// md:fn db_to_fs_round_trip
 #[tokio::test]
 async fn db_to_fs_round_trip() {
     let src_dir = tempdir().unwrap();
@@ -155,12 +146,11 @@ async fn db_to_fs_round_trip() {
     assert_migrated(&dst, &seeded).await;
 }
 
+// md:fn encrypted_fs_to_encrypted_db
 #[tokio::test]
 async fn encrypted_fs_to_encrypted_db() {
     let src_dir = tempdir().unwrap();
     let dst_dir = tempdir().unwrap();
-    // Different passwords on each side: migration reads plaintext from the source and
-    // re-encrypts under the destination's own key.
     let src = EncryptedBackend::new(
         FsBackend::new(src_dir.path()).await.unwrap(),
         "source-pass",
@@ -175,6 +165,5 @@ async fn encrypted_fs_to_encrypted_db() {
     let seeded = seed(&src).await;
     migrate(&src, &dst).await.unwrap();
 
-    // Reads through the destination's encryption decrypt correctly.
     assert_migrated(&dst, &seeded).await;
 }

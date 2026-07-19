@@ -1,31 +1,148 @@
 # `tests/version_handshake.rs` — startup protocol handshake tests
 
-## What is tested
+Self-contained companion for `keeplin-core/tests/version_handshake.rs`. It documents
+**every code block of the source file, in source order** — a reader with only this
+file must be able to understand it without opening anything else, so project-wide
+conventions are deliberately re-explained here (hyper-redundancy is intended).
 
-The `GET /version` protocol handshake (`src/compat.rs`) as wired into the two connect points:
-`DbBackend::new` (relay) and `CollabBackend::start` (collaborative session). Fake keeplin-srv
-`/version` endpoints (in-process axum servers on ephemeral ports) drive the three contractual
-client behaviours: compatible → connect, incompatible → loud actionable failure with no sync,
-missing → warn and continue (backward compatible with pre-`/version` servers).
+**How to navigate**: every block carries exactly one marker comment
+`// md:<Block header>`; grep it in either direction. Each section covers
+**Identification**, **What it does**, **Dependencies**, **Used by**,
+**Repeated context**.
 
-## Test cases
+---
 
-| Test function | Fake server | Expected client behaviour |
-|---------------|-------------|---------------------------|
-| `compatible_version_connects_and_primes_capabilities` | `/version` with `protocol_version = PROTOCOL_VERSION`, capabilities `["history"]`, hit counter | construction succeeds; `/version` fetched exactly **once** — a later history read uses the capability cache primed at startup, no refetch |
-| `incompatible_version_fails_construction_loudly` | `protocol_version = PROTOCOL_VERSION + 7` | `DbBackend::new` fails; message contains "incompatible", both protocol numbers, and "upgrade" (actionable: which side to bump) |
-| `missing_version_warns_and_continues` | no `/version` route (404) | construction succeeds; local CRUD fully usable (offline-capable client unchanged) |
-| `collab_start_applies_the_same_rule` | incompatible → `CollabBackend::start` returns `Err` (connection task never spawned); missing → `Ok` | the same three-way rule holds at the collab session start |
+## Overview
 
-## Fixtures and helpers
+**Identification** — file-level block: the crate doc and the imports. Marker
+`// md:Overview`.
 
-| Utility | Purpose |
-|---------|---------|
-| `spawn_version_server(protocol_version, hits)` | axum server: optional `/version` (counts hits) + a canned empty `/api/notes/:id/history`, so a primed capability cache can be exercised |
-| `fake_token()` | JWT-shaped token with a `device_id` claim (`CollabBackend::new` parses it unverified; only the server verifies signatures) |
-| `db_path()` | fresh LibSQL path in a leaked tempdir |
+```rust
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use axum::{routing::get, Json, Router};
+use keeplin_core::collab::{CollabBackend, CollabConfig};
+use keeplin_core::compat::PROTOCOL_VERSION;
+use keeplin_core::models::Note;
+use keeplin_core::storage::db::DbBackend;
+use keeplin_core::storage::{HistoryRepository, NoteRepository, StorageBackend};
+use tokio::net::TcpListener;
+```
+
+**What it does** — Integration tests for the `GET /version` protocol handshake
+(`src/compat.rs`) as wired into the two connect points: `DbBackend::new` (relay)
+and `CollabBackend::start` (collaborative session). Fake keeplin-srv `/version`
+endpoints (in-process axum servers on ephemeral ports) drive the three
+contractual client behaviours: **compatible** `protocol_version` → construction
+succeeds and the capability cache is primed (`/version` not fetched again);
+**incompatible** → construction fails loudly with an actionable message before
+any sync is attempted; **missing** `/version` (older server) → warn and
+continue, exactly as before the handshake existed.
+
+**Repeated context** — `keeplin_core::compat::PROTOCOL_VERSION = 1`;
+compatibility is an **exact match**. These behaviours are cross-repo API (the
+keeplin-srv `tests/integration.rs` pins the server end of the same wire
+contract) and must not regress.
+
+---
+
+## fn spawn_version_server
+
+**Identification** — `async fn spawn_version_server(protocol_version:
+Option<u32>, hits: Arc<AtomicU64>) -> SocketAddr`. Marker
+`// md:fn spawn_version_server`.
+
+**What it does** — Serves a canned `/version` reply (only when
+`protocol_version` is `Some`; each hit bumps the counter) with
+`name`/`version`/`protocol_version`/`capabilities: ["history"]`, plus an empty
+`GET /api/notes/:id/history` endpoint so a client with a primed capability cache
+can exercise a follow-up REST call without refetching `/version`. Binds an
+ephemeral 127.0.0.1 port and serves on a spawned task.
+
+**Used by** — all four tests.
+
+---
+
+## fn fake_token
+
+**Identification** — `fn fake_token() -> String`. Marker `// md:fn fake_token`.
+
+**What it does** — A JWT-shaped token (`header.payload.sig`, URL-safe base64,
+no padding) whose payload carries a `device_id` claim. `CollabBackend::new`
+extracts the claim **without verifying** — only the server verifies signatures —
+so an unsigned fake is enough.
+
+**Used by** — `collab_start_applies_the_same_rule`.
+
+---
+
+## fn db_path
+
+**Identification** — `fn db_path() -> std::path::PathBuf`. Marker
+`// md:fn db_path`.
+
+**What it does** — A fresh LibSQL path (`dev.db`) inside a leaked tempdir
+(`std::mem::forget` keeps the directory alive for the test's lifetime).
+
+**Used by** — all four tests.
+
+---
+
+## fn compatible_version_connects_and_primes_capabilities
+
+**Identification** — `#[tokio::test]`. Marker
+`// md:fn compatible_version_connects_and_primes_capabilities`.
+
+**What it does** — Against a server answering `PROTOCOL_VERSION`:
+`DbBackend::new` succeeds and `/version` was fetched exactly once; a later
+`note_history` read consults the capability cache primed at startup, so the hit
+counter **stays at 1** (no refetch on capability checks).
+
+---
+
+## fn incompatible_version_fails_construction_loudly
+
+**Identification** — `#[tokio::test]`. Marker
+`// md:fn incompatible_version_fails_construction_loudly`.
+
+**What it does** — Against `PROTOCOL_VERSION + 7`: `DbBackend::new` fails, and
+the message contains "incompatible", the server's protocol number, and
+"upgrade" (actionable: naming which side to bump). No sync is attempted.
+
+---
+
+## fn missing_version_warns_and_continues
+
+**Identification** — `#[tokio::test]`. Marker
+`// md:fn missing_version_warns_and_continues`.
+
+**What it does** — Against a server with no `/version` route (404 — an older
+keeplin-srv): construction succeeds and local CRUD is fully usable
+(offline-capable client, behaviour unchanged from before the handshake).
+
+---
+
+## fn collab_start_applies_the_same_rule
+
+**Identification** — `#[tokio::test]`. Marker
+`// md:fn collab_start_applies_the_same_rule`.
+
+**What it does** — The collaborative session start applies the same three-way
+rule: with an incompatible server (`PROTOCOL_VERSION + 1`),
+`CollabBackend::start` returns `Err` containing "incompatible" (the connection
+task is never spawned); with a missing `/version`, `start` returns `Ok`
+(warn and continue). Both cases run over a local-only `DbBackend` (empty
+`server_url`) wrapped in `CollabBackend` with a `fake_token`.
+
+---
 
 ## Graph context
+
+Repo-tooling metadata, not a code block (no marker in the source). Kept in every
+companion because CI (`scripts/check-docs.sh`) enforces it: this file is LAYER 2 of
+the navigation model, the Graphify graph (`graphify-out/graph.json`) is LAYER 1;
+refresh with `graphify update .` after refactors.
 
 <!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
      EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
@@ -53,9 +170,12 @@ missing → warn and continue (backward compatible with pre-`/version` servers).
 - Pins the three-way handshake contract (compatible / incompatible / missing) for BOTH connect points; these behaviours are cross-repo API and must not regress.
 - The compatible case must fetch `/version` exactly once (startup priming; no refetch on capability checks).
 
-## Related files
+## Coverage checklist
 
-- `../src/compat.rs` — `PROTOCOL_VERSION`, `compatible_with`, `negotiate`, `incompatible_message`.
-- `../src/storage/db.rs` — the relay-side enforcement in `DbBackend::new`.
-- `../src/collab/mod.rs` — the collab-side enforcement in `CollabBackend::start`.
-- keeplin-srv `tests/integration.rs` — the real-server end of the same wire contract.
+| # | Block (source order) | Marker in code |
+|---|----------------------|----------------|
+| 1 | crate doc + imports | `// md:Overview` |
+| 2 | `fn spawn_version_server` | `// md:fn spawn_version_server` |
+| 3 | `fn fake_token` | `// md:fn fake_token` |
+| 4 | `fn db_path` | `// md:fn db_path` |
+| 5–8 | the four `#[tokio::test]` fns | `// md:fn <name>` |
