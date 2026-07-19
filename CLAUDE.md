@@ -10,6 +10,6 @@ Rules:
 
 ## Companion .md format
 
-Companion .md format: docs/templates/source-module.md (v2.3, block-complete).
+Companion .md format: docs/templates/source-module.md (v2.3.1, block-complete).
 Read it fully before touching any companion .md. Its 9 HARD RULES are
 contractual and scripts/check-docs.sh enforces them mechanically.
