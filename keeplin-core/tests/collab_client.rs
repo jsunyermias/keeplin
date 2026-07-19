@@ -1,7 +1,4 @@
-//! Tests of the collaborative client: the body↔lines diffing state machine,
-//! and an end-to-end round trip through a mock keeplin-srv (REST listing +
-//! WebSocket Join/Welcome/Op relay) between two `CollabBackend`-wrapped
-//! `DbBackend`s.
+// md:Overview
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -19,8 +16,7 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-/// Forge an unsigned JWT whose payload carries `device_id` (the client only
-/// decodes, never verifies).
+// md:fn token_for
 fn token_for(device: &str) -> String {
     use base64::Engine;
     let engine = base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -28,8 +24,7 @@ fn token_for(device: &str) -> String {
     format!("{}.{payload}.sig", engine.encode(r#"{"alg":"none"}"#))
 }
 
-// ── State machine ────────────────────────────────────────────────────────────
-
+// md:fn token_device_id_decodes
 #[test]
 fn token_device_id_decodes() {
     let id = Uuid::new_v4().to_string();
@@ -37,6 +32,7 @@ fn token_device_id_decodes() {
     assert_eq!(device_id_from_token("garbage"), None);
 }
 
+// md:fn diff_roundtrip_materializes_new_body
 #[test]
 fn diff_roundtrip_materializes_new_body() {
     let mut lines = NoteLines::default();
@@ -44,12 +40,12 @@ fn diff_roundtrip_materializes_new_body() {
     assert_eq!(ops.len(), 3);
     assert_eq!(lines.materialize(), "uno\ndos\ntres");
 
-    // Edit the middle line, delete the last, append two.
     let ops = lines.diff_body("uno\nDOS\ncuatro\ncinco", "dev");
     assert!(!ops.is_empty());
     assert_eq!(lines.materialize(), "uno\nDOS\ncuatro\ncinco");
 }
 
+// md:fn ops_replay_identically_on_another_mirror
 #[test]
 fn ops_replay_identically_on_another_mirror() {
     let mut a = NoteLines::default();
@@ -65,12 +61,7 @@ fn ops_replay_identically_on_another_mirror() {
     assert_eq!(b.materialize(), "Y\nz");
 }
 
-// ── Mock keeplin-srv ─────────────────────────────────────────────────────────
-
-/// Minimal stand-in for keeplin-srv: `GET /api/notes` lists one pre-seeded
-/// note; `/api/ws` answers `Join` with a Welcome snapshot of that note and
-/// relays `Op` frames to every *other* connection. POST/PATCH/DELETE are
-/// accepted and ignored.
+// md:fn mock_server
 async fn mock_server(note_id: Uuid) -> SocketAddr {
     use axum::extract::ws::{Message as AxMsg, WebSocket, WebSocketUpgrade};
     use axum::extract::Path;
@@ -80,8 +71,6 @@ async fn mock_server(note_id: Uuid) -> SocketAddr {
     use std::collections::HashMap;
     use tokio::sync::Mutex as TokioMutex;
 
-    // In-memory resource-blob store, exercised by the out-of-band upload path
-    // (`PUT /api/resources/:id/data`) and lazy download (`GET …/data`).
     type Blobs = Arc<TokioMutex<HashMap<Uuid, Vec<u8>>>>;
     let blobs: Blobs = Arc::new(TokioMutex::new(HashMap::new()));
 
@@ -172,8 +161,6 @@ async fn mock_server(note_id: Uuid) -> SocketAddr {
                                                 .await;
                                         }
                                         Ok(CollabClientMsg::Cursor { note_id, cursor }) => {
-                                            // Echo a presence list carrying the
-                                            // cursor straight back to the sender.
                                             let presence = CollabServerMsg::Presence {
                                                 note_id,
                                                 users: vec![keeplin_core::collab::protocol::PresenceInfo {
@@ -218,8 +205,7 @@ async fn mock_server(note_id: Uuid) -> SocketAddr {
     addr
 }
 
-/// A `CollabBackend<DbBackend>` in a temp dir, started with itself as the top
-/// of the stack (no linking/eventing in this test).
+// md:fn client
 async fn client(addr: SocketAddr, device: &str) -> Arc<CollabBackend<DbBackend>> {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dev.db");
@@ -241,7 +227,7 @@ async fn client(addr: SocketAddr, device: &str) -> Arc<CollabBackend<DbBackend>>
     collab
 }
 
-/// Poll until the note's local body equals `want` (or panic after ~5s).
+// md:fn wait_body
 async fn wait_body(backend: &Arc<CollabBackend<DbBackend>>, id: Uuid, want: &str) {
     let mut last = String::new();
     for _ in 0..50 {
@@ -256,19 +242,15 @@ async fn wait_body(backend: &Arc<CollabBackend<DbBackend>>, id: Uuid, want: &str
     panic!("body never became {want:?}; last {last:?}");
 }
 
+// md:fn created_note_body_survives_the_join_welcome
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn created_note_body_survives_the_join_welcome() {
-    // Regression: `create_note` used to push the body ops before the Join's
-    // `Welcome`, so a late empty `Welcome` clobbered the local body to "". The
-    // fix defers the push to the Welcome reconcile.
     let seeded = Uuid::new_v4();
     let addr = mock_server(seeded).await;
     let a = client(addr, "dev-a").await;
 
     let note = a.create_note(Note::new("t", "hello world")).await.unwrap();
 
-    // Give the Join/Welcome round-trip ample time to complete (the mock does not
-    // echo the sender's own op, so a clobber here would be permanent).
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     assert_eq!(
         a.read_note(note.id).await.unwrap().body,
@@ -277,6 +259,7 @@ async fn created_note_body_survives_the_join_welcome() {
     );
 }
 
+// md:fn edits_travel_between_two_daemons
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn edits_travel_between_two_daemons() {
     let note_id = Uuid::new_v4();
@@ -285,30 +268,26 @@ async fn edits_travel_between_two_daemons() {
     let a = client(addr, "dev-a").await;
     let b = client(addr, "dev-b").await;
 
-    // Discovery creates the note locally on both daemons.
     wait_body(&a, note_id, "").await;
     wait_body(&b, note_id, "").await;
 
-    // A writes a body → diffed into ops → relayed → B's local note updates.
     let mut note = a.read_note(note_id).await.unwrap();
     note.body = "hola\ndesde A".into();
     a.update_note(note).await.unwrap();
     wait_body(&b, note_id, "hola\ndesde A").await;
 
-    // B edits one line → A converges to the merged state.
     let mut note = b.read_note(note_id).await.unwrap();
     note.body = "hola\ndesde B".into();
     b.update_note(note).await.unwrap();
     wait_body(&a, note_id, "hola\ndesde B").await;
 }
 
+// md:fn resource_blob_uploads_out_of_band_and_downloads_on_read
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resource_blob_uploads_out_of_band_and_downloads_on_read() {
     let note_id = Uuid::new_v4();
     let addr = mock_server(note_id).await;
 
-    // Device A creates a resource: the binary is uploaded to the server, and
-    // the relayed ResourceCreate carries no `data`.
     let a = client(addr, "dev-a").await;
     let bytes = b"opaque-ciphertext-bytes".to_vec();
     let resource = a
@@ -319,7 +298,6 @@ async fn resource_blob_uploads_out_of_band_and_downloads_on_read() {
         .await
         .unwrap();
 
-    // The change A would relay has the blob stripped.
     let changes = a
         .get_changes_since(chrono::DateTime::from_timestamp(0, 0).unwrap())
         .await
@@ -335,8 +313,6 @@ async fn resource_blob_uploads_out_of_band_and_downloads_on_read() {
         _ => unreachable!(),
     }
 
-    // Device B receives only the metadata (stripped change), so its local blob
-    // is empty; read_resource must fetch it from the server.
     let b = client(addr, "dev-b").await;
     b.apply_change(create.clone()).await.unwrap();
     let (got_meta, got_bytes) = b.read_resource(resource.id).await.unwrap();
@@ -344,6 +320,7 @@ async fn resource_blob_uploads_out_of_band_and_downloads_on_read() {
     assert_eq!(got_bytes, bytes, "B downloaded the blob from the server");
 }
 
+// md:fn cursor_updates_flow_into_presence
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cursor_updates_flow_into_presence() {
     let note_id = Uuid::new_v4();

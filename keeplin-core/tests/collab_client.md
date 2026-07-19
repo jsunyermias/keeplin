@@ -1,38 +1,196 @@
 # `tests/collab_client.rs` — collaborative client tests (state machine + mock server e2e)
 
-## What is tested
+Self-contained companion for `keeplin-core/tests/collab_client.rs`. It documents
+**every code block of the source file, in source order** — a reader with only this
+file must be able to understand it without opening anything else, so project-wide
+conventions are deliberately re-explained here (hyper-redundancy is intended).
 
-Two layers of the collaborative client (`src/collab/`):
+**How to navigate**: every block carries exactly one marker comment
+`// md:<Block header>`; grep it in either direction. Each section covers
+**Identification**, **What it does**, **Dependencies**, **Used by**,
+**Repeated context**.
 
-1. **Pure state machine** (`collab::state::NoteLines`): diffing a note body into line ops and
-   replaying ops deterministically — no I/O.
-2. **End-to-end against a mock keeplin-srv**: an in-process axum stand-in serving the REST
-   note listing, the blob endpoints, and a `/api/ws` Join/Welcome/Op relay, driven by two
-   `CollabBackend<DbBackend>` stacks speaking the genuine protocol. (The *production* server
-   end of the same protocol is exercised in keeplin-srv's `tests/collab_client_e2e.rs`.)
+---
 
-## Test cases
+## Overview
 
-| Test function | Scenario | Expected outcome |
-|---------------|----------|------------------|
-| `token_device_id_decodes` | forged unsigned JWT | `device_id_from_token` extracts the claim; garbage → `None` |
-| `diff_roundtrip_materializes_new_body` | diff body v1→v2 into ops, apply to mirror | mirror materialises v2 |
-| `ops_replay_identically_on_another_mirror` | replay one diff's ops elsewhere | both mirrors converge byte-identically |
-| `created_note_body_survives_the_join_welcome` | create note locally, then a (late, empty) `Welcome` arrives | pending-push reconcile: the local body is **not** clobbered |
-| `edits_travel_between_two_daemons` | two clients joined to one note | an edit on A materialises on B via the op relay |
-| `resource_blob_uploads_out_of_band_and_downloads_on_read` | `create_resource` through the collab stack | binary is `PUT` to `/api/resources/:id/data` (never inline in the relayed `Change`); `read_resource` fetches it back |
-| `cursor_updates_flow_into_presence` | `send_cursor` then `presence()` | the server's presence broadcast is readable through `CollabHandle` |
+**Identification** — file-level block: the crate doc and the imports. Marker
+`// md:Overview`.
 
-## Fixtures and helpers
+```rust
+use std::net::SocketAddr;
+use std::sync::Arc;
+use keeplin_core::collab::protocol::{CollabClientMsg, CollabServerMsg,
+    LineSnapshot, NoteLinesSnapshot};
+use keeplin_core::collab::state::NoteLines;
+use keeplin_core::collab::{device_id_from_token, CollabBackend, CollabConfig};
+use keeplin_core::models::{Change, Note, Resource};
+use keeplin_core::storage::{db::DbBackend, NoteRepository, ResourceRepository,
+    StorageBackend, SyncBackend};
+use tokio::net::TcpListener;
+use tokio::sync::broadcast;
+use uuid::Uuid;
+```
 
-| Utility | Purpose |
-|---------|---------|
-| `token_for(device)` | unsigned JWT with a `device_id` claim (client decodes, never verifies) |
-| `mock_server(note_id)` | axum mock of keeplin-srv: `GET /api/notes` (one note), blob PUT/GET, `/api/ws` Join→Welcome + op fan-out |
-| `client(addr, device)` | offline `DbBackend` wrapped in `CollabBackend`, `start`ed with itself as stack top (`start` is `Result` since the `/version` handshake; the mock has no `/version`, which is the warn-and-continue path) |
-| `wait_body` | poll a client's local note body until convergence (~5 s bound) |
+**What it does** — Tests two layers of the collaborative client (`src/collab/`):
+(1) the **pure state machine** (`collab::state::NoteLines`) — diffing a note
+body into line ops and replaying ops deterministically, no I/O; (2) an
+**end-to-end round trip** through a mock keeplin-srv (in-process axum: REST note
+listing, blob endpoints, and a `/api/ws` Join/Welcome/Op relay) between two
+`CollabBackend<DbBackend>` stacks speaking the genuine protocol.
+
+**Repeated context** — the *production* server end of the same wire protocol is
+exercised in keeplin-srv's own e2e suite. The mock has no `/version` route, so
+`CollabBackend::start` runs the warn-and-continue handshake path on purpose
+(dedicated handshake tests live in `tests/version_handshake.rs`).
+
+---
+
+## fn token_for
+
+**Identification** — `fn token_for(device: &str) -> String`. Marker
+`// md:fn token_for`.
+
+**What it does** — Forges an unsigned JWT (`header.payload.sig`, URL-safe
+base64, no padding) whose payload carries a `device_id` claim — the client only
+decodes, never verifies.
+
+**Used by** — `token_device_id_decodes`, `client`.
+
+---
+
+## fn token_device_id_decodes
+
+**Identification** — `#[test]`. Marker `// md:fn token_device_id_decodes`.
+
+**What it does** — `device_id_from_token` extracts the claim from a forged
+token; garbage input yields `None`.
+
+---
+
+## fn diff_roundtrip_materializes_new_body
+
+**Identification** — `#[test]`. Marker
+`// md:fn diff_roundtrip_materializes_new_body`.
+
+**What it does** — `NoteLines::diff_body` from empty to a 3-line body produces
+3 ops and `materialize()` returns the body; a second diff (edit the middle
+line, delete the last, append two) also materialises exactly.
+
+---
+
+## fn ops_replay_identically_on_another_mirror
+
+**Identification** — `#[test]`. Marker
+`// md:fn ops_replay_identically_on_another_mirror`.
+
+**What it does** — Ops collected from three successive diffs on mirror A,
+applied in order on a fresh mirror B, converge byte-identically — the
+deterministic-replay core assertion.
+
+---
+
+## fn mock_server
+
+**Identification** — `async fn mock_server(note_id: Uuid) -> SocketAddr`. Marker
+`// md:fn mock_server`.
+
+**What it does** — Minimal in-process stand-in for keeplin-srv on an ephemeral
+port: `GET /api/notes` lists one pre-seeded note (POST/PATCH/DELETE accepted and
+ignored); `PUT`/`GET /api/resources/:id/data` implement an in-memory blob store
+(the out-of-band upload + lazy-download path); `/api/ws` answers `Join` with a
+`Welcome` snapshot of the seeded (empty-lines) note, echoes `Cursor` back to the
+sender as a `Presence` list, and relays `Op` frames to every **other**
+connection (each socket gets a connection sequence number; the broadcast pair
+`(from, text)` lets a socket skip its own ops).
+
+**Used by** — the four e2e tests.
+
+---
+
+## fn client
+
+**Identification** — `async fn client(addr: SocketAddr, device: &str) ->
+Arc<CollabBackend<DbBackend>>`. Marker `// md:fn client`.
+
+**What it does** — A `CollabBackend` over an offline `DbBackend` in a leaked
+temp dir, configured with the mock's `http`/`ws` URLs and a forged token, then
+`start`ed **with itself as the top of the stack** (no linking/eventing in this
+test). `start` is `Result` since the `/version` handshake; the mock's missing
+`/version` is the warn-and-continue path.
+
+**Used by** — the four e2e tests.
+
+---
+
+## fn wait_body
+
+**Identification** — `async fn wait_body(backend: &Arc<CollabBackend<DbBackend>>,
+id: Uuid, want: &str)`. Marker `// md:fn wait_body`.
+
+**What it does** — Polls the client's local note body every 100 ms until it
+equals `want`, panicking with the last observed body after ~5 s.
+
+**Used by** — `edits_travel_between_two_daemons`,
+`cursor_updates_flow_into_presence`.
+
+---
+
+## fn created_note_body_survives_the_join_welcome
+
+**Identification** — `#[tokio::test(flavor = "multi_thread")]`. Marker
+`// md:fn created_note_body_survives_the_join_welcome`.
+
+**What it does** — Regression: `create_note` used to push the body ops before
+the Join's `Welcome`, so a late empty `Welcome` clobbered the local body to
+`""`. The fix defers the push to the Welcome reconcile. The test creates a note
+with a body, waits 400 ms for the Join/Welcome round trip (the mock does not
+echo the sender's own op, so a clobber would be permanent), and asserts the
+body survived.
+
+---
+
+## fn edits_travel_between_two_daemons
+
+**Identification** — `#[tokio::test(flavor = "multi_thread")]`. Marker
+`// md:fn edits_travel_between_two_daemons`.
+
+**What it does** — Two clients joined to one note: discovery creates the note
+locally on both; A's body edit is diffed into ops, relayed, and materialises on
+B; then B's one-line edit converges back on A.
+
+---
+
+## fn resource_blob_uploads_out_of_band_and_downloads_on_read
+
+**Identification** — `#[tokio::test(flavor = "multi_thread")]`. Marker
+`// md:fn resource_blob_uploads_out_of_band_and_downloads_on_read`.
+
+**What it does** — `create_resource` through the collab stack uploads the
+binary to the server (`PUT /api/resources/:id/data`) and the queued
+`Change::ResourceCreate` carries `data: None` (blob stripped from the relay).
+A second client applying that stripped change has no local blob, so
+`read_resource` lazily downloads it from the server — bytes round-trip intact.
+
+---
+
+## fn cursor_updates_flow_into_presence
+
+**Identification** — `#[tokio::test(flavor = "multi_thread")]`. Marker
+`// md:fn cursor_updates_flow_into_presence`.
+
+**What it does** — `CollabHandle::send_cursor` publishes a caret; the mock
+echoes a presence list carrying it; polling `handle.presence(note_id)` (up to
+~5 s) eventually sees a cursor at the sent column.
+
+---
 
 ## Graph context
+
+Repo-tooling metadata, not a code block (no marker in the source). Kept in every
+companion because CI (`scripts/check-docs.sh`) enforces it: this file is LAYER 2 of
+the navigation model, the Graphify graph (`graphify-out/graph.json`) is LAYER 1;
+refresh with `graphify update .` after refactors.
 
 <!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
      EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
@@ -66,9 +224,14 @@ Two layers of the collaborative client (`src/collab/`):
 - Deterministic replay (same ops → identical bodies on every mirror) is the core assertion and must stay covered.
 - The mock has no `/version` route: `start` exercising the warn-and-continue handshake path is intentional.
 
-## Related files
+## Coverage checklist
 
-- `../src/collab/mod.rs` — the decorator under test (push/apply/suppression logic).
-- `../src/collab/state.rs` — the `NoteLines` diff/apply state machine.
-- `../src/compat.rs` — the `/version` handshake `start` now runs (dedicated tests in `tests/version_handshake.rs`).
-- keeplin-srv `tests/collab.rs` — the server side of the same wire protocol.
+| # | Block (source order) | Marker in code |
+|---|----------------------|----------------|
+| 1 | crate doc + imports | `// md:Overview` |
+| 2 | `fn token_for` | `// md:fn token_for` |
+| 3–5 | the three state-machine `#[test]` fns | `// md:fn <name>` |
+| 6 | `fn mock_server` | `// md:fn mock_server` |
+| 7 | `fn client` | `// md:fn client` |
+| 8 | `fn wait_body` | `// md:fn wait_body` |
+| 9–12 | the four e2e `#[tokio::test]` fns | `// md:fn <name>` |

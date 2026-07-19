@@ -1,5 +1,12 @@
 # `proto/keeplin.proto` — gRPC service definition
 
+Self-contained companion for `keeplin-daemon/proto/keeplin.proto`. Unlike the `.rs`
+companions, this file carries **no** `// md:` markers: the `.proto` is a wire
+contract shared with every client, compiled by `build.rs`/`tonic` at build time, and
+is deliberately left untouched by the companion-doc marker system. This document is
+still written to be readable on its own — the service, every RPC, and every message
+type are described here in source order.
+
 ## Service overview
 
 `KeeplinService` is the single gRPC service that `keeplin-daemon` exposes. It provides
@@ -26,7 +33,7 @@ requests carry `page_size` + `page_token`, responses carry a `next_page_token`.
 
 | Method | Request | Response | Description |
 |--------|---------|----------|-------------|
-| `ListNotesInNotebook` | `ListNotesInNotebookRequest` | `ListNotesInNotebookResponse` | One notebook's notes in manual order (pinned band first); nil UUID = the Inbox / `Pizarra` |
+| `ListNotesInNotebook` | `ListNotesInNotebookRequest` | `ListNotesInNotebookResponse` | One notebook's notes in manual order (pinned band first); nil UUID = the Inbox |
 | `ListStarredNotes` | `ListStarredNotesRequest` | `ListStarredNotesResponse` | Every starred note, across all notebooks |
 | `PinNote` / `UnpinNote` | `{Pin,Unpin}NoteRequest` | `{Pin,Unpin}NoteResponse` | Move a note into / out of the `1–999` pinned band (max 999) |
 | `StarNote` / `UnstarNote` | `{Star,Unstar}NoteRequest` | `{Star,Unstar}NoteResponse` | Toggle the global star (never moves the note) |

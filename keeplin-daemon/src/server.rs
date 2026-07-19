@@ -1,9 +1,4 @@
-//! gRPC service implementation for the Keeplin daemon.
-//!
-//! This module defines [`KeeplinServer<B>`], which implements the `KeeplinService`
-//! trait generated from `proto/keeplin.proto`. It bridges between the protobuf wire
-//! types (e.g. `proto::keeplin::Note`) and the domain types in `keeplin-core`
-//! (e.g. `models::Note`), delegating all persistence to a generic [`StorageBackend`].
+// md:Overview
 
 use std::{pin::Pin, sync::Arc};
 
@@ -48,12 +43,7 @@ use crate::proto::keeplin::{
     UpdateTagResponse, UploadResourceRequest, UploadResourceResponse,
 };
 
-// ── Conversion helpers ────────────────────────────────────────────────────────
-// These functions are stateless and infallible (they only map known fields). They
-// are kept as free functions rather than `From` impls because the proto and domain
-// types live in separate crates and the orphan rule would prevent implementing
-// `From<CoreNote> for proto::Note` here.
-
+// md:fn bookmark_to_proto
 fn bookmark_to_proto(b: CoreBookmark) -> ProtoBookmark {
     ProtoBookmark {
         number: b.number,
@@ -62,6 +52,7 @@ fn bookmark_to_proto(b: CoreBookmark) -> ProtoBookmark {
     }
 }
 
+// md:fn link_source_str
 fn link_source_str(s: LinkSource) -> String {
     match s {
         LinkSource::Content => "content",
@@ -70,6 +61,7 @@ fn link_source_str(s: LinkSource) -> String {
     .to_string()
 }
 
+// md:fn notelink_to_proto
 fn notelink_to_proto(l: CoreNoteLink) -> ProtoNoteLink {
     ProtoNoteLink {
         source: link_source_str(l.source),
@@ -78,13 +70,12 @@ fn notelink_to_proto(l: CoreNoteLink) -> ProtoNoteLink {
     }
 }
 
+// md:fn note_to_proto
 fn note_to_proto(n: CoreNote) -> Note {
     Note {
         id: n.id.to_string(),
         title: n.title,
         body: n.body,
-        // On the wire the Inbox (nil UUID) stays *absent*, exactly what pre-Inbox
-        // clients always saw for an unfiled note.
         notebook_id: (!n.notebook_id.is_nil()).then(|| n.notebook_id.to_string()),
         is_todo: n.is_todo,
         todo_due: n.todo_due.map(|d| d.to_rfc3339()),
@@ -101,6 +92,7 @@ fn note_to_proto(n: CoreNote) -> Note {
     }
 }
 
+// md:fn notebook_to_proto
 fn notebook_to_proto(nb: CoreNotebook) -> Notebook {
     Notebook {
         id: nb.id.to_string(),
@@ -112,6 +104,7 @@ fn notebook_to_proto(nb: CoreNotebook) -> Notebook {
     }
 }
 
+// md:fn resource_to_proto
 fn resource_to_proto(r: CoreResource) -> Resource {
     Resource {
         id: r.id.to_string(),
@@ -123,6 +116,7 @@ fn resource_to_proto(r: CoreResource) -> Resource {
     }
 }
 
+// md:fn tag_to_proto
 fn tag_to_proto(t: CoreTag) -> Tag {
     Tag {
         id: t.id.to_string(),
@@ -133,43 +127,25 @@ fn tag_to_proto(t: CoreTag) -> Tag {
     }
 }
 
-/// Maps a `StorageError` to the appropriate gRPC `Status` code.
-///
-/// `NotFound` errors map to `status::not_found` (HTTP 404 equivalent) so that clients
-/// can distinguish "entity does not exist" from general server failures. All other
-/// errors map to `status::internal` (HTTP 500 equivalent).
+// md:fn storage_err
 fn storage_err(e: StorageError) -> Status {
     match &e {
         StorageError::NotFound(_) => Status::not_found(e.to_string()),
-        // AES-GCM authentication tag failure caused by a wrong key or tampered ciphertext.
-        // gRPC DATA_LOSS is the closest code: the data exists but cannot be recovered
-        // in a trustworthy form.
         StorageError::CorruptedData(_) => Status::data_loss(e.to_string()),
-        // A duplicate alias (or similar uniqueness violation) maps to ALREADY_EXISTS.
         StorageError::Conflict(_) => Status::already_exists(e.to_string()),
-        // Domain-rule rejections (pin an Inbox note, out-of-band sort key, …).
         StorageError::InvalidInput(_) => Status::invalid_argument(e.to_string()),
         _ => Status::internal(e.to_string()),
     }
 }
 
-/// Parses a UUID string received in a protobuf field.
-///
-/// Returns `Status::invalid_argument` if the string is not a valid UUID, including the
-/// field name in the error message so the client knows which field failed.
+// md:fn parse_uuid
 #[allow(clippy::result_large_err)]
 fn parse_uuid(s: &str, field: &str) -> Result<Uuid, Status> {
     s.parse::<Uuid>()
         .map_err(|_| Status::invalid_argument(format!("{field} is not a valid UUID")))
 }
 
-/// Rejects an update aimed at a soft-deleted entity with `NOT_FOUND`.
-///
-/// The `Get*` RPCs intentionally return tombstones (sync needs to read them), but an
-/// update on one would silently *revive* it (the client writes `deleted_at: None` back).
-/// Revival is reserved for the sync path (`apply_change` resolving a causal edit made
-/// after the delete), so the update RPCs answer `NOT_FOUND` instead — mirroring the REST
-/// surface, where a tombstone already reads and updates as `404`.
+// md:fn ensure_not_deleted
 #[allow(clippy::result_large_err)]
 fn ensure_not_deleted<T>(
     read: Result<T, StorageError>,
@@ -183,10 +159,7 @@ fn ensure_not_deleted<T>(
     Ok(())
 }
 
-/// Parses an optional RFC-3339 timestamp from a proto3 `optional string` field.
-///
-/// Returns `None` when the option is absent. Returns `Status::invalid_argument`
-/// if the string is present but not a valid RFC-3339 timestamp.
+// md:fn parse_optional_dt
 #[allow(clippy::result_large_err)]
 fn parse_optional_dt(s: Option<String>) -> Result<Option<chrono::DateTime<chrono::Utc>>, Status> {
     match s {
@@ -200,6 +173,7 @@ fn parse_optional_dt(s: Option<String>) -> Result<Option<chrono::DateTime<chrono
     }
 }
 
+// md:fn proto_to_note
 #[allow(clippy::result_large_err)]
 fn proto_to_note(n: Note) -> Result<CoreNote, Status> {
     Ok(CoreNote {
@@ -225,13 +199,8 @@ fn proto_to_note(n: Note) -> Result<CoreNote, Status> {
             .map_err(|_| Status::invalid_argument("updated_at is invalid"))?,
         deleted_at: parse_optional_dt(n.deleted_at)?,
         alias: n.alias,
-        // Incoming bookmarks/links are mapped so a read-modify-write client preserves manual
-        // links and bookmark-alias edits; `LinkingBackend` re-derives content entries from
-        // the body and resolves targets on write.
         bookmarks: n.bookmarks.into_iter().map(proto_to_bookmark).collect(),
         links: n.links.into_iter().map(proto_to_notelink).collect(),
-        // Version-vector sync metadata is internal to the storage layer and not exposed over
-        // the gRPC API; the backend stamps it on write.
         vv: Default::default(),
         last_writer: String::new(),
         is_pinned: n.is_pinned,
@@ -240,6 +209,7 @@ fn proto_to_note(n: Note) -> Result<CoreNote, Status> {
     })
 }
 
+// md:fn proto_to_bookmark
 fn proto_to_bookmark(b: ProtoBookmark) -> CoreBookmark {
     CoreBookmark {
         number: b.number,
@@ -248,9 +218,9 @@ fn proto_to_bookmark(b: ProtoBookmark) -> CoreBookmark {
     }
 }
 
+// md:fn proto_to_notelink
 fn proto_to_notelink(l: ProtoNoteLink) -> CoreNoteLink {
     CoreNoteLink {
-        // Any value other than "manual" is treated as content-derived (the default).
         source: if l.source == "manual" {
             LinkSource::Manual
         } else {
@@ -261,38 +231,17 @@ fn proto_to_notelink(l: ProtoNoteLink) -> CoreNoteLink {
     }
 }
 
-// ── Server ────────────────────────────────────────────────────────────────────
-
-/// The gRPC service handler.
-///
-/// `KeeplinServer<B>` is generic over the storage backend so the compiler can
-/// monomorphise a single copy for the backend type chosen at startup (e.g.
-/// `EncryptedBackend<FsBackend>` or `DbBackend`). The backend is wrapped in `Arc`
-/// so it can be shared across the concurrent async tasks that tonic spawns for each
-/// incoming RPC call.
+// md:KeeplinServer
 pub struct KeeplinServer<B: StorageBackend> {
-    /// Reference-counted handle to the backend shared across all handler tasks.
     backend: Arc<B>,
-    /// How many days of change-journal history to retain. After each successful sync,
-    /// journal rows older than this are pruned. `0` disables pruning.
     journal_retention_days: u64,
-    /// After each successful sync, reclaim payloads of resources tombstoned longer than
-    /// this many days ago (`0` disables; see `Config::resource_purge_days`).
     resource_purge_days: u64,
-    /// Maximum assembled size, in bytes, of a streamed `UploadResource` payload. `0` means no
-    /// limit. Bounds the memory a single upload can consume (the payload is buffered before it
-    /// is handed to `create_resource`).
     max_upload_bytes: usize,
 }
 
+// md:impl KeeplinServer
 impl<B: StorageBackend> KeeplinServer<B> {
-    /// Builds a server over a shared `Arc<B>` that prunes change-journal entries older
-    /// than `journal_retention_days` after each successful sync (`0` disables pruning) and
-    /// caps a streamed `UploadResource` payload at `max_upload_bytes` (`0` disables the cap).
-    /// Sharing the `Arc` lets the gRPC server and the REST server drive one backend.
-    ///
-    /// The resulting server should be passed to
-    /// `KeeplinServiceServer::new(server)` before being registered with tonic.
+    // md:impl KeeplinServer > fn from_shared
     pub fn from_shared(
         backend: Arc<B>,
         journal_retention_days: u64,
@@ -307,15 +256,7 @@ impl<B: StorageBackend> KeeplinServer<B> {
         }
     }
 
-    /// Assemble a streamed `UploadResource` call into a stored resource.
-    ///
-    /// The first frame must carry the metadata; every later frame carries a payload chunk in
-    /// order. Because each frame is a small gRPC message, an attachment larger than
-    /// `max_message_size` uploads without any single oversized frame; the assembled payload is
-    /// bounded by `max_upload_bytes` (`0` = unlimited) so a client cannot exhaust server memory.
-    ///
-    /// Generic over the frame stream (rather than taking `tonic::Streaming` directly) so the
-    /// assembly logic is unit-testable with an in-memory stream.
+    // md:impl KeeplinServer > fn assemble_upload
     #[allow(clippy::result_large_err)]
     async fn assemble_upload<S>(
         &self,
@@ -354,7 +295,6 @@ impl<B: StorageBackend> KeeplinServer<B> {
                     }
                     data.extend_from_slice(&bytes);
                 }
-                // A second metadata frame is a protocol error; an empty frame is ignored.
                 Some(UploadPayload::Meta(_)) => {
                     return Err(Status::invalid_argument(
                         "unexpected metadata frame in the middle of an upload stream",
@@ -377,13 +317,15 @@ impl<B: StorageBackend> KeeplinServer<B> {
     }
 }
 
+// md:SyncStreamItem
 type SyncStreamItem = Result<SyncProgress, Status>;
+// md:SyncStreamPin
 type SyncStreamPin = Pin<Box<dyn Stream<Item = SyncStreamItem> + Send>>;
 
+// md:impl KeeplinService for KeeplinServer
 #[tonic::async_trait]
 impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
-    // ── Notes ─────────────────────────────────────────────────────────────────
-
+    // md:impl KeeplinService for KeeplinServer > fn list_notes
     async fn list_notes(
         &self,
         req: Request<ListNotesRequest>,
@@ -405,6 +347,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn create_note
     async fn create_note(
         &self,
         req: Request<CreateNoteRequest>,
@@ -420,8 +363,6 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         if !r.notebook_id.is_empty() {
             note.notebook_id = parse_uuid(&r.notebook_id, "notebook_id")?;
         }
-        // Give the new note its initial manual position (top of the Inbox, or the end of
-        // a normal notebook's unpinned band).
         ordering::place_new_note(self.backend.as_ref(), &mut note)
             .await
             .map_err(storage_err)?;
@@ -431,6 +372,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn get_note
     async fn get_note(
         &self,
         req: Request<GetNoteRequest>,
@@ -442,6 +384,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn update_note
     async fn update_note(
         &self,
         req: Request<UpdateNoteRequest>,
@@ -451,14 +394,10 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             .note
             .ok_or_else(|| Status::invalid_argument("note is required"))?;
         let mut note = proto_to_note(note_proto)?;
-        // A tombstoned note reads as absent on this surface, so updating one is NotFound —
-        // otherwise the update (whose body defaults `deleted_at` to none) would revive it.
         let stored = self.backend.read_note(note.id).await.map_err(storage_err)?;
         if stored.deleted_at.is_some() {
             return Err(Status::not_found(note.id.to_string()));
         }
-        // Moving the note to a different notebook re-places it (its old position and pinned
-        // state belonged to the source notebook); a plain edit keeps its position.
         ordering::reconcile_notebook_move(self.backend.as_ref(), stored.notebook_id, &mut note)
             .await
             .map_err(storage_err)?;
@@ -469,6 +408,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn delete_note
     async fn delete_note(
         &self,
         req: Request<DeleteNoteRequest>,
@@ -478,8 +418,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         Ok(Response::new(DeleteNoteResponse {}))
     }
 
-    // ── Pinning, manual ordering, starring ────────────────────────────────────
-
+    // md:impl KeeplinService for KeeplinServer > fn list_notes_in_notebook
     async fn list_notes_in_notebook(
         &self,
         req: Request<ListNotesInNotebookRequest>,
@@ -502,6 +441,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn list_starred_notes
     async fn list_starred_notes(
         &self,
         req: Request<ListStarredNotesRequest>,
@@ -523,6 +463,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn pin_note
     async fn pin_note(
         &self,
         req: Request<PinNoteRequest>,
@@ -536,6 +477,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn unpin_note
     async fn unpin_note(
         &self,
         req: Request<UnpinNoteRequest>,
@@ -549,6 +491,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn star_note
     async fn star_note(
         &self,
         req: Request<StarNoteRequest>,
@@ -562,6 +505,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn unstar_note
     async fn unstar_note(
         &self,
         req: Request<UnstarNoteRequest>,
@@ -575,12 +519,11 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn reorder_notes
     async fn reorder_notes(
         &self,
         req: Request<ReorderNotesRequest>,
     ) -> Result<Response<ReorderNotesResponse>, Status> {
-        // Applied in request order; the first failure aborts the rest. Every move already
-        // applied is durable, and re-sending the whole batch is idempotent.
         let mut notes = Vec::new();
         for order in req.into_inner().orders {
             let id = parse_uuid(&order.note_id, "note_id")?;
@@ -592,8 +535,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         Ok(Response::new(ReorderNotesResponse { notes }))
     }
 
-    // ── Notebooks ─────────────────────────────────────────────────────────────
-
+    // md:impl KeeplinService for KeeplinServer > fn list_notebooks
     async fn list_notebooks(
         &self,
         req: Request<ListNotebooksRequest>,
@@ -615,6 +557,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn create_notebook
     async fn create_notebook(
         &self,
         req: Request<CreateNotebookRequest>,
@@ -630,6 +573,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn get_notebook
     async fn get_notebook(
         &self,
         req: Request<GetNotebookRequest>,
@@ -641,6 +585,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn update_notebook
     async fn update_notebook(
         &self,
         req: Request<UpdateNotebookRequest>,
@@ -656,9 +601,6 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                 .created_at
                 .parse()
                 .map_err(|_| Status::invalid_argument("created_at is invalid"))?,
-            // Refresh server-side, ignoring any client-supplied value, so listings ordered by
-            // `updated_at` reflect the edit and a client cannot back/post-date it — matching
-            // `update_note` and the REST endpoints (issue #75).
             updated_at: now(),
             deleted_at: parse_optional_dt(nb.deleted_at)?,
             alias: nb.alias,
@@ -680,6 +622,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn delete_notebook
     async fn delete_notebook(
         &self,
         req: Request<DeleteNotebookRequest>,
@@ -697,8 +640,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         Ok(Response::new(DeleteNotebookResponse {}))
     }
 
-    // ── Tags ──────────────────────────────────────────────────────────────────
-
+    // md:impl KeeplinService for KeeplinServer > fn list_tags
     async fn list_tags(
         &self,
         req: Request<ListTagsRequest>,
@@ -720,6 +662,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn create_tag
     async fn create_tag(
         &self,
         req: Request<CreateTagRequest>,
@@ -731,6 +674,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn add_note_tag
     async fn add_note_tag(
         &self,
         req: Request<AddNoteTagRequest>,
@@ -746,6 +690,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         Ok(Response::new(AddNoteTagResponse {}))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn remove_note_tag
     async fn remove_note_tag(
         &self,
         req: Request<RemoveNoteTagRequest>,
@@ -761,6 +706,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         Ok(Response::new(RemoveNoteTagResponse {}))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn get_tag
     async fn get_tag(
         &self,
         req: Request<GetTagRequest>,
@@ -772,6 +718,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn update_tag
     async fn update_tag(
         &self,
         req: Request<UpdateTagRequest>,
@@ -787,8 +734,6 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                 .created_at
                 .parse()
                 .map_err(|_| Status::invalid_argument("created_at is invalid"))?,
-            // Refresh server-side (see `update_notebook`); ignore any client-supplied value
-            // so ordering by `updated_at` is consistent and unspoofable (issue #75).
             updated_at: now(),
             deleted_at: parse_optional_dt(t.deleted_at)?,
             vv: Default::default(),
@@ -803,6 +748,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn delete_tag
     async fn delete_tag(
         &self,
         req: Request<DeleteTagRequest>,
@@ -812,6 +758,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         Ok(Response::new(DeleteTagResponse {}))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn list_note_tags
     async fn list_note_tags(
         &self,
         req: Request<ListNoteTagsRequest>,
@@ -834,8 +781,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
-    // ── Resources ─────────────────────────────────────────────────────────────
-
+    // md:impl KeeplinService for KeeplinServer > fn list_resources
     async fn list_resources(
         &self,
         req: Request<ListResourcesRequest>,
@@ -857,6 +803,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn create_resource
     async fn create_resource(
         &self,
         req: Request<CreateResourceRequest>,
@@ -874,6 +821,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn upload_resource
     async fn upload_resource(
         &self,
         req: Request<tonic::Streaming<UploadResourceRequest>>,
@@ -881,6 +829,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         self.assemble_upload(req.into_inner()).await
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn get_resource
     async fn get_resource(
         &self,
         req: Request<GetResourceRequest>,
@@ -893,6 +842,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn delete_resource
     async fn delete_resource(
         &self,
         req: Request<DeleteResourceRequest>,
@@ -905,8 +855,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         Ok(Response::new(DeleteResourceResponse {}))
     }
 
-    // ── Bookmarks & links ─────────────────────────────────────────────────────
-
+    // md:impl KeeplinService for KeeplinServer > fn set_note_alias
     async fn set_note_alias(
         &self,
         req: Request<SetNoteAliasRequest>,
@@ -921,6 +870,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn set_notebook_alias
     async fn set_notebook_alias(
         &self,
         req: Request<SetNotebookAliasRequest>,
@@ -935,6 +885,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn add_note_link
     async fn add_note_link(
         &self,
         req: Request<AddNoteLinkRequest>,
@@ -949,6 +900,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn remove_note_link
     async fn remove_note_link(
         &self,
         req: Request<RemoveNoteLinkRequest>,
@@ -963,6 +915,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn list_backlinks
     async fn list_backlinks(
         &self,
         req: Request<ListBacklinksRequest>,
@@ -984,6 +937,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn resolve_reference
     async fn resolve_reference(
         &self,
         req: Request<ResolveReferenceRequest>,
@@ -1003,6 +957,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
+    // md:impl KeeplinService for KeeplinServer > fn list_alias_conflicts
     async fn list_alias_conflicts(
         &self,
         _req: Request<ListAliasConflictsRequest>,
@@ -1030,20 +985,17 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         }))
     }
 
-    // ── Sync (server-streaming) ───────────────────────────────────────────────
-
+    // md:impl KeeplinService for KeeplinServer > type SyncStream
     type SyncStream = SyncStreamPin;
 
+    // md:impl KeeplinService for KeeplinServer > fn sync
     async fn sync(&self, _req: Request<SyncRequest>) -> Result<Response<Self::SyncStream>, Status> {
         let backend = Arc::clone(&self.backend);
         let retention_days = self.journal_retention_days;
         let purge_days = self.resource_purge_days;
-        // An unbounded channel lets the synchronous progress callback in `run_sync` emit
-        // updates without awaiting; a sync cycle produces only a handful of messages.
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<SyncStreamItem>();
 
         tokio::spawn(async move {
-            // Forward each core `SyncStage` to the client as a `SyncProgress` message.
             let progress_tx = tx.clone();
             let report = move |stage: SyncStage, count: usize| {
                 let (proto_stage, message) = stage_to_proto(stage);
@@ -1054,8 +1006,6 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
                 }));
             };
 
-            // The whole cycle (including the watermark fix) lives in `run_sync`; the
-            // daemon only adapts progress and error reporting to the gRPC stream.
             match run_sync(&*backend, report).await {
                 Ok(_) => {
                     prune_journal_after_sync(&*backend, retention_days).await;
@@ -1077,12 +1027,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
     }
 }
 
-/// Trim change-journal history after a successful sync cycle, so the `entity_changes`
-/// table cannot grow without bound. Shared by the gRPC `Sync` RPC and the REST
-/// `POST /api/sync` handler, so both surfaces honour `journal_retention_days` the same
-/// way. `0` disables pruning; a failure is non-fatal (logged as a warning) because the
-/// sync itself already succeeded. No-op on `FsBackend`, whose `prune_change_journal`
-/// always returns `Ok(0)`.
+// md:fn prune_journal_after_sync
 pub(crate) async fn prune_journal_after_sync<B>(backend: &B, retention_days: u64)
 where
     B: StorageBackend + ?Sized,
@@ -1090,8 +1035,6 @@ where
     if retention_days == 0 {
         return;
     }
-    // Clamp to ~100 years so an absurd config value cannot overflow chrono's `Duration`
-    // (which would panic) or wrap to a negative window that prunes the entire journal.
     let days = retention_days.min(36_500) as i64;
     let cutoff = now() - chrono::Duration::days(days);
     if let Err(e) = backend.prune_change_journal(cutoff).await {
@@ -1099,10 +1042,7 @@ where
     }
 }
 
-/// Reclaim payloads of long-tombstoned resources after a successful sync cycle. Shared by
-/// the gRPC `Sync` RPC and the REST `POST /api/sync` handler, so both surfaces honour
-/// `resource_purge_days` the same way. `0` disables; a failure is non-fatal (logged as a
-/// warning) because the sync itself already succeeded.
+// md:fn purge_resources_after_sync
 pub(crate) async fn purge_resources_after_sync<B>(backend: &B, purge_days: u64)
 where
     B: StorageBackend + ?Sized,
@@ -1110,7 +1050,6 @@ where
     if purge_days == 0 {
         return;
     }
-    // Same overflow clamp as the journal prune (see above).
     let days = purge_days.min(36_500) as i64;
     let cutoff = now() - chrono::Duration::days(days);
     if let Err(e) = backend.purge_deleted_resources(cutoff).await {
@@ -1118,8 +1057,7 @@ where
     }
 }
 
-/// Maps a core [`SyncStage`] to its protobuf [`Stage`] code and a human-readable
-/// progress message for the streaming `Sync` RPC.
+// md:fn stage_to_proto
 fn stage_to_proto(stage: SyncStage) -> (Stage, &'static str) {
     match stage {
         SyncStage::Collecting => (Stage::Collecting, "Collecting local changes"),
@@ -1130,6 +1068,7 @@ fn stage_to_proto(stage: SyncStage) -> (Stage, &'static str) {
     }
 }
 
+// md:mod tests
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1139,10 +1078,7 @@ mod tests {
         NoteRepository, NotebookRepository, ResourceRepository, TagRepository,
     };
 
-    /// A `KeeplinServer` over a fresh `FsBackend` in a leaked temp dir (kept alive for
-    /// the test), plus a handle to the backend for seeding state directly. `max_upload_bytes`
-    /// is generous so the upload tests exercise assembly, not the cap (a dedicated test sets a
-    /// tiny cap explicitly).
+    // md:mod tests > fn server
     async fn server() -> (KeeplinServer<FsBackend>, Arc<FsBackend>) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_path_buf();
@@ -1154,6 +1090,7 @@ mod tests {
         )
     }
 
+    // md:mod tests > fn meta_frame
     fn meta_frame(title: &str, mime: &str, file: &str) -> UploadResourceRequest {
         UploadResourceRequest {
             payload: Some(UploadPayload::Meta(ResourceMeta {
@@ -1164,17 +1101,18 @@ mod tests {
         }
     }
 
+    // md:mod tests > fn chunk_frame
     fn chunk_frame(bytes: &[u8]) -> UploadResourceRequest {
         UploadResourceRequest {
             payload: Some(UploadPayload::Chunk(bytes.to_vec())),
         }
     }
 
+    // md:mod tests > fn upload_resource_assembles_chunks_in_order
     #[tokio::test]
     async fn upload_resource_assembles_chunks_in_order() {
         let (srv, backend) = server().await;
 
-        // A payload split across three chunks must reassemble in order.
         let frames = vec![
             Ok(meta_frame("pic", "image/png", "p.png")),
             Ok(chunk_frame(b"hello ")),
@@ -1191,16 +1129,15 @@ mod tests {
         assert_eq!(meta.file_name, "p.png");
         assert_eq!(meta.size, "hello streamed world".len() as i64);
 
-        // The reassembled bytes round-trip through the backend.
         let id = meta.id.parse().unwrap();
         let (_, data) = backend.read_resource(id).await.unwrap();
         assert_eq!(data, b"hello streamed world");
     }
 
+    // md:mod tests > fn upload_resource_requires_metadata_first
     #[tokio::test]
     async fn upload_resource_requires_metadata_first() {
         let (srv, _backend) = server().await;
-        // A stream that starts with a chunk (no metadata frame) is rejected.
         let frames = vec![Ok(chunk_frame(b"data"))];
         let err = srv
             .assemble_upload(tokio_stream::iter(frames))
@@ -1209,13 +1146,13 @@ mod tests {
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 
+    // md:mod tests > fn upload_resource_enforces_the_cap
     #[tokio::test]
     async fn upload_resource_enforces_the_cap() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().to_path_buf();
         std::mem::forget(dir);
         let backend = Arc::new(FsBackend::new(&path).await.unwrap());
-        // A tiny 8-byte cap: a 10-byte payload must be refused with RESOURCE_EXHAUSTED.
         let srv = KeeplinServer::from_shared(backend, 0, 0, 8);
         let frames = vec![
             Ok(meta_frame("big", "application/octet-stream", "big.bin")),
@@ -1228,12 +1165,11 @@ mod tests {
         assert_eq!(err.code(), tonic::Code::ResourceExhausted);
     }
 
+    // md:mod tests > fn update_rpcs_reject_soft_deleted_entities
     #[tokio::test]
     async fn update_rpcs_reject_soft_deleted_entities() {
         let (srv, backend) = server().await;
 
-        // Note: create → delete → UpdateNote must be NOT_FOUND, not a silent revival
-        // (the client's proto note carries deleted_at: None).
         let note = backend.create_note(CoreNote::new("t", "b")).await.unwrap();
         backend.delete_note(note.id).await.unwrap();
         let mut proto = note_to_proto(note.clone());
@@ -1243,7 +1179,6 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::NotFound);
-        // GetNote still serves the tombstone (sync reads it) — unchanged by the rejection.
         let got = srv
             .get_note(Request::new(GetNoteRequest {
                 id: note.id.to_string(),
@@ -1252,7 +1187,6 @@ mod tests {
             .unwrap();
         assert!(got.into_inner().note.unwrap().deleted_at.is_some());
 
-        // Notebook.
         let nb = backend
             .create_notebook(CoreNotebook::new("nb"))
             .await
@@ -1268,7 +1202,6 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::NotFound);
 
-        // Tag.
         let tag = backend.create_tag(CoreTag::new("label")).await.unwrap();
         backend.delete_tag(tag.id).await.unwrap();
         let mut proto = tag_to_proto(tag);
@@ -1280,14 +1213,12 @@ mod tests {
         assert_eq!(err.code(), tonic::Code::NotFound);
     }
 
+    // md:mod tests > fn update_notebook_and_tag_refresh_updated_at_server_side
     #[tokio::test]
     async fn update_notebook_and_tag_refresh_updated_at_server_side() {
-        // #75: UpdateNotebook/UpdateTag must set `updated_at = now()`, ignoring any
-        // client-supplied value, matching UpdateNote and the REST endpoints.
         let (srv, backend) = server().await;
-        let stale = "2000-01-01T00:00:00Z"; // a value a client might try to (back)date to
+        let stale = "2000-01-01T00:00:00Z";
 
-        // Notebook.
         let nb = backend
             .create_notebook(CoreNotebook::new("nb"))
             .await
@@ -1314,7 +1245,6 @@ mod tests {
             "updated_at must advance to server time"
         );
 
-        // Tag.
         let tag = backend.create_tag(CoreTag::new("label")).await.unwrap();
         let mut proto = tag_to_proto(tag.clone());
         proto.title = "renamed".into();
