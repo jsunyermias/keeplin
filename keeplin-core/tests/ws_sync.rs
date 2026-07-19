@@ -1,13 +1,4 @@
-//! End-to-end test of the `DbBackend` WebSocket synchronisation path.
-//!
-//! Earlier tests exercise `DbBackend` only in offline mode. This suite stands up a real
-//! (in-process) WebSocket relay — a minimal stand-in for the production sync server — and
-//! drives two `DbBackend` instances through the genuine wire protocol: the `auth`
-//! handshake performed on construction, `send_changes` (which serialises a `changes`
-//! envelope and writes it to the socket), the relay forwarding the batch to the *other*
-//! device, and `receive_changes` (which drains and parses incoming frames). This proves
-//! that a change actually travels between two devices over a socket, not just through the
-//! local database.
+// md:Overview
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,23 +17,13 @@ use tokio::sync::broadcast;
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
-/// Start an in-process WebSocket relay on an ephemeral port and return its bound address.
+// md:fn spawn_relay
 async fn spawn_relay() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     spawn_relay_on(listener).await
 }
 
-/// Start the in-process WebSocket relay on an already-bound listener.
-///
-/// The relay mimics the production hub: it accepts any number of client connections,
-/// discards each client's first frame (the `auth` handshake), and forwards every
-/// subsequent text frame (a `changes` batch) to **all other** connected clients — never
-/// echoing it back to the sender. Fan-out uses a `broadcast` channel tagged with a
-/// per-connection id so a device never receives its own batch.
-///
-/// Taking the listener (rather than binding internally) lets a test reserve an address,
-/// run a device against it while nothing is listening, and only then bring the relay up
-/// on that same address — the "relay was down, then recovered" scenario.
+// md:fn spawn_relay_on
 async fn spawn_relay_on(listener: TcpListener) -> SocketAddr {
     let addr = listener.local_addr().unwrap();
     let (tx, _rx) = broadcast::channel::<(u64, String)>(256);
@@ -60,7 +41,6 @@ async fn spawn_relay_on(listener: TcpListener) -> SocketAddr {
                 let (mut write, mut read) = ws.split();
                 let mut rx = tx.subscribe();
 
-                // Forward other devices' batches to this client.
                 let forwarder = tokio::spawn(async move {
                     while let Ok((sender, text)) = rx.recv().await {
                         if sender != my_id && write.send(Message::Text(text)).await.is_err() {
@@ -69,7 +49,6 @@ async fn spawn_relay_on(listener: TcpListener) -> SocketAddr {
                     }
                 });
 
-                // Read loop: drop the first (auth) frame, broadcast the rest.
                 let mut seen_auth = false;
                 while let Some(Ok(msg)) = read.next().await {
                     if let Message::Text(text) = msg {
@@ -88,8 +67,7 @@ async fn spawn_relay_on(listener: TcpListener) -> SocketAddr {
     addr
 }
 
-/// Create a server-mode `DbBackend` connected to `url`. The temp dir is leaked so it
-/// outlives the open database for the duration of the test.
+// md:fn device
 async fn device(url: &str) -> DbBackend {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("device.db");
@@ -97,20 +75,18 @@ async fn device(url: &str) -> DbBackend {
     DbBackend::new(path, url, "test-token").await.unwrap()
 }
 
+// md:fn epoch
 fn epoch() -> DateTime<Utc> {
     DateTime::<Utc>::from_timestamp(0, 0).unwrap()
 }
 
-/// Push every local change of `dev` to the relay.
+// md:fn push
 async fn push(dev: &DbBackend) {
     let changes = dev.get_changes_since(epoch()).await.unwrap();
     dev.send_changes(changes).await.unwrap();
 }
 
-/// Repeatedly `receive_changes` (each call drains ~100 ms) for up to ~3 s, applying every
-/// received change, until note `id` is present and — when `want_body` is `Some` — its body
-/// matches. Returns whether it converged. The poll loop absorbs the asynchronous
-/// accept/forward scheduling without fixed sleeps.
+// md:fn sync_until
 async fn sync_until(dev: &DbBackend, id: Uuid, want_body: Option<&str>) -> bool {
     for _ in 0..30 {
         let remote = dev.receive_changes().await.unwrap();
@@ -128,6 +104,7 @@ async fn sync_until(dev: &DbBackend, id: Uuid, want_body: Option<&str>) -> bool 
     false
 }
 
+// md:fn note_create_syncs_between_two_devices
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn note_create_syncs_between_two_devices() {
     let addr = spawn_relay().await;
@@ -149,6 +126,7 @@ async fn note_create_syncs_between_two_devices() {
     assert_eq!(read.body, "over the wire");
 }
 
+// md:fn update_propagates_and_converges
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn update_propagates_and_converges() {
     let addr = spawn_relay().await;
@@ -177,25 +155,19 @@ async fn update_propagates_and_converges() {
     );
 }
 
-/// A sync cycle whose send cannot reach the relay must FAIL — leaving the last-sync
-/// watermark unchanged — so the same changes are re-collected and delivered once the
-/// relay comes back. Returning `Ok` from an undelivered send would advance the watermark
-/// past the batch and drop it from every future sync (the bug this guards against).
+// md:fn failed_send_keeps_watermark_and_changes_are_resent_after_recovery
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_send_keeps_watermark_and_changes_are_resent_after_recovery() {
-    // Reserve an address, then drop the listener so nothing is accepting on it.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     drop(listener);
 
     let url = format!("ws://{addr}");
-    // Construction tolerates the dead relay (starts disconnected, local CRUD works).
     let a = device(&url).await;
     let note = Note::new("Queued", "while relay was down");
     let id = note.id;
     a.create_note(note).await.unwrap();
 
-    // The cycle must abort with a WebSocket error and leave the watermark untouched.
     let err = run_sync(&a, |_, _| {}).await.unwrap_err();
     assert!(
         matches!(err, SyncError::Storage(StorageError::WebSocket(_))),
@@ -207,7 +179,6 @@ async fn failed_send_keeps_watermark_and_changes_are_resent_after_recovery() {
         "a failed send must not advance the last-sync watermark"
     );
 
-    // Relay recovers on the SAME address; the next cycle re-collects and delivers.
     let listener = TcpListener::bind(addr).await.unwrap();
     spawn_relay_on(listener).await;
     let b = device(&url).await;
@@ -225,9 +196,7 @@ async fn failed_send_keeps_watermark_and_changes_are_resent_after_recovery() {
     );
 }
 
-/// `send_changes` on a backend with no relay configured (`server_url = ""`) is a
-/// deliberate no-op, not an error: the backend is local-only and there is nowhere to
-/// send to, so local sync cycles (and the daemon's `/api/sync`) must keep working.
+// md:fn send_without_configured_relay_is_a_noop
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_without_configured_relay_is_a_noop() {
     let a = device("").await;
@@ -239,16 +208,13 @@ async fn send_without_configured_relay_is_a_noop() {
         .expect("no configured relay → skipping the send is not a failure");
 }
 
-/// One malformed text frame from the relay must be skipped with a warning — not abort
-/// `receive_changes` — so the well-formed batches behind it still come through.
+// md:fn malformed_frame_does_not_abort_receive
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn malformed_frame_does_not_abort_receive() {
     let addr = spawn_relay().await;
     let url = format!("ws://{addr}");
     let b = device(&url).await;
 
-    // A raw WebSocket client: auth frame (dropped by the relay), then garbage, then a
-    // valid `changes` envelope. The relay forwards both non-auth frames to `b` in order.
     let note = Note::new("Survivor", "arrived after garbage");
     let id = note.id;
     let envelope = serde_json::json!({
@@ -267,7 +233,6 @@ async fn malformed_frame_does_not_abort_receive() {
         .unwrap();
     raw.send(Message::Text(envelope)).await.unwrap();
 
-    // Drain until the valid batch arrives (the garbage frame must not error the call).
     let mut received = Vec::new();
     for _ in 0..30 {
         let batch = b
@@ -286,10 +251,7 @@ async fn malformed_frame_does_not_abort_receive() {
     assert_eq!(b.read_note(id).await.unwrap().title, "Survivor");
 }
 
-// ── Server-side history (Front D stage 2) ────────────────────────────────────
-
-/// Serve a canned history reply at `/api/notes/:id/history`. There is no `/api/sync`
-/// WebSocket here: the backend runs offline for sync, which history must not depend on.
+// md:fn spawn_history_server
 async fn spawn_history_server(reply: serde_json::Value) -> SocketAddr {
     use axum::{routing::get, Router};
     let app = Router::new().route(
@@ -305,8 +267,7 @@ async fn spawn_history_server(reply: serde_json::Value) -> SocketAddr {
     addr
 }
 
-/// In server mode history comes from the server journal (every device's changes), so a
-/// device that authored none of the edits still sees the full history, tombstones included.
+// md:fn note_history_prefers_the_server_journal
 #[tokio::test]
 async fn note_history_prefers_the_server_journal() {
     let remote = Note::new("T", "v2-from-server");
@@ -318,7 +279,6 @@ async fn note_history_prefers_the_server_journal() {
     let addr = spawn_history_server(versions).await;
     let be = device(&format!("ws://{addr}/api/sync")).await;
 
-    // The local journal knows nothing about this note; the versions are the server's.
     let hist = be.note_history(remote.id, 0).await.unwrap();
     assert_eq!(hist.len(), 2);
     assert_eq!(hist[0].device_id, "other-device");
@@ -326,11 +286,10 @@ async fn note_history_prefers_the_server_journal() {
     assert!(hist[1].entity.is_none(), "tombstones survive the trip");
 }
 
-/// When the server has no history endpoint (or is unreachable) history falls back to the
-/// local journal, so it keeps working offline.
+// md:fn note_history_falls_back_to_the_local_journal
 #[tokio::test]
 async fn note_history_falls_back_to_the_local_journal() {
-    let addr = spawn_relay().await; // WebSocket-only: the history GET fails.
+    let addr = spawn_relay().await;
     let be = device(&format!("ws://{addr}/api/sync")).await;
     let note = be.create_note(Note::new("T", "v1")).await.unwrap();
 
@@ -339,9 +298,7 @@ async fn note_history_falls_back_to_the_local_journal() {
     assert_eq!(hist[0].entity.as_ref().unwrap().body, "v1");
 }
 
-/// After the server answers a history request with 404 (an older server without the
-/// endpoint), the client latches "unsupported" and stops making the wasted round-trip on
-/// subsequent history reads (issue #113).
+// md:fn a_404_history_endpoint_is_probed_only_once
 #[tokio::test]
 async fn a_404_history_endpoint_is_probed_only_once() {
     use axum::http::StatusCode;
@@ -366,7 +323,6 @@ async fn a_404_history_endpoint_is_probed_only_once() {
     let be = device(&format!("ws://{addr}/api/sync")).await;
     let note = be.create_note(Note::new("T", "v1")).await.unwrap();
 
-    // Several history reads; the server is probed at most once, the rest use the local journal.
     for _ in 0..3 {
         let hist = be.note_history(note.id, 0).await.unwrap();
         assert_eq!(hist.len(), 1, "falls back to the local journal");
@@ -378,8 +334,7 @@ async fn a_404_history_endpoint_is_probed_only_once() {
     );
 }
 
-/// When the server advertises `/version` **without** the `history` capability, the client
-/// skips the history endpoint entirely — it never even sends the request (keeplin#114).
+// md:fn history_is_skipped_when_the_server_capability_is_absent
 #[tokio::test]
 async fn history_is_skipped_when_the_server_capability_is_absent() {
     use axum::{routing::get, Json, Router};
@@ -394,7 +349,7 @@ async fn history_is_skipped_when_the_server_capability_is_absent() {
                     "name": "keeplin-srv",
                     "version": "0.0.0",
                     "protocol_version": 1,
-                    "capabilities": ["readiness"], // deliberately no "history"
+                    "capabilities": ["readiness"],
                 }))
             }),
         )
