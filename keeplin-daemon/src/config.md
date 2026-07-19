@@ -1,160 +1,349 @@
-# `src/config.rs` — daemon configuration
+# `config.rs` — daemon runtime configuration
 
-## Purpose
+Self-contained companion for `keeplin-daemon/src/config.rs`. It documents **every code
+block of the source file, in source order** — a reader with only this file must be able
+to understand it without opening anything else, so project-wide conventions are
+deliberately re-explained here (hyper-redundancy is intended).
 
-This module defines the `Config` struct that controls every aspect of the
-`keeplin-daemon` runtime: storage mode, data directory, gRPC address, TLS certificates,
-authentication credentials, and encryption settings. Configuration is loaded from a TOML
-file (default: `keeplin.toml`) and may be partially overridden by environment variables.
+**How to navigate**: every block carries exactly one marker comment
+`// md:<Header> > … > <Block header>` whose path is the header chain of its section
+here; grep it in either direction. Each section covers **Identification**,
+**What it does**, **Dependencies**, **Used by**, **Repeated context**.
 
-## Key types
+---
 
-| Type | Kind | Description |
-|------|------|-------------|
-| `Config` | struct | All runtime configuration knobs for `keeplin-daemon` |
-| `Mode` | enum | Selects between `offline` (filesystem) and `server` (database + WebSocket) |
+## Overview
 
-## `Config` fields
+**Identification** — file-level block: the imports. Marker `// md:Overview`.
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `mode` | `Mode` | `Offline` | Storage backend to use |
-| `data_dir` | `PathBuf` | `./keeplin-data` | Root directory for file storage (offline) or location of the `.db` file (server) |
-| `server_url` | `String` | `""` | WebSocket URL of the sync server (server mode only) |
-| `auth_token` | `String` | `""` | Bearer token sent on first WebSocket connection (server mode only); also the per-device login token for the collaborative channel when `collab_api_url` is set |
-| `collab_api_url` | `Option<String>` | `None` | HTTP base of the keeplin-srv collaborative server (e.g. `http://host:3000`). When set in server mode, note bodies are edited collaboratively over the line protocol (`/api/ws`) and note changes stop flowing through the relay; notebooks/tags/resources still sync over `server_url` |
-| `grpc_addr` | `String` | `127.0.0.1:50051` | Address and port on which the gRPC server listens |
-| `http_addr` | `Option<String>` | `None` | Optional second listener for the REST/JSON + WebSocket API; when unset, only gRPC runs |
-| `tls_cert_path` | `Option<String>` | `None` | Filesystem path to the PEM-encoded TLS certificate |
-| `tls_key_path` | `Option<String>` | `None` | Filesystem path to the PEM-encoded TLS private key |
-| `max_message_size` | `usize` | 33,554,432 (32 MiB) | Max size of a single gRPC message (inbound and outbound); also caps the REST request body (`DefaultBodyLimit`) so resource uploads have the same limit on both surfaces |
-| `max_upload_bytes` | `usize` | 1,073,741,824 (1 GiB) | Max assembled size of a **streamed** upload (gRPC `UploadResource` / `POST /api/resources/upload`), which is not bounded by `max_message_size`; `0` disables the cap |
-| `journal_retention_days` | `u64` | `30` | Days of `entity_changes` history to keep; pruned after each successful sync (`0` disables; no-op for the filesystem backend) |
-| `resource_purge_days` | `u64` | `0` (keep forever) | After each successful sync, free the binary payloads of resources soft-deleted more than this many days ago (`purge_deleted_resources`); the tombstone metadata is always kept, so convergence is unaffected |
-| `sync_interval_secs` | `u64` | `0` (frontend-driven) | Run a relay sync cycle automatically every N seconds so notebooks/tags/resources keep flowing without a frontend polling `Sync`; `0` leaves syncing driven by client calls (issue #111) |
-| `encryption_password` | `Option<String>` | `None` | Passphrase for AES-256-GCM at-rest encryption; prefer env var (`KEEPLIN_ENCRYPTION_PASSWORD`) |
-| `key_salt` | `Option<String>` | `None` | Argon2id salt (≥ 8 bytes) for the encryption key. When unset, the effective salt is derived from the device ID and **persisted** to `{data_dir}/.keeplin/key_salt` (which then takes precedence) — back that file up. Set the **same** value on all synced devices for portable encryption; prefer env var (`KEEPLIN_KEY_SALT`) |
-| `auth_username` | `Option<String>` | `None` | Username for HTTP Basic Auth on every gRPC call; prefer env var |
-| `auth_password` | `Option<String>` | `None` | Password for HTTP Basic Auth on every gRPC call; prefer env var |
-| `insecure` | `bool` | `false` | Downgrade the startup security checks from errors to warnings (see below) |
+```rust
+use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+```
 
-## Startup security checks — `Config::security_issues`
+**What it does** — Runtime configuration for the `keeplin-daemon` binary:
+`Config` (deserialised from a TOML file at startup) and `Mode` (local
+filesystem storage vs server-backed LibSQL). Sensitive fields can be overridden
+by environment variables (`KEEPLIN_ENCRYPTION_PASSWORD`, `KEEPLIN_KEY_SALT`,
+`KEEPLIN_AUTH_USERNAME`, `KEEPLIN_AUTH_PASSWORD` — applied in `main.rs`) so
+they never need to sit in the TOML file.
 
-`security_issues(&self) -> Vec<String>` is a pure enumeration of configurations that would
-expose data or credentials on an untrusted network. `main::serve` calls it once at startup: if
-it returns anything and `insecure` is `false`, the daemon **refuses to start** (listing the
-issues); if `insecure` is `true`, each issue is logged as a warning and startup proceeds.
+**Dependencies** — `serde`, `toml` (in `from_file`), `std::net`/`path`.
 
-It flags only unambiguous exposures a fronting TLS proxy cannot fix, so the documented
-"terminate TLS at a reverse proxy" deployment is never blocked:
+**Used by** — `main.rs` (loads, env-overrides, validates, and builds the stack
+from it); `migrate` subcommand builds one per side.
 
-| Issue | Condition |
-|-------|-----------|
-| gRPC/HTTP listener open without auth | `grpc_addr` or `http_addr` binds a **non-loopback** address and auth is not **enabled** (see below) |
-| Plaintext sync token | server mode with a `ws://` (not `wss://`) `server_url` whose host is **non-loopback** — the outbound handshake would send `auth_token` in the clear |
+**Repeated context** — security posture: the daemon **refuses to start** on
+unambiguous exposure (`security_issues`) unless `insecure = true`; auth
+half-configuration is a hard startup failure (`validate_auth`, issue #73).
 
-Missing daemon-terminated TLS on the listeners is deliberately **not** flagged (proxy
-termination is supported). The `encryption_password`-without-`key_salt` warning is separate and
-always non-fatal. `plaintext_ws_remote_host` is the helper that classifies a `server_url`,
-tolerating IPv6 literals and treating any not-clearly-loopback host as remote (fail safe).
+---
 
-### Auth is all-or-nothing (`auth_enabled` / `validate_auth`)
+## Mode
 
-Basic-Auth counts as **enabled** only when `auth_username` **and** `auth_password` are both set
-and non-empty (`Config::auth_enabled`). Anything in between is a misconfiguration that would
-silently leave the daemon unauthenticated, so `Config::validate_auth` — called by `main::serve`
-**before** the store is touched — makes the daemon **refuse to start** when:
+**Identification** — enum deriving `Debug, Clone, Default, Serialize,
+Deserialize` with `#[serde(rename_all = "lowercase")]`; marker `// md:Mode`.
 
-- exactly one of `auth_username` / `auth_password` is set (half-configured), or
-- either is set to an empty string (an empty pair would accept `Basic Og==`, base64 of `:`).
+**What it does** — The storage mode: `Offline` (default — `FsBackend`;
+Syncthing replicates, no server needed) or `Server` (`DbBackend` — local
+LibSQL + WebSocket sync; `server_url`/`auth_token` required). Serialises as
+`"offline"`/`"server"`.
 
-This is independent of `insecure`: a half-configured credential is a mistake, not a deployment
-trade-off. Because the security scan keys off `auth_enabled`, a partial credential also still
-trips the "listener open without auth" issue above — defence in depth alongside the hard failure.
+**Dependencies** — `serde`. **Used by** — `Config.mode`,
+`main.rs::build_storage`. **Repeated context** — none.
 
-## `Mode` variants
+---
 
-| Variant | TOML value | Description |
-|---------|-----------|-------------|
-| `Offline` | `"offline"` | Uses `FsBackend`; no network connection required |
-| `Server` | `"server"` | Uses `DbBackend`; requires `server_url` to be set |
+## Config
 
-## Public API
+**Identification** — struct deriving `Debug, Clone, Serialize, Deserialize`;
+marker `// md:Config`.
 
-### `Config::from_file(path: impl AsRef<Path>) -> anyhow::Result<Self>`
-**What it does:** Reads the file at `path`, parses it as TOML, and deserialises it into
-a `Config`. Missing optional fields receive their defaults via `serde(default)` attributes.  
-**Parameters:** `path` — path to the TOML configuration file.  
-**Returns:** A fully-populated `Config`.  
-**Errors:** `anyhow::Error` if the file cannot be read or the TOML is malformed.
+**What it does** — Every daemon setting:
 
-## Environment variable overrides
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `mode` | `offline` | storage mode |
+| `data_dir` | (required) | offline storage root / DB directory |
+| `server_url` | `""` | relay WebSocket URL (server mode) |
+| `auth_token` | `""` | relay/server bearer token (server mode) |
+| `collab_api_url` | `None` | keeplin-srv HTTP base; when set in server mode, note bodies edit collaboratively over `/api/ws` and note changes stop flowing through the relay (notebooks/tags/resources still sync over `server_url`); same `auth_token` |
+| `grpc_addr` | `127.0.0.1:50051` | gRPC listener (loopback by default — no accidental network exposure) |
+| `http_addr` | `None` | optional REST/WebSocket-feed listener (plain HTTP — terminate TLS at a proxy); same Basic-Auth credentials |
+| `tls_cert_path`/`tls_key_path` | `None` | daemon-terminated TLS for gRPC (both or neither) |
+| `max_message_size` | 32 MiB | gRPC message cap (covers typical PDFs/images) |
+| `max_upload_bytes` | 1 GiB | cap on an assembled **streamed** upload (gRPC `UploadResource` / `POST /api/resources/upload`) — streams aren't bounded by `max_message_size`; `0` = unlimited (not recommended shared) |
+| `journal_retention_days` | 30 | prune `entity_changes` rows older than this after each successful sync (no-op on FS); keep larger than the longest peer offline window; `0` disables |
+| `resource_purge_days` | 0 (off) | reclaim payload bytes of tombstones older than this after each sync; metadata always kept |
+| `sync_interval_secs` | 0 | automatic sync cadence; `0` = frontend-driven only (issue #111); the collab channel is independent and always live |
+| `encryption_password` | `None` | at-rest AES-256-GCM (Argon2id); prefer the env var |
+| `key_salt` | `None` | Argon2id salt (≥ 8 bytes; not secret but must match across synced devices for portable encryption; unset → this device's id, single-device only) |
+| `auth_username`/`auth_password` | `None` | Basic auth for gRPC *and* REST; active only when both set and non-empty; partial/empty pairs rejected at startup |
+| `insecure` | `false` | downgrade the startup security checks from errors to warnings (only when another layer protects: isolated network, mTLS mesh, auth-enforcing proxy) |
 
-The following environment variables override the corresponding config file fields. They
-are applied in `main.rs` after loading the file so that secrets never need to be stored
-on disk.
+**Dependencies** — `serde`, the default fns.
 
-| Environment variable | Field overridden |
-|----------------------|-----------------|
-| `KEEPLIN_ENCRYPTION_PASSWORD` | `encryption_password` |
-| `KEEPLIN_AUTH_PASSWORD` | `auth_password` |
-| `KEEPLIN_AUTH_USERNAME` | `auth_username` |
+**Used by** — `main.rs` everywhere.
 
-## TLS behaviour
+**Repeated context** — none.
 
-TLS is enabled when **both** `tls_cert_path` and `tls_key_path` are non-empty. If either
-is absent, the gRPC server starts without TLS (plaintext). For production deployments
-exposed to a network, TLS should always be enabled.
+---
 
-## Design notes
+## fn default_grpc_addr
 
-- `Default::default()` on `Config` produces a usable offline configuration pointing to
-  `./keeplin-data` and listening on `127.0.0.1:50051`. This is the configuration used
-  when no config file is present.
-- `max_message_size` defaults to 32 MiB because many PDF and image files that users
-  attach as resources fall within this limit, avoiding the need for manual tuning. The
-  same value bounds the REST body so a resource upload behaves identically over gRPC and HTTP.
-- `http_addr` is opt-in: leave it unset for a gRPC-only daemon; set it (e.g.
-  `"127.0.0.1:8080"`) to additionally expose the REST/JSON + WebSocket surface described in
-  `rest.md`. Both surfaces share one backend `Arc` and one auth model.
-- `collab_api_url` is opt-in and layered on top of server mode: when set, `main` inserts a
-  `CollabBackend` into the stack so note **bodies** are edited line-by-line against keeplin-srv
-  (`collab/mod.md`) while the rest of the model keeps syncing over `server_url`. Leaving it unset
-  falls back to relaying note changes like any other entity.
+**Identification** — marker `// md:fn default_grpc_addr`.
+
+**What it does** — `127.0.0.1:50051` — loopback so a config-less first start
+cannot expose an unauthenticated API.
+
+---
+
+## fn default_max_message_size
+
+**Identification** — marker `// md:fn default_max_message_size`.
+
+**What it does** — 32 MiB, applied to both decode and encode.
+
+---
+
+## fn default_max_upload_bytes
+
+**Identification** — marker `// md:fn default_max_upload_bytes`.
+
+**What it does** — 1 GiB — generous for large attachments while bounding the
+memory one streamed upload can consume (assembled in memory).
+
+---
+
+## fn default_journal_retention_days
+
+**Identification** — marker `// md:fn default_journal_retention_days`.
+
+**What it does** — 30 days — comfortably exceeds normal peer offline time so
+pruning does not strand an unsynced device.
+
+---
+
+## impl Config (loading)
+
+**Identification** — the first `impl Config`; marker
+`// md:impl Config (loading)`. One method.
+
+### fn from_file
+
+**Identification** — `pub fn from_file(path) -> anyhow::Result<Self>`; marker
+`// md:impl Config (loading) > fn from_file`.
+
+**What it does** — Reads and TOML-parses the file; missing optional fields
+fall back to serde defaults, so a minimal file with only `data_dir` starts the
+daemon offline. Errors on unreadable file or malformed TOML.
+
+**Used by** — `main.rs` startup and the `migrate` subcommand.
+
+---
+
+## impl Default for Config
+
+**Identification** — marker `// md:impl Default for Config`.
+
+**What it does** — The all-defaults config (offline, `./keeplin-data`,
+loopback gRPC, no HTTP/TLS/auth/encryption, retention 30, purge/sync-interval
+off, `insecure = false`).
+
+**Used by** — tests; documentation of the defaults.
+
+---
+
+## impl Config (security)
+
+**Identification** — the second `impl Config`; marker
+`// md:impl Config (security)`. Three methods.
+
+### fn security_issues
+
+**Identification** — `pub fn security_issues(&self) -> Vec<String>`; marker
+`// md:impl Config (security) > fn security_issues`.
+
+**What it does** — Enumerates unambiguous exposures (empty = safe to start).
+Pure and side-effect-free (unit-testable); `main::serve` refuses to start on a
+non-empty result unless `insecure`. Flags only what no fronting TLS proxy can
+fix — so the documented reverse-proxy deployment is never blocked:
+
+- a **network-reachable** (non-loopback) gRPC or HTTP listener with **no
+  auth** (a proxy cannot invent application credentials);
+- in server mode, a **plaintext `ws://` URL to a non-loopback host** — the
+  `auth_token` would travel in the clear on the daemon's *outbound*
+  connection, where a fronting proxy does not help.
+
+Missing daemon-terminated TLS on the listeners is deliberately **not**
+flagged.
+
+**Dependencies** — `auth_enabled`, `plaintext_ws_remote_host`,
+`SocketAddr` parsing.
+
+**Used by** — `main.rs::serve`.
+
+### fn auth_enabled
+
+**Identification** — `pub fn auth_enabled(&self) -> bool`; marker
+`// md:impl Config (security) > fn auth_enabled`.
+
+**What it does** — Auth is **active** only when both credentials are set and
+non-empty — a half-configured or empty pair is *not* active (and is rejected
+by `validate_auth`), so this never reports a store as protected when requests
+would pass unauthenticated.
+
+**Used by** — `security_issues`, `main.rs` (whether to install the
+interceptors).
+
+### fn validate_auth
+
+**Identification** — `pub fn validate_auth(&self) -> Result<(), String>`;
+marker `// md:impl Config (security) > fn validate_auth`.
+
+**What it does** — Rejects configurations that would silently disable auth:
+exactly one credential set, or either set to an empty string (which would
+accept `Basic Og==`). Both unset = intentionally off, valid. Called at
+startup: half-configuring (e.g. only `KEEPLIN_AUTH_PASSWORD`) is a hard
+failure, not a quietly open daemon (issue #73).
+
+**Used by** — `main.rs` startup.
+
+---
+
+## fn plaintext_ws_remote_host
+
+**Identification** — `fn plaintext_ws_remote_host(url: &str) -> Option<&str>`;
+marker `// md:fn plaintext_ws_remote_host`.
+
+**What it does** — Returns the host when `url` is **plaintext `ws://`** to a
+**non-loopback** host; `None` for `wss://`, empty URLs, and loopback targets
+(`localhost`, `127.*`, `::1`, `ip6-localhost`). Parses the authority
+(stripping path/query and an optional port, tolerating a bracketed IPv6
+literal). A host not confidently identifiable as loopback is treated as
+remote — fail safe: better a spurious warning than a silent token leak.
+
+**Used by** — `security_issues`; its own unit test.
+
+---
+
+## mod tests
+
+**Identification** — `#[cfg(test)] mod tests`; marker `// md:mod tests`. Two
+helpers + eight tests, all pure.
+
+**What it does** — Pins the security-check and auth-validation matrices.
+
+### fn base
+
+**Identification** — helper; marker `// md:mod tests > fn base`.
+
+**What it does** — `Config::default()` (a safe loopback config).
+
+### fn with_auth
+
+**Identification** — helper; marker `// md:mod tests > fn with_auth`.
+
+**What it does** — Adds a full credential pair.
+
+### fn loopback_defaults_are_safe
+
+**Identification** — marker `// md:mod tests > fn loopback_defaults_are_safe`.
+
+**What it does** — The default config has no issues.
+
+### fn network_grpc_without_auth_is_flagged
+
+**Identification** — marker
+`// md:mod tests > fn network_grpc_without_auth_is_flagged`.
+
+**What it does** — `0.0.0.0` gRPC without auth → one issue; adding auth
+clears it.
+
+### fn network_http_without_auth_is_flagged
+
+**Identification** — marker
+`// md:mod tests > fn network_http_without_auth_is_flagged`.
+
+**What it does** — Same for `http_addr`.
+
+### fn validate_auth_rejects_partial_and_empty_credentials
+
+**Identification** — marker
+`// md:mod tests > fn validate_auth_rejects_partial_and_empty_credentials`.
+
+**What it does** — The full matrix: both unset ok/off; one set rejected;
+both-empty rejected; one-empty rejected; both non-empty ok/enabled.
+
+### fn partial_auth_still_flags_network_exposure
+
+**Identification** — marker
+`// md:mod tests > fn partial_auth_still_flags_network_exposure`.
+
+**What it does** — A half-configured credential is not "auth enabled" for the
+exposure check — the network listener is still flagged (defence in depth).
+
+### fn plaintext_ws_to_remote_is_flagged_in_server_mode
+
+**Identification** — marker
+`// md:mod tests > fn plaintext_ws_to_remote_is_flagged_in_server_mode`.
+
+**What it does** — Remote `ws://` in server mode flagged; `wss://` safe;
+loopback `ws://` safe; the same URL in offline mode ignored.
+
+### fn plaintext_ws_remote_host_parsing
+
+**Identification** — marker
+`// md:mod tests > fn plaintext_ws_remote_host_parsing`.
+
+**What it does** — Host extraction incl. IPv6 literals; every safe case →
+`None`.
+
+### fn multiple_issues_accumulate
+
+**Identification** — marker
+`// md:mod tests > fn multiple_issues_accumulate`.
+
+**What it does** — Network gRPC + HTTP + remote `ws://`, no auth → three
+issues.
+
+---
 
 ## Graph context
+
+Repo-tooling metadata, not a code block (no marker in the source). Kept in every
+companion because CI (`scripts/check-docs.sh`) enforces it: this file is LAYER 2 of
+the navigation model, the Graphify graph (`graphify-out/graph.json`) is LAYER 1;
+refresh with `graphify update .` after refactors.
 
 <!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
      EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
 
 **Nodes/edges this file contributes** (top symbols by cross-file degree)
 
-- `Config` — defined here (EXTRACTED; 9 cross-file edge(s))
-- `Mode` — defined here (EXTRACTED; file-local)
-- `default_grpc_addr()` — defined here (EXTRACTED; file-local)
-- `default_max_message_size()` — defined here (EXTRACTED; file-local)
-- `default_max_upload_bytes()` — defined here (EXTRACTED; file-local)
-- `default_journal_retention_days()` — defined here (EXTRACTED; file-local)
-- `.from_file()` — defined here (EXTRACTED; file-local)
-- `.default()` — defined here (EXTRACTED; file-local)
-- `.security_issues()` — defined here (EXTRACTED; file-local)
-- `.auth_enabled()` — defined here (EXTRACTED; file-local)
+- `Config` — defined here (EXTRACTED)
+- `Mode` — defined here (EXTRACTED)
+- `security_issues()`, `auth_enabled()`, `validate_auth()`, `plaintext_ws_remote_host()` — defined here (EXTRACTED)
 
 **Direct dependencies** (files this one's symbols reference)
 
-- (none in the graph) (EXTRACTED)
+- (none in the graph — external crates only) (EXTRACTED)
 
 **Direct dependents** (files whose symbols reference this one)
 
-- `keeplin-daemon/src/main.rs` — daemon entry point (EXTRACTED: references×9; e.g. `build_storage()`, `cfg_at()`, `collab_config()`)
+- `keeplin-daemon/src/main.rs` — loads/validates and builds the stack (INFERRED)
 
-**Invariants** (restated on purpose; a change to this file must keep these true)
+## Coverage checklist
 
-- Config comes from `keeplin.toml` with env-var overrides for the secrets; defaults must keep a bare `keeplin-daemon` runnable offline.
-- Security checks (`security_issues`) refuse insecure combinations at startup unless `insecure = true` explicitly opts in (e.g. non-loopback `ws://`).
-
-## Related files
-
-- `keeplin-daemon/src/main.rs` — reads `Config`, applies env var overrides, and uses it
-  to construct the backend and start the server
-- `SECURITY.md` — guidance on credential management
+| # | Block (source order) | Marker in code |
+|---|----------------------|----------------|
+| 1 | imports (`use …`) | `// md:Overview` |
+| 2 | `enum Mode` | `// md:Mode` |
+| 3 | `struct Config` | `// md:Config` |
+| 4–7 | the four default fns | `// md:fn default_*` |
+| 8 | first `impl Config` (`from_file`) | `// md:impl Config (loading)` (+ `> fn from_file`) |
+| 9 | `impl Default for Config` | `// md:impl Default for Config` |
+| 10 | second `impl Config` (`security_issues`, `auth_enabled`, `validate_auth`) | `// md:impl Config (security)` (+ `> fn …`) |
+| 11 | `fn plaintext_ws_remote_host` | `// md:fn plaintext_ws_remote_host` |
+| 12 | `mod tests` (+ 2 helpers + 8 tests) | `// md:mod tests` (+ `> fn …`) |

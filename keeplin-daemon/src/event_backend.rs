@@ -1,29 +1,4 @@
-//! Change-publishing [`StorageBackend`] decorator for the live WebSocket feed.
-//!
-//! [`EventBackend<B>`] wraps any `B: StorageBackend` and, after every **successful**
-//! mutation, publishes the corresponding [`Change`] to a [`tokio::sync::broadcast`]
-//! channel. Read operations delegate to the inner backend unchanged. Because it is a
-//! `StorageBackend` itself (it implements all five sub-traits, like
-//! [`keeplin_core::encryption::EncryptedBackend`]), a single `EventBackend` instance can
-//! sit behind **both** the gRPC service and the REST API — so a mutation from either
-//! surface emits exactly one event.
-//!
-//! # Placement in the decorator stack
-//!
-//! `EventBackend` is wrapped **outside** any `EncryptedBackend`, i.e.
-//! `EventBackend<EncryptedBackend<FsBackend>>`. Its create/update methods publish the
-//! value **returned** by the inner backend, which `EncryptedBackend` has already
-//! decrypted — so WebSocket subscribers receive plaintext changes. The daemon is the
-//! trust boundary; at-rest encryption protects the disk, not connected API clients.
-//!
-//! # Delivery semantics
-//!
-//! The broadcast channel is **lossy and best-effort**: a subscriber that falls behind
-//! the channel capacity sees a `Lagged` error rather than blocking writers. The feed is
-//! a notification stream, not a durable log — the authoritative history is the
-//! per-device change journal used by sync. Publishing never blocks a mutation: a send to
-//! a channel with no live receivers simply returns an error that is ignored.
-
+// md:Overview
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tokio::sync::broadcast;
@@ -35,37 +10,26 @@ use keeplin_core::{
     storage::{NoteRepository, NotebookRepository, ResourceRepository, SyncBackend, TagRepository},
 };
 
-/// Wraps a [`StorageBackend`] and broadcasts a [`Change`] after each successful mutation.
+// md:EventBackend
 pub struct EventBackend<B> {
-    /// The underlying backend that actually persists data. Every operation delegates here
-    /// first; events are only published once the inner call succeeds.
     inner: B,
-    /// The broadcast sender that mutations are published to. The daemon keeps another clone
-    /// of this same channel in the REST `AppState`, from which each WebSocket connection
-    /// derives its own receiver.
     tx: broadcast::Sender<Change>,
 }
 
+// md:impl EventBackend
 impl<B> EventBackend<B> {
-    /// Wraps `inner`, publishing changes to `tx`.
-    ///
-    /// `tx` is created once in `main` (`broadcast::channel(capacity)`); pass a clone here
-    /// and keep another clone around (the daemon stores it in the REST `AppState`) so the
-    /// WebSocket route can hand each connection a fresh `tx.subscribe()` receiver.
+    // md:impl EventBackend > fn new
     pub fn new(inner: B, tx: broadcast::Sender<Change>) -> Self {
         Self { inner, tx }
     }
 
-    /// Publishes one change, ignoring the "no active receivers" error.
-    ///
-    /// `broadcast::Sender::send` only fails when there are zero live receivers, which is
-    /// the normal state when no WebSocket clients are connected. That is not an error
-    /// condition for a mutation, so the result is intentionally discarded.
+    // md:impl EventBackend > fn publish
     fn publish(&self, change: Change) {
         let _ = self.tx.send(change);
     }
 }
 
+// md:impl NoteRepository for EventBackend
 #[async_trait]
 impl<B: NoteRepository> NoteRepository for EventBackend<B> {
     async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
@@ -90,8 +54,6 @@ impl<B: NoteRepository> NoteRepository for EventBackend<B> {
 
     async fn delete_note(&self, id: Uuid) -> Result<(), StorageError> {
         self.inner.delete_note(id).await?;
-        // The live feed is a best-effort notification (clients reload via REST/gRPC), so the
-        // conflict-resolution metadata is not needed here and is left empty.
         self.publish(Change::NoteDelete {
             id,
             deleted_at: Utc::now(),
@@ -115,7 +77,6 @@ impl<B: NoteRepository> NoteRepository for EventBackend<B> {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
-        // Delegate so an inner indexed backend (e.g. DbBackend) is reached.
         self.inner
             .note_backlinks(target_id, page_size, page_token)
             .await
@@ -148,6 +109,7 @@ impl<B: NoteRepository> NoteRepository for EventBackend<B> {
     }
 }
 
+// md:impl NotebookRepository for EventBackend
 #[async_trait]
 impl<B: NotebookRepository> NotebookRepository for EventBackend<B> {
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
@@ -190,6 +152,7 @@ impl<B: NotebookRepository> NotebookRepository for EventBackend<B> {
     }
 }
 
+// md:impl TagRepository for EventBackend
 #[async_trait]
 impl<B: TagRepository> TagRepository for EventBackend<B> {
     async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
@@ -234,7 +197,6 @@ impl<B: TagRepository> TagRepository for EventBackend<B> {
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
         let (note_id, tag_id) = (note_tag.note_id, note_tag.tag_id);
         self.inner.add_note_tag(note_tag).await?;
-        // The live feed is a best-effort notification; version metadata is left empty.
         self.publish(Change::NoteTagAdd {
             note_id,
             tag_id,
@@ -269,6 +231,7 @@ impl<B: TagRepository> TagRepository for EventBackend<B> {
     }
 }
 
+// md:impl ResourceRepository for EventBackend
 #[async_trait]
 impl<B: ResourceRepository> ResourceRepository for EventBackend<B> {
     async fn create_resource(
@@ -277,9 +240,6 @@ impl<B: ResourceRepository> ResourceRepository for EventBackend<B> {
         data: Vec<u8>,
     ) -> Result<Resource, StorageError> {
         let stored = self.inner.create_resource(resource, data).await?;
-        // The feed carries metadata only (`data: None`); subscribers fetch the bytes via
-        // `GET /api/resources/:id/data`. This keeps the broadcast channel lightweight and
-        // matches `FsBackend`, which also omits payloads from its change journal.
         self.publish(Change::ResourceCreate {
             resource: stored.clone(),
             data: None,
@@ -314,14 +274,11 @@ impl<B: ResourceRepository> ResourceRepository for EventBackend<B> {
         &self,
         older_than: DateTime<Utc>,
     ) -> Result<u64, StorageError> {
-        // Maintenance only: the deletions themselves were published when they happened.
         self.inner.purge_deleted_resources(older_than).await
     }
 }
 
-// Synchronisation methods carry no user-visible mutation of their own — they move changes
-// that have already been (or will be) published by the CRUD methods above — so they
-// delegate to the inner backend without emitting anything onto the feed.
+// md:impl SyncBackend for EventBackend
 #[async_trait]
 impl<B: SyncBackend> SyncBackend for EventBackend<B> {
     async fn get_device_id(&self) -> Result<String, StorageError> {
@@ -357,6 +314,7 @@ impl<B: SyncBackend> SyncBackend for EventBackend<B> {
     }
 }
 
+// md:impl HistoryRepository for EventBackend
 #[async_trait]
 impl<B: keeplin_core::storage::HistoryRepository> keeplin_core::storage::HistoryRepository
     for EventBackend<B>
@@ -378,22 +336,23 @@ impl<B: keeplin_core::storage::HistoryRepository> keeplin_core::storage::History
     }
 }
 
+// md:mod tests
 #[cfg(test)]
 mod tests {
     use super::*;
     use keeplin_core::storage::fs::FsBackend;
     use tokio::sync::broadcast::error::TryRecvError;
 
+    // md:mod tests > fn backend
     async fn backend() -> (EventBackend<FsBackend>, broadcast::Receiver<Change>) {
         let dir = tempfile::tempdir().unwrap();
         let fs = FsBackend::new(dir.path()).await.unwrap();
         let (tx, rx) = broadcast::channel(16);
-        // Keep the tempdir alive for the duration of the test by leaking it; the OS
-        // reclaims it when the test process exits.
         std::mem::forget(dir);
         (EventBackend::new(fs, tx), rx)
     }
 
+    // md:mod tests > fn create_update_delete_emit_changes
     #[tokio::test]
     async fn create_update_delete_emit_changes() {
         let (be, mut rx) = backend().await;
@@ -418,11 +377,11 @@ mod tests {
         }
     }
 
+    // md:mod tests > fn reads_do_not_emit_changes
     #[tokio::test]
     async fn reads_do_not_emit_changes() {
         let (be, mut rx) = backend().await;
         let stored = be.create_note(Note::new("t", "b")).await.unwrap();
-        // Drain the create event.
         let _ = rx.try_recv().unwrap();
 
         be.read_note(stored.id).await.unwrap();
@@ -430,10 +389,10 @@ mod tests {
         assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
     }
 
+    // md:mod tests > fn failed_mutation_emits_nothing
     #[tokio::test]
     async fn failed_mutation_emits_nothing() {
         let (be, mut rx) = backend().await;
-        // Updating a note that does not exist must fail and publish no event.
         let ghost = Note::new("t", "b");
         assert!(be.update_note(ghost).await.is_err());
         assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
