@@ -17,11 +17,18 @@ conventions are deliberately re-explained here (hyper-redundancy is intended).
 **Identification** — file-level block: the crate doc and the imports. Marker
 `// md:Overview`.
 
+**Code** — complete and verbatim:
+
 ```rust
-use keeplin_core::{encryption::EncryptedBackend,
-    links::{Bookmark, LinkSource, NoteLink}, migrate::migrate,
+// md:Overview
+
+use keeplin_core::{
+    encryption::EncryptedBackend,
+    links::{Bookmark, LinkSource, NoteLink},
+    migrate::migrate,
     models::{Note, NoteTag, Notebook, Resource, Tag},
-    storage::{db::DbBackend, fs::FsBackend, StorageBackend}};
+    storage::{db::DbBackend, fs::FsBackend, StorageBackend},
+};
 use tempfile::tempdir;
 ```
 
@@ -44,6 +51,20 @@ the `ordering` unit tests — deliberately not here.
 
 **Identification** — `struct Seeded`. Marker `// md:Seeded`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:Seeded
+struct Seeded {
+    notebook_id: uuid::Uuid,
+    tag_id: uuid::Uuid,
+    note_a: uuid::Uuid,
+    note_b: uuid::Uuid,
+    resource_id: uuid::Uuid,
+    data: Vec<u8>,
+}
+```
+
 **What it does** — The record of ids/values a seeded source produced
 (`notebook_id`, `tag_id`, `note_a`, `note_b`, `resource_id`, `data`), handed to
 `assert_migrated` to check the round-trip.
@@ -56,6 +77,65 @@ the `ordering` unit tests — deliberately not here.
 
 **Identification** — `async fn seed(src: &dyn StorageBackend) -> Seeded`. Marker
 `// md:fn seed`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn seed
+async fn seed(src: &dyn StorageBackend) -> Seeded {
+    let notebook = Notebook::new("Work");
+    let notebook_id = notebook.id;
+    src.create_notebook(notebook).await.unwrap();
+
+    let tag = Tag::new("urgent");
+    let tag_id = tag.id;
+    src.create_tag(tag).await.unwrap();
+
+    let note_b = Note::new("Target", "the destination note");
+    let note_b_id = note_b.id;
+    src.create_note(note_b).await.unwrap();
+
+    let mut note_a = Note::new(
+        "Source",
+        "intro [Anchor](### \"Alias\") and a [link](#target)",
+    );
+    let note_a_id = note_a.id;
+    note_a.notebook_id = notebook_id;
+    note_a.alias = Some("alpha".to_string());
+    note_a.bookmarks = vec![Bookmark {
+        number: 1,
+        text: "Anchor".to_string(),
+        alias: "Alias".to_string(),
+    }];
+    note_a.links = vec![NoteLink {
+        source: LinkSource::Content,
+        raw: "#target".to_string(),
+        target_note_id: Some(note_b_id),
+    }];
+    src.create_note(note_a.clone()).await.unwrap();
+
+    src.add_note_tag(NoteTag {
+        note_id: note_a_id,
+        tag_id,
+    })
+    .await
+    .unwrap();
+
+    let data = b"\x00\x01\x02binary-payload\xff".to_vec();
+    let resource = Resource::new("img", "image/png", "img.png", data.len() as u64);
+    let resource_id = resource.id;
+    src.create_resource(resource, data.clone()).await.unwrap();
+
+    Seeded {
+        notebook_id,
+        tag_id,
+        note_a: note_a_id,
+        note_b: note_b_id,
+        resource_id,
+        data,
+    }
+}
+```
 
 **What it does** — Populates `src` with: a notebook ("Work"), a tag ("urgent"),
 note B ("Target" — created first so A can point at it), note A ("Source",
@@ -74,6 +154,40 @@ which is exactly how `migrate` copies them.
 **Identification** — `async fn assert_migrated(dst: &dyn StorageBackend, s:
 &Seeded)`. Marker `// md:fn assert_migrated`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:fn assert_migrated
+async fn assert_migrated(dst: &dyn StorageBackend, s: &Seeded) {
+    let nb = dst.read_notebook(s.notebook_id).await.unwrap();
+    assert_eq!(nb.title, "Work");
+
+    let tag = dst.read_tag(s.tag_id).await.unwrap();
+    assert_eq!(tag.title, "urgent");
+
+    let a = dst.read_note(s.note_a).await.unwrap();
+    assert_eq!(a.title, "Source");
+    assert_eq!(a.notebook_id, s.notebook_id);
+    assert_eq!(a.alias.as_deref(), Some("alpha"));
+    assert_eq!(a.bookmarks.len(), 1);
+    assert_eq!(a.bookmarks[0].text, "Anchor");
+    assert_eq!(a.bookmarks[0].alias, "Alias");
+    assert_eq!(a.links.len(), 1);
+    assert_eq!(a.links[0].raw, "#target");
+    assert_eq!(a.links[0].target_note_id, Some(s.note_b));
+
+    let (tags, _) = dst.list_note_tags(s.note_a, 0, None).await.unwrap();
+    assert!(tags.iter().any(|t| t.id == s.tag_id));
+
+    let (meta, bytes) = dst.read_resource(s.resource_id).await.unwrap();
+    assert_eq!(meta.file_name, "img.png");
+    assert_eq!(bytes, s.data);
+
+    let (back, _) = dst.note_backlinks(s.note_b, 0, None).await.unwrap();
+    assert!(back.iter().any(|n| n.id == s.note_a));
+}
+```
+
 **What it does** — Asserts the destination faithfully reproduces everything
 `seed` wrote: notebook and tag titles; note A's title, notebook membership,
 alias, bookmark fields, and resolved link; the surviving note↔tag association;
@@ -89,6 +203,17 @@ on the destination (built from the copied `links`).
 **Identification** — `async fn db(dir: &std::path::Path) -> DbBackend`. Marker
 `// md:fn db`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:fn db
+async fn db(dir: &std::path::Path) -> DbBackend {
+    DbBackend::new(dir.join("keeplin.db"), "", "")
+        .await
+        .unwrap()
+}
+```
+
 **What it does** — A fresh offline `DbBackend` at `{dir}/keeplin.db` (empty
 server URL and token → no WebSocket, no handshake).
 
@@ -100,6 +225,29 @@ server URL and token → no WebSocket, no handshake).
 
 **Identification** — `#[tokio::test]`. Marker `// md:fn fs_to_db_round_trip`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:fn fs_to_db_round_trip
+#[tokio::test]
+async fn fs_to_db_round_trip() {
+    let src_dir = tempdir().unwrap();
+    let dst_dir = tempdir().unwrap();
+    let src = FsBackend::new(src_dir.path()).await.unwrap();
+    let dst = db(dst_dir.path()).await;
+
+    let seeded = seed(&src).await;
+    let report = migrate(&src, &dst).await.unwrap();
+
+    assert_eq!(report.notebooks, 1);
+    assert_eq!(report.tags, 1);
+    assert_eq!(report.notes, 2);
+    assert_eq!(report.note_tags, 1);
+    assert_eq!(report.resources, 1);
+    assert_migrated(&dst, &seeded).await;
+}
+```
+
 **What it does** — Seed an `FsBackend`, migrate into a `DbBackend`: the
 `MigrationReport` counts exactly 1 notebook, 1 tag, 2 notes, 1 note-tag,
 1 resource, and `assert_migrated` passes.
@@ -110,6 +258,26 @@ server URL and token → no WebSocket, no handshake).
 
 **Identification** — `#[tokio::test]`. Marker `// md:fn db_to_fs_round_trip`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:fn db_to_fs_round_trip
+#[tokio::test]
+async fn db_to_fs_round_trip() {
+    let src_dir = tempdir().unwrap();
+    let dst_dir = tempdir().unwrap();
+    let src = db(src_dir.path()).await;
+    let dst = FsBackend::new(dst_dir.path()).await.unwrap();
+
+    let seeded = seed(&src).await;
+    let report = migrate(&src, &dst).await.unwrap();
+
+    assert_eq!(report.notes, 2);
+    assert_eq!(report.resources, 1);
+    assert_migrated(&dst, &seeded).await;
+}
+```
+
 **What it does** — The reverse direction (`DbBackend` → `FsBackend`); same
 fidelity (spot-checks notes/resources counts, then the full assertion).
 
@@ -119,6 +287,32 @@ fidelity (spot-checks notes/resources counts, then the full assertion).
 
 **Identification** — `#[tokio::test]`. Marker
 `// md:fn encrypted_fs_to_encrypted_db`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn encrypted_fs_to_encrypted_db
+#[tokio::test]
+async fn encrypted_fs_to_encrypted_db() {
+    let src_dir = tempdir().unwrap();
+    let dst_dir = tempdir().unwrap();
+    let src = EncryptedBackend::new(
+        FsBackend::new(src_dir.path()).await.unwrap(),
+        "source-pass",
+        b"source-salt",
+    )
+    .await
+    .unwrap();
+    let dst = EncryptedBackend::new(db(dst_dir.path()).await, "dest-pass", b"dest-salt")
+        .await
+        .unwrap();
+
+    let seeded = seed(&src).await;
+    migrate(&src, &dst).await.unwrap();
+
+    assert_migrated(&dst, &seeded).await;
+}
+```
 
 **What it does** — Both sides wrapped in `EncryptedBackend` with **different**
 passwords and salts: migration reads plaintext from the source and re-encrypts
@@ -166,9 +360,11 @@ refresh with `graphify update .` after refactors.
 
 | # | Block (source order) | Marker in code |
 |---|----------------------|----------------|
-| 1 | crate doc + imports | `// md:Overview` |
-| 2 | `struct Seeded` | `// md:Seeded` |
+| 1 | `Overview` | `// md:Overview` |
+| 2 | `Seeded` | `// md:Seeded` |
 | 3 | `fn seed` | `// md:fn seed` |
 | 4 | `fn assert_migrated` | `// md:fn assert_migrated` |
 | 5 | `fn db` | `// md:fn db` |
-| 6–8 | the three `#[tokio::test]` fns | `// md:fn <name>` |
+| 6 | `fn fs_to_db_round_trip` | `// md:fn fs_to_db_round_trip` |
+| 7 | `fn db_to_fs_round_trip` | `// md:fn db_to_fs_round_trip` |
+| 8 | `fn encrypted_fs_to_encrypted_db` | `// md:fn encrypted_fs_to_encrypted_db` |

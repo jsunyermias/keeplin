@@ -7,8 +7,9 @@ conventions are deliberately re-explained here (hyper-redundancy is intended).
 
 **How to navigate**: every block carries exactly one marker comment
 `// md:<Header> > … > <Block header>` whose path is the header chain of its section
-here; grep it in either direction. Each section covers **Identification**,
-**What it does**, **Dependencies**, **Used by**, **Repeated context**.
+here; grep it in either direction. Each block section covers, in this fixed order:
+**Identification**, **Code**, **What it does**, **Dependencies**, **Used by**,
+**Repeated context**.
 
 ---
 
@@ -16,7 +17,10 @@ here; grep it in either direction. Each section covers **Identification**,
 
 **Identification** — file-level block: the imports. Marker `// md:Overview`.
 
+**Code** — complete and verbatim:
+
 ```rust
+// md:Overview
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
@@ -55,6 +59,13 @@ model must never fork their semantics — the domination test and the
 **Identification** — `pub type VersionVector = BTreeMap<String, u64>;` marker
 `// md:VersionVector`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:VersionVector
+pub type VersionVector = BTreeMap<String, u64>;
+```
+
 **What it does** — A version vector: per-device monotonic counters
 (`device_id → counter`). A missing key is `0`. One vector *dominates* another
 when it is at least as large in every component — it causally descends from
@@ -75,6 +86,15 @@ backends, keeplin-srv.
 **Identification** — `pub fn increment(vv: &mut VersionVector, device: &str)`;
 marker `// md:fn increment`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:fn increment
+pub fn increment(vv: &mut VersionVector, device: &str) {
+    *vv.entry(device.to_string()).or_insert(0) += 1;
+}
+```
+
 **What it does** — Bumps `device`'s component by one (creating it at 1) — the
 "I am about to write" step that makes a local edit dominate the state it was
 based on.
@@ -93,6 +113,16 @@ based on.
 **Identification** — `pub fn dominates(a: &VersionVector, b: &VersionVector) -> bool`;
 marker `// md:fn dominates`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:fn dominates
+pub fn dominates(a: &VersionVector, b: &VersionVector) -> bool {
+    b.iter()
+        .all(|(k, &bv)| a.get(k).copied().unwrap_or(0) >= bv)
+}
+```
+
 **What it does** — `true` when `a[k] >= b[k]` for every key of `b`. Reflexive
 (equal vectors dominate each other); two vectors where neither dominates are
 *concurrent*.
@@ -109,6 +139,20 @@ marker `// md:fn dominates`.
 
 **Identification** — `pub fn join(a: &VersionVector, b: &VersionVector) -> VersionVector`;
 marker `// md:fn join`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn join
+pub fn join(a: &VersionVector, b: &VersionVector) -> VersionVector {
+    let mut out = a.clone();
+    for (k, &bv) in b {
+        let slot = out.entry(k.clone()).or_insert(0);
+        *slot = (*slot).max(bv);
+    }
+    out
+}
+```
 
 **What it does** — Element-wise maximum (least upper bound) of two vectors —
 "the union of everything both sides have seen".
@@ -127,6 +171,18 @@ new frontier.
 **Identification** — enum deriving `Debug, Clone, Serialize, Deserialize,
 PartialEq, Eq` with `#[allow(clippy::large_enum_variant)]`; marker
 `// md:NoteOp`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:NoteOp
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
+pub enum NoteOp {
+    Upsert(Note),
+    Tombstone { deleted_at: DateTime<Utc> },
+}
+```
 
 **What it does** — What a log entry records: `Upsert(Note)` (create-or-update
 with the complete note, body included) or `Tombstone { deleted_at }` (soft
@@ -150,6 +206,19 @@ and tombstone-content recovery possible.
 **Identification** — struct deriving `Debug, Clone, Serialize, Deserialize,
 PartialEq, Eq`; marker `// md:NoteLogEntry`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:NoteLogEntry
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NoteLogEntry {
+    pub vv: VersionVector,
+    pub timestamp: DateTime<Utc>,
+    pub device_id: String,
+    pub op: NoteOp,
+}
+```
+
 **What it does** — One entry in a per-device note log: `vv` (the writer's known
 vector *after* incrementing its own component — comparing each device's latest
 entry reconstructs causal relationships), `timestamp` (wall clock; used
@@ -168,6 +237,20 @@ writer), `op`.
 ## Merged
 
 **Identification** — struct deriving `Debug, Clone`; marker `// md:Merged`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:Merged
+#[derive(Debug, Clone)]
+pub struct Merged {
+    pub note: Option<Note>,
+    pub vv: VersionVector,
+    pub winner_vv: VersionVector,
+    pub winner_device: String,
+    pub conflict: bool,
+}
+```
 
 **What it does** — The outcome of merging every per-device log of one note:
 `note: Option<Note>` (the winner; `deleted_at: Some` when a tombstone won;
@@ -195,6 +278,79 @@ of edits it never saw.
 
 **Identification** — `pub fn merge(logs: &[Vec<NoteLogEntry>]) -> Merged`;
 marker `// md:fn merge`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn merge
+pub fn merge(logs: &[Vec<NoteLogEntry>]) -> Merged {
+    let heads: Vec<&NoteLogEntry> = logs.iter().filter_map(|l| l.last()).collect();
+    if heads.is_empty() {
+        return Merged {
+            note: None,
+            vv: VersionVector::new(),
+            winner_vv: VersionVector::new(),
+            winner_device: String::new(),
+            conflict: false,
+        };
+    }
+
+    let mut merged_vv = VersionVector::new();
+    for h in &heads {
+        merged_vv = join(&merged_vv, &h.vv);
+    }
+
+    let frontier: Vec<&NoteLogEntry> = heads
+        .iter()
+        .copied()
+        .filter(|h| {
+            !heads
+                .iter()
+                .any(|g| !std::ptr::eq(*g, *h) && dominates(&g.vv, &h.vv) && g.vv != h.vv)
+        })
+        .collect();
+
+    let conflict = frontier.len() > 1;
+
+    let winner = frontier
+        .iter()
+        .copied()
+        .max_by(|a, b| {
+            a.timestamp
+                .cmp(&b.timestamp)
+                .then_with(|| a.device_id.cmp(&b.device_id))
+        })
+        .expect("frontier is non-empty when heads is non-empty");
+
+    let note = match &winner.op {
+        NoteOp::Upsert(note) => Some(note.clone()),
+        NoteOp::Tombstone { deleted_at } => {
+            let latest_upsert = logs
+                .iter()
+                .flatten()
+                .filter_map(|e| match &e.op {
+                    NoteOp::Upsert(n) => Some((e.timestamp, n)),
+                    NoteOp::Tombstone { .. } => None,
+                })
+                .max_by_key(|(ts, _)| *ts)
+                .map(|(_, n)| n.clone());
+            latest_upsert.map(|mut n| {
+                n.deleted_at = Some(*deleted_at);
+                n.updated_at = *deleted_at;
+                n
+            })
+        }
+    };
+
+    Merged {
+        note,
+        vv: merged_vv,
+        winner_vv: winner.vv.clone(),
+        winner_device: winner.device_id.clone(),
+        conflict,
+    }
+}
+```
 
 **What it does** — Merges all per-device logs of one note into its current
 state. `logs` is one `Vec<NoteLogEntry>` per device (inter-device order
@@ -230,6 +386,31 @@ each other.
 **Identification** — `pub fn compact_own_log(log: &[NoteLogEntry]) -> Vec<NoteLogEntry>`;
 marker `// md:fn compact_own_log`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:fn compact_own_log
+pub fn compact_own_log(log: &[NoteLogEntry]) -> Vec<NoteLogEntry> {
+    if log.len() <= 1 {
+        return log.to_vec();
+    }
+    let head = log.last().expect("len > 1");
+    let newest_upsert = log
+        .iter()
+        .filter(|e| matches!(e.op, NoteOp::Upsert(_)))
+        .max_by(|a, b| {
+            a.timestamp
+                .cmp(&b.timestamp)
+                .then_with(|| a.device_id.cmp(&b.device_id))
+        });
+    match newest_upsert {
+        None => vec![head.clone()],
+        Some(u) if std::ptr::eq(u, head) => vec![head.clone()],
+        Some(u) => vec![u.clone(), head.clone()],
+    }
+}
+```
+
 **What it does** — Compacts one device's **own** append-only log without
 changing `merge`'s result. Within a single device's log every entry's vector
 dominates all earlier ones (each local write bases itself on everything seen so
@@ -258,6 +439,17 @@ versions per note before collapse to the frontier).
 **Identification** — enum deriving `Debug, Clone, Copy, PartialEq, Eq`; marker
 `// md:Winner`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:Winner
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Winner {
+    Local,
+    Incoming,
+}
+```
+
 **What it does** — Outcome of a pairwise comparison: `Local` (keep the local
 value — incoming is stale, equal, or loses the tiebreak) or `Incoming`
 (replace — causally newer or wins the concurrent tiebreak).
@@ -276,6 +468,34 @@ value — incoming is stale, equal, or loses the tiebreak) or `Incoming`
 **Identification** —
 `pub fn resolve(local_vv, local_ts, local_device, incoming_vv, incoming_ts, incoming_device) -> Winner`;
 marker `// md:fn resolve`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn resolve
+pub fn resolve(
+    local_vv: &VersionVector,
+    local_ts: DateTime<Utc>,
+    local_device: &str,
+    incoming_vv: &VersionVector,
+    incoming_ts: DateTime<Utc>,
+    incoming_device: &str,
+) -> Winner {
+    let incoming_dominates = dominates(incoming_vv, local_vv);
+    let local_dominates = dominates(local_vv, incoming_vv);
+    match (incoming_dominates, local_dominates) {
+        (true, false) => Winner::Incoming,
+        (_, true) => Winner::Local,
+        (false, false) => {
+            if (incoming_ts, incoming_device) > (local_ts, local_device) {
+                Winner::Incoming
+            } else {
+                Winner::Local
+            }
+        }
+    }
+}
+```
 
 **What it does** — Decides whether an `incoming` versioned write replaces the
 `local` one for a single entity — the **state-based analogue of `merge`** for
@@ -308,6 +528,8 @@ equal vectors → `Local` → no-op.
 **Identification** — `#[cfg(test)]` unit-test module; marker `// md:mod tests`.
 Four helpers + twelve tests, all pure.
 
+**Code** — container: members documented as sub-blocks below: fn vv, fn ts, fn resolve_incoming_causally_newer_wins, fn resolve_stale_incoming_loses, fn resolve_equal_vectors_is_noop, fn resolve_concurrent_equal_timestamp_converges_by_device, fn resolve_concurrent_breaks_by_timestamp, fn entry, fn note, fn single_device_history_picks_latest, fn merge_exposes_winning_heads_own_vv_and_device, fn merge_empty_has_empty_winner_fields, fn causal_update_wins_without_conflict, fn concurrent_edits_conflict_and_break_by_timestamp, fn tombstone_wins_over_concurrent_older_edit, fn compact_own_log_preserves_merge, fn causal_edit_after_delete_resurrects.
+
 **What it does** — Pins the resolution semantics: the `resolve` regimes,
 `merge`'s clean/conflict/tombstone/resurrection behaviours, winner-field
 exposure, and `compact_own_log`'s equivalence.
@@ -324,6 +546,15 @@ keeplin-srv; changing them means changing distributed convergence semantics.
 **Identification** — helper `fn vv(pairs: &[(&str, u64)]) -> VersionVector`;
 marker `// md:mod tests > fn vv`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn vv
+    fn vv(pairs: &[(&str, u64)]) -> VersionVector {
+        pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+```
+
 **What it does** — Builds a vector from literal pairs.
 
 ### fn ts
@@ -331,12 +562,39 @@ marker `// md:mod tests > fn vv`.
 **Identification** — helper `fn ts(secs: i64) -> DateTime<Utc>`; marker
 `// md:mod tests > fn ts`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn ts
+    fn ts(secs: i64) -> DateTime<Utc> {
+        DateTime::<Utc>::from_timestamp(secs, 0).unwrap()
+    }
+```
+
 **What it does** — Second-resolution timestamp constructor.
 
 ### fn resolve_incoming_causally_newer_wins
 
 **Identification** — unit test; marker
 `// md:mod tests > fn resolve_incoming_causally_newer_wins`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn resolve_incoming_causally_newer_wins
+    #[test]
+    fn resolve_incoming_causally_newer_wins() {
+        let w = resolve(
+            &vv(&[("A", 1)]),
+            ts(10),
+            "A",
+            &vv(&[("A", 1), ("B", 1)]),
+            ts(5),
+            "B",
+        );
+        assert_eq!(w, Winner::Incoming);
+    }
+```
 
 **What it does** — incoming `{A:1,B:1}` dominates local `{A:1}` → `Incoming`,
 even with an older timestamp (causality beats wall clock).
@@ -346,6 +604,24 @@ even with an older timestamp (causality beats wall clock).
 **Identification** — unit test; marker
 `// md:mod tests > fn resolve_stale_incoming_loses`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn resolve_stale_incoming_loses
+    #[test]
+    fn resolve_stale_incoming_loses() {
+        let w = resolve(
+            &vv(&[("A", 1), ("B", 1)]),
+            ts(5),
+            "B",
+            &vv(&[("A", 1)]),
+            ts(10),
+            "A",
+        );
+        assert_eq!(w, Winner::Local);
+    }
+```
+
 **What it does** — the mirror case: a dominated incoming loses despite a newer
 timestamp.
 
@@ -354,6 +630,17 @@ timestamp.
 **Identification** — unit test; marker
 `// md:mod tests > fn resolve_equal_vectors_is_noop`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn resolve_equal_vectors_is_noop
+    #[test]
+    fn resolve_equal_vectors_is_noop() {
+        let w = resolve(&vv(&[("A", 2)]), ts(10), "A", &vv(&[("A", 2)]), ts(99), "A");
+        assert_eq!(w, Winner::Local);
+    }
+```
+
 **What it does** — equal vectors → `Local` (idempotent re-apply), regardless of
 timestamps.
 
@@ -361,6 +648,25 @@ timestamps.
 
 **Identification** — unit test; marker
 `// md:mod tests > fn resolve_concurrent_equal_timestamp_converges_by_device`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn resolve_concurrent_equal_timestamp_converges_by_device
+    #[test]
+    fn resolve_concurrent_equal_timestamp_converges_by_device() {
+        let local_a = vv(&[("A", 1)]);
+        let incoming_b = vv(&[("B", 1)]);
+        assert_eq!(
+            resolve(&local_a, ts(10), "A", &incoming_b, ts(10), "B"),
+            Winner::Incoming
+        );
+        assert_eq!(
+            resolve(&incoming_b, ts(10), "B", &local_a, ts(10), "A"),
+            Winner::Local
+        );
+    }
+```
 
 **What it does** — the case bare-`updated_at` LWW gets wrong: two concurrent
 edits with identical timestamps. Runs `resolve` from both devices'
@@ -371,6 +677,17 @@ perspectives and asserts both pick the **same** winner (the greater device id).
 **Identification** — unit test; marker
 `// md:mod tests > fn resolve_concurrent_breaks_by_timestamp`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn resolve_concurrent_breaks_by_timestamp
+    #[test]
+    fn resolve_concurrent_breaks_by_timestamp() {
+        let w = resolve(&vv(&[("A", 1)]), ts(10), "A", &vv(&[("B", 1)]), ts(30), "B");
+        assert_eq!(w, Winner::Incoming);
+    }
+```
+
 **What it does** — concurrent vectors, different timestamps → the later one
 wins.
 
@@ -379,12 +696,39 @@ wins.
 **Identification** — helper building a `NoteLogEntry`; marker
 `// md:mod tests > fn entry`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn entry
+    fn entry(vv: &[(&str, u64)], dev: &str, secs: i64, op: NoteOp) -> NoteLogEntry {
+        let vv = vv
+            .iter()
+            .map(|(k, v)| (k.to_string(), *v))
+            .collect::<VersionVector>();
+        NoteLogEntry {
+            vv,
+            timestamp: DateTime::<Utc>::from_timestamp(secs, 0).unwrap(),
+            device_id: dev.to_string(),
+            op,
+        }
+    }
+```
+
 **What it does** — Constructs an entry from vv pairs, device, seconds, and op.
 
 ### fn note
 
 **Identification** — helper `fn note(body: &str) -> Note`; marker
 `// md:mod tests > fn note`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn note
+    fn note(body: &str) -> Note {
+        Note::new("t", body)
+    }
+```
 
 **What it does** — `Note::new("t", body)`.
 
@@ -393,6 +737,23 @@ wins.
 **Identification** — unit test; marker
 `// md:mod tests > fn single_device_history_picks_latest`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn single_device_history_picks_latest
+    #[test]
+    fn single_device_history_picks_latest() {
+        let logs = vec![vec![
+            entry(&[("A", 1)], "A", 10, NoteOp::Upsert(note("v1"))),
+            entry(&[("A", 2)], "A", 20, NoteOp::Upsert(note("v2"))),
+        ]];
+        let m = merge(&logs);
+        assert!(!m.conflict);
+        assert_eq!(m.note.unwrap().body, "v2");
+        assert_eq!(m.vv.get("A"), Some(&2));
+    }
+```
+
 **What it does** — one device, two upserts → latest body wins, no conflict,
 merged vv `{A:2}`.
 
@@ -400,6 +761,38 @@ merged vv `{A:2}`.
 
 **Identification** — unit test; marker
 `// md:mod tests > fn merge_exposes_winning_heads_own_vv_and_device`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn merge_exposes_winning_heads_own_vv_and_device
+    #[test]
+    fn merge_exposes_winning_heads_own_vv_and_device() {
+        let logs = vec![
+            vec![entry(&[("A", 1)], "A", 10, NoteOp::Upsert(note("from A")))],
+            vec![
+                entry(
+                    &[("A", 1), ("B", 1)],
+                    "B",
+                    20,
+                    NoteOp::Upsert(note("from B")),
+                ),
+                entry(
+                    &[("A", 1), ("B", 2)],
+                    "B",
+                    30,
+                    NoteOp::Tombstone {
+                        deleted_at: DateTime::<Utc>::from_timestamp(30, 0).unwrap(),
+                    },
+                ),
+            ],
+        ];
+        let m = merge(&logs);
+        assert_eq!(m.winner_device, "B");
+        assert_eq!(m.winner_vv, vv(&[("A", 1), ("B", 2)]));
+        assert!(m.note.unwrap().deleted_at.is_some());
+    }
+```
 
 **What it does** — a causal chain ending in B's tombstone: `winner_device` is
 `B`, `winner_vv` is the delete head's own `{A:1,B:2}` (not a join), and the
@@ -410,12 +803,47 @@ merged note is deleted.
 **Identification** — unit test; marker
 `// md:mod tests > fn merge_empty_has_empty_winner_fields`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn merge_empty_has_empty_winner_fields
+    #[test]
+    fn merge_empty_has_empty_winner_fields() {
+        let m = merge(&[]);
+        assert!(m.winner_vv.is_empty());
+        assert!(m.winner_device.is_empty());
+    }
+```
+
 **What it does** — `merge(&[])` yields empty `winner_vv`/`winner_device`.
 
 ### fn causal_update_wins_without_conflict
 
 **Identification** — unit test; marker
 `// md:mod tests > fn causal_update_wins_without_conflict`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn causal_update_wins_without_conflict
+    #[test]
+    fn causal_update_wins_without_conflict() {
+        let logs = vec![
+            vec![entry(&[("A", 1)], "A", 10, NoteOp::Upsert(note("from A")))],
+            vec![entry(
+                &[("A", 1), ("B", 1)],
+                "B",
+                20,
+                NoteOp::Upsert(note("from B")),
+            )],
+        ];
+        let m = merge(&logs);
+        assert!(!m.conflict);
+        assert_eq!(m.note.unwrap().body, "from B");
+        assert_eq!(m.vv.get("A"), Some(&1));
+        assert_eq!(m.vv.get("B"), Some(&1));
+    }
+```
 
 **What it does** — B edited after seeing A's edit (`{A:1,B:1}`) → B wins
 cleanly, joined vv `{A:1,B:1}`.
@@ -425,6 +853,24 @@ cleanly, joined vv `{A:1,B:1}`.
 **Identification** — unit test; marker
 `// md:mod tests > fn concurrent_edits_conflict_and_break_by_timestamp`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn concurrent_edits_conflict_and_break_by_timestamp
+    #[test]
+    fn concurrent_edits_conflict_and_break_by_timestamp() {
+        let logs = vec![
+            vec![entry(&[("A", 1)], "A", 10, NoteOp::Upsert(note("from A")))],
+            vec![entry(&[("B", 1)], "B", 30, NoteOp::Upsert(note("from B")))],
+        ];
+        let m = merge(&logs);
+        assert!(m.conflict);
+        assert_eq!(m.note.unwrap().body, "from B");
+        assert_eq!(m.vv.get("A"), Some(&1));
+        assert_eq!(m.vv.get("B"), Some(&1));
+    }
+```
+
 **What it does** — `{A:1}` vs `{B:1}` (neither dominates) → `conflict = true`,
 later timestamp wins, vv joins both.
 
@@ -432,6 +878,38 @@ later timestamp wins, vv joins both.
 
 **Identification** — unit test; marker
 `// md:mod tests > fn tombstone_wins_over_concurrent_older_edit`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn tombstone_wins_over_concurrent_older_edit
+    #[test]
+    fn tombstone_wins_over_concurrent_older_edit() {
+        let logs = vec![
+            vec![
+                entry(&[("A", 1)], "A", 10, NoteOp::Upsert(note("orig"))),
+                entry(
+                    &[("A", 2)],
+                    "A",
+                    40,
+                    NoteOp::Tombstone {
+                        deleted_at: DateTime::<Utc>::from_timestamp(40, 0).unwrap(),
+                    },
+                ),
+            ],
+            vec![entry(
+                &[("B", 1)],
+                "B",
+                20,
+                NoteOp::Upsert(note("concurrent")),
+            )],
+        ];
+        let m = merge(&logs);
+        assert!(m.conflict, "delete vs concurrent edit is a real conflict");
+        let n = m.note.unwrap();
+        assert!(n.deleted_at.is_some(), "tombstone wins by later timestamp");
+    }
+```
 
 **What it does** — A's later delete vs B's earlier concurrent edit → the
 delete wins the tiebreak and the merged note is deleted (content recovered
@@ -441,6 +919,69 @@ from the newest upsert).
 
 **Identification** — unit test; marker
 `// md:mod tests > fn compact_own_log_preserves_merge`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn compact_own_log_preserves_merge
+    #[test]
+    fn compact_own_log_preserves_merge() {
+        let mut long = Vec::new();
+        for i in 1..=10u64 {
+            long.push(entry(
+                &[("A", i)],
+                "A",
+                i as i64 * 10,
+                NoteOp::Upsert(note(&format!("v{i}"))),
+            ));
+        }
+        let c = compact_own_log(&long);
+        assert_eq!(c.len(), 1, "upsert-headed history compacts to the head");
+        assert_eq!(
+            merge(&[c]).note.unwrap().body,
+            merge(&[long]).note.unwrap().body
+        );
+
+        let del_ts = DateTime::<Utc>::from_timestamp(200, 0).unwrap();
+        let mut with_delete = Vec::new();
+        for i in 1..=5u64 {
+            with_delete.push(entry(
+                &[("A", i)],
+                "A",
+                i as i64 * 10,
+                NoteOp::Upsert(note(&format!("body{i}"))),
+            ));
+        }
+        with_delete.push(entry(
+            &[("A", 6)],
+            "A",
+            200,
+            NoteOp::Tombstone { deleted_at: del_ts },
+        ));
+        let c = compact_own_log(&with_delete);
+        assert_eq!(
+            c.len(),
+            2,
+            "tombstone-headed history keeps upsert + tombstone"
+        );
+        let m_orig = merge(std::slice::from_ref(&with_delete));
+        let m_comp = merge(std::slice::from_ref(&c));
+        let n_orig = m_orig.note.unwrap();
+        let n_comp = m_comp.note.unwrap();
+        assert_eq!(n_comp.body, n_orig.body, "recovered content is unchanged");
+        assert!(n_comp.deleted_at.is_some());
+        assert_eq!(m_comp.vv, m_orig.vv, "merged vector is unchanged");
+
+        let peer = vec![entry(&[("B", 1)], "B", 15, NoteOp::Upsert(note("peer")))];
+        let full = merge(&[with_delete, peer.clone()]);
+        let comp = merge(&[c, peer]);
+        assert_eq!(comp.vv, full.vv);
+        assert_eq!(
+            comp.note.map(|n| (n.body, n.deleted_at.is_some())),
+            full.note.map(|n| (n.body, n.deleted_at.is_some())),
+        );
+    }
+```
 
 **What it does** — Three cases: a 10-entry upsert history compacts to just the
 head with an identical merge; a history ending in a tombstone keeps exactly
@@ -452,6 +993,39 @@ the full log.
 
 **Identification** — unit test; marker
 `// md:mod tests > fn causal_edit_after_delete_resurrects`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn causal_edit_after_delete_resurrects
+    #[test]
+    fn causal_edit_after_delete_resurrects() {
+        let logs = vec![
+            vec![
+                entry(&[("A", 1)], "A", 10, NoteOp::Upsert(note("orig"))),
+                entry(
+                    &[("A", 2)],
+                    "A",
+                    20,
+                    NoteOp::Tombstone {
+                        deleted_at: DateTime::<Utc>::from_timestamp(20, 0).unwrap(),
+                    },
+                ),
+            ],
+            vec![entry(
+                &[("A", 2), ("B", 1)],
+                "B",
+                30,
+                NoteOp::Upsert(note("revived")),
+            )],
+        ];
+        let m = merge(&logs);
+        assert!(!m.conflict);
+        let n = m.note.unwrap();
+        assert!(n.deleted_at.is_none());
+        assert_eq!(n.body, "revived");
+    }
+```
 
 **What it does** — B's edit causally follows A's delete (knows `{A:2}`) → B
 dominates → the note revives with `deleted_at: None`, no conflict.
@@ -496,18 +1070,33 @@ refresh with `graphify update .` after refactors.
 
 | # | Block (source order) | Marker in code |
 |---|----------------------|----------------|
-| 1 | imports (`use …`) | `// md:Overview` |
-| 2 | `type VersionVector` | `// md:VersionVector` |
+| 1 | `Overview` | `// md:Overview` |
+| 2 | `VersionVector` | `// md:VersionVector` |
 | 3 | `fn increment` | `// md:fn increment` |
 | 4 | `fn dominates` | `// md:fn dominates` |
 | 5 | `fn join` | `// md:fn join` |
-| 6 | `enum NoteOp` | `// md:NoteOp` |
-| 7 | `struct NoteLogEntry` | `// md:NoteLogEntry` |
-| 8 | `struct Merged` | `// md:Merged` |
+| 6 | `NoteOp` | `// md:NoteOp` |
+| 7 | `NoteLogEntry` | `// md:NoteLogEntry` |
+| 8 | `Merged` | `// md:Merged` |
 | 9 | `fn merge` | `// md:fn merge` |
 | 10 | `fn compact_own_log` | `// md:fn compact_own_log` |
-| 11 | `enum Winner` | `// md:Winner` |
+| 11 | `Winner` | `// md:Winner` |
 | 12 | `fn resolve` | `// md:fn resolve` |
-| 13 | `mod tests` | `// md:mod tests` |
-| 14–17 | helpers `vv`, `ts`, `entry`, `note` | `// md:mod tests > fn <name>` |
-| 18–29 | the twelve tests | `// md:mod tests > fn <name>` |
+| 13 | `mod tests` (container) | `// md:mod tests` |
+| 14 | `fn vv` | `// md:mod tests > fn vv` |
+| 15 | `fn ts` | `// md:mod tests > fn ts` |
+| 16 | `fn resolve_incoming_causally_newer_wins` | `// md:mod tests > fn resolve_incoming_causally_newer_wins` |
+| 17 | `fn resolve_stale_incoming_loses` | `// md:mod tests > fn resolve_stale_incoming_loses` |
+| 18 | `fn resolve_equal_vectors_is_noop` | `// md:mod tests > fn resolve_equal_vectors_is_noop` |
+| 19 | `fn resolve_concurrent_equal_timestamp_converges_by_device` | `// md:mod tests > fn resolve_concurrent_equal_timestamp_converges_by_device` |
+| 20 | `fn resolve_concurrent_breaks_by_timestamp` | `// md:mod tests > fn resolve_concurrent_breaks_by_timestamp` |
+| 21 | `fn entry` | `// md:mod tests > fn entry` |
+| 22 | `fn note` | `// md:mod tests > fn note` |
+| 23 | `fn single_device_history_picks_latest` | `// md:mod tests > fn single_device_history_picks_latest` |
+| 24 | `fn merge_exposes_winning_heads_own_vv_and_device` | `// md:mod tests > fn merge_exposes_winning_heads_own_vv_and_device` |
+| 25 | `fn merge_empty_has_empty_winner_fields` | `// md:mod tests > fn merge_empty_has_empty_winner_fields` |
+| 26 | `fn causal_update_wins_without_conflict` | `// md:mod tests > fn causal_update_wins_without_conflict` |
+| 27 | `fn concurrent_edits_conflict_and_break_by_timestamp` | `// md:mod tests > fn concurrent_edits_conflict_and_break_by_timestamp` |
+| 28 | `fn tombstone_wins_over_concurrent_older_edit` | `// md:mod tests > fn tombstone_wins_over_concurrent_older_edit` |
+| 29 | `fn compact_own_log_preserves_merge` | `// md:mod tests > fn compact_own_log_preserves_merge` |
+| 30 | `fn causal_edit_after_delete_resurrects` | `// md:mod tests > fn causal_edit_after_delete_resurrects` |

@@ -1,14 +1,15 @@
 # `compat.rs` — keeplin-srv protocol/capability handshake (`GET /version`)
 
-Self-contained companion for `keeplin-core/src/compat.rs`. It documents **every code
-block of the source file, in source order** — a reader with only this file must be able
+Self-contained companion for `keeplin-core/src/compat.rs`. It documents **every code block of
+the source file, in source order, with its complete code embedded** — a reader with only this file must be able
 to understand it without opening anything else, so project-wide conventions are
 deliberately re-explained here (hyper-redundancy is intended).
 
 **How to navigate**: every block carries exactly one marker comment
 `// md:<Header> > … > <Block header>` whose path is the header chain of its section
-here; grep it in either direction. Each section covers **Identification**,
-**What it does**, **Dependencies**, **Used by**, **Repeated context**.
+here; grep it in either direction. Each block section covers, in this fixed order:
+**Identification**, **Code**, **What it does**, **Dependencies**, **Used by**,
+**Repeated context**.
 
 ---
 
@@ -16,7 +17,10 @@ here; grep it in either direction. Each section covers **Identification**,
 
 **Identification** — file-level block: the import. Marker `// md:Overview`.
 
+**Code** — complete and verbatim:
+
 ```rust
+// md:Overview
 use serde::Deserialize;
 ```
 
@@ -55,6 +59,13 @@ and run its test suite — it exercises this real client against the real server
 **Identification** — `pub const PROTOCOL_VERSION: u32 = 1;` marker
 `// md:PROTOCOL_VERSION`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:PROTOCOL_VERSION
+pub const PROTOCOL_VERSION: u32 = 1;
+```
+
 **What it does** — The sync/collab wire-protocol version this client speaks.
 Mirrors keeplin-srv's `PROTOCOL_VERSION` (its `src/http.rs`); bump **both sides
 together** on any breaking change to the relay or collab message shapes.
@@ -74,6 +85,15 @@ wire change is expressed only as a version bump, never as dual-format support.
 **Identification** — `pub fn compatible_with(server_protocol: u32) -> bool`; marker
 `// md:fn compatible_with`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:fn compatible_with
+pub fn compatible_with(server_protocol: u32) -> bool {
+    server_protocol == PROTOCOL_VERSION
+}
+```
+
 **What it does** — The compatibility rule, in one place: **exact protocol match**
 (`server_protocol == PROTOCOL_VERSION`). Capabilities cover additive evolution (a
 client probes them instead of guessing), so a `protocol_version` bump is reserved
@@ -92,6 +112,22 @@ of the handshake; both must change in lockstep.
 
 **Identification** — struct deriving `Debug, Clone, Deserialize`; marker
 `// md:ServerInfo`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:ServerInfo
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServerInfo {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    pub protocol_version: u32,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+```
 
 **What it does** — What `GET /version` advertises: `name` and `version`
 (`#[serde(default)]` — informational, may be absent/empty), `protocol_version`
@@ -114,6 +150,18 @@ evolution goes in `protocol_version` — never infer features from `version` str
 
 **Identification** — enum deriving `Debug, Clone`; marker `// md:Handshake`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:Handshake
+#[derive(Debug, Clone)]
+pub enum Handshake {
+    Compatible(ServerInfo),
+    Incompatible(ServerInfo),
+    Unavailable,
+}
+```
+
 **What it does** — Outcome of the startup handshake:
 `Compatible(ServerInfo)` (server speaks our protocol; capabilities known),
 `Incompatible(ServerInfo)` (server answered with a protocol we do not speak — the
@@ -135,6 +183,24 @@ degrades to the pre-handshake behaviour.
 **Identification** —
 `pub async fn negotiate(http: &reqwest::Client, http_base: &str) -> Handshake`;
 marker `// md:fn negotiate`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn negotiate
+pub async fn negotiate(http: &reqwest::Client, http_base: &str) -> Handshake {
+    let url = format!("{}/version", http_base.trim_end_matches('/'));
+    let response = match http.get(&url).send().await {
+        Ok(r) if r.status().is_success() => r,
+        _ => return Handshake::Unavailable,
+    };
+    match response.json::<ServerInfo>().await {
+        Ok(info) if compatible_with(info.protocol_version) => Handshake::Compatible(info),
+        Ok(info) => Handshake::Incompatible(info),
+        Err(_) => Handshake::Unavailable,
+    }
+}
+```
 
 **What it does** — Fetches `GET {http_base}/version` (trailing `/` on the base is
 trimmed before joining) and classifies the answer. **Never errors**: non-2xx status
@@ -159,6 +225,39 @@ pure logic (like `compatible_with`) stays sync and unit-testable.
 **Identification** — `pub fn incompatible_message(info: &ServerInfo) -> String`;
 marker `// md:fn incompatible_message`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:fn incompatible_message
+pub fn incompatible_message(info: &ServerInfo) -> String {
+    let direction = if info.protocol_version > PROTOCOL_VERSION {
+        "The server is newer: upgrade this keeplin client/daemon to a release \
+         that speaks the server's protocol."
+    } else {
+        "The client is newer: upgrade keeplin-srv (its Cargo.toml pins a \
+         keeplin-core rev; bump it to a matching release and run its test \
+         suite), or downgrade this client."
+    };
+    format!(
+        "incompatible sync server: {} {} speaks protocol {} but this client speaks \
+         protocol {}. {} Sync is disabled until the versions match.",
+        if info.name.is_empty() {
+            "server"
+        } else {
+            &info.name
+        },
+        if info.version.is_empty() {
+            "(unknown version)"
+        } else {
+            &info.version
+        },
+        info.protocol_version,
+        PROTOCOL_VERSION,
+        direction
+    )
+}
+```
+
 **What it does** — Builds the actionable startup error for an incompatible server:
 names the server (falling back to `"server"` / `"(unknown version)"` for empty
 fields), states both protocol versions, and says **which side to upgrade** — server
@@ -182,6 +281,8 @@ actionable (say what to do), and must never contain sensitive data.
 **Identification** — `#[cfg(test)]` unit-test module; marker `// md:mod tests`.
 Two tests.
 
+**Code** — container: members documented as sub-blocks below: fn exact_match_is_compatible, fn incompatible_message_names_the_side_to_upgrade.
+
 **What it does** — Unit tests for the pure pieces (the equality rule and the
 message direction); the network path is covered end-to-end by
 `tests/version_handshake.rs` with fake HTTP servers.
@@ -198,6 +299,18 @@ message direction); the network path is covered end-to-end by
 **Identification** — unit test; marker
 `// md:mod tests > fn exact_match_is_compatible`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn exact_match_is_compatible
+    #[test]
+    fn exact_match_is_compatible() {
+        assert!(compatible_with(PROTOCOL_VERSION));
+        assert!(!compatible_with(PROTOCOL_VERSION + 1));
+        assert!(!compatible_with(0));
+    }
+```
+
 **What it does** — Asserts `compatible_with(PROTOCOL_VERSION)` is true and both a
 higher (`+1`) and lower (`0`) version are rejected.
 
@@ -211,6 +324,32 @@ higher (`+1`) and lower (`0`) version are rejected.
 
 **Identification** — unit test; marker
 `// md:mod tests > fn incompatible_message_names_the_side_to_upgrade`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn incompatible_message_names_the_side_to_upgrade
+    #[test]
+    fn incompatible_message_names_the_side_to_upgrade() {
+        let newer_server = ServerInfo {
+            name: "keeplin-srv".into(),
+            version: "9.9.9".into(),
+            protocol_version: PROTOCOL_VERSION + 1,
+            capabilities: vec![],
+        };
+        let msg = incompatible_message(&newer_server);
+        assert!(msg.contains("upgrade this keeplin client"), "{msg}");
+
+        let older_server = ServerInfo {
+            name: "keeplin-srv".into(),
+            version: "0.0.1".into(),
+            protocol_version: 0,
+            capabilities: vec![],
+        };
+        let msg = incompatible_message(&older_server);
+        assert!(msg.contains("upgrade keeplin-srv"), "{msg}");
+    }
+```
 
 **What it does** — Builds a newer-server `ServerInfo` (`PROTOCOL_VERSION + 1`) and
 asserts the message says to upgrade this keeplin client; builds an older-server one

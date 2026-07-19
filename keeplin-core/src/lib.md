@@ -7,8 +7,9 @@ deliberately re-explained here (hyper-redundancy is intended).
 
 **How to navigate**: every block carries exactly one marker comment
 `// md:<Header> > … > <Block header>` whose path is the header chain of its section
-here; grep it in either direction. Each section covers **Identification**,
-**What it does**, **Dependencies**, **Used by**, **Repeated context**.
+here; grep it in either direction. Each block section covers, in this fixed order:
+**Identification**, **Code**, **What it does**, **Dependencies**, **Used by**,
+**Repeated context**.
 
 ---
 
@@ -17,7 +18,10 @@ here; grep it in either direction. Each section covers **Identification**,
 **Identification** — the file's single block: the crate's module declarations. Marker
 `// md:Overview`.
 
+**Code** — complete and verbatim:
+
 ```rust
+// md:Overview
 pub mod collab;
 pub mod compat;
 pub mod encryption;

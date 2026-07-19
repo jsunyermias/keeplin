@@ -1,14 +1,15 @@
 # `migrate.rs` — one-shot state copy between backends
 
-Self-contained companion for `keeplin-core/src/migrate.rs`. It documents **every code
-block of the source file, in source order** — a reader with only this file must be able
+Self-contained companion for `keeplin-core/src/migrate.rs`. It documents **every code block of
+the source file, in source order, with its complete code embedded** — a reader with only this file must be able
 to understand it without opening anything else, so project-wide conventions are
 deliberately re-explained here (hyper-redundancy is intended).
 
 **How to navigate**: every block carries exactly one marker comment
 `// md:<Header> > … > <Block header>` whose path is the header chain of its section
-here; grep it in either direction. Each section covers **Identification**,
-**What it does**, **Dependencies**, **Used by**, **Repeated context**.
+here; grep it in either direction. Each block section covers, in this fixed order:
+**Identification**, **Code**, **What it does**, **Dependencies**, **Used by**,
+**Repeated context**.
 
 ---
 
@@ -16,7 +17,10 @@ here; grep it in either direction. Each section covers **Identification**,
 
 **Identification** — file-level block: the imports. Marker `// md:Overview`.
 
+**Code** — complete and verbatim:
+
 ```rust
+// md:Overview
 use crate::{
     error::StorageError,
     models::{NoteTag, Resource},
@@ -66,6 +70,13 @@ here by design: a migration intentionally leaves tombstones behind. Dyn-trait
 
 **Identification** — `const PAGE: u32 = 500;` marker `// md:PAGE`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:PAGE
+const PAGE: u32 = 500;
+```
+
 **What it does** — How many entities to request per page while exhausting the
 paginated `list_*` methods. Any value in `1..=MAX_PAGE_SIZE` (1000, from
 `storage/mod.rs`) is correct; 500 balances round-trips against per-page memory.
@@ -83,6 +94,20 @@ paginated `list_*` methods. Any value in `1..=MAX_PAGE_SIZE` (1000, from
 
 **Identification** — struct deriving `Debug, Default, Clone, Copy, PartialEq, Eq`;
 marker `// md:MigrationReport`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:MigrationReport
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MigrationReport {
+    pub notebooks: usize,
+    pub tags: usize,
+    pub notes: usize,
+    pub note_tags: usize,
+    pub resources: usize,
+}
+```
 
 **What it does** — Per-entity counts of what a `migrate` run copied, for reporting
 to the operator: `notebooks`, `tags`, `notes`, `note_tags` (note↔tag associations),
@@ -102,6 +127,52 @@ asserted on in `keeplin-core/tests/migrate.rs`.
 **Identification** —
 `pub async fn migrate(src: &dyn StorageBackend, dst: &dyn StorageBackend) -> Result<MigrationReport, StorageError>`;
 marker `// md:fn migrate`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn migrate
+pub async fn migrate(
+    src: &dyn StorageBackend,
+    dst: &dyn StorageBackend,
+) -> Result<MigrationReport, StorageError> {
+    let mut report = MigrationReport::default();
+
+    for notebook in collect(|token| src.list_notebooks(PAGE, token)).await? {
+        dst.create_notebook(notebook).await?;
+        report.notebooks += 1;
+    }
+
+    for tag in collect(|token| src.list_tags(PAGE, token)).await? {
+        dst.create_tag(tag).await?;
+        report.tags += 1;
+    }
+
+    let notes = collect(|token| src.list_notes(PAGE, token)).await?;
+    for note in &notes {
+        dst.create_note(note.clone()).await?;
+        report.notes += 1;
+    }
+    for note in &notes {
+        for tag in collect(|token| src.list_note_tags(note.id, PAGE, token)).await? {
+            dst.add_note_tag(NoteTag {
+                note_id: note.id,
+                tag_id: tag.id,
+            })
+            .await?;
+            report.note_tags += 1;
+        }
+    }
+
+    for meta in collect(|token| src.list_resources(PAGE, token)).await? {
+        let (resource, data): (Resource, Vec<u8>) = src.read_resource(meta.id).await?;
+        dst.create_resource(resource, data).await?;
+        report.resources += 1;
+    }
+
+    Ok(report)
+}
+```
 
 **What it does** — Copies every live entity from `src` into `dst`. Order matters so
 references resolve as entities land:
@@ -140,6 +211,29 @@ correct where the raw-change bridge is not.
 where `F: FnMut(Option<String>) -> Fut`,
 `Fut: Future<Output = Result<(Vec<T>, Option<String>), StorageError>>`; marker
 `// md:fn collect`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn collect
+async fn collect<T, F, Fut>(mut page: F) -> Result<Vec<T>, StorageError>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<(Vec<T>, Option<String>), StorageError>>,
+{
+    let mut out = Vec::new();
+    let mut token = None;
+    loop {
+        let (items, next) = page(token).await?;
+        out.extend(items);
+        match next {
+            Some(t) => token = Some(t),
+            None => break,
+        }
+    }
+    Ok(out)
+}
+```
 
 **What it does** — Exhausts a paginated `list_*` call into a single `Vec`: starts
 with `token = None`, calls `page(token)` in a loop, extends the output with each

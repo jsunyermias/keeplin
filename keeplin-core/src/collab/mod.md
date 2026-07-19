@@ -7,8 +7,9 @@ are deliberately re-explained here (hyper-redundancy is intended).
 
 **How to navigate**: every block carries exactly one marker comment
 `// md:<Header> > … > <Block header>` whose path is the header chain of its section
-here; grep it in either direction. Each section covers **Identification**,
-**What it does**, **Dependencies**, **Used by**, **Repeated context**.
+here; grep it in either direction. Each block section covers, in this fixed order:
+**Identification**, **Code**, **What it does**, **Dependencies**, **Used by**,
+**Repeated context**.
 
 ---
 
@@ -17,11 +18,32 @@ here; grep it in either direction. Each section covers **Identification**,
 **Identification** — file-level block: the child-module declarations and imports.
 Marker `// md:Overview`.
 
+**Code** — complete and verbatim:
+
 ```rust
+// md:Overview
 pub mod protocol;
 pub mod state;
-// … std/tokio/tungstenite/reqwest imports, crate error/model/storage types,
-// protocol::{CollabClientMsg, CollabServerMsg}, state::NoteLines
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::{mpsc, Mutex};
+use tokio_tungstenite::tungstenite::Message;
+use uuid::Uuid;
+
+use crate::error::StorageError;
+use crate::models::{Change, Note, NoteTag, Notebook, Resource, Tag};
+use crate::storage::{
+    NoteRepository, NotebookRepository, ResourceRepository, StorageBackend, SyncBackend,
+    TagRepository,
+};
+use protocol::{CollabClientMsg, CollabServerMsg};
+use state::NoteLines;
 ```
 
 **What it does** — The client side of keeplin-srv's collaborative channel.
@@ -66,6 +88,18 @@ incompatible server spawns no connection task.
 **Identification** — struct deriving `Debug, Clone`; marker
 `// md:CollabConfig`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:CollabConfig
+#[derive(Debug, Clone)]
+pub struct CollabConfig {
+    pub api_url: String,
+    pub ws_url: String,
+    pub token: String,
+}
+```
+
 **What it does** — Connection settings: `api_url` (HTTP base, e.g.
 `http://host:3000`), `ws_url` (e.g. `ws://host:3000/api/ws`), `token` (device
 token from keeplin-srv `POST /api/login` — one per device).
@@ -83,6 +117,21 @@ config.
 
 **Identification** — `pub fn device_id_from_token(token: &str) -> Option<String>`;
 marker `// md:fn device_id_from_token`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn device_id_from_token
+pub fn device_id_from_token(token: &str) -> Option<String> {
+    use base64::Engine;
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    Some(claims.get("device_id")?.as_str()?.to_string())
+}
+```
 
 **What it does** — Extracts the `device_id` claim from a JWT **without
 verifying** it: split on `.`, base64url-decode the payload, read
@@ -103,6 +152,23 @@ advancing vv component is this device id, and the server rejects mismatches
 ## Shared
 
 **Identification** — private `struct Shared`; marker `// md:Shared`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:Shared
+struct Shared {
+    cfg: CollabConfig,
+    device_id: String,
+    http: reqwest::Client,
+    notes: Mutex<HashMap<Uuid, NoteLines>>,
+    suppress: Mutex<HashSet<Uuid>>,
+    presence: Mutex<HashMap<Uuid, Vec<protocol::PresenceInfo>>>,
+    out: mpsc::UnboundedSender<CollabClientMsg>,
+    pending_push: Mutex<HashSet<Uuid>>,
+    top: OnceLock<Arc<dyn StorageBackend>>,
+}
+```
 
 **What it does** — The state shared between the decorator, the handle, and the
 connection task: `cfg`, `device_id`, a `reqwest::Client`,
@@ -131,10 +197,21 @@ writes too).
 
 **Identification** — inherent impl; marker `// md:impl Shared`. Five methods.
 
+**Code** — container: members documented as sub-blocks below: fn auth, fn suppressed, fn apply_from_server, fn upload_blob, fn download_blob.
+
 ### fn auth
 
 **Identification** — `fn auth(&self, req) -> reqwest::RequestBuilder`; marker
 `// md:impl Shared > fn auth`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl Shared > fn auth
+    fn auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        req.bearer_auth(&self.cfg.token)
+    }
+```
 
 **What it does** — Adds `Authorization: Bearer <token>` to a request builder.
 
@@ -150,6 +227,15 @@ proxy and access logs).
 **Identification** — `async fn suppressed(&self, id: Uuid) -> bool`; marker
 `// md:impl Shared > fn suppressed`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl Shared > fn suppressed
+    async fn suppressed(&self, id: Uuid) -> bool {
+        self.suppress.lock().await.contains(&id)
+    }
+```
+
 **What it does** — Whether `id` is currently in the suppression set.
 
 **Dependencies** — `suppress`.
@@ -163,6 +249,25 @@ proxy and access logs).
 **Identification** —
 `async fn apply_from_server(&self, note: Note, create: bool) -> Result<(), StorageError>`;
 marker `// md:impl Shared > fn apply_from_server`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl Shared > fn apply_from_server
+    async fn apply_from_server(&self, note: Note, create: bool) -> Result<(), StorageError> {
+        let Some(top) = self.top.get() else {
+            return Ok(());
+        };
+        self.suppress.lock().await.insert(note.id);
+        let result = if create {
+            top.create_note(note.clone()).await.map(|_| ())
+        } else {
+            top.update_note(note.clone()).await.map(|_| ())
+        };
+        self.suppress.lock().await.remove(&note.id);
+        result
+    }
+```
 
 **What it does** — Writes `note` through the top of the stack with echo
 suppression: insert the id into `suppress`, `create_note` or `update_note` on
@@ -179,6 +284,41 @@ writes re-derive links and fire the daemon's live feed exactly like local ones.
 
 **Identification** — `async fn upload_blob(&self, id: Uuid, data: Vec<u8>)`;
 marker `// md:impl Shared > fn upload_blob`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl Shared > fn upload_blob
+    async fn upload_blob(&self, id: Uuid, data: Vec<u8>) {
+        let url = format!("{}/api/resources/{}/data", self.cfg.api_url, id);
+        for attempt in 0..5u32 {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(200 * u64::from(attempt))).await;
+            }
+            match self
+                .auth(self.http.put(&url))
+                .body(data.clone())
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => return,
+                Ok(resp) => {
+                    tracing::debug!(
+                        resource = %id,
+                        status = %resp.status(),
+                        attempt,
+                        "collab: blob upload not accepted yet"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, resource = %id, "collab: resource blob upload failed");
+                    return;
+                }
+            }
+        }
+        tracing::warn!(resource = %id, "collab: resource blob upload not accepted after retries");
+    }
+```
 
 **What it does** — Uploads a resource's binary to keeplin-srv out-of-band
 (`PUT /api/resources/{id}/data`) so bytes never ride the relay journal. The
@@ -202,6 +342,20 @@ create/replace.
 **Identification** — `async fn download_blob(&self, id: Uuid) -> Option<Vec<u8>>`;
 marker `// md:impl Shared > fn download_blob`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl Shared > fn download_blob
+    async fn download_blob(&self, id: Uuid) -> Option<Vec<u8>> {
+        let url = format!("{}/api/resources/{}/data", self.cfg.api_url, id);
+        let resp = self.auth(self.http.get(url)).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        resp.bytes().await.ok().map(|b| b.to_vec())
+    }
+```
+
 **What it does** — Fetches a resource's binary from keeplin-srv (the source of
 truth for blobs); `None` on any failure so the caller falls back to the local
 cache.
@@ -218,6 +372,16 @@ cache.
 
 **Identification** — `#[derive(Clone)] pub struct CollabHandle`; marker
 `// md:CollabHandle`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:CollabHandle
+#[derive(Clone)]
+pub struct CollabHandle {
+    shared: Arc<Shared>,
+}
+```
 
 **What it does** — An ungeneric, cloneable view of the collaborative session
 for the daemon's HTTP/gRPC surfaces: read presence and publish this device's
@@ -237,10 +401,27 @@ permission proxy).
 **Identification** — inherent impl; marker `// md:impl CollabHandle`. Three
 methods.
 
+**Code** — container: members documented as sub-blocks below: fn presence, fn send_cursor, fn proxy_request.
+
 ### fn presence
 
 **Identification** — `pub async fn presence(&self, note_id: Uuid) -> Vec<PresenceInfo>`;
 marker `// md:impl CollabHandle > fn presence`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl CollabHandle > fn presence
+    pub async fn presence(&self, note_id: Uuid) -> Vec<protocol::PresenceInfo> {
+        self.shared
+            .presence
+            .lock()
+            .await
+            .get(&note_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+```
 
 **What it does** — The latest presence list the server broadcast for `note_id`
 (empty when the note has no live session or is unknown).
@@ -255,6 +436,18 @@ marker `// md:impl CollabHandle > fn presence`.
 
 **Identification** — `pub fn send_cursor(&self, note_id: Uuid, cursor: Cursor)`;
 marker `// md:impl CollabHandle > fn send_cursor`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl CollabHandle > fn send_cursor
+    pub fn send_cursor(&self, note_id: Uuid, cursor: protocol::Cursor) {
+        let _ = self
+            .shared
+            .out
+            .send(CollabClientMsg::Cursor { note_id, cursor });
+    }
+```
 
 **What it does** — Queues this device's caret position; the server fans the
 updated presence out to every participant. Fire-and-forget (send errors
@@ -271,6 +464,35 @@ ignored — the connection task may be between reconnects).
 **Identification** —
 `pub async fn proxy_request(&self, method: &str, path: &str, body: Option<serde_json::Value>) -> Result<(u16, serde_json::Value), StorageError>`;
 marker `// md:impl CollabHandle > fn proxy_request`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl CollabHandle > fn proxy_request
+    pub async fn proxy_request(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<(u16, serde_json::Value), StorageError> {
+        let verb = reqwest::Method::from_bytes(method.as_bytes())
+            .map_err(|e| StorageError::InvalidInput(format!("bad method {method}: {e}")))?;
+        let url = format!("{}{}", self.shared.cfg.api_url, path);
+        let mut req = self.shared.auth(self.shared.http.request(verb, url));
+        if let Some(b) = &body {
+            req = req.json(b);
+        }
+        let resp = req.send().await.map_err(|e| {
+            StorageError::Database(format!("permission proxy to server failed: {e}"))
+        })?;
+        let status = resp.status().as_u16();
+        let json = resp
+            .json::<serde_json::Value>()
+            .await
+            .unwrap_or(serde_json::Value::Null);
+        Ok((status, json))
+    }
+```
 
 **What it does** — Forwards a **permission-management** request (share,
 transfer, list, revoke) to keeplin-srv — the authority for permissions in
@@ -295,6 +517,17 @@ notebook→note cascade) lives entirely in keeplin-srv.
 **Identification** — `pub struct CollabBackend<B>`; marker
 `// md:CollabBackend`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:CollabBackend
+pub struct CollabBackend<B> {
+    inner: Arc<B>,
+    shared: Arc<Shared>,
+    out_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<CollabClientMsg>>>>,
+}
+```
+
 **What it does** — The storage decorator that turns local note writes into
 collaborative ops and REST calls. Sits **below** `LinkingBackend`/`EventBackend`
 in the stack. Fields: `inner: Arc<B>`, `shared: Arc<Shared>`,
@@ -313,6 +546,21 @@ taken exactly once by `start`).
 
 **Identification** — manual impl; marker `// md:impl Clone for CollabBackend`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:impl Clone for CollabBackend
+impl<B> Clone for CollabBackend<B> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            shared: self.shared.clone(),
+            out_rx: self.out_rx.clone(),
+        }
+    }
+}
+```
+
 **What it does** — Clones the three `Arc`s. Manual because `B` itself need not
 be `Clone`.
 
@@ -329,10 +577,39 @@ be `Clone`.
 **Identification** — inherent impl `impl<B: StorageBackend> CollabBackend<B>`;
 marker `// md:impl CollabBackend`. Five methods.
 
+**Code** — container: members documented as sub-blocks below: fn new, fn handle, fn start, fn push_local_edit, fn patch_meta.
+
 ### fn new
 
 **Identification** — `pub fn new(inner: B, cfg: CollabConfig) -> Result<Self, StorageError>`;
 marker `// md:impl CollabBackend > fn new`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl CollabBackend > fn new
+    pub fn new(inner: B, cfg: CollabConfig) -> Result<Self, StorageError> {
+        let device_id = device_id_from_token(&cfg.token).ok_or_else(|| {
+            StorageError::InvalidState("collab token has no device_id claim".into())
+        })?;
+        let (out, out_rx) = mpsc::unbounded_channel();
+        Ok(Self {
+            inner: Arc::new(inner),
+            shared: Arc::new(Shared {
+                cfg,
+                device_id,
+                http: reqwest::Client::new(),
+                notes: Mutex::new(HashMap::new()),
+                suppress: Mutex::new(HashSet::new()),
+                presence: Mutex::new(HashMap::new()),
+                out,
+                pending_push: Mutex::new(HashSet::new()),
+                top: OnceLock::new(),
+            }),
+            out_rx: Arc::new(Mutex::new(Some(out_rx))),
+        })
+    }
+```
 
 **What it does** — Extracts the device id from the token (`InvalidState` when
 the claim is missing), creates the outbound channel, and assembles the shared
@@ -349,6 +626,17 @@ state with empty mirrors/sets and an unset `top`.
 **Identification** — `pub fn handle(&self) -> CollabHandle`; marker
 `// md:impl CollabBackend > fn handle`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl CollabBackend > fn handle
+    pub fn handle(&self) -> CollabHandle {
+        CollabHandle {
+            shared: self.shared.clone(),
+        }
+    }
+```
+
 **What it does** — A cloneable presence/cursor/proxy view for the daemon's
 surfaces.
 
@@ -363,6 +651,46 @@ surfaces.
 **Identification** —
 `pub async fn start(&self, top: Arc<dyn StorageBackend>) -> Result<(), StorageError>`;
 marker `// md:impl CollabBackend > fn start`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl CollabBackend > fn start
+    pub async fn start(&self, top: Arc<dyn StorageBackend>) -> Result<(), StorageError> {
+        match crate::compat::negotiate(&self.shared.http, &self.shared.cfg.api_url).await {
+            crate::compat::Handshake::Compatible(info) => {
+                tracing::info!(
+                    server = %info.name,
+                    server_version = %info.version,
+                    protocol = info.protocol_version,
+                    capabilities = ?info.capabilities,
+                    "collab: server protocol negotiated"
+                );
+            }
+            crate::compat::Handshake::Incompatible(info) => {
+                return Err(StorageError::InvalidState(
+                    crate::compat::incompatible_message(&info),
+                ));
+            }
+            crate::compat::Handshake::Unavailable => {
+                tracing::warn!(
+                    api_url = %self.shared.cfg.api_url,
+                    "collab: server has no usable GET /version (older keeplin-srv?); \
+                     continuing without protocol negotiation"
+                );
+            }
+        }
+        let _ = self.shared.top.set(top);
+        let rx = self
+            .out_rx
+            .lock()
+            .await
+            .take()
+            .expect("collab task started twice");
+        tokio::spawn(run_connection(self.shared.clone(), rx));
+        Ok(())
+    }
+```
 
 **What it does** — Runs the `GET /version` handshake first (`crate::compat`):
 `Compatible` → log negotiated protocol + capabilities and proceed;
@@ -385,6 +713,24 @@ and spawns `run_connection`.
 **Identification** — `async fn push_local_edit(&self, note: &Note)`; marker
 `// md:impl CollabBackend > fn push_local_edit`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl CollabBackend > fn push_local_edit
+    async fn push_local_edit(&self, note: &Note) {
+        let mut notes = self.shared.notes.lock().await;
+        let lines = notes.entry(note.id).or_default();
+        let ops = lines.diff_body(&note.body, &self.shared.device_id);
+        drop(notes);
+        if !ops.is_empty() {
+            let _ = self.shared.out.send(CollabClientMsg::Op {
+                note_id: note.id,
+                ops,
+            });
+        }
+    }
+```
+
 **What it does** — Diffs `note.body` against the mirror (creating an empty
 mirror for an unknown id) via `NoteLines::diff_body` with this device as
 actor, and queues the resulting ops (if any) as one `CollabClientMsg::Op`.
@@ -399,6 +745,35 @@ actor, and queues the resulting ops (if any) as one `CollabClientMsg::Op`.
 
 **Identification** — `async fn patch_meta(&self, note: &Note)`; marker
 `// md:impl CollabBackend > fn patch_meta`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl CollabBackend > fn patch_meta
+    async fn patch_meta(&self, note: &Note) {
+        let url = format!("{}/api/notes/{}", self.shared.cfg.api_url, note.id);
+        let body = serde_json::json!({
+            "title": note.title,
+            "notebook_id": note.notebook_id,
+            "is_todo": note.is_todo,
+            "todo_due": note.todo_due,
+            "todo_completed": note.todo_completed,
+        });
+        match self
+            .shared
+            .auth(self.shared.http.patch(url))
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {}
+            Ok(resp) => {
+                tracing::warn!(status = %resp.status(), note = %note.id, "collab: PATCH note rejected by server")
+            }
+            Err(e) => tracing::warn!(error = %e, note = %note.id, "collab: PATCH note failed"),
+        }
+    }
+```
 
 **What it does** — Mirrors title/notebook/todo metadata to the server
 (`PATCH /api/notes/{id}`). Checks the HTTP status, not just transport success:
@@ -421,6 +796,127 @@ server holds the durable truth and the local row already has the change.
 `#[async_trait] impl<B: StorageBackend> NoteRepository for CollabBackend<B>`;
 marker `// md:impl NoteRepository for CollabBackend` (one marker for the impl
 block; the methods are documented here).
+
+**Code** — complete and verbatim:
+
+```rust
+// md:impl NoteRepository for CollabBackend
+#[async_trait]
+impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
+    async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
+        let created = self.inner.create_note(note).await?;
+        if self.shared.suppressed(created.id).await {
+            return Ok(created);
+        }
+        self.shared.pending_push.lock().await.insert(created.id);
+        let url = format!("{}/api/notes", self.shared.cfg.api_url);
+        let body = serde_json::json!({ "id": created.id, "title": created.title });
+        match self
+            .shared
+            .auth(self.shared.http.post(url))
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(resp)
+                if resp.status().is_success() || resp.status() == reqwest::StatusCode::CONFLICT => {
+            }
+            Ok(resp) => {
+                tracing::warn!(status = %resp.status(), note = %created.id, "collab: POST note rejected by server")
+            }
+            Err(e) => tracing::warn!(error = %e, note = %created.id, "collab: POST note failed"),
+        }
+        self.patch_meta(&created).await;
+        let _ = self.shared.out.send(CollabClientMsg::Join {
+            note_id: created.id,
+        });
+        Ok(created)
+    }
+
+    async fn read_note(&self, id: Uuid) -> Result<Note, StorageError> {
+        self.inner.read_note(id).await
+    }
+
+    async fn update_note(&self, note: Note) -> Result<Note, StorageError> {
+        let previous = self.inner.read_note(note.id).await.ok();
+        let updated = self.inner.update_note(note).await?;
+        if self.shared.suppressed(updated.id).await {
+            return Ok(updated);
+        }
+        let meta_changed = previous.as_ref().is_none_or(|p| {
+            p.title != updated.title
+                || p.notebook_id != updated.notebook_id
+                || p.is_todo != updated.is_todo
+                || p.todo_due != updated.todo_due
+                || p.todo_completed != updated.todo_completed
+        });
+        if meta_changed {
+            self.patch_meta(&updated).await;
+        }
+        if !self.shared.pending_push.lock().await.contains(&updated.id) {
+            self.push_local_edit(&updated).await;
+        }
+        Ok(updated)
+    }
+
+    async fn delete_note(&self, id: Uuid) -> Result<(), StorageError> {
+        self.inner.delete_note(id).await?;
+        if !self.shared.suppressed(id).await {
+            let url = format!("{}/api/notes/{}", self.shared.cfg.api_url, id);
+            if let Err(e) = self.shared.auth(self.shared.http.delete(url)).send().await {
+                tracing::warn!(error = %e, note = %id, "collab: DELETE note failed");
+            }
+            self.shared.notes.lock().await.remove(&id);
+        }
+        Ok(())
+    }
+
+    async fn list_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        self.inner.list_notes(page_size, page_token).await
+    }
+
+    async fn note_backlinks(
+        &self,
+        target_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        self.inner
+            .note_backlinks(target_id, page_size, page_token)
+            .await
+    }
+
+    async fn list_notes_in_notebook(
+        &self,
+        notebook_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        self.inner
+            .list_notes_in_notebook(notebook_id, page_size, page_token)
+            .await
+    }
+
+    async fn list_starred_notes(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Note>, Option<String>), StorageError> {
+        self.inner.list_starred_notes(page_size, page_token).await
+    }
+
+    async fn notebook_sort_profile(
+        &self,
+        notebook_id: Uuid,
+    ) -> Result<crate::storage::NotebookSortProfile, StorageError> {
+        self.inner.notebook_sort_profile(notebook_id).await
+    }
+}
+```
 
 **What it does** — The note surface, where local writes become collab traffic:
 
@@ -464,6 +960,34 @@ indexed-override rule from `storage/backend.md`.
 
 **Identification** — marker `// md:impl NotebookRepository for CollabBackend`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:impl NotebookRepository for CollabBackend
+#[async_trait]
+impl<B: StorageBackend> NotebookRepository for CollabBackend<B> {
+    async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
+        self.inner.create_notebook(notebook).await
+    }
+    async fn read_notebook(&self, id: Uuid) -> Result<Notebook, StorageError> {
+        self.inner.read_notebook(id).await
+    }
+    async fn update_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
+        self.inner.update_notebook(notebook).await
+    }
+    async fn delete_notebook(&self, id: Uuid) -> Result<(), StorageError> {
+        self.inner.delete_notebook(id).await
+    }
+    async fn list_notebooks(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Notebook>, Option<String>), StorageError> {
+        self.inner.list_notebooks(page_size, page_token).await
+    }
+}
+```
+
 **What it does** — Pure delegation for all five notebook methods: notebooks
 are not collaborative — they sync over the relay.
 
@@ -479,6 +1003,50 @@ are not collaborative — they sync over the relay.
 
 **Identification** — marker `// md:impl TagRepository for CollabBackend`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:impl TagRepository for CollabBackend
+#[async_trait]
+impl<B: StorageBackend> TagRepository for CollabBackend<B> {
+    async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
+        self.inner.create_tag(tag).await
+    }
+    async fn read_tag(&self, id: Uuid) -> Result<Tag, StorageError> {
+        self.inner.read_tag(id).await
+    }
+    async fn update_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
+        self.inner.update_tag(tag).await
+    }
+    async fn delete_tag(&self, id: Uuid) -> Result<(), StorageError> {
+        self.inner.delete_tag(id).await
+    }
+    async fn list_tags(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        self.inner.list_tags(page_size, page_token).await
+    }
+    async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
+        self.inner.add_note_tag(note_tag).await
+    }
+    async fn remove_note_tag(&self, note_id: Uuid, tag_id: Uuid) -> Result<(), StorageError> {
+        self.inner.remove_note_tag(note_id, tag_id).await
+    }
+    async fn list_note_tags(
+        &self,
+        note_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
+        self.inner
+            .list_note_tags(note_id, page_size, page_token)
+            .await
+    }
+}
+```
+
 **What it does** — Pure delegation for all eight tag/association methods (tags
 sync over the relay).
 
@@ -493,6 +1061,57 @@ sync over the relay).
 ## impl ResourceRepository for CollabBackend
 
 **Identification** — marker `// md:impl ResourceRepository for CollabBackend`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:impl ResourceRepository for CollabBackend
+#[async_trait]
+impl<B: StorageBackend> ResourceRepository for CollabBackend<B> {
+    async fn create_resource(
+        &self,
+        resource: Resource,
+        data: Vec<u8>,
+    ) -> Result<Resource, StorageError> {
+        let created = self.inner.create_resource(resource, data.clone()).await?;
+        let meta = Change::ResourceCreate {
+            resource: created.clone(),
+            data: None,
+        };
+        if let Err(e) = self.inner.send_changes(vec![meta]).await {
+            tracing::warn!(error = %e, resource = %created.id, "collab: eager resource metadata push failed");
+        }
+        self.shared.upload_blob(created.id, data).await;
+        Ok(created)
+    }
+    async fn read_resource(&self, id: Uuid) -> Result<(Resource, Vec<u8>), StorageError> {
+        let (resource, data) = self.inner.read_resource(id).await?;
+        if data.is_empty() && resource.size > 0 {
+            if let Some(bytes) = self.shared.download_blob(id).await {
+                return Ok((resource, bytes));
+            }
+            tracing::warn!(resource = %id, "collab: resource blob unavailable from server");
+        }
+        Ok((resource, data))
+    }
+    async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError> {
+        self.inner.delete_resource(id).await
+    }
+    async fn list_resources(
+        &self,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
+        self.inner.list_resources(page_size, page_token).await
+    }
+    async fn purge_deleted_resources(
+        &self,
+        older_than: DateTime<Utc>,
+    ) -> Result<u64, StorageError> {
+        self.inner.purge_deleted_resources(older_than).await
+    }
+}
+```
 
 **What it does** —
 
@@ -522,6 +1141,47 @@ sync over the relay).
 
 **Identification** — marker `// md:impl SyncBackend for CollabBackend`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:impl SyncBackend for CollabBackend
+#[async_trait]
+impl<B: StorageBackend> SyncBackend for CollabBackend<B> {
+    async fn get_device_id(&self) -> Result<String, StorageError> {
+        self.inner.get_device_id().await
+    }
+    async fn get_last_sync_time(&self) -> Result<DateTime<Utc>, StorageError> {
+        self.inner.get_last_sync_time().await
+    }
+    async fn update_sync_time(&self, ts: DateTime<Utc>) -> Result<(), StorageError> {
+        self.inner.update_sync_time(ts).await
+    }
+    async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError> {
+        let changes = self.inner.get_changes_since(since).await?;
+        Ok(changes
+            .into_iter()
+            .filter(|c| !is_note_change(c))
+            .map(strip_resource_blob)
+            .collect())
+    }
+    async fn apply_change(&self, change: Change) -> Result<(), StorageError> {
+        if is_note_change(&change) {
+            return Ok(());
+        }
+        self.inner.apply_change(change).await
+    }
+    async fn send_changes(&self, changes: Vec<Change>) -> Result<(), StorageError> {
+        self.inner.send_changes(changes).await
+    }
+    async fn receive_changes(&self) -> Result<Vec<Change>, StorageError> {
+        self.inner.receive_changes().await
+    }
+    async fn prune_change_journal(&self, older_than: DateTime<Utc>) -> Result<u64, StorageError> {
+        self.inner.prune_change_journal(older_than).await
+    }
+}
+```
+
 **What it does** — Delegation for `get_device_id` / `get_last_sync_time` /
 `update_sync_time` / `send_changes` / `receive_changes` /
 `prune_change_journal`, with the two note filters:
@@ -546,6 +1206,30 @@ invariant.
 
 **Identification** — marker `// md:impl HistoryRepository for CollabBackend`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:impl HistoryRepository for CollabBackend
+#[async_trait]
+impl<B: StorageBackend> crate::storage::HistoryRepository for CollabBackend<B> {
+    async fn note_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<crate::storage::EntityVersion<Note>>, StorageError> {
+        self.inner.note_history(id, limit).await
+    }
+
+    async fn notebook_history(
+        &self,
+        id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<crate::storage::EntityVersion<Notebook>>, StorageError> {
+        self.inner.notebook_history(id, limit).await
+    }
+}
+```
+
 **What it does** — Pure delegation of `note_history`/`notebook_history`.
 
 **Dependencies** — the inner backend.
@@ -561,6 +1245,18 @@ invariant.
 **Identification** — `fn is_note_change(change: &Change) -> bool`; marker
 `// md:fn is_note_change`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:fn is_note_change
+fn is_note_change(change: &Change) -> bool {
+    matches!(
+        change,
+        Change::NoteCreate { .. } | Change::NoteUpdate { .. } | Change::NoteDelete { .. }
+    )
+}
+```
+
 **What it does** — `true` for `NoteCreate`/`NoteUpdate`/`NoteDelete`.
 
 **Dependencies** — `Change`.
@@ -575,6 +1271,21 @@ invariant.
 
 **Identification** — `fn strip_resource_blob(change: Change) -> Change`; marker
 `// md:fn strip_resource_blob`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn strip_resource_blob
+fn strip_resource_blob(change: Change) -> Change {
+    match change {
+        Change::ResourceCreate { resource, .. } => Change::ResourceCreate {
+            resource,
+            data: None,
+        },
+        other => other,
+    }
+}
+```
 
 **What it does** — Drops the inline binary from a `ResourceCreate` before it
 is relayed: with keeplin-srv the blob is uploaded out-of-band and served from
@@ -595,6 +1306,23 @@ journal.
 `#[derive(Debug, serde::Deserialize)] struct ServerNote`; marker
 `// md:ServerNote`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:ServerNote
+#[derive(Debug, serde::Deserialize)]
+struct ServerNote {
+    id: Uuid,
+    title: String,
+    notebook_id: Option<Uuid>,
+    is_todo: bool,
+    todo_due: Option<DateTime<Utc>>,
+    todo_completed: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+```
+
 **What it does** — The server's note representation from `GET /api/notes`:
 `id`, `title`, `notebook_id: Option<Uuid>`, the todo fields, timestamps. No
 body — bodies arrive via `Welcome` snapshots.
@@ -612,6 +1340,25 @@ body — bodies arrive via `Welcome` snapshots.
 **Identification** —
 `async fn run_connection(shared: Arc<Shared>, out: mpsc::UnboundedReceiver<CollabClientMsg>)`;
 marker `// md:fn run_connection`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn run_connection
+async fn run_connection(shared: Arc<Shared>, mut out: mpsc::UnboundedReceiver<CollabClientMsg>) {
+    let mut backoff = Duration::from_secs(1);
+    loop {
+        match connect_once(&shared, &mut out).await {
+            Ok(()) => backoff = Duration::from_secs(1),
+            Err(e) => {
+                tracing::warn!(error = %e, "collab: connection ended; reconnecting");
+            }
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(30));
+    }
+}
+```
 
 **What it does** — Maintains the WebSocket connection forever: `connect_once`
 in a loop, resetting the backoff to 1 s after a clean run and doubling it up
@@ -632,6 +1379,13 @@ rebuilt from snapshots.
 `const REDISCOVER_EVERY: Duration = Duration::from_secs(15);` marker
 `// md:REDISCOVER_EVERY`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:REDISCOVER_EVERY
+const REDISCOVER_EVERY: Duration = Duration::from_secs(15);
+```
+
 **What it does** — How often a live connection re-runs note discovery, so
 notes created on other devices — or newly shared with this user — get joined
 without a reconnect.
@@ -649,6 +1403,56 @@ without a reconnect.
 **Identification** —
 `async fn connect_once(shared: &Arc<Shared>, out: &mut mpsc::UnboundedReceiver<CollabClientMsg>) -> anyhow::Result<()>`;
 marker `// md:fn connect_once`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn connect_once
+async fn connect_once(
+    shared: &Arc<Shared>,
+    out: &mut mpsc::UnboundedReceiver<CollabClientMsg>,
+) -> anyhow::Result<()> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = shared.cfg.ws_url.as_str().into_client_request()?;
+    request.headers_mut().insert(
+        "authorization",
+        format!("Bearer {}", shared.cfg.token).parse()?,
+    );
+    let (mut ws, _) = tokio_tungstenite::connect_async(request).await?;
+    tracing::info!("collab: connected");
+
+    let mut joined: HashSet<Uuid> = HashSet::new();
+    discover_and_join(shared, &mut ws, &mut joined).await?;
+
+    let mut rediscover = tokio::time::interval(REDISCOVER_EVERY);
+    rediscover.tick().await;
+
+    loop {
+        tokio::select! {
+            queued = out.recv() => {
+                let Some(msg) = queued else { return Ok(()) };
+                if let CollabClientMsg::Join { note_id } = &msg {
+                    if !joined.insert(*note_id) {
+                        continue;
+                    }
+                }
+                ws.send(Message::Text(serde_json::to_string(&msg)?)).await?;
+            }
+            incoming = ws.next() => {
+                let Some(frame) = incoming else { anyhow::bail!("socket closed") };
+                if let Message::Text(text) = frame? {
+                    if let Ok(msg) = serde_json::from_str::<CollabServerMsg>(&text) {
+                        handle_server_msg(shared, msg).await;
+                    }
+                }
+            }
+            _ = rediscover.tick() => {
+                discover_and_join(shared, &mut ws, &mut joined).await?;
+            }
+        }
+    }
+}
+```
 
 **What it does** — One connection lifetime: build the WebSocket request with
 the token in the **Authorization header, not the URL** (query strings end up
@@ -679,6 +1483,13 @@ loop over three arms:
 **Identification** — `const DISCOVER_PAGE_SIZE: &str = "200";` marker
 `// md:DISCOVER_PAGE_SIZE`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:DISCOVER_PAGE_SIZE
+const DISCOVER_PAGE_SIZE: &str = "200";
+```
+
 **What it does** — Page size for note discovery. The server caps `?limit` at
 500 (keeplin-srv #29); a smaller page keeps each round-trip bounded on large
 accounts.
@@ -696,6 +1507,52 @@ accounts.
 **Identification** —
 `async fn discover_and_join(shared, ws: &mut WsStream, joined: &mut HashSet<Uuid>) -> anyhow::Result<()>`;
 marker `// md:fn discover_and_join`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn discover_and_join
+async fn discover_and_join(
+    shared: &Arc<Shared>,
+    ws: &mut WsStream,
+    joined: &mut HashSet<Uuid>,
+) -> anyhow::Result<()> {
+    let mut cursor: Option<String> = None;
+    loop {
+        let mut req = shared
+            .auth(shared.http.get(format!("{}/api/notes", shared.cfg.api_url)))
+            .query(&[("limit", DISCOVER_PAGE_SIZE)]);
+        if let Some(c) = &cursor {
+            req = req.query(&[("cursor", c.as_str())]);
+        }
+        let resp = req.send().await?;
+        let next = resp
+            .headers()
+            .get("x-next-cursor")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let listing: Vec<ServerNote> = resp.json().await?;
+
+        for server_note in &listing {
+            if joined.contains(&server_note.id) {
+                continue;
+            }
+            ensure_local(shared, server_note).await;
+            let join = serde_json::to_string(&CollabClientMsg::Join {
+                note_id: server_note.id,
+            })?;
+            ws.send(Message::Text(join)).await?;
+            joined.insert(server_note.id);
+        }
+
+        match next {
+            Some(c) => cursor = Some(c),
+            None => break,
+        }
+    }
+    Ok(())
+}
+```
 
 **What it does** — Discovers own + shared notes and joins the ones this
 connection hasn't joined yet. Pages through `GET /api/notes?limit=&cursor=`,
@@ -722,6 +1579,14 @@ recorded in `joined`.
 `type WsStream = tokio_tungstenite::WebSocketStream<MaybeTlsStream<TcpStream>>;`
 marker `// md:WsStream`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:WsStream
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+```
+
 **What it does** — The client-side WebSocket stream type (plain TCP or TLS).
 
 **Dependencies** — `tokio_tungstenite`.
@@ -737,6 +1602,33 @@ marker `// md:WsStream`.
 **Identification** —
 `async fn ensure_local(shared: &Arc<Shared>, server_note: &ServerNote)`; marker
 `// md:fn ensure_local`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn ensure_local
+async fn ensure_local(shared: &Arc<Shared>, server_note: &ServerNote) {
+    let Some(top) = shared.top.get() else { return };
+    if top.read_note(server_note.id).await.is_ok() {
+        return;
+    }
+    let note = Note {
+        id: server_note.id,
+        title: server_note.title.clone(),
+        body: String::new(),
+        notebook_id: server_note.notebook_id.unwrap_or_else(Uuid::nil),
+        is_todo: server_note.is_todo,
+        todo_due: server_note.todo_due,
+        todo_completed: server_note.todo_completed,
+        created_at: server_note.created_at,
+        updated_at: server_note.updated_at,
+        ..Note::new("", "")
+    };
+    if let Err(e) = shared.apply_from_server(note, true).await {
+        tracing::warn!(error = %e, note = %server_note.id, "collab: local create failed");
+    }
+}
+```
 
 **What it does** — Makes sure a note discovered on the server exists locally:
 no-op when `top` is unset or the note already reads; otherwise builds a local
@@ -757,6 +1649,56 @@ the nil UUID — locally the Inbox system notebook) and creates it through
 **Identification** —
 `async fn handle_server_msg(shared: &Arc<Shared>, msg: CollabServerMsg)`;
 marker `// md:fn handle_server_msg`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn handle_server_msg
+async fn handle_server_msg(shared: &Arc<Shared>, msg: CollabServerMsg) {
+    match msg {
+        CollabServerMsg::Welcome { note_id, snapshot } => {
+            let mut lines = NoteLines::from_snapshot(snapshot);
+            if shared.pending_push.lock().await.remove(&note_id) {
+                let local_body = match shared.top.get() {
+                    Some(top) => top
+                        .read_note(note_id)
+                        .await
+                        .map(|n| n.body)
+                        .unwrap_or_default(),
+                    None => String::new(),
+                };
+                let ops = lines.diff_body(&local_body, &shared.device_id);
+                shared.notes.lock().await.insert(note_id, lines);
+                if !ops.is_empty() {
+                    let _ = shared.out.send(CollabClientMsg::Op { note_id, ops });
+                }
+            } else {
+                let body = lines.materialize();
+                shared.notes.lock().await.insert(note_id, lines);
+                write_body(shared, note_id, body).await;
+            }
+        }
+        CollabServerMsg::Op { note_id, ops, .. } => {
+            let mut notes = shared.notes.lock().await;
+            let Some(lines) = notes.get_mut(&note_id) else {
+                return;
+            };
+            for op in &ops {
+                lines.apply(op);
+            }
+            let body = lines.materialize();
+            drop(notes);
+            write_body(shared, note_id, body).await;
+        }
+        CollabServerMsg::Error { code, message } => {
+            tracing::warn!(code, message, "collab: server error");
+        }
+        CollabServerMsg::Presence { note_id, users } => {
+            shared.presence.lock().await.insert(note_id, users);
+        }
+    }
+}
+```
 
 **What it does** — Dispatches one server message:
 
@@ -787,6 +1729,33 @@ must not clobber local content" invariant, restated in `create_note`.
 **Identification** —
 `async fn write_body(shared: &Arc<Shared>, note_id: Uuid, body: String)`;
 marker `// md:fn write_body`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn write_body
+async fn write_body(shared: &Arc<Shared>, note_id: Uuid, body: String) {
+    let Some(top) = shared.top.get() else { return };
+    match top.read_note(note_id).await {
+        Ok(mut note) => {
+            if note.body != body {
+                note.body = body;
+                note.updated_at = Utc::now();
+                if let Err(e) = shared.apply_from_server(note, false).await {
+                    tracing::warn!(error = %e, note = %note_id, "collab: local update failed");
+                }
+            }
+        }
+        Err(_) => {
+            let mut note = Note::new("", body);
+            note.id = note_id;
+            if let Err(e) = shared.apply_from_server(note, true).await {
+                tracing::warn!(error = %e, note = %note_id, "collab: local create failed");
+            }
+        }
+    }
+}
+```
 
 **What it does** — Persists a server-derived body locally (suppressed),
 keeping metadata: read the note from `top`; if it exists and the body differs,
@@ -843,31 +1812,44 @@ refresh with `graphify update .` after refactors.
 
 | # | Block (source order) | Marker in code |
 |---|----------------------|----------------|
-| 1 | module declarations + imports | `// md:Overview` |
-| 2 | `struct CollabConfig` | `// md:CollabConfig` |
+| 1 | `Overview` | `// md:Overview` |
+| 2 | `CollabConfig` | `// md:CollabConfig` |
 | 3 | `fn device_id_from_token` | `// md:fn device_id_from_token` |
-| 4 | `struct Shared` | `// md:Shared` |
-| 5 | `impl Shared` (+ `auth`, `suppressed`, `apply_from_server`, `upload_blob`, `download_blob`) | `// md:impl Shared` (+ `> fn …`) |
-| 6 | `struct CollabHandle` | `// md:CollabHandle` |
-| 7 | `impl CollabHandle` (+ `presence`, `send_cursor`, `proxy_request`) | `// md:impl CollabHandle` (+ `> fn …`) |
-| 8 | `struct CollabBackend` | `// md:CollabBackend` |
-| 9 | `impl Clone for CollabBackend` | `// md:impl Clone for CollabBackend` |
-| 10 | `impl CollabBackend` (+ `new`, `handle`, `start`, `push_local_edit`, `patch_meta`) | `// md:impl CollabBackend` (+ `> fn …`) |
-| 11 | `impl NoteRepository for CollabBackend` (9 methods) | `// md:impl NoteRepository for CollabBackend` |
-| 12 | `impl NotebookRepository for CollabBackend` (5 methods) | `// md:impl NotebookRepository for CollabBackend` |
-| 13 | `impl TagRepository for CollabBackend` (8 methods) | `// md:impl TagRepository for CollabBackend` |
-| 14 | `impl ResourceRepository for CollabBackend` (5 methods) | `// md:impl ResourceRepository for CollabBackend` |
-| 15 | `impl SyncBackend for CollabBackend` (8 methods) | `// md:impl SyncBackend for CollabBackend` |
-| 16 | `impl HistoryRepository for CollabBackend` (2 methods) | `// md:impl HistoryRepository for CollabBackend` |
-| 17 | `fn is_note_change` | `// md:fn is_note_change` |
-| 18 | `fn strip_resource_blob` | `// md:fn strip_resource_blob` |
-| 19 | `struct ServerNote` | `// md:ServerNote` |
-| 20 | `fn run_connection` | `// md:fn run_connection` |
-| 21 | `const REDISCOVER_EVERY` | `// md:REDISCOVER_EVERY` |
-| 22 | `fn connect_once` | `// md:fn connect_once` |
-| 23 | `const DISCOVER_PAGE_SIZE` | `// md:DISCOVER_PAGE_SIZE` |
-| 24 | `fn discover_and_join` | `// md:fn discover_and_join` |
-| 25 | `type WsStream` | `// md:WsStream` |
-| 26 | `fn ensure_local` | `// md:fn ensure_local` |
-| 27 | `fn handle_server_msg` | `// md:fn handle_server_msg` |
-| 28 | `fn write_body` | `// md:fn write_body` |
+| 4 | `Shared` | `// md:Shared` |
+| 5 | `impl Shared` (container) | `// md:impl Shared` |
+| 6 | `fn auth` | `// md:impl Shared > fn auth` |
+| 7 | `fn suppressed` | `// md:impl Shared > fn suppressed` |
+| 8 | `fn apply_from_server` | `// md:impl Shared > fn apply_from_server` |
+| 9 | `fn upload_blob` | `// md:impl Shared > fn upload_blob` |
+| 10 | `fn download_blob` | `// md:impl Shared > fn download_blob` |
+| 11 | `CollabHandle` | `// md:CollabHandle` |
+| 12 | `impl CollabHandle` (container) | `// md:impl CollabHandle` |
+| 13 | `fn presence` | `// md:impl CollabHandle > fn presence` |
+| 14 | `fn send_cursor` | `// md:impl CollabHandle > fn send_cursor` |
+| 15 | `fn proxy_request` | `// md:impl CollabHandle > fn proxy_request` |
+| 16 | `CollabBackend` | `// md:CollabBackend` |
+| 17 | `impl Clone for CollabBackend` | `// md:impl Clone for CollabBackend` |
+| 18 | `impl CollabBackend` (container) | `// md:impl CollabBackend` |
+| 19 | `fn new` | `// md:impl CollabBackend > fn new` |
+| 20 | `fn handle` | `// md:impl CollabBackend > fn handle` |
+| 21 | `fn start` | `// md:impl CollabBackend > fn start` |
+| 22 | `fn push_local_edit` | `// md:impl CollabBackend > fn push_local_edit` |
+| 23 | `fn patch_meta` | `// md:impl CollabBackend > fn patch_meta` |
+| 24 | `impl NoteRepository for CollabBackend` | `// md:impl NoteRepository for CollabBackend` |
+| 25 | `impl NotebookRepository for CollabBackend` | `// md:impl NotebookRepository for CollabBackend` |
+| 26 | `impl TagRepository for CollabBackend` | `// md:impl TagRepository for CollabBackend` |
+| 27 | `impl ResourceRepository for CollabBackend` | `// md:impl ResourceRepository for CollabBackend` |
+| 28 | `impl SyncBackend for CollabBackend` | `// md:impl SyncBackend for CollabBackend` |
+| 29 | `impl HistoryRepository for CollabBackend` | `// md:impl HistoryRepository for CollabBackend` |
+| 30 | `fn is_note_change` | `// md:fn is_note_change` |
+| 31 | `fn strip_resource_blob` | `// md:fn strip_resource_blob` |
+| 32 | `ServerNote` | `// md:ServerNote` |
+| 33 | `fn run_connection` | `// md:fn run_connection` |
+| 34 | `REDISCOVER_EVERY` | `// md:REDISCOVER_EVERY` |
+| 35 | `fn connect_once` | `// md:fn connect_once` |
+| 36 | `DISCOVER_PAGE_SIZE` | `// md:DISCOVER_PAGE_SIZE` |
+| 37 | `fn discover_and_join` | `// md:fn discover_and_join` |
+| 38 | `WsStream` | `// md:WsStream` |
+| 39 | `fn ensure_local` | `// md:fn ensure_local` |
+| 40 | `fn handle_server_msg` | `// md:fn handle_server_msg` |
+| 41 | `fn write_body` | `// md:fn write_body` |

@@ -506,8 +506,11 @@ Two navigation layers, checked in:
    sourced from the graph; redundancy across companions is intentional). Agents should query
    the graph first, then read the companion `.md` — not the raw `.rs` — whenever possible.
 
-CI enforces the contract (`scripts/check-docs.sh`): every `.rs` has a companion `.md` and
-every companion carries `## Graph context`. The templates live in `docs/templates/`. To
+CI enforces the contract (`scripts/check-docs.sh`, hardened): every `.rs` has a companion
+`.md` in the block-complete format — a `## Graph context` section, every `// md:` marker
+mirrored in the companion (none duplicated in the `.rs`), a `## Coverage checklist` with one
+row per marker, no elision inside its `rust` fences, and no comment lines in the `.rs` other
+than `// md:` markers. The templates live in `docs/templates/` (`source-module.md` v2.3). To
 enable the optional Graphify Claude Code hooks locally, copy
 `.claude/settings.example.json` to `.claude/settings.local.json` — the example is guarded so
 it no-ops for contributors without Graphify installed (`pip install graphifyy`).
