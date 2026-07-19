@@ -1,13 +1,4 @@
-//! LibSQL-backed implementation of [`StorageBackend`] with WebSocket synchronisation.
-//!
-//! [`DbBackend`] stores all data in a local LibSQL (SQLite-compatible) database and
-//! replicates mutations to a central server over a WebSocket connection. Every write
-//! operation appends a row to the `entity_changes` journal table so that
-//! `get_changes_since` can return a complete, ordered list of mutations since any
-//! given point in time. Binary resource data is stored directly in the `resources`
-//! table as a BLOB and is also embedded in the change journal as a Base64-encoded
-//! `_data_b64` field so remote peers can reconstruct the full resource payload.
-
+// md:Overview
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -32,110 +23,26 @@ use super::{
     SortableRfc3339, SyncBackend, TagRepository,
 };
 
-/// A WebSocket stream over either a plain TCP connection or a TLS-wrapped TCP connection.
-///
-/// `tokio_tungstenite::MaybeTlsStream` transparently handles both cases, so the
-/// daemon can connect to `ws://` and `wss://` servers without changing this type.
+// md:WsStream
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-// ── DbBackend ─────────────────────────────────────────────────────────────────
-
-/// LibSQL-backed implementation of [`StorageBackend`] with optional WebSocket synchronisation.
-///
-/// All entities are stored in a local SQLite-compatible database opened via the
-/// `libsql` crate. Every mutation is also recorded in the `entity_changes` append-only
-/// table so that `get_changes_since` can efficiently enumerate all changes after a
-/// given point in time.
-///
-/// When `server_url` is non-empty, a WebSocket connection is established on construction
-/// and used by `send_changes` / `receive_changes` to exchange change batches with a
-/// central server. If the WebSocket connection fails at any point, `ensure_ws` attempts
-/// a reconnect before the next operation; while disconnected, the local database
-/// continues to work normally and changes accumulate in `entity_changes` for the next
-/// successful push. A `send_changes` that cannot deliver its batch (no connection, or
-/// every retry failed) returns an **error** so the sync cycle aborts without advancing
-/// the last-sync watermark — the undelivered changes are re-collected and re-sent on
-/// the next cycle instead of being silently skipped forever.
-///
-/// ## Conflict resolution
-///
-/// `DbBackend` resolves concurrent edits with **version vectors** for every entity
-/// (see [`super::note_log::resolve`]): `apply_change` compares the stored and incoming
-/// `(vv, updated_at, last_writer)` and applies the incoming write only when it wins.
-/// A causally newer write applies cleanly; a genuine concurrent conflict is broken by
-/// the deterministic `(timestamp, device_id)` tiebreak, so every device converges on
-/// the same winner. This is the same decision procedure [`super::fs::FsBackend`] uses
-/// — state-based `resolve` over current rows here, log-based `merge` over per-device
-/// note logs there; only the storage shape differs. See `SECURITY.md`
-/// ("Conflict resolution is unified on version vectors").
+// md:DbBackend
 pub struct DbBackend {
-    /// The open LibSQL connection to the local database file.
     conn: libsql::Connection,
-    /// The `ws://` or `wss://` URL of the synchronisation server. Empty string
-    /// means offline mode — no WebSocket connection is attempted.
     server_url: String,
-    /// The bearer token sent in the first WebSocket message for server authentication.
-    /// Stored here so `ensure_ws` can re-authenticate on reconnect without requiring
-    /// the caller to pass the token again.
     auth_token: String,
-    /// The live WebSocket stream wrapped in a mutex so it can be accessed from
-    /// multiple async tasks without data races. The `Option` represents the
-    /// connection being absent (either not configured or lost and not yet reconnected).
     ws: Arc<Mutex<Option<WsStream>>>,
-    /// A UUID string that permanently identifies this installation of the database.
-    /// It is stored in the `device` table and is sent in every change batch so the
-    /// server can identify the originating device and deduplicate messages.
     device_id: String,
-    /// HTTP client for the server's REST surface (currently the history endpoints).
-    /// Only used when `server_url` is configured.
     http: reqwest::Client,
-    /// Set once the server answers a history request with `404` — the endpoint does not
-    /// exist on this (older) server. Subsequent history reads then skip the wasted server
-    /// round-trip and go straight to the local journal (issue #113). A network error does
-    /// **not** set this (it is transient, not a definitive "no such route").
     history_unsupported: Arc<std::sync::atomic::AtomicBool>,
-    /// Cached result of the `GET /version` capability handshake (keeplin#114): fetched once
-    /// and reused so the client can negotiate behaviour instead of guessing.
     server_capabilities: Arc<Mutex<CapabilityCache>>,
-    /// Guards access to the shared `libsql::Connection` so that reads and writes are
-    /// correctly isolated even though every operation runs on a **single** connection.
-    ///
-    /// Writers take the **write** (exclusive) side for the whole `BEGIN IMMEDIATE …
-    /// COMMIT` span (and for bare writes); readers take the **read** (shared) side.
-    /// This guarantees three things on the shared connection:
-    /// - two `BEGIN IMMEDIATE`s never overlap (which would fail with "cannot start a
-    ///   transaction within a transaction"),
-    /// - a bare write never lands inside another task's open transaction, and
-    /// - a query never observes another task's *uncommitted* rows mid-transaction (which
-    ///   would otherwise be possible because all tasks share one connection).
-    ///
-    /// SQLite permits only one writer at a time regardless, so the exclusive write side
-    /// costs no real throughput, while multiple readers still run concurrently.
     lock: Arc<RwLock<()>>,
 }
 
+// md:impl DbBackend
 impl DbBackend {
-    /// Open (or create) a LibSQL database at `db_path`, run all pending schema
-    /// migrations, and optionally connect to the synchronisation server.
-    ///
-    /// # Parameters
-    ///
-    /// - `db_path` — Path to the SQLite database file. The file is created if it does
-    ///   not exist. Passing an empty string opens an in-memory database (useful for
-    ///   tests), but LibSQL currently requires a real path, so tests use a path inside
-    ///   a temporary directory.
-    /// - `server_url` — WebSocket URL of the sync server (`"ws://…"` or `"wss://…"`).
-    ///   Pass an empty string to run in offline mode without any WebSocket connection.
-    /// - `auth_token` — Authentication token sent to the server as the first WebSocket
-    ///   message. Ignored when `server_url` is empty.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StorageError` if the database file cannot be opened, if schema
-    /// migrations fail, or if the device-ID cannot be read from (or written to) the
-    /// `device` table. A WebSocket connection failure is treated as a non-fatal warning:
-    /// the backend is returned in offline mode rather than failing the constructor.
+    // md:impl DbBackend > fn new
     pub async fn new(
         db_path: impl AsRef<std::path::Path>,
         server_url: impl Into<String>,
@@ -156,10 +63,6 @@ impl DbBackend {
             .build()
             .unwrap_or_default();
 
-        // Protocol handshake before any sync is attempted (keeplin#114 follow-up):
-        // an incompatible server fails construction loudly with an actionable
-        // message; a server without `/version` (older keeplin-srv, or a bare test
-        // relay) warns and continues exactly as before the handshake existed.
         let mut startup_capabilities = CapabilityCache::Unknown;
         if !server_url.is_empty() {
             if let Some(base) = http_base_of(&server_url) {
@@ -213,34 +116,14 @@ impl DbBackend {
             device_id,
             http,
             history_unsupported: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            // Primed by the startup handshake when the server answered; left
-            // `Unknown` otherwise so the lazy per-capability probe can retry.
             server_capabilities: Arc::new(Mutex::new(startup_capabilities)),
             lock: Arc::new(RwLock::new(())),
         })
     }
 
-    // ── Migrations ────────────────────────────────────────────────────────────
-
-    /// The schema version this build understands. Bump it — and add a matching arm to
-    /// [`apply_migration`](Self::apply_migration) — for every new migration step.
-    ///
-    /// Version `1` is the **baseline**: the complete current schema. The pre-framework
-    /// additive `ALTER TABLE`s are folded into it as idempotent guards, so a database created
-    /// by an older build (which already has those columns) is stamped `1` without change.
     const SCHEMA_VERSION: u32 = 2;
 
-    /// Bring the database schema up to [`SCHEMA_VERSION`], recording progress in SQLite's
-    /// `PRAGMA user_version` so each step runs **exactly once** across restarts.
-    ///
-    /// Previously every startup re-ran the whole `CREATE TABLE IF NOT EXISTS` batch and every
-    /// `ALTER TABLE … ADD COLUMN` (swallowing "duplicate column" each time). Now the current
-    /// version is read once: an up-to-date database does no schema work at all, and only the
-    /// outstanding steps run — each in its own transaction, so a crash mid-migration leaves
-    /// the version stamp behind the half-applied step and the next startup retries it cleanly.
-    ///
-    /// A database whose `user_version` is **newer** than this build supports is rejected rather
-    /// than opened, so a downgrade cannot silently corrupt a schema it does not understand.
+    // md:impl DbBackend > fn run_migrations
     async fn run_migrations(conn: &libsql::Connection) -> Result<(), StorageError> {
         let current = Self::schema_version(conn).await?;
         if current > Self::SCHEMA_VERSION {
@@ -251,14 +134,9 @@ impl DbBackend {
             )));
         }
         for version in (current + 1)..=Self::SCHEMA_VERSION {
-            // Each migration is atomic with its version bump: SQLite DDL is transactional, and
-            // `PRAGMA user_version` set inside the transaction rolls back with it, so a step
-            // never lands half-applied with the stamp advanced.
             conn.execute("BEGIN IMMEDIATE", ()).await?;
             let stepped = async {
                 Self::apply_migration(conn, version).await?;
-                // `PRAGMA user_version` takes no bound parameters; `version` is our own const,
-                // never caller input, so formatting it in is safe.
                 conn.execute(&format!("PRAGMA user_version = {version}"), ())
                     .await?;
                 Ok::<(), StorageError>(())
@@ -278,8 +156,7 @@ impl DbBackend {
         Ok(())
     }
 
-    /// Read the database's current schema version from `PRAGMA user_version` (`0` on a
-    /// database that predates the versioned-migration framework or was never stamped).
+    // md:impl DbBackend > fn schema_version
     async fn schema_version(conn: &libsql::Connection) -> Result<u32, StorageError> {
         let mut rows = conn.query("PRAGMA user_version", ()).await?;
         match rows.next().await? {
@@ -288,8 +165,7 @@ impl DbBackend {
         }
     }
 
-    /// Apply the migration that advances the schema **to** `version`. The caller wraps this in
-    /// a transaction and bumps `user_version` on success.
+    // md:impl DbBackend > fn apply_migration
     async fn apply_migration(conn: &libsql::Connection, version: u32) -> Result<(), StorageError> {
         match version {
             1 => Self::migrate_v1_baseline(conn).await,
@@ -300,23 +176,7 @@ impl DbBackend {
         }
     }
 
-    /// Migration v1 — the baseline schema: every table and index in their current shape.
-    ///
-    /// Fresh databases get the complete schema in one step. Databases created by a
-    /// pre-framework build already have these tables (and, having run the old additive
-    /// `ALTER`s, these columns), so the `IF NOT EXISTS` creates and the
-    /// [`add_column_if_missing`](Self::add_column_if_missing) guards below are all no-ops that
-    /// simply carry such a database onto the version ladder at `1`.
-    ///
-    /// Tables created:
-    /// - `notes` — note records with soft-deletion via `deleted_at`.
-    /// - `notebooks` — notebook records with soft-deletion.
-    /// - `tags` — tag records with soft-deletion.
-    /// - `note_tags` — many-to-many association between notes and tags.
-    /// - `resources` — resource metadata and binary payload.
-    /// - `sync_state` — key/value store for the last-sync timestamp.
-    /// - `device` — stores the single device-identifier UUID.
-    /// - `entity_changes` — append-only change journal used by `get_changes_since`.
+    // md:impl DbBackend > fn migrate_v1_baseline
     async fn migrate_v1_baseline(conn: &libsql::Connection) -> Result<(), StorageError> {
         conn.execute_batch(
             "
@@ -430,48 +290,30 @@ impl DbBackend {
         )
         .await?;
 
-        // Additive migration for databases created before the bookmark/link feature: the
-        // `CREATE TABLE IF NOT EXISTS` above is a no-op on an existing table, so add the new
-        // columns explicitly. `ADD COLUMN` errors with "duplicate column name" on a fresh
-        // database (where the columns already exist) — that case is ignored.
         Self::add_column_if_missing(conn, "notes", "alias TEXT").await?;
         Self::add_column_if_missing(conn, "notes", "bookmarks TEXT NOT NULL DEFAULT '[]'").await?;
         Self::add_column_if_missing(conn, "notes", "links TEXT NOT NULL DEFAULT '[]'").await?;
         Self::add_column_if_missing(conn, "notebooks", "alias TEXT").await?;
 
-        // Additive migration for the version-vector conflict-resolution columns (see
-        // `note_log::resolve`). `vv` is the JSON per-device counter map, `last_writer` the
-        // authoring device id used as the concurrent tiebreak. Pre-VV rows default to an empty
-        // vector, so they behave like today until the next local write stamps them.
         for table in ["notes", "notebooks", "tags"] {
             Self::add_column_if_missing(conn, table, "vv TEXT NOT NULL DEFAULT '{}'").await?;
             Self::add_column_if_missing(conn, table, "last_writer TEXT NOT NULL DEFAULT ''")
                 .await?;
         }
-        // Versioned note↔tag associations: an add is the present state, a remove sets the
-        // `deleted_at` tombstone; both resolve with the same version vectors as other entities.
         Self::add_column_if_missing(conn, "note_tags", "updated_at TEXT").await?;
         Self::add_column_if_missing(conn, "note_tags", "deleted_at TEXT").await?;
         Self::add_column_if_missing(conn, "note_tags", "vv TEXT NOT NULL DEFAULT '{}'").await?;
         Self::add_column_if_missing(conn, "note_tags", "last_writer TEXT NOT NULL DEFAULT ''")
             .await?;
-        // Resource soft-delete + version vectors (previously hard delete).
         Self::add_column_if_missing(conn, "resources", "deleted_at TEXT").await?;
         Self::add_column_if_missing(conn, "resources", "vv TEXT NOT NULL DEFAULT '{}'").await?;
         Self::add_column_if_missing(conn, "resources", "last_writer TEXT NOT NULL DEFAULT ''")
             .await?;
 
-        // Alias uniqueness is enforced at the application layer by `LinkingBackend`, which
-        // checks the *plaintext* alias before a local write. A database UNIQUE index is
-        // deliberately NOT used: under at-rest encryption the stored alias is ciphertext
-        // with a fresh random nonce per write (so it never compares equal), and a hard
-        // constraint would make `apply_change` error — instead of silently tolerating — a
-        // duplicate alias arriving through sync, breaking the sync cycle.
         Ok(())
     }
 
-    /// Run `ALTER TABLE {table} ADD COLUMN {column_def}`, treating a "duplicate column name"
-    /// error (the column already exists, e.g. on a freshly created database) as success.
+    // md:impl DbBackend > fn add_column_if_missing
     async fn add_column_if_missing(
         conn: &libsql::Connection,
         table: &str,
@@ -485,18 +327,7 @@ impl DbBackend {
         }
     }
 
-    // ── Device ID ─────────────────────────────────────────────────────────────
-
-    /// Read the device identifier from the `device` table, or insert a new UUID v4
-    /// string if the table is empty.
-    ///
-    /// The `device` table holds at most one row. On the very first startup the table
-    /// is empty, so a new UUID is generated and inserted. On all subsequent startups
-    /// the existing row is returned unchanged.
-    ///
-    /// The device identifier is included in every change batch sent to the server
-    /// (as `"device_id"`) so the server can route changes to the correct recipient
-    /// and avoid echoing a device's own changes back to itself.
+    // md:impl DbBackend > fn get_or_create_device_id
     async fn get_or_create_device_id(conn: &libsql::Connection) -> Result<String, StorageError> {
         let mut rows = conn.query("SELECT id FROM device LIMIT 1", ()).await?;
 
@@ -510,27 +341,7 @@ impl DbBackend {
         Ok(id)
     }
 
-    // ── Change journal ────────────────────────────────────────────────────────
-
-    /// Insert one row into the `entity_changes` append-only journal.
-    ///
-    /// This helper is called by every mutating `StorageBackend` method immediately
-    /// after the primary table operation succeeds. Because both writes happen on the
-    /// same LibSQL connection (no transaction isolation is used here), a crash between
-    /// the two writes could leave the primary table updated but the journal entry
-    /// missing. In practice this means `get_changes_since` might miss a change; the
-    /// next sync cycle will re-read the primary table state and catch up.
-    ///
-    /// # Parameters
-    ///
-    /// - `entity_type` — one of `"note"`, `"notebook"`, `"tag"`, `"note_tag"`,
-    ///   or `"resource"`.
-    /// - `entity_id` — the UUID string of the affected entity (the note_id for
-    ///   `note_tag` operations).
-    /// - `operation` — one of `"create"`, `"update"`, `"delete"`, `"add"`, or
-    ///   `"remove"`.
-    /// - `data` — the full entity serialised as a JSON string, or `None` for
-    ///   delete operations where no payload is needed.
+    // md:impl DbBackend > fn record_change
     async fn record_change(
         &self,
         entity_type: &str,
@@ -554,10 +365,7 @@ impl DbBackend {
         Ok(())
     }
 
-    /// Rebuild the `note_links` projection rows for `note`: clear the note's existing rows
-    /// and insert one row per distinct resolved `target_note_id`. Called on every note write
-    /// (create/update and applied sync changes) so backlinks stay indexed. Runs on the same
-    /// connection as the surrounding note write.
+    // md:impl DbBackend > fn refresh_note_links
     async fn refresh_note_links(&self, note: &Note) -> Result<(), StorageError> {
         self.conn
             .execute(
@@ -579,34 +387,9 @@ impl DbBackend {
         Ok(())
     }
 
-    // ── WebSocket ─────────────────────────────────────────────────────────────
-
-    /// Open a WebSocket connection to `url` and perform the application-level
-    /// handshake by sending an authentication token as the first message.
-    ///
-    /// The handshake message format is:
-    /// ```json
-    /// { "type": "auth", "token": "<auth_token>" }
-    /// ```
-    ///
-    /// The server is expected to validate the token and either accept subsequent
-    /// messages or close the connection. If the server closes the connection, the
-    /// next call to `send_changes` or `receive_changes` will detect the closure and
-    /// set the WebSocket field to `None`, triggering a reconnect on the next attempt.
-    ///
-    /// **Security note:** The token is sent in plaintext over the WebSocket. Always
-    /// use a `wss://` (TLS) URL in production to prevent the token from being
-    /// intercepted in transit.
-    ///
-    /// The `device_id` identifies this installation to the relay so it can keep a
-    /// per-device delivery cursor and replay, on reconnect, every change batch this
-    /// device missed while offline (see keeplin-srv's durable change journal). A relay that
-    /// predates the field simply ignores it.
+    // md:impl DbBackend > fn connect_ws
     async fn connect_ws(url: &str, token: &str, device_id: &str) -> Result<WsStream, StorageError> {
         let (mut stream, _) = connect_async(url).await?;
-        // Send the authentication token immediately after the WebSocket handshake
-        // so the server can verify the caller's identity before processing any
-        // further messages.
         stream
             .send(Message::Text(
                 serde_json::json!({ "type": "auth", "token": token, "device_id": device_id })
@@ -616,8 +399,7 @@ impl DbBackend {
         Ok(stream)
     }
 
-    // ── Row → Note ────────────────────────────────────────────────────────────
-
+    // md:impl DbBackend > fn row_to_note
     fn row_to_note(row: &libsql::Row) -> Result<Note, StorageError> {
         let id = Self::parse_uuid(row.get::<String>(0)?)?;
         let title: String = row.get(1)?;
@@ -664,16 +446,19 @@ impl DbBackend {
         })
     }
 
+    // md:impl DbBackend > fn parse_uuid
     fn parse_uuid(s: String) -> Result<Uuid, StorageError> {
         s.parse()
             .map_err(|e: uuid::Error| StorageError::InvalidState(e.to_string()))
     }
 
+    // md:impl DbBackend > fn parse_required_dt
     fn parse_required_dt(s: String) -> Result<DateTime<Utc>, StorageError> {
         s.parse::<DateTime<Utc>>()
             .map_err(|e| StorageError::InvalidState(e.to_string()))
     }
 
+    // md:impl DbBackend > fn parse_optional_dt
     fn parse_optional_dt(s: Option<String>) -> Result<Option<DateTime<Utc>>, StorageError> {
         match s {
             None => Ok(None),
@@ -684,6 +469,7 @@ impl DbBackend {
         }
     }
 
+    // md:impl DbBackend > fn row_to_notebook
     fn row_to_notebook(row: &libsql::Row) -> Result<Notebook, StorageError> {
         Ok(Notebook {
             id: Self::parse_uuid(row.get::<String>(0)?)?,
@@ -697,6 +483,7 @@ impl DbBackend {
         })
     }
 
+    // md:impl DbBackend > fn row_to_tag
     fn row_to_tag(row: &libsql::Row) -> Result<Tag, StorageError> {
         Ok(Tag {
             id: Self::parse_uuid(row.get::<String>(0)?)?,
@@ -709,8 +496,7 @@ impl DbBackend {
         })
     }
 
-    /// Parse a `Resource` from a row selecting, in order:
-    /// `id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer` (no `data`).
+    // md:impl DbBackend > fn row_to_resource
     fn row_to_resource(row: &libsql::Row) -> Result<Resource, StorageError> {
         Ok(Resource {
             id: Self::parse_uuid(row.get::<String>(0)?)?,
@@ -725,23 +511,7 @@ impl DbBackend {
         })
     }
 
-    /// Convert a row from the `entity_changes` table into a typed [`Change`] variant.
-    ///
-    /// The arguments correspond to the `entity_type`, `entity_id`, `operation`,
-    /// `changed_at`, and `data` columns of the `entity_changes` table. The `data`
-    /// argument is a `serde_json::Value` already parsed from the stored JSON string (or
-    /// `Null` when the column value is `NULL`); `changed_at` is the time the mutation was
-    /// recorded and becomes the tombstone timestamp for delete variants.
-    ///
-    /// Returns `None` for any `(entity_type, operation)` combination that is not
-    /// recognised. This can happen if a future version of the software added new
-    /// entity types or operations that this version does not know about. Callers
-    /// should log a warning and skip `None` entries without aborting the sync.
-    ///
-    /// For resource creates, the function checks for a `_data_b64` key in `data`.
-    /// If present, it decodes the Base64 payload and attaches it to the
-    /// `ResourceCreate.data` field so that peers without a copy of the binary file
-    /// can reconstruct the full resource from the change record alone.
+    // md:impl DbBackend > fn row_to_change
     fn row_to_change(
         entity_type: &str,
         entity_id_str: &str,
@@ -842,43 +612,24 @@ impl DbBackend {
         }
     }
 
-    // ── Transaction helpers ───────────────────────────────────────────────────
-
-    /// Start a `BEGIN IMMEDIATE` transaction.
-    ///
-    /// `IMMEDIATE` acquires a write lock at the start so that all subsequent writes
-    /// succeed or fail atomically. Use `commit` to persist changes or `rollback` to
-    /// discard them. Prefer wrapping multiple operations in a transaction so that a
-    /// crash between the primary-table write and the `entity_changes` journal write
-    /// cannot leave the two tables in an inconsistent state.
+    // md:impl DbBackend > fn begin
     async fn begin(&self) -> Result<(), StorageError> {
         self.conn.execute("BEGIN IMMEDIATE", ()).await?;
         Ok(())
     }
 
-    /// Commit the current transaction and make all changes durable.
+    // md:impl DbBackend > fn commit
     async fn commit(&self) -> Result<(), StorageError> {
         self.conn.execute("COMMIT", ()).await?;
         Ok(())
     }
 
-    /// Roll back the current transaction, discarding all changes since `begin`.
-    ///
-    /// Errors from `ROLLBACK` are intentionally swallowed (`.ok()`) because a rollback
-    /// failure means no transaction was active — the database is already in a clean
-    /// state and there is nothing to recover from.
+    // md:impl DbBackend > fn rollback
     async fn rollback(&self) {
         self.conn.execute("ROLLBACK", ()).await.ok();
     }
 
-    /// Reconnect the WebSocket if the current connection slot is empty and a server
-    /// URL is configured.
-    ///
-    /// This method is called at the start of `send_changes` and `receive_changes`.
-    /// When the connection was lost (the slot was set to `None` by a previous error),
-    /// a fresh connection is established and re-authenticated. If reconnection fails,
-    /// the slot remains `None` and the caller silently skips the network operation
-    /// (changes accumulate locally until the connection is restored).
+    // md:impl DbBackend > fn ensure_ws
     async fn ensure_ws(guard: &mut Option<WsStream>, url: &str, token: &str, device_id: &str) {
         if guard.is_none() && !url.is_empty() {
             match Self::connect_ws(url, token, device_id).await {
@@ -893,13 +644,7 @@ impl DbBackend {
         }
     }
 
-    /// Migration v2 — pinning, starring, and manual ordering:
-    /// - `is_pinned` / `is_starred` / `sort_key` columns (defaults keep old rows valid:
-    ///   `sort_key 0` is the "never positioned" sentinel, ordered as the start of the
-    ///   normal band — see `Note::effective_sort_key`).
-    /// - `notebook_id` becomes non-optional in the model; existing `NULL` rows are moved
-    ///   to the Inbox system notebook (the nil UUID) so queries never see `NULL` again.
-    /// - The `(notebook_id, sort_key, id)` index that backs `list_notes_in_notebook`.
+    // md:impl DbBackend > fn migrate_v2_ordering
     async fn migrate_v2_ordering(conn: &libsql::Connection) -> Result<(), StorageError> {
         Self::add_column_if_missing(conn, "notes", "is_pinned INTEGER NOT NULL DEFAULT 0").await?;
         Self::add_column_if_missing(conn, "notes", "is_starred INTEGER NOT NULL DEFAULT 0").await?;
@@ -917,11 +662,7 @@ impl DbBackend {
         Ok(())
     }
 
-    /// Read the version-vector metadata `(vv, updated_at, last_writer)` of a row, or `None`
-    /// when the row does not exist. Used by `apply_change` to feed [`resolve`].
-    ///
-    /// `table` is always one of the hard-coded literals `"notes"`, `"notebooks"`, or `"tags"`
-    /// — never caller-supplied — so interpolating it into the query is safe.
+    // md:impl DbBackend > fn current_meta
     async fn current_meta(
         &self,
         table: &str,
@@ -944,10 +685,7 @@ impl DbBackend {
         }
     }
 
-    /// Decide whether an incoming remote write should replace the local row via [`resolve`]:
-    /// `true` when there is no local row, or when the incoming `(vv, updated_at, last_writer)`
-    /// wins the version-vector comparison against the stored one. This replaces the old bare
-    /// `updated_at` last-write-wins, so concurrent edits converge deterministically.
+    // md:impl DbBackend > fn incoming_wins
     async fn incoming_wins(
         &self,
         table: &str,
@@ -972,9 +710,7 @@ impl DbBackend {
         }
     }
 
-    /// Compute the version vector for a **local** write to `(table, id)`: the current stored
-    /// vector (or empty for a new row) with this device's component incremented. The caller
-    /// stamps the entity with this vector and sets `last_writer = self.device_id`.
+    // md:impl DbBackend > fn next_local_vv
     async fn next_local_vv(&self, table: &str, id: &str) -> Result<VersionVector, StorageError> {
         let mut vv = self
             .current_meta(table, id)
@@ -985,11 +721,7 @@ impl DbBackend {
         Ok(vv)
     }
 
-    /// Whether a row exists in `table` and is live (`deleted_at IS NULL`). Used by
-    /// `add_note_tag` to refuse dangling associations.
-    ///
-    /// `table` is always one of the hard-coded literals `"notes"` or `"tags"` — never
-    /// caller-supplied — so interpolating it into the query is safe.
+    // md:impl DbBackend > fn row_is_live
     async fn row_is_live(&self, table: &str, id: &str) -> Result<bool, StorageError> {
         let mut rows = self
             .conn
@@ -1004,11 +736,7 @@ impl DbBackend {
         }
     }
 
-    // ── note↔tag association version helpers ──────────────────────────────────
-
-    /// Version metadata `(vv, updated_at, last_writer)` of a note↔tag association, or `None`
-    /// when the pair has never been written. A pre-version row (NULL `updated_at`) is reported
-    /// at the epoch so any real incoming write dominates it.
+    // md:impl DbBackend > fn assoc_meta
     async fn assoc_meta(
         &self,
         note_id: &str,
@@ -1037,8 +765,7 @@ impl DbBackend {
         }
     }
 
-    /// Version vector for a **local** association write: current vector (empty if new) with this
-    /// device's component incremented.
+    // md:impl DbBackend > fn next_assoc_vv
     async fn next_assoc_vv(
         &self,
         note_id: &str,
@@ -1053,8 +780,7 @@ impl DbBackend {
         Ok(vv)
     }
 
-    /// Whether an incoming association write (add or remove) should replace the local state,
-    /// via [`resolve`]. `true` when the pair has no local row.
+    // md:impl DbBackend > fn assoc_incoming_wins
     async fn assoc_incoming_wins(
         &self,
         note_id: &str,
@@ -1079,8 +805,7 @@ impl DbBackend {
         }
     }
 
-    /// Upsert an association's versioned state: `deleted_at = None` for an add (present),
-    /// `Some(ts)` for a remove (tombstone).
+    // md:impl DbBackend > fn upsert_assoc
     async fn upsert_assoc(
         &self,
         note_id: &str,
@@ -1107,11 +832,7 @@ impl DbBackend {
         Ok(())
     }
 
-    // ── resource version helpers ──────────────────────────────────────────────
-
-    /// Version metadata `(vv, effective_ts, last_writer)` of a resource, or `None` if absent.
-    /// Resources have no `updated_at`, so the tiebreak timestamp is `deleted_at` when tombstoned
-    /// else `created_at`.
+    // md:impl DbBackend > fn resource_meta
     async fn resource_meta(
         &self,
         id: &str,
@@ -1137,8 +858,7 @@ impl DbBackend {
         }
     }
 
-    /// Version vector for a **local** resource write (create or delete): current vector (empty
-    /// if new) with this device's component incremented.
+    // md:impl DbBackend > fn next_resource_vv
     async fn next_resource_vv(&self, id: &str) -> Result<VersionVector, StorageError> {
         let mut vv = self
             .resource_meta(id)
@@ -1149,8 +869,7 @@ impl DbBackend {
         Ok(vv)
     }
 
-    /// Whether an incoming resource change should replace the local row, via [`resolve`].
-    /// `true` when the resource has no local row.
+    // md:impl DbBackend > fn resource_incoming_wins
     async fn resource_incoming_wins(
         &self,
         id: &str,
@@ -1175,11 +894,7 @@ impl DbBackend {
     }
 }
 
-// ── Pagination helpers ────────────────────────────────────────────────────────
-
-/// Parse a cursor token of the form `"<created_at_rfc3339>|<uuid>"` into its
-/// two components. Returns `("", "")` when the token is absent or empty, which
-/// causes the keyset SQL condition `?1 = ''` to match all rows (no offset).
+// md:fn parse_cursor
 fn parse_cursor(token: Option<&str>) -> (String, String) {
     match token.filter(|t| !t.is_empty()) {
         Some(cursor) => match cursor.split_once('|') {
@@ -1190,11 +905,7 @@ fn parse_cursor(token: Option<&str>) -> (String, String) {
     }
 }
 
-/// Given a `rows` vec that was fetched with `LIMIT limit + 1`, return `(page, next_token)`.
-///
-/// If `rows.len() > limit`, there is a next page: `next_token` is built from
-/// the last item of the actual page (index `limit - 1`) using `token_fn`.
-/// The extra row is discarded so the returned page never exceeds `limit` items.
+// md:fn build_page
 fn build_page<T, F>(mut rows: Vec<T>, limit: usize, token_fn: F) -> (Vec<T>, Option<String>)
 where
     F: Fn(&T) -> String,
@@ -1211,42 +922,37 @@ where
     (rows, next_token)
 }
 
-/// Serialise a note's bookmarks to the JSON stored in the `notes.bookmarks` column.
-/// Serialisation of a plain `Vec` of small structs cannot fail in practice; `"[]"` is a
-/// safe fallback that round-trips to an empty list.
+// md:fn bookmarks_to_json
 fn bookmarks_to_json(bookmarks: &[Bookmark]) -> String {
     serde_json::to_string(bookmarks).unwrap_or_else(|_| "[]".to_string())
 }
 
-/// Serialise a note's links to the JSON stored in the `notes.links` column.
+// md:fn links_to_json
 fn links_to_json(links: &[NoteLink]) -> String {
     serde_json::to_string(links).unwrap_or_else(|_| "[]".to_string())
 }
 
-/// Parse the `notes.bookmarks` JSON column; a malformed value yields an empty list rather
-/// than failing the whole read.
+// md:fn json_to_bookmarks
 fn json_to_bookmarks(s: &str) -> Vec<Bookmark> {
     serde_json::from_str(s).unwrap_or_default()
 }
 
-/// Parse the `notes.links` JSON column; a malformed value yields an empty list.
+// md:fn json_to_links
 fn json_to_links(s: &str) -> Vec<NoteLink> {
     serde_json::from_str(s).unwrap_or_default()
 }
 
-/// Serialise a version vector to the JSON stored in the `vv` column (`"{}"` fallback).
+// md:fn vv_to_json
 fn vv_to_json(vv: &VersionVector) -> String {
     serde_json::to_string(vv).unwrap_or_else(|_| "{}".to_string())
 }
 
-/// Parse a `vv` JSON column; a malformed value yields an empty vector.
+// md:fn json_to_vv
 fn json_to_vv(s: &str) -> VersionVector {
     serde_json::from_str(s).unwrap_or_default()
 }
 
-/// Build the `entity_changes.data` JSON for a delete: the tombstone timestamp plus the
-/// deleting write's version vector and author, so `row_to_change` can reconstruct a delete
-/// `Change` that carries everything `resolve` needs on the receiving peer.
+// md:fn tombstone_data
 fn tombstone_data(deleted_at: DateTime<Utc>, vv: &VersionVector, last_writer: &str) -> String {
     serde_json::json!({
         "deleted_at": deleted_at,
@@ -1256,8 +962,7 @@ fn tombstone_data(deleted_at: DateTime<Utc>, vv: &VersionVector, last_writer: &s
     .to_string()
 }
 
-/// Build the `entity_changes.data` JSON for a note↔tag add/remove: the other key plus the
-/// association's version metadata, so `row_to_change` reconstructs a versioned association change.
+// md:fn assoc_data
 fn assoc_data(
     tag_id: Uuid,
     updated_at: DateTime<Utc>,
@@ -1273,13 +978,11 @@ fn assoc_data(
     .to_string()
 }
 
-/// Reconstruct an association change's `(updated_at, vv, last_writer)` from a journal `data`
-/// value. Falls back to `changed_at` and empty vv/writer for pre-version records.
+// md:fn assoc_from_data
 fn assoc_from_data(
     data: &serde_json::Value,
     changed_at: DateTime<Utc>,
 ) -> (DateTime<Utc>, VersionVector, String) {
-    // Same shape as a tombstone minus the semantics; reuse the field extraction.
     let updated_at = data
         .get("updated_at")
         .and_then(|v| v.as_str())
@@ -1297,8 +1000,7 @@ fn assoc_from_data(
     (updated_at, vv, last_writer)
 }
 
-/// Reconstruct a delete's `(deleted_at, vv, last_writer)` from a journal `data` value.
-/// Falls back to `changed_at` and empty vv/writer for pre-VV records that stored `NULL`.
+// md:fn tombstone_from_data
 fn tombstone_from_data(
     data: &serde_json::Value,
     changed_at: DateTime<Utc>,
@@ -1320,15 +1022,13 @@ fn tombstone_from_data(
     (deleted_at, vv, last_writer)
 }
 
-// ── NoteRepository impl ───────────────────────────────────────────────────────
-
+// md:impl NoteRepository for DbBackend
 #[async_trait]
 impl NoteRepository for DbBackend {
+    // md:impl NoteRepository for DbBackend > fn create_note
     async fn create_note(&self, mut note: Note) -> Result<Note, StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
-        // Stamp this local write with a freshly incremented version vector so remote peers can
-        // resolve it against their own edits (see `note_log::resolve`).
         note.vv = self.next_local_vv("notes", &note.id.to_string()).await?;
         note.last_writer = self.device_id.clone();
         let r: Result<(), StorageError> = async {
@@ -1377,6 +1077,7 @@ impl NoteRepository for DbBackend {
         }
     }
 
+    // md:impl NoteRepository for DbBackend > fn read_note
     async fn read_note(&self, id: Uuid) -> Result<Note, StorageError> {
         let _read_guard = self.lock.read().await;
         let mut rows = self
@@ -1395,6 +1096,7 @@ impl NoteRepository for DbBackend {
         }
     }
 
+    // md:impl NoteRepository for DbBackend > fn update_note
     async fn update_note(&self, mut note: Note) -> Result<Note, StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
@@ -1453,6 +1155,7 @@ impl NoteRepository for DbBackend {
         }
     }
 
+    // md:impl NoteRepository for DbBackend > fn delete_note
     async fn delete_note(&self, id: Uuid) -> Result<(), StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
@@ -1487,6 +1190,7 @@ impl NoteRepository for DbBackend {
         }
     }
 
+    // md:impl NoteRepository for DbBackend > fn list_notes
     async fn list_notes(
         &self,
         page_size: u32,
@@ -1521,15 +1225,13 @@ impl NoteRepository for DbBackend {
         }))
     }
 
+    // md:impl NoteRepository for DbBackend > fn note_backlinks
     async fn note_backlinks(
         &self,
         target_id: Uuid,
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
-        // Indexed lookup via the `note_links` projection joined back to live notes, instead
-        // of the default full scan. `idx_note_links_target` makes the `WHERE` an index seek,
-        // and a keyset cursor on `(created_at, id)` plus `LIMIT` keeps the response bounded.
         let _read_guard = self.lock.read().await;
         let limit = super::effective_page_size(page_size);
         let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
@@ -1566,6 +1268,7 @@ impl NoteRepository for DbBackend {
         }))
     }
 
+    // md:impl NoteRepository for DbBackend > fn list_notes_in_notebook
     async fn list_notes_in_notebook(
         &self,
         notebook_id: Uuid,
@@ -1575,9 +1278,6 @@ impl NoteRepository for DbBackend {
         let _read_guard = self.lock.read().await;
         let limit = super::effective_page_size(page_size);
         let (cursor_key, cursor_id) = parse_cursor(page_token.as_deref());
-        // The legacy `sort_key 0` sentinel orders as the start of the normal band (see
-        // `Note::effective_sort_key`); the CASE mirrors that mapping in SQL. The keyset
-        // cursor carries the *effective* key, compared numerically.
         let mut rows = self
             .conn
             .query(
@@ -1606,6 +1306,7 @@ impl NoteRepository for DbBackend {
         }))
     }
 
+    // md:impl NoteRepository for DbBackend > fn list_starred_notes
     async fn list_starred_notes(
         &self,
         page_size: u32,
@@ -1640,12 +1341,12 @@ impl NoteRepository for DbBackend {
         }))
     }
 
+    // md:impl NoteRepository for DbBackend > fn notebook_sort_profile
     async fn notebook_sort_profile(
         &self,
         notebook_id: Uuid,
     ) -> Result<super::NotebookSortProfile, StorageError> {
         let _read_guard = self.lock.read().await;
-        // Keys only — `idx_notes_notebook_sort` makes this an index scan.
         let mut rows = self
             .conn
             .query(
@@ -1666,10 +1367,10 @@ impl NoteRepository for DbBackend {
     }
 }
 
-// ── NotebookRepository impl ───────────────────────────────────────────────────
-
+// md:impl NotebookRepository for DbBackend
 #[async_trait]
 impl NotebookRepository for DbBackend {
+    // md:impl NotebookRepository for DbBackend > fn create_notebook
     async fn create_notebook(&self, mut notebook: Notebook) -> Result<Notebook, StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
@@ -1712,6 +1413,7 @@ impl NotebookRepository for DbBackend {
         }
     }
 
+    // md:impl NotebookRepository for DbBackend > fn read_notebook
     async fn read_notebook(&self, id: Uuid) -> Result<Notebook, StorageError> {
         let _read_guard = self.lock.read().await;
         let mut rows = self
@@ -1728,6 +1430,7 @@ impl NotebookRepository for DbBackend {
         }
     }
 
+    // md:impl NotebookRepository for DbBackend > fn update_notebook
     async fn update_notebook(&self, mut notebook: Notebook) -> Result<Notebook, StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
@@ -1772,6 +1475,7 @@ impl NotebookRepository for DbBackend {
         }
     }
 
+    // md:impl NotebookRepository for DbBackend > fn delete_notebook
     async fn delete_notebook(&self, id: Uuid) -> Result<(), StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
@@ -1806,6 +1510,7 @@ impl NotebookRepository for DbBackend {
         }
     }
 
+    // md:impl NotebookRepository for DbBackend > fn list_notebooks
     async fn list_notebooks(
         &self,
         page_size: u32,
@@ -1839,10 +1544,10 @@ impl NotebookRepository for DbBackend {
     }
 }
 
-// ── TagRepository impl ────────────────────────────────────────────────────────
-
+// md:impl TagRepository for DbBackend
 #[async_trait]
 impl TagRepository for DbBackend {
+    // md:impl TagRepository for DbBackend > fn create_tag
     async fn create_tag(&self, mut tag: Tag) -> Result<Tag, StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
@@ -1882,6 +1587,7 @@ impl TagRepository for DbBackend {
         }
     }
 
+    // md:impl TagRepository for DbBackend > fn read_tag
     async fn read_tag(&self, id: Uuid) -> Result<Tag, StorageError> {
         let _read_guard = self.lock.read().await;
         let mut rows = self
@@ -1898,6 +1604,7 @@ impl TagRepository for DbBackend {
         }
     }
 
+    // md:impl TagRepository for DbBackend > fn update_tag
     async fn update_tag(&self, mut tag: Tag) -> Result<Tag, StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
@@ -1939,6 +1646,7 @@ impl TagRepository for DbBackend {
         }
     }
 
+    // md:impl TagRepository for DbBackend > fn delete_tag
     async fn delete_tag(&self, id: Uuid) -> Result<(), StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
@@ -1973,6 +1681,7 @@ impl TagRepository for DbBackend {
         }
     }
 
+    // md:impl TagRepository for DbBackend > fn list_tags
     async fn list_tags(
         &self,
         page_size: u32,
@@ -2005,6 +1714,7 @@ impl TagRepository for DbBackend {
         }))
     }
 
+    // md:impl TagRepository for DbBackend > fn add_note_tag
     async fn add_note_tag(&self, note_tag: NoteTag) -> Result<(), StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
@@ -2014,17 +1724,12 @@ impl TagRepository for DbBackend {
         let writer = self.device_id.clone();
         let ts = now();
         let r: Result<(), StorageError> = async {
-            // Both ends must exist and be live: the API must not create a dangling
-            // association. `apply_change` deliberately skips this check — sync delivery
-            // order is not guaranteed, so an association may arrive before its note/tag.
             if !self.row_is_live("notes", &note_id).await? {
                 return Err(StorageError::NotFound(note_id.clone()));
             }
             if !self.row_is_live("tags", &tag_id).await? {
                 return Err(StorageError::NotFound(tag_id.clone()));
             }
-            // An add is the association's *present* state (deleted_at = NULL), versioned so a
-            // concurrent add-vs-remove converges through `resolve`.
             self.upsert_assoc(&note_id, &tag_id, ts, None, &vv, &writer)
                 .await?;
             let data = assoc_data(note_tag.tag_id, ts, &vv, &writer);
@@ -2044,6 +1749,7 @@ impl TagRepository for DbBackend {
         }
     }
 
+    // md:impl TagRepository for DbBackend > fn remove_note_tag
     async fn remove_note_tag(&self, note_id: Uuid, tag_id: Uuid) -> Result<(), StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
@@ -2053,7 +1759,6 @@ impl TagRepository for DbBackend {
         let writer = self.device_id.clone();
         let ts = now();
         let r: Result<(), StorageError> = async {
-            // A remove is a *tombstone* (deleted_at set), kept so it can beat a concurrent add.
             self.upsert_assoc(&note_id_s, &tag_id_s, ts, Some(ts), &vv, &writer)
                 .await?;
             let data = assoc_data(tag_id, ts, &vv, &writer);
@@ -2073,6 +1778,7 @@ impl TagRepository for DbBackend {
         }
     }
 
+    // md:impl TagRepository for DbBackend > fn list_note_tags
     async fn list_note_tags(
         &self,
         note_id: Uuid,
@@ -2114,10 +1820,10 @@ impl TagRepository for DbBackend {
     }
 }
 
-// ── ResourceRepository impl ───────────────────────────────────────────────────
-
+// md:impl ResourceRepository for DbBackend
 #[async_trait]
 impl ResourceRepository for DbBackend {
+    // md:impl ResourceRepository for DbBackend > fn create_resource
     async fn create_resource(
         &self,
         mut resource: Resource,
@@ -2128,11 +1834,6 @@ impl ResourceRepository for DbBackend {
         resource.vv = self.next_resource_vv(&resource.id.to_string()).await?;
         resource.last_writer = self.device_id.clone();
         let r: Result<(), StorageError> = async {
-            // Encode the binary payload as Base64 before moving `data` into the SQL
-            // parameter list. The Base64 string is stored in the `entity_changes` journal
-            // under the key `_data_b64` so that peers that receive this change via
-            // `get_changes_since` can retrieve the full binary resource without needing
-            // to download it separately.
             let data_b64 = STANDARD.encode(&data);
             self.conn
                 .execute(
@@ -2173,6 +1874,7 @@ impl ResourceRepository for DbBackend {
         }
     }
 
+    // md:impl ResourceRepository for DbBackend > fn read_resource
     async fn read_resource(&self, id: Uuid) -> Result<(Resource, Vec<u8>), StorageError> {
         let _read_guard = self.lock.read().await;
         let mut rows = self
@@ -2196,6 +1898,7 @@ impl ResourceRepository for DbBackend {
         }
     }
 
+    // md:impl ResourceRepository for DbBackend > fn delete_resource
     async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError> {
         let _write_guard = self.lock.write().await;
         self.begin().await?;
@@ -2203,8 +1906,6 @@ impl ResourceRepository for DbBackend {
         let writer = self.device_id.clone();
         let ts = now();
         let r: Result<(), StorageError> = async {
-            // Soft-delete: set the tombstone and bump the vector; the binary payload is
-            // retained (reclaiming it is a separate compaction concern).
             let affected = self
                 .conn
                 .execute(
@@ -2242,6 +1943,7 @@ impl ResourceRepository for DbBackend {
         }
     }
 
+    // md:impl ResourceRepository for DbBackend > fn list_resources
     async fn list_resources(
         &self,
         page_size: u32,
@@ -2271,14 +1973,12 @@ impl ResourceRepository for DbBackend {
         }))
     }
 
+    // md:impl ResourceRepository for DbBackend > fn purge_deleted_resources
     async fn purge_deleted_resources(
         &self,
         older_than: DateTime<Utc>,
     ) -> Result<u64, StorageError> {
         let _write_guard = self.lock.write().await;
-        // Free the dead bytes but keep the tombstone row (deleted_at, vv, last_writer)
-        // intact so the deletion keeps converging. `size` is left as a record of what the
-        // payload was; reads of a tombstoned resource are NotFound before touching data.
         let purged = self
             .conn
             .execute(
@@ -2294,10 +1994,10 @@ impl ResourceRepository for DbBackend {
     }
 }
 
-// ── SyncBackend impl ──────────────────────────────────────────────────────────
-
+// md:impl SyncBackend for DbBackend
 #[async_trait]
 impl SyncBackend for DbBackend {
+    // md:impl SyncBackend for DbBackend > fn get_changes_since
     async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError> {
         let _read_guard = self.lock.read().await;
         let since_str = since.to_sortable_rfc3339();
@@ -2336,24 +2036,11 @@ impl SyncBackend for DbBackend {
         Ok(changes)
     }
 
+    // md:impl SyncBackend for DbBackend > fn apply_change
     async fn apply_change(&self, change: Change) -> Result<(), StorageError> {
-        // Applies a change pulled from the relay. Deliberately does NOT call `record_change`:
-        // the `entity_changes` journal holds only changes that ORIGINATED on this device, so
-        // `get_changes_since`/`send_changes` never re-send something we merely received. The
-        // sync server is a broadcast relay (it forwards each device's change to every other
-        // peer), so re-propagation is unnecessary; re-journaling applied changes would just
-        // echo every change back out on the next cycle. Do not add `record_change` here
-        // without also switching the relay away from broadcast — see `db.md`.
-        //
-        // Hold the write lock for the whole apply so this write cannot interleave with
-        // another task's open transaction on the shared connection.
         let _write_guard = self.lock.write().await;
         match change {
-            // Notes
             Change::NoteCreate { note } | Change::NoteUpdate { note } => {
-                // Version-vector conflict resolution: apply only when the incoming write wins
-                // against the local row (see `resolve`), so concurrent edits converge instead
-                // of the old bare-`updated_at` last-write-wins.
                 if !self
                     .incoming_wins(
                         "notes",
@@ -2366,12 +2053,8 @@ impl SyncBackend for DbBackend {
                 {
                     return Ok(());
                 }
-                // Atomically refresh the `note_links` projection and upsert the note, so a
-                // crash mid-apply cannot leave the index out of sync with the note row
-                // (mirrors the create/update transactions; still idempotent on retry).
                 self.begin().await?;
                 let r: Result<(), StorageError> = async {
-                    // Refresh the link index before the INSERT consumes the note's fields.
                     self.refresh_note_links(&note).await?;
                     self.conn
                         .execute(
@@ -2415,10 +2098,6 @@ impl SyncBackend for DbBackend {
                 vv,
                 last_writer,
             } => {
-                // Tombstone competes in `resolve` exactly like an edit (using `deleted_at` as
-                // its timestamp), so a stale delete never overrides a newer edit and a causal
-                // edit made after the delete can still revive the note. Store the tombstone's
-                // own vv/writer so it can beat later concurrent edits deterministically.
                 if !self
                     .incoming_wins("notes", &id.to_string(), &vv, deleted_at, &last_writer)
                     .await?
@@ -2438,9 +2117,6 @@ impl SyncBackend for DbBackend {
                     )
                     .await?;
                 if affected == 0 {
-                    // The note is unknown locally (out-of-order delivery, a device catching
-                    // up). Persist a minimal tombstone so a later stale create/update loses
-                    // against it in `resolve` instead of resurrecting the note (issue #71).
                     self.conn
                         .execute(
                             "INSERT OR IGNORE INTO notes (id, title, created_at, updated_at, deleted_at, vv, last_writer)
@@ -2455,7 +2131,6 @@ impl SyncBackend for DbBackend {
                         .await?;
                 }
             }
-            // Notebooks
             Change::NotebookCreate { notebook } | Change::NotebookUpdate { notebook } => {
                 if !self
                     .incoming_wins(
@@ -2506,8 +2181,6 @@ impl SyncBackend for DbBackend {
                     )
                     .await?;
                 if affected == 0 {
-                    // Unknown notebook: write a minimal tombstone so a later stale create/update
-                    // cannot resurrect it (issue #71).
                     self.conn
                         .execute(
                             "INSERT OR IGNORE INTO notebooks (id, title, created_at, updated_at, deleted_at, vv, last_writer)
@@ -2517,7 +2190,6 @@ impl SyncBackend for DbBackend {
                         .await?;
                 }
             }
-            // Tags
             Change::TagCreate { tag } | Change::TagUpdate { tag } => {
                 if !self
                     .incoming_wins(
@@ -2567,8 +2239,6 @@ impl SyncBackend for DbBackend {
                     )
                     .await?;
                 if affected == 0 {
-                    // Unknown tag: write a minimal tombstone so a later stale create/update
-                    // cannot resurrect it (issue #71).
                     self.conn
                         .execute(
                             "INSERT OR IGNORE INTO tags (id, title, created_at, updated_at, deleted_at, vv, last_writer)
@@ -2578,7 +2248,6 @@ impl SyncBackend for DbBackend {
                         .await?;
                 }
             }
-            // NoteTag associations
             Change::NoteTagAdd {
                 note_id,
                 tag_id,
@@ -2611,8 +2280,6 @@ impl SyncBackend for DbBackend {
                         .await?;
                 }
             }
-            // Resource create — version-vector resolved. `data` carries the payload from a
-            // `DbBackend` peer (the normal case); it is stored in the `resources.data` column.
             Change::ResourceCreate { resource, data } => {
                 let id = resource.id.to_string();
                 let ts = resource.deleted_at.unwrap_or(resource.created_at);
@@ -2641,8 +2308,6 @@ impl SyncBackend for DbBackend {
                         .await?;
                 }
             }
-            // Resource delete — soft-delete (tombstone) resolved like other deletes; the blob
-            // is retained.
             Change::ResourceDelete {
                 id,
                 deleted_at,
@@ -2666,8 +2331,6 @@ impl SyncBackend for DbBackend {
                         )
                         .await?;
                     if affected == 0 {
-                        // Unknown resource: write a minimal metadata tombstone (no blob) so a
-                        // later stale create cannot resurrect it (issue #71).
                         self.conn
                             .execute(
                                 "INSERT OR IGNORE INTO resources (id, title, mime_type, file_name, size, created_at, deleted_at, vv, last_writer)
@@ -2687,6 +2350,7 @@ impl SyncBackend for DbBackend {
         Ok(())
     }
 
+    // md:impl SyncBackend for DbBackend > fn get_last_sync_time
     async fn get_last_sync_time(&self) -> Result<DateTime<Utc>, StorageError> {
         let _read_guard = self.lock.read().await;
         let mut rows = self
@@ -2703,6 +2367,7 @@ impl SyncBackend for DbBackend {
         }
     }
 
+    // md:impl SyncBackend for DbBackend > fn update_sync_time
     async fn update_sync_time(&self, ts: DateTime<Utc>) -> Result<(), StorageError> {
         let _write_guard = self.lock.write().await;
         self.conn
@@ -2714,15 +2379,12 @@ impl SyncBackend for DbBackend {
         Ok(())
     }
 
+    // md:impl SyncBackend for DbBackend > fn send_changes
     async fn send_changes(&self, changes: Vec<Change>) -> Result<(), StorageError> {
         if changes.is_empty() {
             return Ok(());
         }
         if self.server_url.is_empty() {
-            // No relay is configured: this backend is deliberately local-only, so there
-            // is nowhere to send changes and skipping is not a failure. With a relay
-            // configured, an undeliverable batch must error instead (below), so the sync
-            // watermark does not advance past changes the relay never received.
             tracing::debug!("No server_url configured; changes stay local");
             return Ok(());
         }
@@ -2736,13 +2398,6 @@ impl SyncBackend for DbBackend {
         })
         .to_string();
 
-        // Retry sending with exponential backoff to tolerate transient network
-        // disruptions. Delays are 2 s, 4 s, and 8 s. After four attempts — or as soon
-        // as the connection cannot be (re-)established at all — the error is propagated
-        // to the caller so `run_sync` aborts and leaves the last-sync watermark
-        // unchanged; the same changes are re-collected and re-sent on the next cycle.
-        // Returning `Ok` here instead would advance the watermark past changes the
-        // relay never saw, silently dropping them from every future sync.
         for attempt in 0u32..=3 {
             let mut guard = self.ws.lock().await;
             Self::ensure_ws(
@@ -2753,9 +2408,6 @@ impl SyncBackend for DbBackend {
             )
             .await;
             let Some(ws) = guard.as_mut() else {
-                // Reconnect failed. Fail fast rather than sleeping through the backoff:
-                // a refused connection rarely heals within seconds, and the next sync
-                // cycle retries the whole batch anyway.
                 return Err(StorageError::WebSocket(format!(
                     "cannot send {n} change(s): no WebSocket connection to {}",
                     self.server_url
@@ -2782,6 +2434,7 @@ impl SyncBackend for DbBackend {
         Ok(())
     }
 
+    // md:impl SyncBackend for DbBackend > fn receive_changes
     async fn receive_changes(&self) -> Result<Vec<Change>, StorageError> {
         let mut guard = self.ws.lock().await;
         Self::ensure_ws(
@@ -2795,16 +2448,7 @@ impl SyncBackend for DbBackend {
             tracing::warn!("No WebSocket connection; no changes received");
             return Ok(vec![]);
         }
-        // Reject sync batches that exceed this message count. Enforcing an upper bound
-        // prevents a malicious or misbehaving server from exhausting the daemon's memory
-        // by sending an unbounded stream of messages in a single receive call. Any
-        // messages not consumed here will be delivered on the next sync cycle.
         const MAX_WS_MESSAGES: usize = 1_000;
-        // Drain all messages that have already been buffered in the WebSocket stream,
-        // but stop waiting after 100 milliseconds of silence. This makes `receive_changes`
-        // a bounded-time operation: it will not block indefinitely waiting for new
-        // messages to arrive. Any messages that arrive after the timeout will be picked
-        // up on the next sync cycle.
         let drain_timeout = Duration::from_millis(100);
         let mut changes = Vec::new();
         let mut connection_closed = false;
@@ -2822,10 +2466,6 @@ impl SyncBackend for DbBackend {
                 match timeout(drain_timeout, ws.next()).await {
                     Ok(Some(Ok(Message::Text(text)))) => {
                         msg_count += 1;
-                        // A malformed frame is logged and skipped rather than aborting the
-                        // whole receive (mirroring how the backends skip corrupt NDJSON log
-                        // lines): one bad frame from the relay must not block every
-                        // well-formed batch behind it, or fail the sync cycle outright.
                         let v: serde_json::Value = match serde_json::from_str(&text) {
                             Ok(v) => v,
                             Err(e) => {
@@ -2860,6 +2500,7 @@ impl SyncBackend for DbBackend {
         Ok(changes)
     }
 
+    // md:impl SyncBackend for DbBackend > fn prune_change_journal
     async fn prune_change_journal(&self, older_than: DateTime<Utc>) -> Result<u64, StorageError> {
         let _write_guard = self.lock.write().await;
         let affected = self
@@ -2873,16 +2514,13 @@ impl SyncBackend for DbBackend {
         Ok(affected)
     }
 
+    // md:impl SyncBackend for DbBackend > fn get_device_id
     async fn get_device_id(&self) -> Result<String, StorageError> {
         Ok(self.device_id.clone())
     }
 }
 
-/// One version as served by keeplin-srv's history endpoints
-/// (`GET /api/{notes,notebooks}/:id/history`): the edit's instant, the authoring sync
-/// device, and the snapshot exactly as this account's devices pushed it (`None` for a
-/// tombstone). Encrypted fields are still ciphertext here; `EncryptedBackend` decrypts
-/// them on the way up, the same as for the local journal.
+// md:ServerVersion
 #[derive(Debug, serde::Deserialize)]
 struct ServerVersion {
     timestamp: DateTime<Utc>,
@@ -2890,20 +2528,14 @@ struct ServerVersion {
     entity: Option<serde_json::Value>,
 }
 
-/// Cached outcome of the `GET /version` capability handshake (keeplin#114).
+// md:CapabilityCache
 enum CapabilityCache {
-    /// Not yet fetched.
     Unknown,
-    /// Fetched, but the server has no `/version` (older server) — capabilities indeterminate.
     Unavailable,
-    /// The server's advertised capability list.
     Known(Vec<String>),
 }
 
-/// The HTTP base URL of the sync server, derived from the WebSocket `server_url`
-/// (`ws`→`http`, `wss`→`https`, the relay path stripped). `None` for an empty or
-/// non-WebSocket URL (offline mode). Free function so `DbBackend::new` can run
-/// the `/version` handshake before `self` exists.
+// md:fn http_base_of
 fn http_base_of(server_url: &str) -> Option<String> {
     let (scheme, rest) = if let Some(rest) = server_url.strip_prefix("wss://") {
         ("https://", rest)
@@ -2914,17 +2546,14 @@ fn http_base_of(server_url: &str) -> Option<String> {
     Some(format!("{scheme}{}", rest.trim_end_matches('/')))
 }
 
+// md:impl DbBackend (server history)
 impl DbBackend {
-    /// See [`http_base_of`].
+    // md:impl DbBackend (server history) > fn server_http_base
     fn server_http_base(&self) -> Option<String> {
         http_base_of(&self.server_url)
     }
 
-    /// Whether the server advertises `capability` at `GET /version` (keeplin#114). Fetched
-    /// once and cached. Returns:
-    /// - `Some(true)`/`Some(false)` — the server has `/version` and does / does not advertise it;
-    /// - `None` — the server has no `/version` (older server), so the caller cannot rely on
-    ///   capability negotiation and should fall back to feature-specific probing.
+    // md:impl DbBackend (server history) > fn server_has_capability
     async fn server_has_capability(&self, capability: &str) -> Option<bool> {
         let mut cache = self.server_capabilities.lock().await;
         if let CapabilityCache::Unknown = &*cache {
@@ -2949,8 +2578,6 @@ impl DbBackend {
                                 Err(_) => CapabilityCache::Unavailable,
                             }
                         }
-                        // No /version endpoint (or unreachable): capability negotiation is
-                        // unavailable on this server.
                         _ => CapabilityCache::Unavailable,
                     }
                 }
@@ -2963,9 +2590,7 @@ impl DbBackend {
         }
     }
 
-    /// Fetch an entity's history from the server (the durable, cross-device change record).
-    /// `Ok(None)` when no server is configured or the fetch fails for any reason — the
-    /// caller falls back to the local journal, so history keeps working offline.
+    // md:impl DbBackend (server history) > fn server_entity_history
     async fn server_entity_history<T: serde::de::DeserializeOwned>(
         &self,
         entity_type: &str,
@@ -2973,14 +2598,9 @@ impl DbBackend {
         cap: u32,
     ) -> Option<Vec<EntityVersion<T>>> {
         use std::sync::atomic::Ordering;
-        // A previous request already learned this server has no history endpoint: skip the
-        // wasted round-trip and fall back to the local journal (issue #113).
         if self.history_unsupported.load(Ordering::Relaxed) {
             return None;
         }
-        // Prefer explicit capability negotiation (keeplin#114): if the server advertises a
-        // `/version` without `history`, skip straight to the local journal. `None` (no
-        // `/version`, an older server) falls through to the request + 404-latch path.
         if self.server_has_capability("history").await == Some(false) {
             self.history_unsupported.store(true, Ordering::Relaxed);
             return None;
@@ -2996,15 +2616,11 @@ impl DbBackend {
         {
             Ok(r) => r,
             Err(e) => {
-                // Transient (network) failure — not a definitive "no such route", so do not
-                // latch the flag; just fall back this time.
                 tracing::debug!(%url, "server history unreachable, using local journal: {e}");
                 return None;
             }
         };
         if response.status() == reqwest::StatusCode::NOT_FOUND {
-            // The endpoint does not exist on this (older) server: latch it so future reads
-            // skip straight to the local journal.
             self.history_unsupported.store(true, Ordering::Relaxed);
             tracing::debug!(%url, "server has no history endpoint; using the local journal");
             return None;
@@ -3028,7 +2644,6 @@ impl DbBackend {
                 .into_iter()
                 .filter_map(|v| {
                     let entity = match v.entity {
-                        // Unparseable snapshot: skip rather than mislabel it as a delete.
                         Some(raw) => Some(serde_json::from_value::<T>(raw).ok()?),
                         None => None,
                     };
@@ -3042,12 +2657,7 @@ impl DbBackend {
         )
     }
 
-    /// Read an entity's past versions, newest first. In server mode the server journal is
-    /// asked first — it holds **every** device's changes, so a fresh device still sees the
-    /// full history and cross-device rollback works; the local `entity_changes` journal
-    /// (which holds only changes that originated on this device, see `apply_change`) is the
-    /// offline fallback. `data` carries the full snapshot for create/update and a tombstone
-    /// for delete, so a delete maps to `entity: None`.
+    // md:impl DbBackend (server history) > fn entity_history
     async fn entity_history<T: serde::de::DeserializeOwned>(
         &self,
         entity_type: &str,
@@ -3087,7 +2697,6 @@ impl DbBackend {
                         .and_then(|s| serde_json::from_str::<T>(s).ok())
                     {
                         Some(e) => Some(e),
-                        // Unparseable snapshot: skip rather than mislabel it as a delete.
                         None => continue,
                     }
                 }
@@ -3104,8 +2713,10 @@ impl DbBackend {
     }
 }
 
+// md:impl HistoryRepository for DbBackend
 #[async_trait]
 impl HistoryRepository for DbBackend {
+    // md:impl HistoryRepository for DbBackend > fn note_history
     async fn note_history(
         &self,
         id: Uuid,
@@ -3114,6 +2725,7 @@ impl HistoryRepository for DbBackend {
         self.entity_history::<Note>("note", id, limit).await
     }
 
+    // md:impl HistoryRepository for DbBackend > fn notebook_history
     async fn notebook_history(
         &self,
         id: Uuid,
@@ -3123,21 +2735,23 @@ impl HistoryRepository for DbBackend {
     }
 }
 
+// md:mod migration_tests
 #[cfg(test)]
 mod migration_tests {
     use super::*;
 
-    /// Open a raw libsql connection to a fresh file database, bypassing `DbBackend::new` so a
-    /// test can plant a pre-framework schema before the migration runner sees it.
+    // md:mod migration_tests > fn raw_conn
     async fn raw_conn(path: &std::path::Path) -> libsql::Connection {
         let db = libsql::Builder::new_local(path).build().await.unwrap();
         db.connect().unwrap()
     }
 
+    // md:mod migration_tests > fn user_version
     async fn user_version(conn: &libsql::Connection) -> u32 {
         DbBackend::schema_version(conn).await.unwrap()
     }
 
+    // md:mod migration_tests > fn note_history_reads_this_devices_versions_newest_first
     #[tokio::test]
     async fn note_history_reads_this_devices_versions_newest_first() {
         let dir = tempfile::tempdir().unwrap();
@@ -3154,16 +2768,15 @@ mod migration_tests {
         assert_eq!(hist[0].entity.as_ref().unwrap().body, "v2", "newest first");
         assert_eq!(hist[1].entity.as_ref().unwrap().body, "v1");
 
-        // A delete records a tombstone version (no snapshot).
         be.delete_note(n.id).await.unwrap();
         let hist = be.note_history(n.id, 0).await.unwrap();
         assert_eq!(hist.len(), 3);
         assert!(hist[0].entity.is_none(), "newest version is the tombstone");
 
-        // The limit caps the reply.
         assert_eq!(be.note_history(n.id, 1).await.unwrap().len(), 1);
     }
 
+    // md:mod migration_tests > fn fresh_database_is_stamped_current_and_reopen_is_a_noop
     #[tokio::test]
     async fn fresh_database_is_stamped_current_and_reopen_is_a_noop() {
         let dir = tempfile::tempdir().unwrap();
@@ -3175,11 +2788,9 @@ mod migration_tests {
             DbBackend::SCHEMA_VERSION,
             "a fresh database is stamped at the current schema version"
         );
-        // A note round-trips, proving the baseline schema (incl. vv/last_writer) is present.
         let note = be.create_note(Note::new("t", "b")).await.unwrap();
         drop(be);
 
-        // Reopening runs no migrations (version already current) and preserves the data.
         let reopened = DbBackend::new(&path, "", "").await.unwrap();
         assert_eq!(
             user_version(&reopened.conn).await,
@@ -3188,14 +2799,12 @@ mod migration_tests {
         assert_eq!(reopened.read_note(note.id).await.unwrap().title, "t");
     }
 
+    // md:mod migration_tests > fn migrates_a_pre_framework_database_without_losing_data
     #[tokio::test]
     async fn migrates_a_pre_framework_database_without_losing_data() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("legacy.db");
 
-        // Simulate a database created by a build that predates both the versioned-migration
-        // framework (user_version stays 0) and the vv/last_writer columns: an old-shape
-        // `notes` table with a row already in it.
         {
             let conn = raw_conn(&path).await;
             conn.execute_batch(
@@ -3225,19 +2834,14 @@ mod migration_tests {
             assert_eq!(user_version(&conn).await, 0, "unstamped legacy database");
         }
 
-        // Opening through DbBackend migrates it to the baseline in place.
         let be = DbBackend::new(&path, "", "").await.unwrap();
         assert_eq!(user_version(&be.conn).await, DbBackend::SCHEMA_VERSION);
 
-        // The pre-existing row survived and now reads back through the current schema (the
-        // added vv/last_writer columns default cleanly).
         let id: Uuid = "11111111-1111-4111-8111-111111111111".parse().unwrap();
         let migrated = be.read_note(id).await.unwrap();
         assert_eq!(migrated.title, "legacy");
         assert_eq!(migrated.body, "kept");
         assert!(migrated.vv.is_empty());
-        // v2: the NULL notebook_id was moved to the Inbox (nil UUID) and the note carries
-        // the never-positioned sort-key sentinel, ordered at the start of the normal band.
         assert_eq!(migrated.notebook_id, Uuid::nil());
         assert_eq!(migrated.sort_key, 0);
         assert!(!migrated.is_pinned);
@@ -3251,18 +2855,17 @@ mod migration_tests {
             "the migrated note lists under the Inbox"
         );
 
-        // And new writes work against the migrated schema.
         be.create_note(Note::new("after", "migration"))
             .await
             .unwrap();
     }
 
+    // md:mod migration_tests > fn refuses_to_open_a_newer_schema
     #[tokio::test]
     async fn refuses_to_open_a_newer_schema() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("future.db");
 
-        // A database written by a hypothetical future build stamps a higher user_version.
         {
             let conn = raw_conn(&path).await;
             conn.execute(
@@ -3273,7 +2876,6 @@ mod migration_tests {
             .unwrap();
         }
 
-        // `DbBackend` has no `Debug`, so match instead of `unwrap_err`.
         let err = match DbBackend::new(&path, "", "").await {
             Ok(_) => panic!("opening a newer schema must be refused"),
             Err(e) => e,

@@ -1,23 +1,4 @@
-//! Client side of the keeplin-srv collaborative channel.
-//!
-//! Architecture: frontends talk to this daemon (gRPC/REST/feed); the daemon —
-//! through [`CollabBackend`] — talks to keeplin-srv. The server stores every
-//! note (lines + versioned order + metadata) and is the durable source of
-//! truth; this client keeps the user's notes (own and shared) in the local
-//! database and mirrors line state in memory, rebuilt from each `Welcome`
-//! snapshot on (re)connect.
-//!
-//! - Local note writes are diffed into [`protocol::LineOp`]s (signed with this
-//!   *device*'s id, the vv actor) and pushed over the WebSocket; title and
-//!   metadata changes go over REST.
-//! - Remote ops and snapshots are applied through the daemon's full decorator
-//!   stack (so links are re-derived and the live feed fires), with an
-//!   in-flight suppression set preventing those writes from echoing back.
-//! - Note discovery (own + shared) is a paged REST `GET /api/notes` at connect
-//!   (follows the server's `X-Next-Cursor` header).
-//! - Note `Change`s are filtered out of the relay sync path: the collab
-//!   channel owns notes; notebooks/tags/resources keep syncing via the relay.
-
+// md:Overview
 pub mod protocol;
 pub mod state;
 
@@ -41,19 +22,15 @@ use crate::storage::{
 use protocol::{CollabClientMsg, CollabServerMsg};
 use state::NoteLines;
 
-/// Connection settings for the collaborative channel.
+// md:CollabConfig
 #[derive(Debug, Clone)]
 pub struct CollabConfig {
-    /// HTTP base of keeplin-srv, e.g. `http://host:3000`.
     pub api_url: String,
-    /// WebSocket endpoint, e.g. `ws://host:3000/api/ws`.
     pub ws_url: String,
-    /// Device token from `POST /api/login` (one per device).
     pub token: String,
 }
 
-/// Extract the `device_id` claim from a JWT without verifying it (the server
-/// verifies; the client only needs to know its own identity to sign ops).
+// md:fn device_id_from_token
 pub fn device_id_from_token(token: &str) -> Option<String> {
     use base64::Engine;
     let payload = token.split('.').nth(1)?;
@@ -64,40 +41,32 @@ pub fn device_id_from_token(token: &str) -> Option<String> {
     Some(claims.get("device_id")?.as_str()?.to_string())
 }
 
+// md:Shared
 struct Shared {
     cfg: CollabConfig,
     device_id: String,
     http: reqwest::Client,
-    /// Per-note in-memory mirror of the server's line entities.
     notes: Mutex<HashMap<Uuid, NoteLines>>,
-    /// Note ids currently being written *from* the server, so the decorator
-    /// does not diff them back into ops (no echo).
     suppress: Mutex<HashSet<Uuid>>,
-    /// Latest presence list per note, as broadcast by the server after every
-    /// join/leave/cursor move. Served to frontends via the daemon's REST API.
     presence: Mutex<HashMap<Uuid, Vec<protocol::PresenceInfo>>>,
-    /// Outbound queue drained by the connection task.
     out: mpsc::UnboundedSender<CollabClientMsg>,
-    /// Notes with local content not yet on the server (freshly created, or
-    /// edited before the note's first `Welcome`). Their body is reconciled
-    /// against the join snapshot instead of being pushed eagerly, so a late
-    /// (empty) `Welcome` cannot clobber the local content.
     pending_push: Mutex<HashSet<Uuid>>,
-    /// Top of the daemon's decorator stack, set once after construction, used
-    /// to apply remote state so linking/eventing run on those writes too.
     top: OnceLock<Arc<dyn StorageBackend>>,
 }
 
+// md:impl Shared
 impl Shared {
+    // md:impl Shared > fn auth
     fn auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         req.bearer_auth(&self.cfg.token)
     }
 
+    // md:impl Shared > fn suppressed
     async fn suppressed(&self, id: Uuid) -> bool {
         self.suppress.lock().await.contains(&id)
     }
 
-    /// Write `note` through the top of the stack with echo suppression.
+    // md:impl Shared > fn apply_from_server
     async fn apply_from_server(&self, note: Note, create: bool) -> Result<(), StorageError> {
         let Some(top) = self.top.get() else {
             return Ok(());
@@ -112,15 +81,7 @@ impl Shared {
         result
     }
 
-    /// Upload a resource's binary payload to keeplin-srv out-of-band, so the
-    /// bytes never ride the relay journal (they are stripped from the relayed
-    /// `ResourceCreate`). The server accepts a blob only once the resource's
-    /// metadata has been **materialised** from the relay journal — which
-    /// happens asynchronously after the eager push in `create_resource` — so
-    /// a non-success answer (a `404` while the metadata is still in flight)
-    /// is retried briefly with backoff. Best effort beyond that: a persistent
-    /// failure is logged and the metadata still syncs; the blob can be
-    /// re-uploaded by a later create/replace.
+    // md:impl Shared > fn upload_blob
     async fn upload_blob(&self, id: Uuid, data: Vec<u8>) {
         let url = format!("{}/api/resources/{}/data", self.cfg.api_url, id);
         for attempt in 0..5u32 {
@@ -143,8 +104,6 @@ impl Shared {
                     );
                 }
                 Err(e) => {
-                    // Transport failure — the server is unreachable; an
-                    // immediate retry cannot help.
                     tracing::warn!(error = %e, resource = %id, "collab: resource blob upload failed");
                     return;
                 }
@@ -153,9 +112,7 @@ impl Shared {
         tracing::warn!(resource = %id, "collab: resource blob upload not accepted after retries");
     }
 
-    /// Fetch a resource's binary payload from keeplin-srv (the source of truth
-    /// for blobs). `None` on any failure, so the caller falls back to whatever
-    /// the local cache holds.
+    // md:impl Shared > fn download_blob
     async fn download_blob(&self, id: Uuid) -> Option<Vec<u8>> {
         let url = format!("{}/api/resources/{}/data", self.cfg.api_url, id);
         let resp = self.auth(self.http.get(url)).send().await.ok()?;
@@ -166,17 +123,15 @@ impl Shared {
     }
 }
 
-/// An ungeneric, cloneable view of the collaborative session for the daemon's
-/// HTTP/gRPC surfaces: read presence and publish this device's cursor without
-/// knowing the storage type behind [`CollabBackend`].
+// md:CollabHandle
 #[derive(Clone)]
 pub struct CollabHandle {
     shared: Arc<Shared>,
 }
 
+// md:impl CollabHandle
 impl CollabHandle {
-    /// The latest presence list the server broadcast for `note_id` (empty if
-    /// the note has no live session or is unknown).
+    // md:impl CollabHandle > fn presence
     pub async fn presence(&self, note_id: Uuid) -> Vec<protocol::PresenceInfo> {
         self.shared
             .presence
@@ -187,8 +142,7 @@ impl CollabHandle {
             .unwrap_or_default()
     }
 
-    /// Queue this device's caret position for `note_id`; the server fans the
-    /// updated presence out to every participant.
+    // md:impl CollabHandle > fn send_cursor
     pub fn send_cursor(&self, note_id: Uuid, cursor: protocol::Cursor) {
         let _ = self
             .shared
@@ -196,12 +150,7 @@ impl CollabHandle {
             .send(CollabClientMsg::Cursor { note_id, cursor });
     }
 
-    /// Forward a **permission-management** request (share, transfer, list, revoke) to
-    /// keeplin-srv — the authority for permissions in server mode — and return the server's
-    /// status code and JSON body. The daemon's REST surface proxies its own permission
-    /// endpoints through this, so a frontend can view/manage shares on demand without the
-    /// client re-implementing (or locally enforcing) the model. `method` is an HTTP verb
-    /// (`"GET"`, `"POST"`, `"DELETE"`); `path` is a server path like `/api/notes/<id>/share`.
+    // md:impl CollabHandle > fn proxy_request
     pub async fn proxy_request(
         &self,
         method: &str,
@@ -227,15 +176,14 @@ impl CollabHandle {
     }
 }
 
-/// Storage decorator that turns local note writes into collaborative ops and
-/// REST calls. Sits *below* `LinkingBackend`/`EventBackend` in the stack.
+// md:CollabBackend
 pub struct CollabBackend<B> {
     inner: Arc<B>,
     shared: Arc<Shared>,
     out_rx: Arc<Mutex<Option<mpsc::UnboundedReceiver<CollabClientMsg>>>>,
 }
 
-// Manual impl: `B` itself need not be `Clone` (everything is behind `Arc`s).
+// md:impl Clone for CollabBackend
 impl<B> Clone for CollabBackend<B> {
     fn clone(&self) -> Self {
         Self {
@@ -246,7 +194,9 @@ impl<B> Clone for CollabBackend<B> {
     }
 }
 
+// md:impl CollabBackend
 impl<B: StorageBackend> CollabBackend<B> {
+    // md:impl CollabBackend > fn new
     pub fn new(inner: B, cfg: CollabConfig) -> Result<Self, StorageError> {
         let device_id = device_id_from_token(&cfg.token).ok_or_else(|| {
             StorageError::InvalidState("collab token has no device_id claim".into())
@@ -269,21 +219,14 @@ impl<B: StorageBackend> CollabBackend<B> {
         })
     }
 
-    /// A cloneable presence/cursor view for the daemon's surfaces.
+    // md:impl CollabBackend > fn handle
     pub fn handle(&self) -> CollabHandle {
         CollabHandle {
             shared: self.shared.clone(),
         }
     }
 
-    /// Start the connection task. `top` must be the outermost backend of the
-    /// daemon's stack (this backend wrapped by linking/eventing) so remote
-    /// writes flow through every decorator exactly once.
-    ///
-    /// Performs the `GET /version` protocol handshake first (see
-    /// [`crate::compat`]): an **incompatible** server is a loud error and the
-    /// connection task is never spawned (no sync is attempted); a server
-    /// without a usable `/version` warns and proceeds (backward compatible).
+    // md:impl CollabBackend > fn start
     pub async fn start(&self, top: Arc<dyn StorageBackend>) -> Result<(), StorageError> {
         match crate::compat::negotiate(&self.shared.http, &self.shared.cfg.api_url).await {
             crate::compat::Handshake::Compatible(info) => {
@@ -319,7 +262,7 @@ impl<B: StorageBackend> CollabBackend<B> {
         Ok(())
     }
 
-    /// Diff `note.body` against the mirror and queue the resulting ops.
+    // md:impl CollabBackend > fn push_local_edit
     async fn push_local_edit(&self, note: &Note) {
         let mut notes = self.shared.notes.lock().await;
         let lines = notes.entry(note.id).or_default();
@@ -333,9 +276,7 @@ impl<B: StorageBackend> CollabBackend<B> {
         }
     }
 
-    /// Mirror title/metadata to the server; failures are logged and retried
-    /// implicitly by the next edit (the server holds the durable truth, the
-    /// local row already has the change).
+    // md:impl CollabBackend > fn patch_meta
     async fn patch_meta(&self, note: &Note) {
         let url = format!("{}/api/notes/{}", self.shared.cfg.api_url, note.id);
         let body = serde_json::json!({
@@ -345,9 +286,6 @@ impl<B: StorageBackend> CollabBackend<B> {
             "todo_due": note.todo_due,
             "todo_completed": note.todo_completed,
         });
-        // Check the HTTP status, not just transport success: a 4xx/5xx means the server
-        // rejected the metadata mirror (e.g. an auth or validation change), which the client
-        // must surface rather than treat as delivered (issue #112).
         match self
             .shared
             .auth(self.shared.http.patch(url))
@@ -364,6 +302,7 @@ impl<B: StorageBackend> CollabBackend<B> {
     }
 }
 
+// md:impl NoteRepository for CollabBackend
 #[async_trait]
 impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
     async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
@@ -371,23 +310,9 @@ impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
         if self.shared.suppressed(created.id).await {
             return Ok(created);
         }
-        // Mark the body as pending BEFORE the note becomes visible on the
-        // server. The moment the POST below lands, the periodic rediscovery can
-        // see the note and Join it on its own; if that early Join's (empty)
-        // `Welcome` arrived while the note was not yet in `pending_push`, the
-        // Welcome handler would take the "cache" branch and overwrite the fresh
-        // local body with the server's empty snapshot — destroying the note's
-        // content. With the flag set first, any Welcome for this note (whoever
-        // triggered the Join) reconciles the local body into ops instead.
         self.shared.pending_push.lock().await.insert(created.id);
-        // Register the note on the server keeping the local id. A 409 means it
-        // already exists there (e.g. created on another device); the body still
-        // converges through resolution.
         let url = format!("{}/api/notes", self.shared.cfg.api_url);
         let body = serde_json::json!({ "id": created.id, "title": created.title });
-        // 2xx is success; 409 is the expected "already exists" (created on another device) and
-        // is fine. Any other status is a real rejection the client must not treat as success
-        // (issue #112).
         match self
             .shared
             .auth(self.shared.http.post(url))
@@ -404,12 +329,6 @@ impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
             Err(e) => tracing::warn!(error = %e, note = %created.id, "collab: POST note failed"),
         }
         self.patch_meta(&created).await;
-        // Join. The body is pushed when the Join's `Welcome` arrives
-        // (reconciled against the snapshot), NOT eagerly: pushing before the
-        // `Welcome` lets a late empty snapshot clobber the local content. See
-        // `handle_server_msg`. (The connection task drops this Join if the
-        // rediscovery already joined the note — a duplicate Join would fetch a
-        // second, possibly stale snapshot.)
         let _ = self.shared.out.send(CollabClientMsg::Join {
             note_id: created.id,
         });
@@ -436,9 +355,6 @@ impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
         if meta_changed {
             self.patch_meta(&updated).await;
         }
-        // If the note is still pending its first `Welcome`, leave the push to
-        // that reconcile (which reads the latest local body) rather than
-        // diffing against a mirror that has not been initialised yet.
         if !self.shared.pending_push.lock().await.contains(&updated.id) {
             self.push_local_edit(&updated).await;
         }
@@ -503,6 +419,7 @@ impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
     }
 }
 
+// md:impl NotebookRepository for CollabBackend
 #[async_trait]
 impl<B: StorageBackend> NotebookRepository for CollabBackend<B> {
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
@@ -526,6 +443,7 @@ impl<B: StorageBackend> NotebookRepository for CollabBackend<B> {
     }
 }
 
+// md:impl TagRepository for CollabBackend
 #[async_trait]
 impl<B: StorageBackend> TagRepository for CollabBackend<B> {
     async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
@@ -565,6 +483,7 @@ impl<B: StorageBackend> TagRepository for CollabBackend<B> {
     }
 }
 
+// md:impl ResourceRepository for CollabBackend
 #[async_trait]
 impl<B: StorageBackend> ResourceRepository for CollabBackend<B> {
     async fn create_resource(
@@ -573,12 +492,6 @@ impl<B: StorageBackend> ResourceRepository for CollabBackend<B> {
         data: Vec<u8>,
     ) -> Result<Resource, StorageError> {
         let created = self.inner.create_resource(resource, data.clone()).await?;
-        // The server accepts a blob only for already-materialised resource
-        // metadata, and the *periodic* relay cycle always loses that race for
-        // a brand-new resource. Eagerly push the (blob-stripped) create over
-        // the relay first, then upload the binary out-of-band. The periodic
-        // cycle may re-send the same change later; server materialisation is
-        // version-vector-idempotent, so the duplicate is harmless.
         let meta = Change::ResourceCreate {
             resource: created.clone(),
             data: None,
@@ -591,9 +504,6 @@ impl<B: StorageBackend> ResourceRepository for CollabBackend<B> {
     }
     async fn read_resource(&self, id: Uuid) -> Result<(Resource, Vec<u8>), StorageError> {
         let (resource, data) = self.inner.read_resource(id).await?;
-        // A blob that never arrived over the relay (metadata synced from another
-        // device) is not in the local cache; fetch it from the server, the
-        // source of truth for resource binaries.
         if data.is_empty() && resource.size > 0 {
             if let Some(bytes) = self.shared.download_blob(id).await {
                 return Ok((resource, bytes));
@@ -620,6 +530,7 @@ impl<B: StorageBackend> ResourceRepository for CollabBackend<B> {
     }
 }
 
+// md:impl SyncBackend for CollabBackend
 #[async_trait]
 impl<B: StorageBackend> SyncBackend for CollabBackend<B> {
     async fn get_device_id(&self) -> Result<String, StorageError> {
@@ -631,10 +542,6 @@ impl<B: StorageBackend> SyncBackend for CollabBackend<B> {
     async fn update_sync_time(&self, ts: DateTime<Utc>) -> Result<(), StorageError> {
         self.inner.update_sync_time(ts).await
     }
-    /// Note changes are owned by the collaborative channel; the relay only
-    /// carries notebooks, tags and resources. Resource binaries are stripped:
-    /// they are uploaded out-of-band (`create_resource` → `PUT …/data`) and the
-    /// server holds them, so they must not bloat the relay journal.
     async fn get_changes_since(&self, since: DateTime<Utc>) -> Result<Vec<Change>, StorageError> {
         let changes = self.inner.get_changes_since(since).await?;
         Ok(changes
@@ -660,6 +567,7 @@ impl<B: StorageBackend> SyncBackend for CollabBackend<B> {
     }
 }
 
+// md:impl HistoryRepository for CollabBackend
 #[async_trait]
 impl<B: StorageBackend> crate::storage::HistoryRepository for CollabBackend<B> {
     async fn note_history(
@@ -679,6 +587,7 @@ impl<B: StorageBackend> crate::storage::HistoryRepository for CollabBackend<B> {
     }
 }
 
+// md:fn is_note_change
 fn is_note_change(change: &Change) -> bool {
     matches!(
         change,
@@ -686,9 +595,7 @@ fn is_note_change(change: &Change) -> bool {
     )
 }
 
-/// Drop the inline binary from a `ResourceCreate` before it is relayed: with
-/// keeplin-srv the blob is uploaded out-of-band and served from the server, so
-/// carrying it in the change would duplicate it and bloat the journal.
+// md:fn strip_resource_blob
 fn strip_resource_blob(change: Change) -> Change {
     match change {
         Change::ResourceCreate { resource, .. } => Change::ResourceCreate {
@@ -699,9 +606,7 @@ fn strip_resource_blob(change: Change) -> Change {
     }
 }
 
-// ── Connection task ──────────────────────────────────────────────────────────
-
-/// Server note representation from `GET /api/notes`.
+// md:ServerNote
 #[derive(Debug, serde::Deserialize)]
 struct ServerNote {
     id: Uuid,
@@ -714,9 +619,7 @@ struct ServerNote {
     updated_at: DateTime<Utc>,
 }
 
-/// Maintain the WebSocket connection forever: discover notes, join them, and
-/// pump ops in both directions. Reconnects with a capped backoff; every
-/// reconnect re-discovers and re-joins, so state is rebuilt from snapshots.
+// md:fn run_connection
 async fn run_connection(shared: Arc<Shared>, mut out: mpsc::UnboundedReceiver<CollabClientMsg>) {
     let mut backoff = Duration::from_secs(1);
     loop {
@@ -731,17 +634,14 @@ async fn run_connection(shared: Arc<Shared>, mut out: mpsc::UnboundedReceiver<Co
     }
 }
 
-/// How often a live connection re-runs note discovery, so notes created on
-/// other devices — or newly shared with this user — get joined without a
-/// reconnect.
+// md:REDISCOVER_EVERY
 const REDISCOVER_EVERY: Duration = Duration::from_secs(15);
 
+// md:fn connect_once
 async fn connect_once(
     shared: &Arc<Shared>,
     out: &mut mpsc::UnboundedReceiver<CollabClientMsg>,
 ) -> anyhow::Result<()> {
-    // The token travels in the Authorization header, not the URL: query
-    // strings end up in proxy and access logs.
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     let mut request = shared.cfg.ws_url.as_str().into_client_request()?;
     request.headers_mut().insert(
@@ -755,18 +655,13 @@ async fn connect_once(
     discover_and_join(shared, &mut ws, &mut joined).await?;
 
     let mut rediscover = tokio::time::interval(REDISCOVER_EVERY);
-    rediscover.tick().await; // consume the immediate first tick
+    rediscover.tick().await;
 
     loop {
         tokio::select! {
             queued = out.recv() => {
                 let Some(msg) = queued else { return Ok(()) };
                 if let CollabClientMsg::Join { note_id } = &msg {
-                    // Drop a Join for a note this connection already joined
-                    // (the rediscovery got there first): a duplicate Join
-                    // would fetch a second snapshot that may predate ops we
-                    // just sent, and its Welcome would clobber the mirror
-                    // with that stale state.
                     if !joined.insert(*note_id) {
                         continue;
                     }
@@ -788,19 +683,10 @@ async fn connect_once(
     }
 }
 
-/// Page size for note discovery. The server caps `?limit` at 500 (keeplin-srv
-/// #29); a smaller page keeps each round-trip bounded on large accounts.
+// md:DISCOVER_PAGE_SIZE
 const DISCOVER_PAGE_SIZE: &str = "200";
 
-/// Discover own + shared notes and join the ones this connection has not
-/// joined yet. Unknown notes are created locally (empty body — the Welcome
-/// snapshot fills it in).
-///
-/// Pages through `GET /api/notes?limit=&cursor=`, following the `X-Next-Cursor`
-/// header until the list is exhausted, so an account with thousands of notes
-/// never materialises the whole listing at once. Back-compatible with a server
-/// that predates pagination: it ignores `?limit`, returns every note in one
-/// array with no cursor header, and the loop runs exactly once.
+// md:fn discover_and_join
 async fn discover_and_join(
     shared: &Arc<Shared>,
     ws: &mut WsStream,
@@ -842,11 +728,11 @@ async fn discover_and_join(
     Ok(())
 }
 
-/// The client-side WebSocket stream type (plain TCP or TLS).
+// md:WsStream
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
-/// Make sure a note discovered on the server exists locally.
+// md:fn ensure_local
 async fn ensure_local(shared: &Arc<Shared>, server_note: &ServerNote) {
     let Some(top) = shared.top.get() else { return };
     if top.read_note(server_note.id).await.is_ok() {
@@ -856,8 +742,6 @@ async fn ensure_local(shared: &Arc<Shared>, server_note: &ServerNote) {
         id: server_note.id,
         title: server_note.title.clone(),
         body: String::new(),
-        // The server may have no notebook for the note; locally the nil UUID
-        // is the Inbox system notebook.
         notebook_id: server_note.notebook_id.unwrap_or_else(Uuid::nil),
         is_todo: server_note.is_todo,
         todo_due: server_note.todo_due,
@@ -871,17 +755,12 @@ async fn ensure_local(shared: &Arc<Shared>, server_note: &ServerNote) {
     }
 }
 
+// md:fn handle_server_msg
 async fn handle_server_msg(shared: &Arc<Shared>, msg: CollabServerMsg) {
     match msg {
         CollabServerMsg::Welcome { note_id, snapshot } => {
             let mut lines = NoteLines::from_snapshot(snapshot);
             if shared.pending_push.lock().await.remove(&note_id) {
-                // This note has local content the server has not seen yet (it
-                // was just created, or edited before this first Welcome). Rather
-                // than overwrite it with the snapshot, diff the local body
-                // against the snapshot and push the difference — so the content
-                // is preserved and correctly transformed into ops against the
-                // server's actual state.
                 let local_body = match shared.top.get() {
                     Some(top) => top
                         .read_note(note_id)
@@ -895,9 +774,7 @@ async fn handle_server_msg(shared: &Arc<Shared>, msg: CollabServerMsg) {
                 if !ops.is_empty() {
                     let _ = shared.out.send(CollabClientMsg::Op { note_id, ops });
                 }
-                // The local body already equals `local_body`; nothing to write.
             } else {
-                // A note we only cache: take the server's body as-is.
                 let body = lines.materialize();
                 shared.notes.lock().await.insert(note_id, lines);
                 write_body(shared, note_id, body).await;
@@ -924,7 +801,7 @@ async fn handle_server_msg(shared: &Arc<Shared>, msg: CollabServerMsg) {
     }
 }
 
-/// Persist a server-derived body locally (suppressed), keeping metadata.
+// md:fn write_body
 async fn write_body(shared: &Arc<Shared>, note_id: Uuid, body: String) {
     let Some(top) = shared.top.get() else { return };
     match top.read_note(note_id).await {
