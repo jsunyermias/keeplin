@@ -306,7 +306,7 @@ mod tests {
     fn partial_auth_still_flags_network_exposure() {
         let mut c = base();
         c.grpc_addr = "0.0.0.0:50051".into();
-        c.auth_password = Some("s3cr3t".into()); // username missing
+        c.auth_password = Some("s3cr3t".into());
         let issues = c.security_issues();
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert!(issues[0].contains("grpc_addr"));
