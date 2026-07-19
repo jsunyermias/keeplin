@@ -7,8 +7,9 @@ conventions are deliberately re-explained here (hyper-redundancy is intended).
 
 **How to navigate**: every block carries exactly one marker comment
 `// md:<Header> > … > <Block header>` whose path is the header chain of its section
-here; grep it in either direction. Each section covers **Identification**,
-**What it does**, **Dependencies**, **Used by**, **Repeated context**.
+here; grep it in either direction. Each block section covers, in this fixed order:
+**Identification**, **Code**, **What it does**, **Dependencies**, **Used by**,
+**Repeated context**.
 
 ---
 
@@ -16,7 +17,10 @@ here; grep it in either direction. Each section covers **Identification**,
 
 **Identification** — file-level block: the imports. Marker `// md:Overview`.
 
+**Code** — complete and verbatim:
+
 ```rust
+// md:Overview
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -52,6 +56,13 @@ exact-match check).
 
 **Identification** — `pub type LineId = Uuid;` marker `// md:LineId`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:LineId
+pub type LineId = Uuid;
+```
+
 **What it does** — Type alias giving a line's stable identity a name. Lines keep
 their `LineId` across edits and even across deletion (tombstones), which is what
 lets concurrent ops target "the same line" unambiguously.
@@ -71,6 +82,17 @@ devices.
 **Identification** — struct deriving `Debug, Clone, PartialEq, Eq, Serialize,
 Deserialize`; marker `// md:Cursor`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:Cursor
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cursor {
+    pub line_id: LineId,
+    pub column: usize,
+}
+```
+
 **What it does** — A caret position inside a note, for presence: `line_id` (the
 line the caret is on) + `column` (a `usize` character offset). `Eq` lets callers
 skip re-sending an unchanged cursor.
@@ -89,6 +111,22 @@ only rebroadcast to current participants.
 
 **Identification** — struct deriving `Debug, Clone, Serialize, Deserialize`; marker
 `// md:LineSnapshot`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:LineSnapshot
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LineSnapshot {
+    pub id: LineId,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub deleted_at: Option<DateTime<Utc>>,
+    pub vv: VersionVector,
+    pub last_writer: String,
+}
+```
 
 **What it does** — One line as carried in snapshots: the full versioned entity —
 `id`, `content`, `created_at`/`updated_at`, the `deleted_at` tombstone (`Some` =
@@ -112,6 +150,21 @@ another versioned write that version vectors can order.
 **Identification** — struct deriving `Debug, Clone, Serialize, Deserialize`; marker
 `// md:NoteLinesSnapshot`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:NoteLinesSnapshot
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteLinesSnapshot {
+    pub note_id: Uuid,
+    pub order: Vec<LineId>,
+    pub updated_at: DateTime<Utc>,
+    pub vv: VersionVector,
+    pub last_writer: String,
+    pub lines: Vec<LineSnapshot>,
+}
+```
+
 **What it does** — Full note state sent in `CollabServerMsg::Welcome`: `note_id`,
 the **order** as its own versioned entity (`order: Vec<LineId>` + `updated_at` +
 `vv` + `last_writer`), and every `LineSnapshot`. The order lists only live lines;
@@ -133,6 +186,45 @@ edits) never falsely conflict with each other.
 
 **Identification** — enum deriving `Debug, Clone, Serialize, Deserialize` with
 `#[serde(tag = "op", rename_all = "PascalCase")]`; marker `// md:LineOp`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:LineOp
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "PascalCase")]
+pub enum LineOp {
+    Insert {
+        after_line_id: Option<LineId>,
+        line_id: LineId,
+        content: String,
+        vv: VersionVector,
+        last_writer: String,
+        updated_at: DateTime<Utc>,
+    },
+    Update {
+        line_id: LineId,
+        content: String,
+        vv: VersionVector,
+        last_writer: String,
+        updated_at: DateTime<Utc>,
+    },
+    Delete {
+        line_id: LineId,
+        deleted_at: DateTime<Utc>,
+        vv: VersionVector,
+        last_writer: String,
+        updated_at: DateTime<Utc>,
+    },
+    Move {
+        line_ids: Vec<LineId>,
+        after_line_id: Option<LineId>,
+        vv: VersionVector,
+        last_writer: String,
+        updated_at: DateTime<Utc>,
+    },
+}
+```
 
 **What it does** — One line-level operation. Every variant carries its own `vv`,
 `last_writer`, and `updated_at` so the server resolves each op independently;
@@ -165,6 +257,18 @@ exactly that rule.
 **Identification** — struct deriving `Debug, Clone, Serialize, Deserialize`; marker
 `// md:PresenceInfo`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:PresenceInfo
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresenceInfo {
+    pub user_id: String,
+    pub display_name: String,
+    pub cursor: Option<Cursor>,
+}
+```
+
 **What it does** — One participant as reported in `CollabServerMsg::Presence`:
 `user_id`, human-readable `display_name`, and their optional `Cursor` (absent until
 the participant first reports one).
@@ -185,6 +289,21 @@ distinct.
 **Identification** — enum deriving `Debug, Clone, Serialize, Deserialize` with
 `#[serde(tag = "type", rename_all = "PascalCase")]`; marker
 `// md:CollabClientMsg`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:CollabClientMsg
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "PascalCase")]
+pub enum CollabClientMsg {
+    Join { note_id: Uuid },
+    Leave { note_id: Uuid },
+    Op { note_id: Uuid, ops: Vec<LineOp> },
+    Cursor { note_id: Uuid, cursor: Cursor },
+    Ack { server_seq: u64 },
+}
+```
 
 **What it does** — Every client → server message: `Join { note_id }` (enter a
 note's session; server replies `Welcome`), `Leave { note_id }`, `Op { note_id, ops }`
@@ -207,6 +326,34 @@ every message names its `note_id` (except `Ack`, which is per-connection).
 **Identification** — enum deriving `Debug, Clone, Serialize, Deserialize` with
 `#[serde(tag = "type", rename_all = "PascalCase")]`; marker
 `// md:CollabServerMsg`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:CollabServerMsg
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "PascalCase")]
+pub enum CollabServerMsg {
+    Welcome {
+        note_id: Uuid,
+        snapshot: NoteLinesSnapshot,
+    },
+    Op {
+        server_seq: u64,
+        note_id: Uuid,
+        user_id: String,
+        ops: Vec<LineOp>,
+    },
+    Presence {
+        note_id: Uuid,
+        users: Vec<PresenceInfo>,
+    },
+    Error {
+        code: String,
+        message: String,
+    },
+}
+```
 
 **What it does** — Every server → client message: `Welcome { note_id, snapshot }`
 (reply to `Join`; full `NoteLinesSnapshot`), `Op { server_seq, note_id, user_id,
