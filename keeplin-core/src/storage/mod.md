@@ -7,8 +7,9 @@ deliberately re-explained here (hyper-redundancy is intended).
 
 **How to navigate**: every block carries exactly one marker comment
 `// md:<Header> > … > <Block header>` whose path is the header chain of its section
-here; grep it in either direction. Each section covers **Identification**,
-**What it does**, **Dependencies**, **Used by**, **Repeated context**.
+here; grep it in either direction. Each block section covers, in this fixed order:
+**Identification**, **Code**, **What it does**, **Dependencies**, **Used by**,
+**Repeated context**.
 
 ---
 
@@ -17,7 +18,10 @@ here; grep it in either direction. Each section covers **Identification**,
 **Identification** — file-level block: the child-module declarations and the
 `backend` re-exports. Marker `// md:Overview`.
 
+**Code** — complete and verbatim:
+
 ```rust
+// md:Overview
 mod backend;
 pub mod db;
 pub mod fs;
@@ -63,6 +67,13 @@ re-exports at the *crate* root — `storage` is the shallowest public path.
 **Identification** — `pub const DEFAULT_PAGE_SIZE: u32 = 100;` marker
 `// md:DEFAULT_PAGE_SIZE`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:DEFAULT_PAGE_SIZE
+pub const DEFAULT_PAGE_SIZE: u32 = 100;
+```
+
 **What it does** — Page size used when a list call passes `page_size = 0` (the
 "caller has no opinion" sentinel).
 
@@ -80,6 +91,13 @@ carries an opaque cursor; `page_size = 0` means "default".
 
 **Identification** — `pub const MAX_PAGE_SIZE: u32 = 1000;` marker
 `// md:MAX_PAGE_SIZE`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:MAX_PAGE_SIZE
+pub const MAX_PAGE_SIZE: u32 = 1000;
+```
 
 **What it does** — Hard upper bound applied to every list call's `page_size`.
 `page_size` arrives from the network (gRPC/REST) as an arbitrary `u32`; without a cap
@@ -102,6 +120,19 @@ paging inputs; domain-rule violations (e.g. pinning an inbox note) reject with
 **Identification** — `pub(crate) fn effective_page_size(page_size: u32) -> u32`;
 marker `// md:fn effective_page_size`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:fn effective_page_size
+pub(crate) fn effective_page_size(page_size: u32) -> u32 {
+    if page_size == 0 {
+        DEFAULT_PAGE_SIZE
+    } else {
+        page_size.min(MAX_PAGE_SIZE)
+    }
+}
+```
+
 **What it does** — Resolves a caller-supplied `page_size` to the limit actually
 used: `0` → `DEFAULT_PAGE_SIZE` (100); anything above `MAX_PAGE_SIZE` (1000) clamps
 down to it; everything in between passes through. Pure, total, no errors.
@@ -120,6 +151,15 @@ crate see only the *effect* (default + clamp), which the constants document.
 
 **Identification** — `pub(crate) trait SortableRfc3339` with one method
 `fn to_sortable_rfc3339(&self) -> String`; marker `// md:trait SortableRfc3339`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:trait SortableRfc3339
+pub(crate) trait SortableRfc3339 {
+    fn to_sortable_rfc3339(&self) -> String;
+}
+```
 
 **What it does** — Fixed-precision RFC 3339 formatting for timestamps that are
 **compared as text**. The backends store timestamps as RFC 3339 TEXT and order them
@@ -152,6 +192,17 @@ makes it safe.
 **Identification** — the sole implementation, for `chrono::DateTime<chrono::Utc>`;
 marker `// md:impl SortableRfc3339 for DateTime Utc`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:impl SortableRfc3339 for DateTime Utc
+impl SortableRfc3339 for chrono::DateTime<chrono::Utc> {
+    fn to_sortable_rfc3339(&self) -> String {
+        self.to_rfc3339_opts(chrono::SecondsFormat::Nanos, false)
+    }
+}
+```
+
 **What it does** — Delegates to
 `self.to_rfc3339_opts(chrono::SecondsFormat::Nanos, false)`: `Nanos` forces exactly
 nine fractional digits; `use_z: false` keeps the `+00:00` offset form (matching the
@@ -170,6 +221,8 @@ strings `to_rfc3339()` already produced, so old and new rows share the offset sh
 **Identification** — `#[cfg(test)]` unit-test module; marker `// md:mod tests`.
 Three tests.
 
+**Code** — container: members documented as sub-blocks below: fn effective_page_size_defaults_and_clamps, fn sortable_rfc3339_has_fixed_shape, fn lexicographic_order_matches_chronological_even_mixed_with_old_format.
+
 **What it does** — Compile-time-gated unit tests for the two pure pieces of this
 file (page-size clamping and timestamp shape). They run with `cargo test -p
 keeplin-core` and never touch I/O.
@@ -187,6 +240,22 @@ keeplin-core` and never touch I/O.
 **Identification** — unit test; marker
 `// md:mod tests > fn effective_page_size_defaults_and_clamps`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn effective_page_size_defaults_and_clamps
+    #[test]
+    fn effective_page_size_defaults_and_clamps() {
+        assert_eq!(super::effective_page_size(0), super::DEFAULT_PAGE_SIZE);
+        assert_eq!(super::effective_page_size(7), 7);
+        assert_eq!(
+            super::effective_page_size(super::MAX_PAGE_SIZE),
+            super::MAX_PAGE_SIZE
+        );
+        assert_eq!(super::effective_page_size(u32::MAX), super::MAX_PAGE_SIZE);
+    }
+```
+
 **What it does** — Asserts the three regimes of `effective_page_size`: `0` →
 `DEFAULT_PAGE_SIZE`; in-range values (7, `MAX_PAGE_SIZE`) pass through;
 `u32::MAX` clamps to `MAX_PAGE_SIZE`.
@@ -202,6 +271,24 @@ keeplin-core` and never touch I/O.
 **Identification** — unit test; marker
 `// md:mod tests > fn sortable_rfc3339_has_fixed_shape`.
 
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn sortable_rfc3339_has_fixed_shape
+    #[test]
+    fn sortable_rfc3339_has_fixed_shape() {
+        let second_aligned = Utc.timestamp_opt(1_700_000_000, 0).unwrap();
+        let s = second_aligned.to_sortable_rfc3339();
+        assert!(s.ends_with("+00:00"), "offset form is kept: {s}");
+        let frac = s.split('.').nth(1).unwrap();
+        assert_eq!(
+            &frac[..9],
+            "000000000",
+            "always nine fractional digits: {s}"
+        );
+    }
+```
+
 **What it does** — Formats a second-aligned instant (worst case: `to_rfc3339()`
 would emit *zero* fractional digits) and asserts the output ends with `+00:00` and
 carries exactly nine fractional digits (`000000000`).
@@ -216,6 +303,41 @@ carries exactly nine fractional digits (`000000000`).
 
 **Identification** — unit test; marker
 `// md:mod tests > fn lexicographic_order_matches_chronological_even_mixed_with_old_format`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn lexicographic_order_matches_chronological_even_mixed_with_old_format
+    #[test]
+    fn lexicographic_order_matches_chronological_even_mixed_with_old_format() {
+        let instants: Vec<DateTime<Utc>> = [
+            (100, 0),
+            (100, 500_000_000),
+            (100, 500_000_001),
+            (100, 999_999_999),
+            (101, 0),
+            (101, 123_456_000),
+        ]
+        .iter()
+        .map(|&(s, n)| Utc.timestamp_opt(s, n).unwrap())
+        .collect();
+
+        let mut tagged: Vec<(DateTime<Utc>, String)> = Vec::new();
+        for t in &instants {
+            tagged.push((*t, t.to_rfc3339()));
+            tagged.push((*t, t.to_sortable_rfc3339()));
+        }
+        let mut by_string = tagged.clone();
+        by_string.sort_by(|a, b| a.1.cmp(&b.1));
+        let mut by_time = tagged;
+        by_time.sort_by_key(|(t, _)| *t);
+        assert_eq!(
+            by_string.iter().map(|(t, _)| *t).collect::<Vec<_>>(),
+            by_time.iter().map(|(t, _)| *t).collect::<Vec<_>>(),
+            "string order must never contradict time order"
+        );
+    }
+```
 
 **What it does** — Builds a set of instants straddling second and sub-second
 boundaries, renders each in **both** the legacy variable-precision `to_rfc3339()`
