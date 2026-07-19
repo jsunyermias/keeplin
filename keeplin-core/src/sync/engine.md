@@ -7,8 +7,9 @@ deliberately re-explained here (hyper-redundancy is intended).
 
 **How to navigate**: every block carries exactly one marker comment
 `// md:<Header> > … > <Block header>` whose path is the header chain of its section
-here; grep it in either direction. Each section covers **Identification**,
-**What it does**, **Dependencies**, **Used by**, **Repeated context**.
+here; grep it in either direction. Each block section covers, in this fixed order:
+**Identification**, **Code**, **What it does**, **Dependencies**, **Used by**,
+**Repeated context**.
 
 ---
 
@@ -16,7 +17,10 @@ here; grep it in either direction. Each section covers **Identification**,
 
 **Identification** — file-level block: the imports. Marker `// md:Overview`.
 
+**Code** — complete and verbatim:
+
 ```rust
+// md:Overview
 use crate::{
     error::SyncError,
     models::{now, Change},
@@ -53,6 +57,20 @@ devices converge regardless of arrival order.
 **Identification** — enum deriving `Debug, Clone, Copy, PartialEq, Eq`; marker
 `// md:SyncStage`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:SyncStage
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncStage {
+    Collecting,
+    Sending,
+    Receiving,
+    Applying,
+    Done,
+}
+```
+
 **What it does** — The stage a synchronisation cycle has reached, reported through
 the `run_sync` progress callback: `Collecting` (about to collect local changes
 since the last sync), `Sending` (about to push them), `Receiving` (about to pull
@@ -76,6 +94,46 @@ progress message.
 `pub async fn run_sync<B, F>(backend: &B, mut report: F) -> Result<Vec<Change>, SyncError>`
 where `B: StorageBackend + ?Sized`, `F: FnMut(SyncStage, usize)`; marker
 `// md:fn run_sync`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn run_sync
+pub async fn run_sync<B, F>(backend: &B, mut report: F) -> Result<Vec<Change>, SyncError>
+where
+    B: StorageBackend + ?Sized,
+    F: FnMut(SyncStage, usize),
+{
+    let last_sync = backend.get_last_sync_time().await?;
+    tracing::info!(last_sync = %last_sync, "Starting sync");
+
+    let sync_ts = now();
+
+    report(SyncStage::Collecting, 0);
+    let local_changes = backend.get_changes_since(last_sync).await?;
+    tracing::info!(count = local_changes.len(), "Local changes collected");
+
+    report(SyncStage::Sending, local_changes.len());
+    backend.send_changes(local_changes).await?;
+    tracing::info!("Local changes sent");
+
+    report(SyncStage::Receiving, 0);
+    let remote_changes = backend.receive_changes().await?;
+    tracing::info!(count = remote_changes.len(), "Remote changes received");
+
+    report(SyncStage::Applying, remote_changes.len());
+    for change in &remote_changes {
+        backend.apply_change(change.clone()).await?;
+    }
+    tracing::debug!(applied = remote_changes.len(), "Remote changes applied");
+
+    backend.update_sync_time(sync_ts).await?;
+    tracing::info!(new_sync_ts = %sync_ts, "Sync complete");
+
+    report(SyncStage::Done, remote_changes.len());
+    Ok(remote_changes)
+}
+```
 
 **What it does** — Runs one complete push-then-pull cycle against `backend`,
 invoking `report(stage, count)` immediately before each stage begins (and once more
@@ -128,6 +186,15 @@ at-least-once delivery safe.
 **Identification** — `pub struct SyncEngine<T: StorageBackend>` with a single
 `pub backend: T` field; marker `// md:SyncEngine`.
 
+**Code** — complete and verbatim:
+
+```rust
+// md:SyncEngine
+pub struct SyncEngine<T: StorageBackend> {
+    pub backend: T,
+}
+```
+
 **What it does** — Orchestrates a single synchronisation cycle for any
 `StorageBackend`. Generic over `T`, so the compiler produces a monomorphised,
 zero-cost implementation per concrete backend — no runtime dispatch, no
@@ -147,6 +214,8 @@ directly between sync cycles without going through the engine.
 **Identification** — `impl<T: StorageBackend> SyncEngine<T>`; marker
 `// md:impl SyncEngine`. Two methods, each with its own marker below.
 
+**Code** — container: members documented as sub-blocks below: fn new, fn sync.
+
 **What it does** — Constructor and the cycle entry point.
 
 **Dependencies / Used by / Repeated context** — per method.
@@ -155,6 +224,15 @@ directly between sync cycles without going through the engine.
 
 **Identification** — `pub fn new(backend: T) -> Self`; marker
 `// md:impl SyncEngine > fn new`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl SyncEngine > fn new
+    pub fn new(backend: T) -> Self {
+        Self { backend }
+    }
+```
 
 **What it does** — Wraps `backend` in a new engine. No validation, no I/O.
 
@@ -168,6 +246,15 @@ directly between sync cycles without going through the engine.
 
 **Identification** — `pub async fn sync(&self) -> Result<Vec<Change>, SyncError>`;
 marker `// md:impl SyncEngine > fn sync`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl SyncEngine > fn sync
+    pub async fn sync(&self) -> Result<Vec<Change>, SyncError> {
+        run_sync(&self.backend, |_, _| {}).await
+    }
+```
 
 **What it does** — Runs one complete push-then-pull cycle: a thin wrapper over
 `run_sync(&self.backend, |_, _| {})` with a no-op progress callback. Same return
