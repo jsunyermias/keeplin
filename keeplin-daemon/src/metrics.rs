@@ -1,36 +1,4 @@
-//! Operational metrics: a lightweight counter registry plus a [`StorageBackend`] decorator
-//! that records every storage operation, exported in Prometheus text format.
-//!
-//! # Why a decorator
-//!
-//! [`MetricsBackend<B>`] wraps any `B: StorageBackend` and increments a counter after each
-//! call, then delegates. Because it is itself a `StorageBackend` (like
-//! [`crate::event_backend::EventBackend`] and
-//! [`keeplin_core::encryption::EncryptedBackend`]), one instance sits behind **both** the
-//! gRPC service and the REST API, so an operation from either surface is counted exactly
-//! once — no per-surface instrumentation to keep in sync.
-//!
-//! # Placement in the decorator stack
-//!
-//! `MetricsBackend` is the **outermost** decorator —
-//! `MetricsBackend(EventBackend(LinkingBackend([EncryptedBackend](Fs|Db))))` — so it counts
-//! logical operations as a client issues them (a note create is one `note`/`create`, after
-//! link derivation and decryption), not the extra inner reads those layers perform.
-//!
-//! # What is measured
-//!
-//! - `keeplin_storage_operations_total{entity,op}` — successful storage calls, by entity
-//!   (`note`/`notebook`/`tag`/`resource`/`note_tag`) and operation
-//!   (`create`/`read`/`update`/`delete`/`list`/`add`/`remove`).
-//! - `keeplin_storage_errors_total` — storage calls that returned an error.
-//! - `keeplin_sync_changes_applied_total` — remote changes applied via `apply_change`.
-//! - `keeplin_http_requests_total{status}` — HTTP responses by status class (`2xx`/`4xx`/
-//!   `5xx`/`other`), fed by [`crate::rest`]'s middleware, not the decorator.
-//!
-//! Counters only ever increase and carry no user content (labels are fixed literals), so the
-//! `/api/metrics` endpoint is safe to scrape without authentication concerns beyond the
-//! existing Basic-Auth gate.
-
+// md:Overview
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -45,10 +13,7 @@ use keeplin_core::{
     storage::{NoteRepository, NotebookRepository, ResourceRepository, SyncBackend, TagRepository},
 };
 
-/// The `(entity, op)` label pairs pre-registered in [`Metrics::operations`]. Kept as a fixed
-/// list so every counter exists up front: incrementing never allocates or locks, and the
-/// export always lists every series (a `0` is as informative as a positive count to a
-/// scraper).
+// md:OPERATION_LABELS
 const OPERATION_LABELS: &[(&str, &str)] = &[
     ("note", "create"),
     ("note", "read"),
@@ -74,35 +39,27 @@ const OPERATION_LABELS: &[(&str, &str)] = &[
     ("note_tag", "list"),
 ];
 
-/// The HTTP status classes tracked by [`Metrics::http_requests`].
+// md:HTTP_STATUS_CLASSES
 const HTTP_STATUS_CLASSES: &[&str] = &["2xx", "4xx", "5xx", "other"];
 
-/// A process-lifetime counter registry, shared (behind an `Arc`) between the
-/// [`MetricsBackend`] decorator, the REST middleware, and the `/api/metrics` handler.
-///
-/// Every counter is an [`AtomicU64`] touched with `Relaxed` ordering: metrics need no
-/// happens-before relationship with the operations they count, only eventual accuracy, so
-/// the cheapest atomic is correct here.
+// md:Metrics
 pub struct Metrics {
-    /// Successful storage operations keyed by `(entity, op)`. Pre-populated from
-    /// [`OPERATION_LABELS`], so `incr_op` only ever looks up an existing atomic.
     operations: HashMap<(&'static str, &'static str), AtomicU64>,
-    /// Storage calls that returned `Err`.
     errors: AtomicU64,
-    /// Remote changes applied through `apply_change`.
     sync_changes_applied: AtomicU64,
-    /// HTTP responses keyed by status class (`2xx`/`4xx`/`5xx`/`other`).
     http_requests: HashMap<&'static str, AtomicU64>,
 }
 
+// md:impl Default for Metrics
 impl Default for Metrics {
     fn default() -> Self {
         Self::new()
     }
 }
 
+// md:impl Metrics
 impl Metrics {
-    /// Build a registry with every known counter pre-registered at zero.
+    // md:impl Metrics > fn new
     pub fn new() -> Self {
         Self {
             operations: OPERATION_LABELS
@@ -118,25 +75,24 @@ impl Metrics {
         }
     }
 
-    /// Record one successful storage operation. Unknown `(entity, op)` pairs (which cannot
-    /// arise from the decorator, whose labels are all in [`OPERATION_LABELS`]) are ignored.
+    // md:impl Metrics > fn incr_op
     fn incr_op(&self, entity: &'static str, op: &'static str) {
         if let Some(counter) = self.operations.get(&(entity, op)) {
             counter.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    /// Record one storage error.
+    // md:impl Metrics > fn incr_error
     fn incr_error(&self) {
         self.errors.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record `n` remote changes applied by a sync cycle.
+    // md:impl Metrics > fn add_sync_applied
     fn add_sync_applied(&self, n: u64) {
         self.sync_changes_applied.fetch_add(n, Ordering::Relaxed);
     }
 
-    /// Record one HTTP response, bucketed by status class. Called by the REST middleware.
+    // md:impl Metrics > fn record_http_status
     pub fn record_http_status(&self, status: u16) {
         let class = match status {
             200..=299 => "2xx",
@@ -149,10 +105,7 @@ impl Metrics {
         }
     }
 
-    /// Render the whole registry in Prometheus text exposition format (v0.0.4).
-    ///
-    /// Series are emitted in a stable order (the fixed label lists, sorted) so the output is
-    /// deterministic across scrapes and easy to diff in tests.
+    // md:impl Metrics > fn render_prometheus
     pub fn render_prometheus(&self) -> String {
         let mut out = String::new();
 
@@ -200,22 +153,20 @@ impl Metrics {
     }
 }
 
-/// A [`StorageBackend`] decorator that records each operation into a shared [`Metrics`].
+// md:MetricsBackend
 pub struct MetricsBackend<B> {
     inner: B,
     metrics: Arc<Metrics>,
 }
 
+// md:impl MetricsBackend
 impl<B> MetricsBackend<B> {
-    /// Wrap `inner`, recording into `metrics`. Pass a clone of the same `Arc<Metrics>` the
-    /// daemon keeps in its REST state so `/api/metrics` reads the counters this decorator
-    /// writes.
+    // md:impl MetricsBackend > fn new
     pub fn new(inner: B, metrics: Arc<Metrics>) -> Self {
         Self { inner, metrics }
     }
 
-    /// Record `result` under `(entity, op)`: bump the operation counter on `Ok`, the shared
-    /// error counter on `Err`. Returns `result` unchanged so call sites stay one-liners.
+    // md:impl MetricsBackend > fn record
     fn record<T>(
         &self,
         entity: &'static str,
@@ -230,6 +181,7 @@ impl<B> MetricsBackend<B> {
     }
 }
 
+// md:impl NoteRepository for MetricsBackend
 #[async_trait]
 impl<B: NoteRepository> NoteRepository for MetricsBackend<B> {
     async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
@@ -267,8 +219,6 @@ impl<B: NoteRepository> NoteRepository for MetricsBackend<B> {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
-        // A backlink lookup is a specialised read; count it under the note/read series so the
-        // decorator delegates to (and does not shadow) an inner indexed implementation.
         let r = self
             .inner
             .note_backlinks(target_id, page_size, page_token)
@@ -302,11 +252,11 @@ impl<B: NoteRepository> NoteRepository for MetricsBackend<B> {
         &self,
         notebook_id: Uuid,
     ) -> Result<keeplin_core::storage::NotebookSortProfile, StorageError> {
-        // Internal placement metadata, not a user-facing operation; delegate unrecorded.
         self.inner.notebook_sort_profile(notebook_id).await
     }
 }
 
+// md:impl NotebookRepository for MetricsBackend
 #[async_trait]
 impl<B: NotebookRepository> NotebookRepository for MetricsBackend<B> {
     async fn create_notebook(&self, notebook: Notebook) -> Result<Notebook, StorageError> {
@@ -339,6 +289,7 @@ impl<B: NotebookRepository> NotebookRepository for MetricsBackend<B> {
     }
 }
 
+// md:impl TagRepository for MetricsBackend
 #[async_trait]
 impl<B: TagRepository> TagRepository for MetricsBackend<B> {
     async fn create_tag(&self, tag: Tag) -> Result<Tag, StorageError> {
@@ -394,6 +345,7 @@ impl<B: TagRepository> TagRepository for MetricsBackend<B> {
     }
 }
 
+// md:impl ResourceRepository for MetricsBackend
 #[async_trait]
 impl<B: ResourceRepository> ResourceRepository for MetricsBackend<B> {
     async fn create_resource(
@@ -433,9 +385,7 @@ impl<B: ResourceRepository> ResourceRepository for MetricsBackend<B> {
     }
 }
 
-// Sync methods delegate unchanged, except `apply_change` bumps the applied-changes counter so
-// `/api/metrics` reflects inbound sync traffic. The other methods carry no per-operation
-// signal worth a dedicated series here.
+// md:impl SyncBackend for MetricsBackend
 #[async_trait]
 impl<B: SyncBackend> SyncBackend for MetricsBackend<B> {
     async fn get_device_id(&self) -> Result<String, StorageError> {
@@ -475,6 +425,7 @@ impl<B: SyncBackend> SyncBackend for MetricsBackend<B> {
     }
 }
 
+// md:impl HistoryRepository for MetricsBackend
 #[async_trait]
 impl<B: keeplin_core::storage::HistoryRepository> keeplin_core::storage::HistoryRepository
     for MetricsBackend<B>
@@ -496,11 +447,13 @@ impl<B: keeplin_core::storage::HistoryRepository> keeplin_core::storage::History
     }
 }
 
+// md:mod tests
 #[cfg(test)]
 mod tests {
     use super::*;
     use keeplin_core::storage::fs::FsBackend;
 
+    // md:mod tests > fn backend
     async fn backend() -> (MetricsBackend<FsBackend>, Arc<Metrics>) {
         let dir = tempfile::tempdir().unwrap();
         let fs = FsBackend::new(dir.path()).await.unwrap();
@@ -509,6 +462,7 @@ mod tests {
         (MetricsBackend::new(fs, metrics.clone()), metrics)
     }
 
+    // md:mod tests > fn counts_operations_and_errors
     #[tokio::test]
     async fn counts_operations_and_errors() {
         let (be, metrics) = backend().await;
@@ -516,7 +470,6 @@ mod tests {
         let note = be.create_note(Note::new("t", "b")).await.unwrap();
         be.read_note(note.id).await.unwrap();
         be.list_notes(0, None).await.unwrap();
-        // A read of a missing note is one error, not a note/read.
         assert!(be.read_note(Uuid::new_v4()).await.is_err());
 
         let text = metrics.render_prometheus();
@@ -526,6 +479,7 @@ mod tests {
         assert!(text.contains("keeplin_storage_errors_total 1"));
     }
 
+    // md:mod tests > fn counts_applied_sync_changes
     #[tokio::test]
     async fn counts_applied_sync_changes() {
         let (be, metrics) = backend().await;
@@ -538,6 +492,7 @@ mod tests {
             .contains("keeplin_sync_changes_applied_total 1"));
     }
 
+    // md:mod tests > fn http_status_buckets
     #[test]
     fn http_status_buckets() {
         let metrics = Metrics::new();
@@ -545,7 +500,7 @@ mod tests {
         metrics.record_http_status(204);
         metrics.record_http_status(404);
         metrics.record_http_status(503);
-        metrics.record_http_status(101); // upgrade → "other"
+        metrics.record_http_status(101);
         let text = metrics.render_prometheus();
         assert!(text.contains("keeplin_http_requests_total{status=\"2xx\"} 2"));
         assert!(text.contains("keeplin_http_requests_total{status=\"4xx\"} 1"));

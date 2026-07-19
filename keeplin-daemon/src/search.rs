@@ -1,27 +1,4 @@
-//! Full-text search for the daemon.
-//!
-//! Search runs in the **daemon**, not on keeplin-srv: the server may only ever
-//! hold ciphertext (at-rest encryption is a client concern), so it cannot index
-//! note content. The daemon, by contrast, sits above the [`EncryptedBackend`]
-//! layer and sees plaintext.
-//!
-//! [`SearchIndex`] keeps an **in-memory SQLite FTS5** index of every live note —
-//! title, body, and the (denormalised) names of its tags and notebook — plus a
-//! set of structured columns (notebook, to-do state, due date, starred, pinned,
-//! updated-at) for filtering. The index is:
-//!
-//! - **rebuilt at startup** by scanning the store through the top of the
-//!   decorator stack (so it reads decrypted notes), and
-//! - **kept live** by draining the same [`Change`] broadcast channel the
-//!   WebSocket feed uses. That channel carries plaintext because `EventBackend`
-//!   sits outside encryption. On a lag (dropped changes) the index rebuilds.
-//!
-//! The index is ephemeral: nothing is persisted, so a restart simply rebuilds
-//! from the store. [`SearchHandle`] is the cloneable query view handed to the
-//! REST/gRPC surfaces.
-//!
-//! [`EncryptedBackend`]: keeplin_core::encryption::EncryptedBackend
-
+// md:Overview
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -30,15 +7,12 @@ use keeplin_core::storage::StorageBackend;
 use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
 
-/// A parsed search request: free text plus optional structured filters.
+// md:SearchQuery
 #[derive(Debug, Clone, Default)]
 pub struct SearchQuery {
-    /// Free-text query, matched against title, body, tag names and notebook
-    /// name. Empty means "no text filter" (results ordered by recency).
     pub text: String,
     pub notebook_id: Option<Uuid>,
     pub is_todo: Option<bool>,
-    /// `Some(true)` = open to-dos only, `Some(false)` = completed only.
     pub todo_open: Option<bool>,
     pub is_starred: Option<bool>,
     pub is_pinned: Option<bool>,
@@ -46,22 +20,18 @@ pub struct SearchQuery {
     pub due_before: Option<DateTime<Utc>>,
     pub updated_after: Option<DateTime<Utc>>,
     pub updated_before: Option<DateTime<Utc>>,
-    /// Maximum number of note ids to return (clamped to `MAX_LIMIT`).
     pub limit: usize,
 }
 
-/// Upper bound on results returned by one query.
+// md:MAX_LIMIT
 pub const MAX_LIMIT: usize = 500;
 
+// md:fn rfc
 fn rfc(ts: DateTime<Utc>) -> String {
-    // RFC3339 in UTC sorts lexicographically the same as chronologically, so
-    // range filters work as plain string comparisons.
     ts.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
 }
 
-/// Turn free text into an FTS5 `MATCH` expression, or `None` when it is empty.
-/// Each whitespace-separated token becomes a quoted prefix term (`"tok"*`), so
-/// user input can never inject FTS5 operators and typing a prefix matches.
+// md:fn fts_match
 fn fts_match(text: &str) -> Option<String> {
     let terms: Vec<String> = text
         .split_whitespace()
@@ -74,16 +44,15 @@ fn fts_match(text: &str) -> Option<String> {
     }
 }
 
-/// The in-memory FTS5 index. Shared behind an `Arc<Mutex<…>>` by the query
-/// handle and the maintenance task; a single in-memory connection is kept alive
-/// for the process lifetime (each `:memory:` connection is its own database).
+// md:Index
 struct Index {
     conn: libsql::Connection,
-    // Keep the database handle alive alongside the connection.
     _db: libsql::Database,
 }
 
+// md:impl Index
 impl Index {
+    // md:impl Index > fn open
     async fn open() -> anyhow::Result<Self> {
         let db = libsql::Builder::new_local(":memory:").build().await?;
         let conn = db.connect()?;
@@ -104,6 +73,7 @@ impl Index {
         Ok(Self { conn, _db: db })
     }
 
+    // md:impl Index > fn remove
     async fn remove(&self, note_id: Uuid) -> anyhow::Result<()> {
         self.conn
             .execute(
@@ -114,8 +84,8 @@ impl Index {
         Ok(())
     }
 
+    // md:impl Index > fn upsert
     async fn upsert(&self, note: &Note, tags: &str, notebook: &str) -> anyhow::Result<()> {
-        // FTS5 has no UPDATE; delete then insert.
         self.remove(note.id).await?;
         self.conn
             .execute(
@@ -142,11 +112,13 @@ impl Index {
         Ok(())
     }
 
+    // md:impl Index > fn clear
     async fn clear(&self) -> anyhow::Result<()> {
         self.conn.execute("DELETE FROM note_fts", ()).await?;
         Ok(())
     }
 
+    // md:impl Index > fn query
     async fn query(&self, q: &SearchQuery) -> anyhow::Result<Vec<Uuid>> {
         let limit = q.limit.clamp(1, MAX_LIMIT);
         let match_expr = fts_match(&q.text);
@@ -155,8 +127,6 @@ impl Index {
         if match_expr.is_some() {
             conds.push("note_fts MATCH ?1".into());
         }
-        // Every value below is server-validated (parsed into a Uuid / bool /
-        // timestamp and re-serialised), so inlining it is injection-safe.
         if let Some(id) = q.notebook_id {
             conds.push(format!("notebook_id = '{id}'"));
         }
@@ -190,7 +160,6 @@ impl Index {
         } else {
             conds.join(" AND ")
         };
-        // With a text query, rank by FTS relevance; otherwise most-recent first.
         let order = if match_expr.is_some() {
             "rank"
         } else {
@@ -214,6 +183,7 @@ impl Index {
     }
 }
 
+// md:fn bit
 fn bit(b: bool) -> &'static str {
     if b {
         "1"
@@ -222,21 +192,21 @@ fn bit(b: bool) -> &'static str {
     }
 }
 
-/// A cloneable query view of the search index, handed to the REST/gRPC surfaces.
+// md:SearchHandle
 #[derive(Clone)]
 pub struct SearchHandle {
     index: Arc<Mutex<Index>>,
 }
 
+// md:impl SearchHandle
 impl SearchHandle {
-    /// Return the ids of the notes matching `query`, best match first.
+    // md:impl SearchHandle > fn search
     pub async fn search(&self, query: &SearchQuery) -> anyhow::Result<Vec<Uuid>> {
         self.index.lock().await.query(query).await
     }
 }
 
-/// Denormalise a note's tag names and notebook name by reading them through the
-/// (plaintext) top of the stack.
+// md:fn denormalize
 async fn denormalize(backend: &Arc<dyn StorageBackend>, note: &Note) -> (String, String) {
     let tags = backend
         .list_note_tags(note.id, 0, None)
@@ -256,9 +226,7 @@ async fn denormalize(backend: &Arc<dyn StorageBackend>, note: &Note) -> (String,
     (tags, notebook)
 }
 
-/// Rebuild the whole index from the store (used at startup and whenever a
-/// rename/delete makes denormalised names stale in bulk, or the event stream
-/// lags).
+// md:fn rebuild
 async fn rebuild(index: &Arc<Mutex<Index>>, backend: &Arc<dyn StorageBackend>) {
     let guard = index.lock().await;
     if let Err(e) = guard.clear().await {
@@ -291,7 +259,7 @@ async fn rebuild(index: &Arc<Mutex<Index>>, backend: &Arc<dyn StorageBackend>) {
     tracing::info!("search: index rebuilt");
 }
 
-/// Index a single note (or remove it when tombstoned).
+// md:fn index_note
 async fn index_note(index: &Arc<Mutex<Index>>, backend: &Arc<dyn StorageBackend>, note: &Note) {
     let guard = index.lock().await;
     let result = if note.deleted_at.is_some() {
@@ -307,11 +275,10 @@ async fn index_note(index: &Arc<Mutex<Index>>, backend: &Arc<dyn StorageBackend>
     }
 }
 
-/// Reindex a single note by id (used when its associations change).
+// md:fn reindex_id
 async fn reindex_id(index: &Arc<Mutex<Index>>, backend: &Arc<dyn StorageBackend>, id: Uuid) {
     match backend.read_note(id).await {
         Ok(note) => index_note(index, backend, &note).await,
-        // Unreadable (deleted/absent): make sure it is not in the index.
         Err(_) => {
             let guard = index.lock().await;
             let _ = guard.remove(id).await;
@@ -319,9 +286,7 @@ async fn reindex_id(index: &Arc<Mutex<Index>>, backend: &Arc<dyn StorageBackend>
     }
 }
 
-/// Build the index, do the initial rebuild, and spawn the task that keeps it in
-/// sync with the change stream. Returns the query handle, or `None` if the
-/// index could not be created (search is then simply disabled).
+// md:fn start
 pub async fn start(
     backend: Arc<dyn StorageBackend>,
     events: broadcast::Sender<Change>,
@@ -337,10 +302,6 @@ pub async fn start(
         index: index.clone(),
     };
 
-    // Subscribe before the initial rebuild so nothing written during the rebuild
-    // is missed (a duplicate index of the same note is harmless — upsert). The
-    // rebuild runs inside the task so startup is not blocked by it; queries
-    // before it finishes simply see fewer results.
     let mut rx = events.subscribe();
 
     tokio::spawn(async move {
@@ -360,6 +321,7 @@ pub async fn start(
     Some(handle)
 }
 
+// md:fn apply_change
 async fn apply_change(
     index: &Arc<Mutex<Index>>,
     backend: &Arc<dyn StorageBackend>,
@@ -373,12 +335,9 @@ async fn apply_change(
             let guard = index.lock().await;
             let _ = guard.remove(id).await;
         }
-        // An association change affects exactly one note's denormalised tags.
         Change::NoteTagAdd { note_id, .. } | Change::NoteTagRemove { note_id, .. } => {
             reindex_id(index, backend, note_id).await
         }
-        // A rename or bulk change to a notebook/tag alters denormalised names
-        // across many notes; these are infrequent, so rebuild wholesale.
         Change::NotebookUpdate { .. }
         | Change::NotebookDelete { .. }
         | Change::TagUpdate { .. }
@@ -387,20 +346,24 @@ async fn apply_change(
     }
 }
 
+// md:mod tests
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // md:mod tests > fn note
     fn note(title: &str, body: &str) -> Note {
         let mut n = Note::new(title, body);
         n.updated_at = Utc::now();
         n
     }
 
+    // md:mod tests > fn idx
     async fn idx() -> Index {
         Index::open().await.unwrap()
     }
 
+    // md:mod tests > fn matches_title_and_body_by_prefix
     #[tokio::test]
     async fn matches_title_and_body_by_prefix() {
         let index = idx().await;
@@ -429,6 +392,7 @@ mod tests {
         assert!(none.is_empty());
     }
 
+    // md:mod tests > fn matches_tag_and_notebook_names
     #[tokio::test]
     async fn matches_tag_and_notebook_names() {
         let index = idx().await;
@@ -448,6 +412,7 @@ mod tests {
         }
     }
 
+    // md:mod tests > fn structured_filters_narrow_results
     #[tokio::test]
     async fn structured_filters_narrow_results() {
         let index = idx().await;
@@ -469,6 +434,7 @@ mod tests {
         assert_eq!(hits, vec![starred.id], "only the starred note matches");
     }
 
+    // md:mod tests > fn empty_query_lists_by_recency_with_filters
     #[tokio::test]
     async fn empty_query_lists_by_recency_with_filters() {
         let index = idx().await;
@@ -490,6 +456,7 @@ mod tests {
         assert_eq!(hits, vec![todo.id], "empty text + filter returns the todo");
     }
 
+    // md:mod tests > fn indexes_from_rebuild_and_the_event_stream
     #[tokio::test]
     async fn indexes_from_rebuild_and_the_event_stream() {
         use keeplin_core::storage::fs::FsBackend;
@@ -500,13 +467,11 @@ mod tests {
         let backend: Arc<dyn StorageBackend> =
             Arc::new(crate::event_backend::EventBackend::new(fs, events.clone()));
 
-        // A note that exists before the index starts (exercises the rebuild).
         let pre = backend
             .create_note(Note::new("preexisting alpha", "b"))
             .await
             .unwrap();
         let handle = start(backend.clone(), events.clone()).await.unwrap();
-        // A note created after start (exercises live event indexing).
         let live = backend
             .create_note(Note::new("live beta", "b"))
             .await
@@ -538,7 +503,6 @@ mod tests {
             "event stream indexed the new note"
         );
 
-        // Deleting it removes it from the index.
         backend.delete_note(live.id).await.unwrap();
         for _ in 0..50 {
             let hits = handle
@@ -557,6 +521,7 @@ mod tests {
         panic!("deleted note stayed in the index");
     }
 
+    // md:mod tests > fn remove_drops_the_note
     #[tokio::test]
     async fn remove_drops_the_note() {
         let index = idx().await;
