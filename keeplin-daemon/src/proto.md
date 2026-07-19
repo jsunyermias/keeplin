@@ -1,14 +1,15 @@
 # `proto.rs` — generated Protocol Buffers / gRPC code
 
-Self-contained companion for `keeplin-daemon/src/proto.rs`. It documents **every code
-block of the source file, in source order** — a reader with only this file must be able
+Self-contained companion for `keeplin-daemon/src/proto.rs`. It documents **every code block of
+the source file, in source order, with its complete code embedded** — a reader with only this file must be able
 to understand it without opening anything else, so project-wide conventions are
 deliberately re-explained here (hyper-redundancy is intended).
 
 **How to navigate**: every block carries exactly one marker comment
 `// md:<Header> > … > <Block header>` whose path is the header chain of its section
-here; grep it in either direction. Each section covers **Identification**,
-**What it does**, **Dependencies**, **Used by**, **Repeated context**.
+here; grep it in either direction. Each block section covers, in this fixed order:
+**Identification**, **Code**, **What it does**, **Dependencies**, **Used by**,
+**Repeated context**.
 
 ---
 
@@ -17,7 +18,10 @@ here; grep it in either direction. Each section covers **Identification**,
 **Identification** — the file's single block: the generated-code module. Marker
 `// md:Overview` (on the `pub mod keeplin` item — this file has no imports).
 
+**Code** — complete and verbatim:
+
 ```rust
+// md:Overview
 #[allow(dead_code, clippy::all)]
 pub mod keeplin {
     tonic::include_proto!("keeplin");
