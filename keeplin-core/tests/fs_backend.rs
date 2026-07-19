@@ -1,10 +1,4 @@
-//! Integration tests for [`FsBackend`] — the filesystem-backed storage implementation.
-//!
-//! Every test in this module creates a fresh temporary directory with [`tempfile::tempdir`],
-//! constructs a new [`FsBackend`] rooted there, and exercises the full
-//! [`StorageBackend`] API against real files on disk. The tests verify both the
-//! happy path (create → read → update → delete) and error paths (operations on
-//! non-existent entities must return [`StorageError::NotFound`]).
+// md:Overview
 
 use chrono::Utc;
 use keeplin_core::{
@@ -17,6 +11,7 @@ use keeplin_core::{
 };
 use tempfile::tempdir;
 
+// md:fn create_and_read_note
 #[tokio::test]
 async fn create_and_read_note() {
     let dir = tempdir().unwrap();
@@ -33,6 +28,7 @@ async fn create_and_read_note() {
     assert_eq!(read.body, "Test body");
 }
 
+// md:fn update_note
 #[tokio::test]
 async fn update_note() {
     let dir = tempdir().unwrap();
@@ -50,6 +46,7 @@ async fn update_note() {
     assert_eq!(read.title, "Updated");
 }
 
+// md:fn delete_note_soft_deletes
 #[tokio::test]
 async fn delete_note_soft_deletes() {
     let dir = tempdir().unwrap();
@@ -64,6 +61,7 @@ async fn delete_note_soft_deletes() {
     assert!(!notes.iter().any(|n| n.id == id));
 }
 
+// md:fn list_notes_excludes_deleted
 #[tokio::test]
 async fn list_notes_excludes_deleted() {
     let dir = tempdir().unwrap();
@@ -81,6 +79,7 @@ async fn list_notes_excludes_deleted() {
     assert_eq!(notes[0].title, "B");
 }
 
+// md:fn read_nonexistent_note_returns_not_found
 #[tokio::test]
 async fn read_nonexistent_note_returns_not_found() {
     let dir = tempdir().unwrap();
@@ -94,6 +93,7 @@ async fn read_nonexistent_note_returns_not_found() {
     );
 }
 
+// md:fn device_id_is_stable_across_instances
 #[tokio::test]
 async fn device_id_is_stable_across_instances() {
     let dir = tempdir().unwrap();
@@ -106,6 +106,7 @@ async fn device_id_is_stable_across_instances() {
     assert_eq!(id1, id2);
 }
 
+// md:fn sync_state_persists
 #[tokio::test]
 async fn sync_state_persists() {
     let dir = tempdir().unwrap();
@@ -115,9 +116,6 @@ async fn sync_state_persists() {
     backend.update_sync_time(ts).await.unwrap();
 
     let read = backend.get_last_sync_time().await.unwrap();
-    // The sync timestamp is serialised as an RFC-3339 string and then deserialised
-    // back. Sub-second precision may be lost during that round-trip, so the
-    // comparison is done at second-level granularity using Unix timestamps.
     assert_eq!(
         read.timestamp(),
         ts.timestamp(),
@@ -125,6 +123,7 @@ async fn sync_state_persists() {
     );
 }
 
+// md:fn get_changes_since_scans_other_device_logs
 #[tokio::test]
 async fn get_changes_since_scans_other_device_logs() {
     use keeplin_core::models::Change;
@@ -132,9 +131,6 @@ async fn get_changes_since_scans_other_device_logs() {
     let dir = tempdir().unwrap();
     let our = FsBackend::new(dir.path()).await.unwrap();
 
-    // Simulate a log file that a different device has written and Syncthing has
-    // replicated into the `logs/` directory. The file name must differ from this
-    // device's own log file name so that `get_changes_since` does not skip it.
     let other_note = Note::new("Remote note", "Remote body");
     let entry = serde_json::json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
@@ -153,8 +149,7 @@ async fn get_changes_since_scans_other_device_logs() {
     assert!(matches!(changes[0], Change::NoteCreate { .. }));
 }
 
-// ── Error-path tests ──────────────────────────────────────────────────────────
-
+// md:fn update_nonexistent_note_returns_not_found
 #[tokio::test]
 async fn update_nonexistent_note_returns_not_found() {
     let dir = tempdir().unwrap();
@@ -164,6 +159,7 @@ async fn update_nonexistent_note_returns_not_found() {
     assert!(matches!(err, StorageError::NotFound(_)));
 }
 
+// md:fn delete_nonexistent_note_returns_not_found
 #[tokio::test]
 async fn delete_nonexistent_note_returns_not_found() {
     let dir = tempdir().unwrap();
@@ -173,6 +169,7 @@ async fn delete_nonexistent_note_returns_not_found() {
     assert!(matches!(err, StorageError::NotFound(_)));
 }
 
+// md:fn update_nonexistent_notebook_returns_not_found
 #[tokio::test]
 async fn update_nonexistent_notebook_returns_not_found() {
     let dir = tempdir().unwrap();
@@ -182,6 +179,7 @@ async fn update_nonexistent_notebook_returns_not_found() {
     assert!(matches!(err, StorageError::NotFound(_)));
 }
 
+// md:fn delete_nonexistent_notebook_returns_not_found
 #[tokio::test]
 async fn delete_nonexistent_notebook_returns_not_found() {
     let dir = tempdir().unwrap();
@@ -191,6 +189,7 @@ async fn delete_nonexistent_notebook_returns_not_found() {
     assert!(matches!(err, StorageError::NotFound(_)));
 }
 
+// md:fn update_nonexistent_tag_returns_not_found
 #[tokio::test]
 async fn update_nonexistent_tag_returns_not_found() {
     let dir = tempdir().unwrap();
@@ -200,6 +199,7 @@ async fn update_nonexistent_tag_returns_not_found() {
     assert!(matches!(err, StorageError::NotFound(_)));
 }
 
+// md:fn delete_nonexistent_tag_returns_not_found
 #[tokio::test]
 async fn delete_nonexistent_tag_returns_not_found() {
     let dir = tempdir().unwrap();
@@ -209,8 +209,7 @@ async fn delete_nonexistent_tag_returns_not_found() {
     assert!(matches!(err, StorageError::NotFound(_)));
 }
 
-// ── Notebook tests ────────────────────────────────────────────────────────────
-
+// md:fn create_and_read_notebook
 #[tokio::test]
 async fn create_and_read_notebook() {
     let dir = tempdir().unwrap();
@@ -225,10 +224,9 @@ async fn create_and_read_notebook() {
     assert!(read.deleted_at.is_none());
 }
 
+// md:fn list_notebooks_includes_created
 #[tokio::test]
 async fn list_notebooks_includes_created() {
-    // Regression: the sidecar is written as `{id}.msgpack`, so the listing must filter on
-    // that extension. A previous `.json` filter matched nothing and returned an empty list.
     let dir = tempdir().unwrap();
     let backend = FsBackend::new(dir.path()).await.unwrap();
 
@@ -240,6 +238,7 @@ async fn list_notebooks_includes_created() {
     assert!(notebooks.iter().any(|n| n.id == id && n.title == "Work"));
 }
 
+// md:fn delete_notebook_soft_deletes
 #[tokio::test]
 async fn delete_notebook_soft_deletes() {
     let dir = tempdir().unwrap();
@@ -257,8 +256,7 @@ async fn delete_notebook_soft_deletes() {
     assert!(raw.deleted_at.is_some());
 }
 
-// ── Tag tests ─────────────────────────────────────────────────────────────────
-
+// md:fn create_and_read_tag
 #[tokio::test]
 async fn create_and_read_tag() {
     let dir = tempdir().unwrap();
@@ -272,9 +270,9 @@ async fn create_and_read_tag() {
     assert_eq!(read.title, "rust");
 }
 
+// md:fn list_tags_includes_created
 #[tokio::test]
 async fn list_tags_includes_created() {
-    // Regression: same `.msgpack`-vs-`.json` listing bug as notebooks, for tags.
     let dir = tempdir().unwrap();
     let backend = FsBackend::new(dir.path()).await.unwrap();
 
@@ -286,6 +284,7 @@ async fn list_tags_includes_created() {
     assert!(tags.iter().any(|t| t.id == id && t.title == "rust"));
 }
 
+// md:fn add_and_list_note_tags
 #[tokio::test]
 async fn add_and_list_note_tags() {
     let dir = tempdir().unwrap();
@@ -307,6 +306,7 @@ async fn add_and_list_note_tags() {
     assert_eq!(tags[0].id, tag_id);
 }
 
+// md:fn add_note_tag_rejects_missing_or_deleted_ends
 #[tokio::test]
 async fn add_note_tag_rejects_missing_or_deleted_ends() {
     let dir = tempdir().unwrap();
@@ -318,7 +318,6 @@ async fn add_note_tag_rejects_missing_or_deleted_ends() {
     backend.create_note(note).await.unwrap();
     backend.create_tag(tag).await.unwrap();
 
-    // Nonexistent note / tag: no dangling association may be created.
     let err = backend
         .add_note_tag(NoteTag {
             note_id: uuid::Uuid::new_v4(),
@@ -336,7 +335,6 @@ async fn add_note_tag_rejects_missing_or_deleted_ends() {
         .unwrap_err();
     assert!(matches!(err, StorageError::NotFound(_)), "got: {err}");
 
-    // Soft-deleted ends are rejected the same way.
     backend.delete_tag(tag_id).await.unwrap();
     let err = backend
         .add_note_tag(NoteTag { note_id, tag_id })
@@ -344,11 +342,11 @@ async fn add_note_tag_rejects_missing_or_deleted_ends() {
         .unwrap_err();
     assert!(matches!(err, StorageError::NotFound(_)), "got: {err}");
 
-    // Nothing was attached by the failed calls.
     let (tags, _) = backend.list_note_tags(note_id, 0, None).await.unwrap();
     assert!(tags.is_empty());
 }
 
+// md:fn remove_note_tag
 #[tokio::test]
 async fn remove_note_tag() {
     let dir = tempdir().unwrap();
@@ -370,8 +368,7 @@ async fn remove_note_tag() {
     assert!(tags.is_empty());
 }
 
-// ── Resource tests ────────────────────────────────────────────────────────────
-
+// md:fn create_and_read_resource
 #[tokio::test]
 async fn create_and_read_resource() {
     let dir = tempdir().unwrap();
@@ -387,6 +384,7 @@ async fn create_and_read_resource() {
     assert_eq!(bytes, data);
 }
 
+// md:fn list_resources_excludes_data
 #[tokio::test]
 async fn list_resources_excludes_data() {
     let dir = tempdir().unwrap();
@@ -407,6 +405,7 @@ async fn list_resources_excludes_data() {
     assert_eq!(list.len(), 3);
 }
 
+// md:fn delete_resource
 #[tokio::test]
 async fn delete_resource() {
     let dir = tempdir().unwrap();
@@ -421,14 +420,12 @@ async fn delete_resource() {
     assert!(matches!(err, StorageError::NotFound(_)));
 }
 
-// ── Pagination test ───────────────────────────────────────────────────────────
-
+// md:fn list_notes_paginates_without_duplicates_or_gaps
 #[tokio::test]
 async fn list_notes_paginates_without_duplicates_or_gaps() {
     let dir = tempdir().unwrap();
     let backend = FsBackend::new(dir.path()).await.unwrap();
 
-    // Insert more notes than a single page holds so the cursor must be walked.
     let total = 23usize;
     for i in 0..total {
         backend
@@ -463,10 +460,7 @@ async fn list_notes_paginates_without_duplicates_or_gaps() {
     assert_eq!(seen, all_ids, "paged order must match single-shot order");
 }
 
-// ── Version-vector note model ─────────────────────────────────────────────────
-
-/// Simulate Syncthing replicating a note from one root to another by copying only its
-/// per-device log files (the single-writer source of truth), not the local projections.
+// md:fn replicate_note
 async fn replicate_note(from_root: &std::path::Path, to_root: &std::path::Path, id: uuid::Uuid) {
     let from = from_root.join("notes").join(id.to_string());
     let to = to_root.join("notes").join(id.to_string());
@@ -480,6 +474,7 @@ async fn replicate_note(from_root: &std::path::Path, to_root: &std::path::Path, 
     }
 }
 
+// md:fn fs_note_uses_three_file_layout
 #[tokio::test]
 async fn fs_note_uses_three_file_layout() {
     let dir = tempdir().unwrap();
@@ -504,11 +499,11 @@ async fn fs_note_uses_three_file_layout() {
     }
     assert!(found_log, "a per-device log file must exist");
 
-    // The markdown body is stored verbatim (unencrypted backend).
     let body = std::fs::read_to_string(ndir.join("note.md")).unwrap();
     assert_eq!(body, "# Markdown body");
 }
 
+// md:fn fs_two_device_causal_sync
 #[tokio::test]
 async fn fs_two_device_causal_sync() {
     let dir_a = tempdir().unwrap();
@@ -520,20 +515,18 @@ async fn fs_two_device_causal_sync() {
     let id = note.id;
     a.create_note(note).await.unwrap();
 
-    // A → B: B sees A's note after the log replicates.
     replicate_note(dir_a.path(), dir_b.path(), id).await;
     assert_eq!(b.read_note(id).await.unwrap().body, "from A");
 
-    // B edits causally (it has seen A's version).
     let mut edited = b.read_note(id).await.unwrap();
     edited.body = "edited by B".to_string();
     b.update_note(edited).await.unwrap();
 
-    // B → A: the causal edit wins with no conflict.
     replicate_note(dir_b.path(), dir_a.path(), id).await;
     assert_eq!(a.read_note(id).await.unwrap().body, "edited by B");
 }
 
+// md:fn fs_two_device_concurrent_edits_converge
 #[tokio::test]
 async fn fs_two_device_concurrent_edits_converge() {
     let dir_a = tempdir().unwrap();
@@ -547,7 +540,6 @@ async fn fs_two_device_concurrent_edits_converge() {
     replicate_note(dir_a.path(), dir_b.path(), id).await;
     b.read_note(id).await.unwrap();
 
-    // Concurrent edits with no exchange between them.
     let mut ea = a.read_note(id).await.unwrap();
     ea.body = "A wins?".to_string();
     a.update_note(ea).await.unwrap();
@@ -556,8 +548,6 @@ async fn fs_two_device_concurrent_edits_converge() {
     eb.body = "B wins?".to_string();
     b.update_note(eb).await.unwrap();
 
-    // Cross-replicate both logs; both devices must converge to the SAME winner
-    // (deterministic last-write-wins by timestamp, then device id).
     replicate_note(dir_b.path(), dir_a.path(), id).await;
     replicate_note(dir_a.path(), dir_b.path(), id).await;
     let winner_a = a.read_note(id).await.unwrap().body;
@@ -569,6 +559,7 @@ async fn fs_two_device_concurrent_edits_converge() {
     );
 }
 
+// md:fn note_alias_bookmarks_links_persist_in_meta
 #[tokio::test]
 async fn note_alias_bookmarks_links_persist_in_meta() {
     use keeplin_core::links::{Bookmark, LinkSource, NoteLink};
@@ -591,15 +582,11 @@ async fn note_alias_bookmarks_links_persist_in_meta() {
     let id = note.id;
     backend.create_note(note.clone()).await.unwrap();
 
-    // Reads materialize from the per-device log; the new fields survive the round-trip
-    // through `log.{device}.msgpack` + `meta.msgpack`.
     let read = backend.read_note(id).await.unwrap();
     assert_eq!(read.alias.as_deref(), Some("note3"));
     assert_eq!(read.bookmarks, note.bookmarks);
     assert_eq!(read.links, note.links);
 
-    // A second backend over the same root (a different "device") materializes the same
-    // state from the replicated log — i.e. the fields converge.
     let backend2 = FsBackend::new(dir.path()).await.unwrap();
     let seen = backend2.read_note(id).await.unwrap();
     assert_eq!(seen.alias.as_deref(), Some("note3"));
@@ -607,6 +594,7 @@ async fn note_alias_bookmarks_links_persist_in_meta() {
     assert_eq!(seen.links, note.links);
 }
 
+// md:fn backlinks_default_scan_is_paginated
 #[tokio::test]
 async fn backlinks_default_scan_is_paginated() {
     use keeplin_core::links::{LinkSource, NoteLink};
@@ -637,10 +625,7 @@ async fn backlinks_default_scan_is_paginated() {
     assert_eq!(ids.len(), 3);
 }
 
-/// Two `FsBackend` devices editing the same notebook concurrently with the **identical**
-/// `updated_at` converge on one deterministic winner via version-vector `resolve`. Under the
-/// old `updated_at`-only comparison (`>`), equal timestamps meant neither device applied the
-/// other's edit → permanent divergence.
+// md:fn fs_notebook_concurrent_equal_timestamp_edits_converge
 #[tokio::test]
 async fn fs_notebook_concurrent_equal_timestamp_edits_converge() {
     let dir_a = tempdir().unwrap();
@@ -648,7 +633,6 @@ async fn fs_notebook_concurrent_equal_timestamp_edits_converge() {
     let a = FsBackend::new(dir_a.path()).await.unwrap();
     let b = FsBackend::new(dir_b.path()).await.unwrap();
 
-    // Shared baseline: create on A, replicate the create to B (B now holds vv {A:1}).
     let nb = a.create_notebook(Notebook::new("shared")).await.unwrap();
     let id = nb.id;
     b.apply_change(Change::NotebookCreate {
@@ -657,7 +641,6 @@ async fn fs_notebook_concurrent_equal_timestamp_edits_converge() {
     .await
     .unwrap();
 
-    // Concurrent edits sharing the SAME updated_at.
     let t = Utc::now();
     let mut ea = a.read_notebook(id).await.unwrap();
     ea.title = "from A".to_string();
@@ -669,7 +652,6 @@ async fn fs_notebook_concurrent_equal_timestamp_edits_converge() {
     eb.updated_at = t;
     let ub = b.update_notebook(eb).await.unwrap();
 
-    // Exchange the concurrent edits.
     a.apply_change(Change::NotebookUpdate { notebook: ub })
         .await
         .unwrap();
@@ -683,10 +665,7 @@ async fn fs_notebook_concurrent_equal_timestamp_edits_converge() {
     assert!(title_a == "from A" || title_a == "from B");
 }
 
-/// A concurrent note↔tag attach-vs-detach converges on `FsBackend` exactly as on `DbBackend`:
-/// both devices agree on the association's final presence, resolved through the shared version
-/// vectors rather than being order-dependent. This is the FS mirror of
-/// `sync::db_concurrent_note_tag_add_remove_converges`.
+// md:fn fs_concurrent_note_tag_add_remove_converges
 #[tokio::test]
 async fn fs_concurrent_note_tag_add_remove_converges() {
     let dir_a = tempdir().unwrap();
@@ -694,7 +673,6 @@ async fn fs_concurrent_note_tag_add_remove_converges() {
     let a = FsBackend::new(dir_a.path()).await.unwrap();
     let b = FsBackend::new(dir_b.path()).await.unwrap();
 
-    // Baseline: note + tag + attached association on A, replicated to B.
     let note = a.create_note(Note::new("n", "")).await.unwrap();
     let tag = a.create_tag(Tag::new("t")).await.unwrap();
     a.add_note_tag(NoteTag {
@@ -707,7 +685,6 @@ async fn fs_concurrent_note_tag_add_remove_converges() {
     drain_sync(&b).await;
     assert_eq!(b.list_note_tags(note.id, 0, None).await.unwrap().0.len(), 1);
 
-    // Concurrent: A detaches, B re-attaches (each from the shared baseline).
     a.remove_note_tag(note.id, tag.id).await.unwrap();
     b.add_note_tag(NoteTag {
         note_id: note.id,
@@ -716,7 +693,6 @@ async fn fs_concurrent_note_tag_add_remove_converges() {
     .await
     .unwrap();
 
-    // Exchange both ways through the replicated logs.
     replicate_logs(dir_a.path(), dir_b.path()).await;
     replicate_logs(dir_b.path(), dir_a.path()).await;
     drain_sync(&a).await;
@@ -740,7 +716,7 @@ async fn fs_concurrent_note_tag_add_remove_converges() {
     );
 }
 
-/// Count the entries in a note's single per-device log file (the `log.*.msgpack` in its dir).
+// md:fn note_log_len
 async fn note_log_len(root: &std::path::Path, id: uuid::Uuid) -> usize {
     use keeplin_core::storage::note_log::NoteLogEntry;
     let dir = root.join("notes").join(id.to_string());
@@ -756,10 +732,7 @@ async fn note_log_len(root: &std::path::Path, id: uuid::Uuid) -> usize {
     panic!("no per-device note log found for {id}");
 }
 
-/// A note edited far past the compaction threshold keeps its own per-device log bounded (the
-/// log is collapsed to its frontier) while reads still return the latest content, and the
-/// compacted log replicates to a peer that converges on the same state — including after a
-/// delete, whose tombstone still recovers its content from the retained newest upsert.
+// md:fn fs_note_log_compacts_and_still_converges
 #[tokio::test]
 async fn fs_note_log_compacts_and_still_converges() {
     let dir_a = tempdir().unwrap();
@@ -771,7 +744,6 @@ async fn fs_note_log_compacts_and_still_converges() {
     let id = note.id;
     a.create_note(note.clone()).await.unwrap();
 
-    // Edit well past the compaction threshold so compaction fires repeatedly.
     let edits = 1000u64;
     for i in 1..=edits {
         let mut edited = note.clone();
@@ -779,8 +751,6 @@ async fn fs_note_log_compacts_and_still_converges() {
         a.update_note(edited).await.unwrap();
     }
 
-    // Despite 1000 edits, the log is bounded to at most the threshold (+1): each time it grows
-    // past 256 entries it is collapsed back to its frontier, rather than growing to 1001.
     let len = note_log_len(dir_a.path(), id).await;
     assert!(
         len <= 257,
@@ -788,12 +758,9 @@ async fn fs_note_log_compacts_and_still_converges() {
     );
     assert_eq!(a.read_note(id).await.unwrap().body, format!("v{edits}"));
 
-    // The compacted log replicates to a fresh peer, which converges on the latest content.
     replicate_note(dir_a.path(), dir_b.path(), id).await;
     assert_eq!(b.read_note(id).await.unwrap().body, format!("v{edits}"));
 
-    // Deleting after all that churn still produces a tombstone that carries the recovered
-    // content (the newest upsert was retained by compaction), and it propagates.
     a.delete_note(id).await.unwrap();
     replicate_note(dir_a.path(), dir_b.path(), id).await;
     assert!(
@@ -802,10 +769,7 @@ async fn fs_note_log_compacts_and_still_converges() {
     );
 }
 
-/// Simulate Syncthing replicating one device's single-writer log files to another: every
-/// global `logs/*.log` file plus every per-note `notes/{id}/log.*.msgpack` op log. Each has a
-/// single writer, so this never conflicts. Projections (`note.md`, `meta.msgpack`) are *not*
-/// copied — they are per-device caches the receiver regenerates from the logs on sync.
+// md:fn replicate_logs
 async fn replicate_logs(from: &std::path::Path, to: &std::path::Path) {
     let from_logs = from.join("logs");
     let to_logs = to.join("logs");
@@ -838,15 +802,14 @@ async fn replicate_logs(from: &std::path::Path, to: &std::path::Path) {
     }
 }
 
-/// Pull and apply every change a device can currently see from its peers' replicated logs.
+// md:fn drain_sync
 async fn drain_sync(b: &FsBackend) {
     for c in b.receive_changes().await.unwrap() {
         b.apply_change(c).await.unwrap();
     }
 }
 
-/// The generation epoch and change-entry count of a device's own global log (parsing the log
-/// text directly, without depending on `FsBackend` internals).
+// md:fn own_log_stats
 async fn own_log_stats(root: &std::path::Path, backend: &FsBackend) -> (u64, usize) {
     let device = backend.get_device_id().await.unwrap();
     let path = root.join("logs").join(format!("{device}.log"));
@@ -872,11 +835,7 @@ async fn own_log_stats(root: &std::path::Path, backend: &FsBackend) -> (u64, usi
     (epoch, count)
 }
 
-/// The global NDJSON journal is bounded by generation-epoch snapshot compaction: churning one
-/// notebook far past the threshold rewrites the log as a small current-state snapshot behind a
-/// bumped epoch, and a peer that already synced the pre-compaction baseline detects the new
-/// generation, re-reads the snapshot, and converges — a live entity at its latest state and a
-/// deleted one tombstoned.
+// md:fn fs_global_log_compacts_and_peer_converges
 #[tokio::test]
 async fn fs_global_log_compacts_and_peer_converges() {
     let dir_a = tempdir().unwrap();
@@ -884,7 +843,6 @@ async fn fs_global_log_compacts_and_peer_converges() {
     let a = FsBackend::new(dir_a.path()).await.unwrap();
     let b = FsBackend::new(dir_b.path()).await.unwrap();
 
-    // Baseline: two notebooks on A, synced to B before any compaction.
     let x = a.create_notebook(Notebook::new("x0")).await.unwrap();
     let y = a.create_notebook(Notebook::new("y0")).await.unwrap();
     replicate_logs(dir_a.path(), dir_b.path()).await;
@@ -892,8 +850,6 @@ async fn fs_global_log_compacts_and_peer_converges() {
     assert_eq!(b.read_notebook(x.id).await.unwrap().title, "x0");
     assert_eq!(b.read_notebook(y.id).await.unwrap().title, "y0");
 
-    // Churn X well past the global-log threshold (512) to force at least one snapshot
-    // compaction, and delete Y so a tombstone must survive in the snapshot.
     for i in 1..=600u64 {
         let mut e = a.read_notebook(x.id).await.unwrap();
         e.title = format!("x{i}");
@@ -901,8 +857,6 @@ async fn fs_global_log_compacts_and_peer_converges() {
     }
     a.delete_notebook(y.id).await.unwrap();
 
-    // A's own log was compacted: it carries a generation header (epoch >= 1) and far fewer
-    // entries than the ~601 mutations, because each notebook collapsed to one snapshot entry.
     let (epoch, entry_count) = own_log_stats(dir_a.path(), &a).await;
     assert!(
         epoch >= 1,
@@ -913,8 +867,6 @@ async fn fs_global_log_compacts_and_peer_converges() {
         "snapshot compaction must bound the log, had {entry_count} entries"
     );
 
-    // B — which had synced only the baseline (epoch 0) — notices the new generation, re-reads
-    // the snapshot from the header, and converges on the latest state of both notebooks.
     replicate_logs(dir_a.path(), dir_b.path()).await;
     drain_sync(&b).await;
     assert_eq!(
@@ -928,9 +880,7 @@ async fn fs_global_log_compacts_and_peer_converges() {
     );
 }
 
-/// The snapshot written on global-log compaction covers **every** globally-journalled entity
-/// type — notebooks, tags, resources, and note↔tag associations — so a fresh peer that only ever
-/// receives the post-compaction snapshot still reconstructs all of them.
+// md:fn fs_global_log_snapshot_covers_all_entity_types
 #[tokio::test]
 async fn fs_global_log_snapshot_covers_all_entity_types() {
     let dir_a = tempdir().unwrap();
@@ -951,7 +901,6 @@ async fn fs_global_log_snapshot_covers_all_entity_types() {
     let res_id = res.id;
     a.create_resource(res, b"abc".to_vec()).await.unwrap();
 
-    // Force at least one global-log compaction by churning the notebook past the threshold.
     for i in 1..=560u64 {
         let mut e = a.read_notebook(nb.id).await.unwrap();
         e.title = format!("nb{i}");
@@ -960,7 +909,6 @@ async fn fs_global_log_snapshot_covers_all_entity_types() {
     let (epoch, _) = own_log_stats(dir_a.path(), &a).await;
     assert!(epoch >= 1, "the global log must have compacted");
 
-    // A brand-new peer receives only the compacted snapshot, yet reconstructs each entity type.
     replicate_logs(dir_a.path(), dir_b.path()).await;
     drain_sync(&b).await;
 
@@ -978,8 +926,7 @@ async fn fs_global_log_snapshot_covers_all_entity_types() {
     );
 }
 
-// ── Pinning / ordering / starring (issues #49–#52) ────────────────────────────
-
+// md:fn ordering_fields_round_trip_and_manual_order_query
 #[tokio::test]
 async fn ordering_fields_round_trip_and_manual_order_query() {
     let dir = tempdir().unwrap();
@@ -991,11 +938,11 @@ async fn ordering_fields_round_trip_and_manual_order_query() {
     pinned.is_pinned = true;
     pinned.sort_key = 5;
     let mut legacy = Note::new("legacy", "");
-    legacy.notebook_id = nb.id; // sort_key 0 sentinel → orders as 1000
+    legacy.notebook_id = nb.id;
     let mut normal = Note::new("normal", "");
     normal.notebook_id = nb.id;
     normal.sort_key = 1500;
-    let mut starred = Note::new("starred", ""); // Inbox note
+    let mut starred = Note::new("starred", "");
     starred.is_starred = true;
     for n in [&pinned, &legacy, &normal, &starred] {
         backend.create_note(n.clone()).await.unwrap();
@@ -1005,7 +952,6 @@ async fn ordering_fields_round_trip_and_manual_order_query() {
     assert!(read.is_pinned);
     assert_eq!(read.sort_key, 5);
 
-    // Manual order with single-note pages: cursor semantics over the effective key.
     let mut walked = Vec::new();
     let mut token = None;
     loop {
@@ -1030,22 +976,16 @@ async fn ordering_fields_round_trip_and_manual_order_query() {
     assert_eq!(profile.max_normal_key, Some(1500));
 }
 
-// ── In-memory note index (listing scalability) ────────────────────────────────
-
-/// The index is built lazily on the first listing, then maintained in place: a create
-/// after the build appears, and a delete after the build disappears — without any listing
-/// re-reading every note's logs.
+// md:fn note_index_reflects_local_writes_after_it_is_built
 #[tokio::test]
 async fn note_index_reflects_local_writes_after_it_is_built() {
     let dir = tempdir().unwrap();
     let backend = FsBackend::new(dir.path()).await.unwrap();
 
     let a = backend.create_note(Note::new("a", "")).await.unwrap();
-    // First listing builds the index (sees `a`).
     let (page, _) = backend.list_notes(0, None).await.unwrap();
     assert_eq!(page.len(), 1);
 
-    // A create after the build must appear (incremental insert).
     let b = backend.create_note(Note::new("b", "")).await.unwrap();
     let mut ids: Vec<_> = backend
         .list_notes(0, None)
@@ -1060,7 +1000,6 @@ async fn note_index_reflects_local_writes_after_it_is_built() {
     want.sort();
     assert_eq!(ids, want);
 
-    // A delete after the build must drop it (incremental remove).
     backend.delete_note(a.id).await.unwrap();
     let ids: Vec<_> = backend
         .list_notes(0, None)
@@ -1073,8 +1012,7 @@ async fn note_index_reflects_local_writes_after_it_is_built() {
     assert_eq!(ids, vec![b.id]);
 }
 
-/// A change pulled from a peer (its log replicated, then a sync cycle) flows through the
-/// same `persist_note_projection` choke point, so it shows up in the listings too.
+// md:fn note_index_reflects_changes_pulled_from_a_peer
 #[tokio::test]
 async fn note_index_reflects_changes_pulled_from_a_peer() {
     let dir_a = tempdir().unwrap();
@@ -1082,17 +1020,14 @@ async fn note_index_reflects_changes_pulled_from_a_peer() {
     let a = FsBackend::new(dir_a.path()).await.unwrap();
     let b = FsBackend::new(dir_b.path()).await.unwrap();
 
-    // Warm B's index while it is empty.
     assert!(b.list_notes(0, None).await.unwrap().0.is_empty());
 
-    // A creates a starred note; its per-device log replicates to B.
     let mut note = Note::new("from A", "body");
     note.is_starred = true;
     let id = note.id;
     a.create_note(note).await.unwrap();
     replicate_logs(dir_a.path(), dir_b.path()).await;
 
-    // A sync cycle materializes the peer note and updates B's index.
     drain_sync(&b).await;
     let (page, _) = b.list_notes(0, None).await.unwrap();
     assert_eq!(page.len(), 1);
@@ -1102,11 +1037,7 @@ async fn note_index_reflects_changes_pulled_from_a_peer() {
     assert_eq!(starred[0].id, id);
 }
 
-/// #71: on `FsBackend`, a notebook/tag/resource delete for an entity unknown locally must
-/// write a minimal tombstone sidecar, so a later stale create/update loses against it in
-/// `resolve` instead of resurrecting the entity. (Note deletes converge through the
-/// Syncthing-replicated per-note logs, not through this apply path, so they are covered by
-/// the two-device convergence tests instead.)
+// md:fn delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_create
 #[tokio::test]
 async fn delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_create() {
     let dir = tempdir().unwrap();
@@ -1114,7 +1045,6 @@ async fn delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_c
     let vv = |dev: &str, n: u64| std::collections::BTreeMap::from([(dev.to_string(), n)]);
     let ts = Utc::now();
 
-    // ── Notebook ──────────────────────────────────────────────────────────────
     let nb_id = uuid::Uuid::new_v4();
     backend
         .apply_change(Change::NotebookDelete {
@@ -1139,7 +1069,6 @@ async fn delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_c
         "a stale create must not resurrect a notebook deleted before it was known"
     );
 
-    // ── Tag ───────────────────────────────────────────────────────────────────
     let tag_id = uuid::Uuid::new_v4();
     backend
         .apply_change(Change::TagDelete {
@@ -1161,7 +1090,6 @@ async fn delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_c
     let (tags, _) = backend.list_tags(0, None).await.unwrap();
     assert!(!tags.iter().any(|t| t.id == tag_id), "tag stays deleted");
 
-    // ── Resource ──────────────────────────────────────────────────────────────
     let res_id = uuid::Uuid::new_v4();
     backend
         .apply_change(Change::ResourceDelete {

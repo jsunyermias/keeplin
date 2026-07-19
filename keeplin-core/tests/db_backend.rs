@@ -1,11 +1,4 @@
-//! Integration tests for [`DbBackend`] — the LibSQL-backed storage implementation.
-//!
-//! Every test in this module uses [`in_memory_backend`], a helper that creates a
-//! [`DbBackend`] backed by a temporary file with an empty `server_url` so no
-//! WebSocket connection is attempted. The tests cover the complete
-//! [`StorageBackend`] API at the SQLite level, including soft-deletion semantics,
-//! the `entity_changes` change journal, and device-ID persistence. WebSocket
-//! synchronisation paths are not exercised here because they require a live server.
+// md:Overview
 
 use keeplin_core::{
     error::StorageError,
@@ -17,23 +10,15 @@ use keeplin_core::{
 };
 use tempfile::tempdir;
 
-/// Create a `DbBackend` backed by a temporary file database with no server URL.
-///
-/// Passing an empty string for `server_url` and `auth_token` puts the backend in
-/// offline mode so no WebSocket connection is attempted. The `tempdir` is intentionally
-/// leaked with `std::mem::forget` to prevent the temporary directory from being deleted
-/// before the test completes — the directory must stay alive as long as the database
-/// file is open.
+// md:fn in_memory_backend
 async fn in_memory_backend() -> DbBackend {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("test.db");
-    // The temporary directory must outlive the database connection. Leaking it here
-    // prevents the destructor from deleting the directory while the database file
-    // is still open. The OS will clean up the temporary directory when the process exits.
     std::mem::forget(dir);
     DbBackend::new(db_path, "", "").await.unwrap()
 }
 
+// md:fn create_and_read_note
 #[tokio::test]
 async fn create_and_read_note() {
     let backend = in_memory_backend().await;
@@ -47,6 +32,7 @@ async fn create_and_read_note() {
     assert_eq!(read.body, "World");
 }
 
+// md:fn update_note
 #[tokio::test]
 async fn update_note() {
     let backend = in_memory_backend().await;
@@ -62,6 +48,7 @@ async fn update_note() {
     assert_eq!(read.title, "New");
 }
 
+// md:fn delete_note_soft_deletes
 #[tokio::test]
 async fn delete_note_soft_deletes() {
     let backend = in_memory_backend().await;
@@ -75,6 +62,7 @@ async fn delete_note_soft_deletes() {
     assert!(!notes.iter().any(|n| n.id == id));
 }
 
+// md:fn list_notes_excludes_deleted
 #[tokio::test]
 async fn list_notes_excludes_deleted() {
     let backend = in_memory_backend().await;
@@ -91,6 +79,7 @@ async fn list_notes_excludes_deleted() {
     assert_eq!(notes[0].title, "Keep");
 }
 
+// md:fn read_nonexistent_returns_not_found
 #[tokio::test]
 async fn read_nonexistent_returns_not_found() {
     let backend = in_memory_backend().await;
@@ -99,6 +88,7 @@ async fn read_nonexistent_returns_not_found() {
     assert!(matches!(err, StorageError::NotFound(_)));
 }
 
+// md:fn device_id_is_stable
 #[tokio::test]
 async fn device_id_is_stable() {
     let dir = tempdir().unwrap();
@@ -113,6 +103,7 @@ async fn device_id_is_stable() {
     assert_eq!(id1, id2);
 }
 
+// md:fn sync_state_round_trips
 #[tokio::test]
 async fn sync_state_round_trips() {
     let backend = in_memory_backend().await;
@@ -123,6 +114,7 @@ async fn sync_state_round_trips() {
     assert_eq!(read.timestamp(), ts.timestamp());
 }
 
+// md:fn get_changes_since_returns_updated_notes
 #[tokio::test]
 async fn get_changes_since_returns_updated_notes() {
     use keeplin_core::models::Change;
@@ -135,12 +127,10 @@ async fn get_changes_since_returns_updated_notes() {
 
     let changes = backend.get_changes_since(before).await.unwrap();
     assert!(!changes.is_empty());
-    // A note that was created (not merely updated) after `since` must appear
-    // in the change list as `Change::NoteCreate`, not `Change::NoteUpdate`,
-    // because the `entity_changes` journal records the original operation type.
     assert!(matches!(changes[0], Change::NoteCreate { .. }));
 }
 
+// md:fn prune_change_journal_removes_rows_older_than_cutoff
 #[tokio::test]
 async fn prune_change_journal_removes_rows_older_than_cutoff() {
     let backend = in_memory_backend().await;
@@ -150,26 +140,21 @@ async fn prune_change_journal_removes_rows_older_than_cutoff() {
     backend.create_note(Note::new("b", "")).await.unwrap();
     assert_eq!(backend.get_changes_since(epoch).await.unwrap().len(), 2);
 
-    // A cutoff in the past removes nothing; the journal is untouched.
     let removed = backend.prune_change_journal(epoch).await.unwrap();
     assert_eq!(removed, 0);
     assert_eq!(backend.get_changes_since(epoch).await.unwrap().len(), 2);
 
-    // A cutoff in the future removes every row and reports the count.
     let future = chrono::Utc::now() + chrono::Duration::days(1);
     let removed = backend.prune_change_journal(future).await.unwrap();
     assert_eq!(removed, 2);
     assert!(backend.get_changes_since(epoch).await.unwrap().is_empty());
 }
 
+// md:fn apply_change_is_not_re_journaled
 #[tokio::test]
 async fn apply_change_is_not_re_journaled() {
     use keeplin_core::models::Change;
 
-    // The `entity_changes` journal holds only changes that ORIGINATED on this device.
-    // A change ingested via `apply_change` (a remote change pulled from the broadcast relay)
-    // must be applied to the tables but must NOT enter the journal, so it is never re-sent
-    // to the relay. See the invariant documented on `DbBackend::apply_change`.
     let backend = in_memory_backend().await;
     let epoch = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap();
 
@@ -179,10 +164,8 @@ async fn apply_change_is_not_re_journaled() {
         .apply_change(Change::NoteCreate { note: remote })
         .await
         .unwrap();
-    // It really was applied (readable from the tables)…
     assert_eq!(backend.read_note(remote_id).await.unwrap().title, "remote");
 
-    // …and a locally created note DOES enter the journal, for contrast.
     let local = Note::new("local", "mine");
     let local_id = local.id;
     backend.create_note(local).await.unwrap();
@@ -207,8 +190,7 @@ async fn apply_change_is_not_re_journaled() {
     );
 }
 
-// ── Error-path tests ──────────────────────────────────────────────────────────
-
+// md:fn update_nonexistent_note_returns_not_found
 #[tokio::test]
 async fn update_nonexistent_note_returns_not_found() {
     let backend = in_memory_backend().await;
@@ -217,6 +199,7 @@ async fn update_nonexistent_note_returns_not_found() {
     assert!(matches!(err, StorageError::NotFound(_)));
 }
 
+// md:fn delete_nonexistent_note_returns_not_found
 #[tokio::test]
 async fn delete_nonexistent_note_returns_not_found() {
     let backend = in_memory_backend().await;
@@ -225,6 +208,7 @@ async fn delete_nonexistent_note_returns_not_found() {
     assert!(matches!(err, StorageError::NotFound(_)));
 }
 
+// md:fn update_nonexistent_notebook_returns_not_found
 #[tokio::test]
 async fn update_nonexistent_notebook_returns_not_found() {
     let backend = in_memory_backend().await;
@@ -233,6 +217,7 @@ async fn update_nonexistent_notebook_returns_not_found() {
     assert!(matches!(err, StorageError::NotFound(_)));
 }
 
+// md:fn delete_nonexistent_notebook_returns_not_found
 #[tokio::test]
 async fn delete_nonexistent_notebook_returns_not_found() {
     let backend = in_memory_backend().await;
@@ -241,6 +226,7 @@ async fn delete_nonexistent_notebook_returns_not_found() {
     assert!(matches!(err, StorageError::NotFound(_)));
 }
 
+// md:fn update_nonexistent_tag_returns_not_found
 #[tokio::test]
 async fn update_nonexistent_tag_returns_not_found() {
     let backend = in_memory_backend().await;
@@ -249,6 +235,7 @@ async fn update_nonexistent_tag_returns_not_found() {
     assert!(matches!(err, StorageError::NotFound(_)));
 }
 
+// md:fn delete_nonexistent_tag_returns_not_found
 #[tokio::test]
 async fn delete_nonexistent_tag_returns_not_found() {
     let backend = in_memory_backend().await;
@@ -257,8 +244,7 @@ async fn delete_nonexistent_tag_returns_not_found() {
     assert!(matches!(err, StorageError::NotFound(_)));
 }
 
-// ── Notebook tests ────────────────────────────────────────────────────────────
-
+// md:fn create_and_read_notebook
 #[tokio::test]
 async fn create_and_read_notebook() {
     let backend = in_memory_backend().await;
@@ -271,6 +257,7 @@ async fn create_and_read_notebook() {
     assert!(read.deleted_at.is_none());
 }
 
+// md:fn delete_notebook_soft_deletes
 #[tokio::test]
 async fn delete_notebook_soft_deletes() {
     let backend = in_memory_backend().await;
@@ -286,8 +273,7 @@ async fn delete_notebook_soft_deletes() {
     assert!(raw.deleted_at.is_some());
 }
 
-// ── Tag tests ─────────────────────────────────────────────────────────────────
-
+// md:fn create_and_read_tag
 #[tokio::test]
 async fn create_and_read_tag() {
     let backend = in_memory_backend().await;
@@ -299,6 +285,7 @@ async fn create_and_read_tag() {
     assert_eq!(read.title, "async");
 }
 
+// md:fn add_and_list_note_tags
 #[tokio::test]
 async fn add_and_list_note_tags() {
     let backend = in_memory_backend().await;
@@ -319,6 +306,7 @@ async fn add_and_list_note_tags() {
     assert_eq!(tags[0].id, tag_id);
 }
 
+// md:fn add_note_tag_rejects_missing_or_deleted_ends
 #[tokio::test]
 async fn add_note_tag_rejects_missing_or_deleted_ends() {
     let backend = in_memory_backend().await;
@@ -328,7 +316,6 @@ async fn add_note_tag_rejects_missing_or_deleted_ends() {
     backend.create_note(note).await.unwrap();
     backend.create_tag(tag).await.unwrap();
 
-    // Nonexistent note / tag: no dangling association may be created.
     let err = backend
         .add_note_tag(NoteTag {
             note_id: uuid::Uuid::new_v4(),
@@ -346,7 +333,6 @@ async fn add_note_tag_rejects_missing_or_deleted_ends() {
         .unwrap_err();
     assert!(matches!(err, StorageError::NotFound(_)), "got: {err}");
 
-    // Soft-deleted ends are rejected the same way.
     backend.delete_note(note_id).await.unwrap();
     let err = backend
         .add_note_tag(NoteTag { note_id, tag_id })
@@ -354,16 +340,13 @@ async fn add_note_tag_rejects_missing_or_deleted_ends() {
         .unwrap_err();
     assert!(matches!(err, StorageError::NotFound(_)), "got: {err}");
 
-    // Nothing was attached by the failed calls.
     let (tags, _) = backend.list_note_tags(note_id, 0, None).await.unwrap();
     assert!(tags.is_empty());
 }
 
+// md:fn pagination_walks_notes_sharing_a_created_at
 #[tokio::test]
 async fn pagination_walks_notes_sharing_a_created_at() {
-    // Keyset pagination must visit every row exactly once even when several rows share
-    // one created_at — the case that relies on the cursor's `created_at = ?` equality
-    // branch, which in turn relies on the fixed-precision timestamp format.
     let backend = in_memory_backend().await;
     let shared_ts = chrono::Utc::now();
     let mut expected = Vec::new();
@@ -392,6 +375,7 @@ async fn pagination_walks_notes_sharing_a_created_at() {
     );
 }
 
+// md:fn remove_note_tag
 #[tokio::test]
 async fn remove_note_tag() {
     let backend = in_memory_backend().await;
@@ -412,8 +396,7 @@ async fn remove_note_tag() {
     assert!(tags.is_empty());
 }
 
-// ── Resource tests ────────────────────────────────────────────────────────────
-
+// md:fn purge_reclaims_old_tombstoned_payloads_only
 #[tokio::test]
 async fn purge_reclaims_old_tombstoned_payloads_only() {
     let backend = in_memory_backend().await;
@@ -433,7 +416,6 @@ async fn purge_reclaims_old_tombstoned_payloads_only() {
         .await
         .unwrap();
 
-    // A cutoff before the tombstone purges nothing; one after it frees the dead payload.
     let epoch = chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap();
     assert_eq!(backend.purge_deleted_resources(epoch).await.unwrap(), 0);
     assert_eq!(
@@ -443,7 +425,6 @@ async fn purge_reclaims_old_tombstoned_payloads_only() {
             .unwrap(),
         1
     );
-    // Idempotent, tombstone still resolves as deleted, live resource untouched.
     assert_eq!(
         backend
             .purge_deleted_resources(chrono::Utc::now())
@@ -459,6 +440,7 @@ async fn purge_reclaims_old_tombstoned_payloads_only() {
     assert_eq!(bytes, b"live");
 }
 
+// md:fn create_and_read_resource
 #[tokio::test]
 async fn create_and_read_resource() {
     let backend = in_memory_backend().await;
@@ -473,6 +455,7 @@ async fn create_and_read_resource() {
     assert_eq!(bytes, data);
 }
 
+// md:fn list_resources_excludes_data
 #[tokio::test]
 async fn list_resources_excludes_data() {
     let backend = in_memory_backend().await;
@@ -492,6 +475,7 @@ async fn list_resources_excludes_data() {
     assert_eq!(list.len(), 3);
 }
 
+// md:fn delete_resource
 #[tokio::test]
 async fn delete_resource() {
     let backend = in_memory_backend().await;
@@ -505,13 +489,11 @@ async fn delete_resource() {
     assert!(matches!(err, StorageError::NotFound(_)));
 }
 
-// ── Pagination tests ──────────────────────────────────────────────────────────
-
+// md:fn list_notes_paginates_without_duplicates_or_gaps
 #[tokio::test]
 async fn list_notes_paginates_without_duplicates_or_gaps() {
     let backend = in_memory_backend().await;
 
-    // Insert more notes than a single page holds so the cursor must be walked.
     let total = 25usize;
     for i in 0..total {
         backend
@@ -520,7 +502,6 @@ async fn list_notes_paginates_without_duplicates_or_gaps() {
             .unwrap();
     }
 
-    // Walk every page with a small page size and collect the ids in order.
     let page_size = 10u32;
     let mut seen = Vec::new();
     let mut token: Option<String> = None;
@@ -537,7 +518,6 @@ async fn list_notes_paginates_without_duplicates_or_gaps() {
         }
     }
 
-    // Every note must appear exactly once across all pages.
     assert_eq!(
         seen.len(),
         total,
@@ -546,20 +526,12 @@ async fn list_notes_paginates_without_duplicates_or_gaps() {
     let unique: std::collections::HashSet<_> = seen.iter().copied().collect();
     assert_eq!(unique.len(), total, "no note may appear on two pages");
 
-    // The keyset order (created_at ASC, id ASC) must be stable across the walk.
     let (all, _) = backend.list_notes(total as u32 + 5, None).await.unwrap();
     let all_ids: Vec<_> = all.iter().map(|n| n.id).collect();
     assert_eq!(seen, all_ids, "paged order must match single-shot order");
 }
 
-// ── Concurrency test ──────────────────────────────────────────────────────────
-
-/// Many writers hitting the same `DbBackend` concurrently must all succeed.
-///
-/// `DbBackend` wraps every mutation in a `BEGIN IMMEDIATE … COMMIT` transaction on a
-/// single shared connection, so without serialisation a second `BEGIN` arriving before
-/// the first `COMMIT` fails with "cannot start a transaction within a transaction".
-/// This test runs on a multi-threaded runtime to maximise the chance of interleaving.
+// md:fn concurrent_note_creates_all_succeed
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_note_creates_all_succeed() {
     use std::sync::Arc;
@@ -584,21 +556,17 @@ async fn concurrent_note_creates_all_succeed() {
     }
     assert_eq!(ok, 50, "all concurrent creates must commit");
 
-    // All 50 notes must be queryable afterwards (none lost to a failed transaction).
     let (notes, _) = backend.list_notes(100, None).await.unwrap();
     assert_eq!(notes.len(), 50);
 }
 
-/// Concurrent readers and writers must all make progress and complete — the read/write
-/// guard around the shared connection must never deadlock (a reader must not block a
-/// reader, and the read and write sides must not be acquired re-entrantly by one task).
+// md:fn concurrent_reads_and_writes_make_progress
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_reads_and_writes_make_progress() {
     use std::sync::Arc;
 
     let backend = Arc::new(in_memory_backend().await);
 
-    // Seed a note so reads have something to return.
     let seed = Note::new("seed", "");
     let seed_id = seed.id;
     backend.create_note(seed).await.unwrap();
@@ -614,7 +582,6 @@ async fn concurrent_reads_and_writes_make_progress() {
         }));
         let reader = Arc::clone(&backend);
         handles.push(tokio::spawn(async move {
-            // Mix point reads and list reads to exercise both read paths.
             let _ = reader.read_note(seed_id).await;
             reader.list_notes(10, None).await.map(|_| ())
         }));
@@ -628,6 +595,7 @@ async fn concurrent_reads_and_writes_make_progress() {
     assert_eq!(notes.len(), 21, "seed + 20 writers");
 }
 
+// md:fn note_alias_bookmarks_links_round_trip
 #[tokio::test]
 async fn note_alias_bookmarks_links_round_trip() {
     use keeplin_core::links::{Bookmark, LinkSource, NoteLink};
@@ -646,8 +614,6 @@ async fn note_alias_bookmarks_links_round_trip() {
         target_note_id: None,
     }];
     let created = backend.create_note(note.clone()).await.unwrap();
-    // Content is preserved verbatim; `create_note` additionally stamps the version vector
-    // and author for conflict resolution, so compare the content fields explicitly.
     assert_eq!(created.id, note.id);
     assert_eq!(created.title, note.title);
     assert_eq!(created.body, note.body);
@@ -663,13 +629,11 @@ async fn note_alias_bookmarks_links_round_trip() {
         "create_note records the author"
     );
 
-    // Read back: alias, bookmarks and links survive the SQLite columns.
     let read = backend.read_note(note.id).await.unwrap();
     assert_eq!(read.alias.as_deref(), Some("note3"));
     assert_eq!(read.bookmarks, note.bookmarks);
     assert_eq!(read.links, note.links);
 
-    // Update the alias and a bookmark; verify persistence.
     let mut edited = read;
     edited.alias = Some("renamed".to_string());
     edited.bookmarks[0].alias = "Edited".to_string();
@@ -679,6 +643,7 @@ async fn note_alias_bookmarks_links_round_trip() {
     assert_eq!(reread.bookmarks[0].alias, "Edited");
 }
 
+// md:fn notebook_alias_round_trip
 #[tokio::test]
 async fn notebook_alias_round_trip() {
     let backend = in_memory_backend().await;
@@ -692,6 +657,7 @@ async fn notebook_alias_round_trip() {
     assert_eq!(list[0].alias.as_deref(), Some("notebook1"));
 }
 
+// md:fn indexed_backlinks_track_writes_and_deletes
 #[tokio::test]
 async fn indexed_backlinks_track_writes_and_deletes() {
     use keeplin_core::links::{LinkSource, NoteLink};
@@ -713,25 +679,23 @@ async fn indexed_backlinks_track_writes_and_deletes() {
     src2.links = vec![link_to(target.id)];
     let src2 = backend.create_note(src2).await.unwrap();
 
-    // An unrelated note must not appear as a backlink.
     backend.create_note(Note::new("other", "")).await.unwrap();
 
     let (back, _) = backend.note_backlinks(target.id, 0, None).await.unwrap();
     assert_eq!(back.len(), 2, "both sources link to target");
 
-    // Removing src1's link (update) drops it from the index.
     let mut s = src1.clone();
     s.links.clear();
     backend.update_note(s).await.unwrap();
     let (back, _) = backend.note_backlinks(target.id, 0, None).await.unwrap();
     assert_eq!(back.len(), 1);
 
-    // Soft-deleting src2 excludes it from backlinks (the JOIN filters deleted sources).
     backend.delete_note(src2.id).await.unwrap();
     let (back, _) = backend.note_backlinks(target.id, 0, None).await.unwrap();
     assert!(back.is_empty());
 }
 
+// md:fn backlinks_are_paginated
 #[tokio::test]
 async fn backlinks_are_paginated() {
     use keeplin_core::links::{LinkSource, NoteLink};
@@ -758,13 +722,11 @@ async fn backlinks_are_paginated() {
     assert_eq!(p2.len(), 1);
     assert!(next2.is_none(), "no third page");
 
-    // The two pages cover all three distinct sources without overlap.
     let ids: std::collections::HashSet<_> = p1.iter().chain(&p2).map(|n| n.id).collect();
     assert_eq!(ids.len(), 3);
 }
 
-// ── Pinning / ordering / starring (issues #49–#52, #55) ──────────────────────
-
+// md:fn ordering_fields_round_trip_and_manual_order_query
 #[tokio::test]
 async fn ordering_fields_round_trip_and_manual_order_query() {
     let backend = in_memory_backend().await;
@@ -775,22 +737,20 @@ async fn ordering_fields_round_trip_and_manual_order_query() {
     pinned.is_pinned = true;
     pinned.sort_key = 5;
     let mut legacy = Note::new("legacy", "");
-    legacy.notebook_id = nb.id; // sort_key 0 sentinel → orders as 1000
+    legacy.notebook_id = nb.id;
     let mut normal = Note::new("normal", "");
     normal.notebook_id = nb.id;
     normal.sort_key = 1500;
-    let mut starred = Note::new("starred", ""); // Inbox note
+    let mut starred = Note::new("starred", "");
     starred.is_starred = true;
     for n in [&pinned, &legacy, &normal, &starred] {
         backend.create_note(n.clone()).await.unwrap();
     }
 
-    // Fields round-trip.
     let read = backend.read_note(pinned.id).await.unwrap();
     assert!(read.is_pinned);
     assert_eq!(read.sort_key, 5);
 
-    // Manual order: pinned band first, then the 0-sentinel (effective 1000), then 1500.
     let (page, next) = backend
         .list_notes_in_notebook(nb.id, 0, None)
         .await
@@ -799,7 +759,6 @@ async fn ordering_fields_round_trip_and_manual_order_query() {
     assert_eq!(titles, ["pinned", "legacy", "normal"]);
     assert!(next.is_none());
 
-    // Cursor pagination walks the same order one note at a time.
     let mut walked = Vec::new();
     let mut token = None;
     loop {
@@ -815,20 +774,17 @@ async fn ordering_fields_round_trip_and_manual_order_query() {
     }
     assert_eq!(walked, ["pinned", "legacy", "normal"]);
 
-    // Starred list spans notebooks and excludes everything unstarred.
     let (stars, _) = backend.list_starred_notes(0, None).await.unwrap();
     assert_eq!(stars.len(), 1);
     assert_eq!(stars[0].title, "starred");
 
-    // The profile summarises the notebook for the placement rules.
     let profile = backend.notebook_sort_profile(nb.id).await.unwrap();
     assert_eq!(profile.pinned_keys, [5]);
     assert_eq!(profile.min_key, Some(5));
     assert_eq!(profile.max_normal_key, Some(1500));
 }
 
-/// #55: a sync-applied change carries the new fields, and the whole-note version-vector
-/// resolution treats them like any other field.
+// md:fn sync_applied_change_carries_ordering_fields
 #[tokio::test]
 async fn sync_applied_change_carries_ordering_fields() {
     let backend = in_memory_backend().await;
@@ -852,17 +808,13 @@ async fn sync_applied_change_carries_ordering_fields() {
     assert_eq!(stars.len(), 1, "sync-applied stars are queryable");
 }
 
-/// #71: a delete that arrives for an entity this backend has never seen must leave a
-/// tombstone, so a later (stale) create for the same id cannot resurrect it. Covers all four
-/// versioned entity types, which each insert a minimal tombstone when the `UPDATE` hits no row.
+// md:fn delete_for_unknown_entity_leaves_a_tombstone_blocking_a_stale_create
 #[tokio::test]
 async fn delete_for_unknown_entity_leaves_a_tombstone_blocking_a_stale_create() {
     let backend = in_memory_backend().await;
     let vv = |dev: &str, n: u64| std::collections::BTreeMap::from([(dev.to_string(), n)]);
     let ts = chrono::Utc::now();
 
-    // ── Note ──────────────────────────────────────────────────────────────────
-    // Peer created then deleted a note (vv {peer:1} → {peer:2}); the delete reaches us first.
     let note_id = uuid::Uuid::new_v4();
     backend
         .apply_change(Change::NoteDelete {
@@ -873,7 +825,6 @@ async fn delete_for_unknown_entity_leaves_a_tombstone_blocking_a_stale_create() 
         })
         .await
         .unwrap();
-    // The out-of-order (causally older) create must lose against the stored tombstone.
     let mut stale = Note::new("resurrected?", "body");
     stale.id = note_id;
     stale.vv = vv("peer", 1);
@@ -894,7 +845,6 @@ async fn delete_for_unknown_entity_leaves_a_tombstone_blocking_a_stale_create() 
         .deleted_at
         .is_some());
 
-    // ── Notebook ──────────────────────────────────────────────────────────────
     let nb_id = uuid::Uuid::new_v4();
     backend
         .apply_change(Change::NotebookDelete {
@@ -916,7 +866,6 @@ async fn delete_for_unknown_entity_leaves_a_tombstone_blocking_a_stale_create() 
     let (nbs, _) = backend.list_notebooks(0, None).await.unwrap();
     assert!(!nbs.iter().any(|n| n.id == nb_id), "notebook stays deleted");
 
-    // ── Tag ───────────────────────────────────────────────────────────────────
     let tag_id = uuid::Uuid::new_v4();
     backend
         .apply_change(Change::TagDelete {
@@ -938,7 +887,6 @@ async fn delete_for_unknown_entity_leaves_a_tombstone_blocking_a_stale_create() 
     let (tags, _) = backend.list_tags(0, None).await.unwrap();
     assert!(!tags.iter().any(|t| t.id == tag_id), "tag stays deleted");
 
-    // ── Resource ──────────────────────────────────────────────────────────────
     let res_id = uuid::Uuid::new_v4();
     backend
         .apply_change(Change::ResourceDelete {
