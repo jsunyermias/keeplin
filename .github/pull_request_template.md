@@ -41,7 +41,7 @@
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` clean.
 - [ ] `cargo test -p keeplin-core` and `cargo test -p keeplin-daemon` green.
 - [ ] Tests added or updated for the new behaviour.
-- [ ] `graphify update .` run and the refreshed `graphify-out/` committed (code changes only).
+- [ ] `graphify update .` run and the refreshed `graphify-out/` committed (code changes only). CI (`scripts/check-graph.sh`) fails if the graph is stale; enable the auto-refresh hook once with `git config core.hooksPath .githooks`. Requires `pip install graphifyy==0.9.25`.
 
 <!-- Paste anything a reviewer should know that the diff doesn't show:
      manual testing done, follow-ups deferred, known limitations. -->

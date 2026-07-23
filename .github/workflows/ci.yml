@@ -60,3 +60,28 @@ jobs:
 
       - name: Audit dependencies
         run: cargo audit
+
+  graph:
+    name: Knowledge graph up to date
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Pinned so the AST extraction and the committed graph are built by the
+      # same version; contributors must use the same pin locally.
+      - name: Install graphify
+        run: python -m pip install --quiet "graphifyy==0.9.25"
+
+      # Fails if graphify-out/ is stale: re-extracts the AST graph and diffs the
+      # code structure against the committed graph.json (GRAPHIFY_REQUIRED makes a
+      # missing install a hard error rather than a silent skip).
+      - name: Check knowledge graph is up to date
+        env:
+          GRAPHIFY_REQUIRED: "1"
+        run: ./scripts/check-graph.sh
