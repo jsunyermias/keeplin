@@ -83,6 +83,7 @@ message Resource {
   optional uint64 duration_ms = 7;  // audio/video
   optional uint32 width       = 8;  // image
   optional uint32 height      = 9;  // image
+  string note_id    = 10; // owning note UUID; sentinel for system resources
 }
 
 // ── Note requests / responses ─────────────────────────────────────────────────
@@ -299,6 +300,7 @@ message ListNoteTagsResponse {
 message ListResourcesRequest {
   uint32 page_size  = 1;
   string page_token = 2;
+  string note_id    = 3; // empty = no filter (list every resource)
 }
 
 message ListResourcesResponse {
@@ -323,6 +325,7 @@ message CreateResourceRequest {
   optional uint64 duration_ms = 5;
   optional uint32 width       = 6;
   optional uint32 height      = 7;
+  string note_id   = 8; // owning note UUID; required for user attachments
 }
 
 message CreateResourceResponse {
@@ -337,6 +340,7 @@ message ResourceMeta {
   optional uint64 duration_ms = 4;
   optional uint32 width       = 5;
   optional uint32 height      = 6;
+  string note_id   = 7; // owning note UUID; required for user attachments
 }
 
 // One frame of a client-streaming UploadResource call. The client sends exactly one `meta`

@@ -1125,16 +1125,35 @@ struct ResourceMeta {
     width: Option<u32>,
     #[serde(default)]
     height: Option<u32>,
+    #[serde(default)]
+    note_id: Option<Uuid>,
+}
+
+// md:ListResourcesQuery
+#[derive(Debug, Deserialize)]
+struct ListResourcesQuery {
+    #[serde(default)]
+    page_size: u32,
+    #[serde(default)]
+    page_token: Option<String>,
+    #[serde(default)]
+    note_id: Option<Uuid>,
 }
 
 // md:fn list_resources
 async fn list_resources(
     State(s): State<Shared>,
-    Query(p): Query<Pagination>,
+    Query(p): Query<ListResourcesQuery>,
 ) -> Result<Json<Page<Resource>>, ApiError> {
-    Ok(page(
-        s.backend.list_resources(p.page_size, p.page_token).await?,
-    ))
+    let listed = match p.note_id {
+        Some(note_id) => {
+            s.backend
+                .list_resources_for_note(note_id, p.page_size, p.page_token)
+                .await?
+        }
+        None => s.backend.list_resources(p.page_size, p.page_token).await?,
+    };
+    Ok(page(listed))
 }
 
 // md:fn create_resource
@@ -1149,8 +1168,11 @@ async fn create_resource(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream")
         .to_string();
+    let note_id = meta
+        .note_id
+        .ok_or_else(|| StorageError::InvalidInput("note_id is required".into()))?;
     let data = body.to_vec();
-    let mut resource = Resource::new(meta.title, mime, meta.file_name, data.len() as u64);
+    let mut resource = Resource::new(note_id, meta.title, mime, meta.file_name, data.len() as u64);
     resource.duration_ms = meta.duration_ms;
     resource.dimensions = match (meta.width, meta.height) {
         (Some(w), Some(h)) => Some((w, h)),
@@ -1188,7 +1210,14 @@ async fn upload_resource(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream")
         .to_string();
-    let mut resource = Resource::new(meta.title, mime, meta.file_name, data.len() as u64);
+    let note_id = match meta.note_id {
+        Some(id) => id,
+        None => {
+            return ApiError(StorageError::InvalidInput("note_id is required".into()))
+                .into_response()
+        }
+    };
+    let mut resource = Resource::new(note_id, meta.title, mime, meta.file_name, data.len() as u64);
     resource.duration_ms = meta.duration_ms;
     resource.dimensions = match (meta.width, meta.height) {
         (Some(w), Some(h)) => Some((w, h)),
@@ -1789,7 +1818,7 @@ mod tests {
         let (code, body) = call(
             &st,
             "POST",
-            "/api/resources?title=pic&file_name=p.png",
+            "/api/resources?title=pic&file_name=p.png&note_id=00000000-0000-0000-0000-000000000001",
             Some("not really json but raw bytes"),
             None,
         )
@@ -1819,7 +1848,7 @@ mod tests {
         let (code, body) = call(
             &st,
             "POST",
-            "/api/resources?title=big&file_name=big.bin",
+            "/api/resources?title=big&file_name=big.bin&note_id=00000000-0000-0000-0000-000000000001",
             Some(&big),
             None,
         )
@@ -1837,7 +1866,7 @@ mod tests {
         let (code, body) = call(
             &st,
             "POST",
-            "/api/resources/upload?title=vid&file_name=v.bin",
+            "/api/resources/upload?title=vid&file_name=v.bin&note_id=00000000-0000-0000-0000-000000000001",
             Some(payload),
             None,
         )

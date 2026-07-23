@@ -4,7 +4,7 @@ use keeplin_core::{
     encryption::EncryptedBackend,
     links::{Bookmark, LinkSource, NoteLink},
     migrate::migrate,
-    models::{Note, NoteTag, Notebook, Resource, Tag},
+    models::{Note, NoteTag, Notebook, Resource, Tag, SYSTEM_RESOURCE_NOTE_ID},
     storage::{db::DbBackend, fs::FsBackend, StorageBackend},
 };
 use tempfile::tempdir;
@@ -60,7 +60,13 @@ async fn seed(src: &dyn StorageBackend) -> Seeded {
     .unwrap();
 
     let data = b"\x00\x01\x02binary-payload\xff".to_vec();
-    let resource = Resource::new("img", "image/png", "img.png", data.len() as u64);
+    let resource = Resource::new(
+        SYSTEM_RESOURCE_NOTE_ID,
+        "img",
+        "image/png",
+        "img.png",
+        data.len() as u64,
+    );
     let resource_id = resource.id;
     src.create_resource(resource, data.clone()).await.unwrap();
 

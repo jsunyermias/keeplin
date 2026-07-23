@@ -3,7 +3,7 @@
 use chrono::Utc;
 use keeplin_core::{
     error::StorageError,
-    models::{Change, Note, NoteTag, Notebook, Resource, Tag},
+    models::{Change, Note, NoteTag, Notebook, Resource, Tag, SYSTEM_RESOURCE_NOTE_ID},
     storage::{
         fs::FsBackend, NoteRepository, NotebookRepository, ResourceRepository, SyncBackend,
         TagRepository,
@@ -375,7 +375,13 @@ async fn create_and_read_resource() {
     let backend = FsBackend::new(dir.path()).await.unwrap();
 
     let data = b"hello world".to_vec();
-    let res = Resource::new("attachment", "text/plain", "hello.txt", data.len() as u64);
+    let res = Resource::new(
+        SYSTEM_RESOURCE_NOTE_ID,
+        "attachment",
+        "text/plain",
+        "hello.txt",
+        data.len() as u64,
+    );
     let id = res.id;
     backend.create_resource(res, data.clone()).await.unwrap();
 
@@ -393,6 +399,7 @@ async fn list_resources_excludes_data() {
     for i in 0..3u8 {
         let data = vec![i];
         let res = Resource::new(
+            SYSTEM_RESOURCE_NOTE_ID,
             format!("file{i}"),
             "application/octet-stream",
             format!("f{i}.bin"),
@@ -411,7 +418,7 @@ async fn delete_resource() {
     let dir = tempdir().unwrap();
     let backend = FsBackend::new(dir.path()).await.unwrap();
 
-    let res = Resource::new("doc", "text/plain", "doc.txt", 0);
+    let res = Resource::new(SYSTEM_RESOURCE_NOTE_ID, "doc", "text/plain", "doc.txt", 0);
     let id = res.id;
     backend.create_resource(res, vec![]).await.unwrap();
     backend.delete_resource(id).await.unwrap();
@@ -897,7 +904,7 @@ async fn fs_global_log_snapshot_covers_all_entity_types() {
     })
     .await
     .unwrap();
-    let res = Resource::new("f", "text/plain", "f.txt", 3);
+    let res = Resource::new(SYSTEM_RESOURCE_NOTE_ID, "f", "text/plain", "f.txt", 3);
     let res_id = res.id;
     a.create_resource(res, b"abc".to_vec()).await.unwrap();
 
@@ -1102,6 +1109,7 @@ async fn delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_c
         .unwrap();
     let res = Resource {
         id: res_id,
+        note_id: SYSTEM_RESOURCE_NOTE_ID,
         title: "resurrected?".into(),
         mime_type: "text/plain".into(),
         file_name: "f.txt".into(),
@@ -1124,5 +1132,141 @@ async fn delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_c
     assert!(
         !resources.iter().any(|r| r.id == res_id),
         "resource stays deleted"
+    );
+}
+
+// md:fn fs_note_delete_cascades_to_attachments_and_restore_recovers_dragged
+#[tokio::test]
+async fn fs_note_delete_cascades_to_attachments_and_restore_recovers_dragged() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+    let note = backend.create_note(Note::new("N", "")).await.unwrap();
+
+    let r1 = backend
+        .create_resource(
+            Resource::new(note.id, "a", "text/plain", "a.txt", 1),
+            vec![1],
+        )
+        .await
+        .unwrap();
+    let r2 = backend
+        .create_resource(
+            Resource::new(note.id, "b", "text/plain", "b.txt", 1),
+            vec![2],
+        )
+        .await
+        .unwrap();
+    let r3 = backend
+        .create_resource(
+            Resource::new(note.id, "c", "text/plain", "c.txt", 1),
+            vec![3],
+        )
+        .await
+        .unwrap();
+
+    backend.delete_resource(r3.id).await.unwrap();
+    backend.delete_note(note.id).await.unwrap();
+
+    assert!(matches!(
+        backend.read_resource(r1.id).await,
+        Err(StorageError::NotFound(_))
+    ));
+    assert!(matches!(
+        backend.read_resource(r2.id).await,
+        Err(StorageError::NotFound(_))
+    ));
+
+    let mut revived = backend.read_note(note.id).await.unwrap();
+    revived.deleted_at = None;
+    backend.update_note(revived).await.unwrap();
+
+    assert!(
+        backend.read_resource(r1.id).await.is_ok(),
+        "r1 dragged back"
+    );
+    assert!(
+        backend.read_resource(r2.id).await.is_ok(),
+        "r2 dragged back"
+    );
+    assert!(
+        matches!(
+            backend.read_resource(r3.id).await,
+            Err(StorageError::NotFound(_))
+        ),
+        "a directly-deleted attachment keeps its own tombstone through the restore"
+    );
+}
+
+// md:fn fs_moving_note_between_notebooks_leaves_attachments_untouched
+#[tokio::test]
+async fn fs_moving_note_between_notebooks_leaves_attachments_untouched() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+    let mut note = backend.create_note(Note::new("N", "")).await.unwrap();
+    let res = backend
+        .create_resource(
+            Resource::new(note.id, "a", "text/plain", "a.txt", 1),
+            vec![1],
+        )
+        .await
+        .unwrap();
+
+    note.notebook_id = uuid::Uuid::new_v4();
+    backend.update_note(note.clone()).await.unwrap();
+
+    let (read, _) = backend.read_resource(res.id).await.unwrap();
+    assert_eq!(read.note_id, note.id, "note_id is unchanged by a move");
+    assert!(
+        read.deleted_at.is_none(),
+        "a move never tombstones attachments"
+    );
+}
+
+// md:fn fs_list_resources_for_note_orders_and_excludes_others
+#[tokio::test]
+async fn fs_list_resources_for_note_orders_and_excludes_others() {
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+    let a = backend.create_note(Note::new("A", "")).await.unwrap();
+    let b = backend.create_note(Note::new("B", "")).await.unwrap();
+
+    let a1 = backend
+        .create_resource(
+            Resource::new(a.id, "a1", "text/plain", "a1.txt", 1),
+            vec![1],
+        )
+        .await
+        .unwrap();
+    let a2 = backend
+        .create_resource(
+            Resource::new(a.id, "a2", "text/plain", "a2.txt", 1),
+            vec![2],
+        )
+        .await
+        .unwrap();
+    backend
+        .create_resource(
+            Resource::new(b.id, "b1", "text/plain", "b1.txt", 1),
+            vec![3],
+        )
+        .await
+        .unwrap();
+    backend
+        .create_resource(
+            Resource::new(SYSTEM_RESOURCE_NOTE_ID, "sys", "text/plain", "s.txt", 1),
+            vec![4],
+        )
+        .await
+        .unwrap();
+
+    let (listed, _) = backend
+        .list_resources_for_note(a.id, 0, None)
+        .await
+        .unwrap();
+    let ids: Vec<_> = listed.iter().map(|r| r.id).collect();
+    assert_eq!(
+        ids,
+        vec![a1.id, a2.id],
+        "only note A's attachments, in created_at order, no note B or system resources"
     );
 }

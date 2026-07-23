@@ -35,7 +35,9 @@ use uuid::Uuid;
 use crate::{
     error::StorageError,
     links::{Bookmark, NoteLink},
-    models::{new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag},
+    models::{
+        new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag, SYSTEM_RESOURCE_NOTE_ID,
+    },
 };
 
 use super::backend::DEFAULT_HISTORY_LIMIT;
@@ -241,7 +243,7 @@ marker `// md:impl DbBackend > fn new`.
         })
     }
 
-    const SCHEMA_VERSION: u32 = 2;
+    const SCHEMA_VERSION: u32 = 5;
 ```
 
 **What it does** — Opens (or creates) the database, runs `run_migrations`, loads
@@ -352,6 +354,7 @@ never-stamped database).
             2 => Self::migrate_v2_ordering(conn).await,
             3 => Self::migrate_v3_tag_system(conn).await,
             4 => Self::migrate_v4_resource_media(conn).await,
+            5 => Self::migrate_v5_resource_note_id(conn).await,
             other => Err(StorageError::InvalidState(format!(
                 "no migration defined for schema version {other}"
             ))),
@@ -362,7 +365,7 @@ never-stamped database).
 **What it does** — Dispatches the step that advances **to** `version`: 1 →
 `migrate_v1_baseline`, 2 → `migrate_v2_ordering`, 3 → `migrate_v3_tag_system`,
 4 → `migrate_v4_resource_media`, anything else → `InvalidState`. The caller wraps
-it in a transaction and bumps the stamp. `SCHEMA_VERSION` is now `4`.
+it in a transaction and bumps the stamp. `SCHEMA_VERSION` is now `5`.
 
 **Used by** — `run_migrations`.
 
@@ -877,6 +880,7 @@ last.
         };
         Ok(Resource {
             id: Self::parse_uuid(row.get::<String>(0)?)?,
+            note_id: Self::parse_uuid(row.get::<String>(12)?)?,
             title: row.get(1)?,
             mime_type: row.get(2)?,
             file_name: row.get(3)?,
@@ -891,12 +895,14 @@ last.
     }
 ```
 
-**What it does** — Maps the 12-column metadata row shape (no `data` BLOB). Columns `9/10/11`
-are `duration_ms`/`width`/`height`; `dimensions` is reconstructed as `Some((w, h))` only when
+**What it does** — Maps the 13-column metadata row shape (no `data` BLOB). Columns `9/10/11`
+are `duration_ms`/`width`/`height`; column `12` is `note_id` (parsed as a UUID, like `id`);
+`dimensions` is reconstructed as `Some((w, h))` only when
 both are present (mixed → `None`, defensively). Every `SELECT` feeding this mapper
-(`read_resource`, `list_resources`, the resource-create materialisation) must select the
-metadata columns in this order, `duration_ms, width, height` after `last_writer`; only
-`read_resource` appends `data` afterwards, so its blob is column `12`.
+(`read_resource`, `list_resources`, `list_resources_for_note`, the resource-create
+materialisation) must select the metadata columns in this order — `duration_ms, width, height,
+note_id` after `last_writer`; only `read_resource` appends `data` afterwards, so its blob is
+column `13`.
 
 ### fn row_to_change
 
@@ -1184,6 +1190,48 @@ reads back as `None`. `width`/`height` are written and read as a pair (both-or-n
   treat "duplicate column name" as success so the step is idempotent.
 
 **Used by** — `apply_migration` (arm `4`).
+
+### fn migrate_v5_resource_note_id
+
+**Identification** — marker `// md:impl DbBackend > fn migrate_v5_resource_note_id`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl DbBackend > fn migrate_v5_resource_note_id
+    async fn migrate_v5_resource_note_id(conn: &libsql::Connection) -> Result<(), StorageError> {
+        let sentinel = SYSTEM_RESOURCE_NOTE_ID.to_string();
+        Self::add_column_if_missing(
+            conn,
+            "resources",
+            &format!("note_id TEXT NOT NULL DEFAULT '{sentinel}'"),
+        )
+        .await?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_resources_note ON resources(note_id, created_at, id)",
+            (),
+        )
+        .await?;
+        Ok(())
+    }
+```
+
+**What it does** — Migration v5 (issue #125): adds `note_id TEXT NOT NULL DEFAULT '<sentinel>'`
+to `resources` plus an index `(note_id, created_at, id)` that backs the native
+`list_resources_for_note`. The default is `SYSTEM_RESOURCE_NOTE_ID`
+(`00000000-0000-0000-0000-000000000001`): existing rows and non-media/system attachments get a
+valid non-nil owner, and `row_to_resource` reads it back into `Resource.note_id`. `note_id` is
+stored as `TEXT` like every other UUID in this SQLite schema (parsed by `parse_uuid`). Both
+statements are idempotent (`add_column_if_missing` swallows "duplicate column name";
+`CREATE INDEX IF NOT EXISTS`), so re-running is a no-op.
+
+**Dependencies** —
+- `add_column_if_missing` — issues the `ALTER TABLE`; expects "duplicate column name" treated
+  as success for idempotency.
+- `SYSTEM_RESOURCE_NOTE_ID` — the column default; expects the reserved non-nil sentinel so
+  per-note queries never collide with it.
+
+**Used by** — `apply_migration` (arm `5`).
 
 ### fn current_meta
 
@@ -1987,6 +2035,19 @@ user-facing layers re-check `deleted_at`.
         note.vv = self.next_local_vv("notes", &note.id.to_string()).await?;
         note.last_writer = self.device_id.clone();
         let r: Result<(), StorageError> = async {
+            let prior_deleted = {
+                let mut rows = self
+                    .conn
+                    .query(
+                        "SELECT deleted_at FROM notes WHERE id = ?1",
+                        [note.id.to_string()],
+                    )
+                    .await?;
+                match rows.next().await? {
+                    Some(row) => row.get::<Option<String>>(0)?,
+                    None => None,
+                }
+            };
             let affected = self
                 .conn
                 .execute(
@@ -2020,6 +2081,16 @@ user-facing layers re-check `deleted_at`.
             if affected == 0 {
                 return Err(StorageError::NotFound(note.id.to_string()));
             }
+            if note.deleted_at.is_none() {
+                if let Some(old_ts) = prior_deleted {
+                    self.conn
+                        .execute(
+                            "UPDATE resources SET deleted_at = NULL WHERE note_id = ?1 AND deleted_at = ?2",
+                            libsql::params![note.id.to_string(), old_ts],
+                        )
+                        .await?;
+                }
+            }
             self.refresh_note_links(&note).await?;
             let data = serde_json::to_value(&note).ok().map(|v| v.to_string());
             self.record_change("note", &note.id.to_string(), "update", data)
@@ -2041,7 +2112,12 @@ user-facing layers re-check `deleted_at`.
 ```
 
 **What it does** — `UPDATE … WHERE id` (0 rows → `NotFound`), links refresh,
-`"update"` journal row.
+`"update"` journal row. **Restore cascade (issue #125):** `prior_deleted` is read
+before the update; if this update makes the note live again (`note.deleted_at` is
+`None`) and it was previously tombstoned, the resources the note dragged down —
+those whose `deleted_at` equals the note's old tombstone ts — are un-stamped
+(`deleted_at = NULL`). A resource deleted directly on its own has a different ts and
+is left deleted.
 
 ### fn delete_note
 
@@ -2069,6 +2145,12 @@ user-facing layers re-check `deleted_at`.
             if affected == 0 {
                 return Err(StorageError::NotFound(id.to_string()));
             }
+            self.conn
+                .execute(
+                    "UPDATE resources SET deleted_at = ?2 WHERE note_id = ?1 AND deleted_at IS NULL",
+                    libsql::params![id.to_string(), ts.to_sortable_rfc3339()],
+                )
+                .await?;
             self.record_change("note", &id.to_string(), "delete", Some(tombstone_data(ts, &vv, &writer)))
                 .await
         }
@@ -2088,7 +2170,9 @@ user-facing layers re-check `deleted_at`.
 ```
 
 **What it does** — Soft delete: `deleted_at = updated_at = now`, bumped vv,
-`"delete"` journal row with `tombstone_data`.
+`"delete"` journal row with `tombstone_data`. **Delete cascade (issue #125):** in the
+same transaction, every live resource with this `note_id` is stamped `deleted_at = ts`
+(the note's tombstone ts), so attachments follow their note into the tombstone.
 
 ### fn list_notes
 
@@ -2982,8 +3066,8 @@ per-method markers `> fn <name>`.
             let data_b64 = STANDARD.encode(&data);
             self.conn
                 .execute(
-                    "INSERT INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer,duration_ms,width,height)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                    "INSERT INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer,duration_ms,width,height,note_id)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
                     libsql::params![
                         resource.id.to_string(),
                         resource.title.clone(),
@@ -2998,6 +3082,7 @@ per-method markers `> fn <name>`.
                         resource.duration_ms.map(|d| d as i64),
                         resource.dimensions.map(|(w, _)| w as i64),
                         resource.dimensions.map(|(_, h)| h as i64),
+                        resource.note_id.to_string(),
                     ],
                 )
                 .await?;
@@ -3041,7 +3126,7 @@ change via the relay reconstruct the full resource without a separate download.
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer,duration_ms,width,height,data
+                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer,duration_ms,width,height,note_id,data
                  FROM resources WHERE id=?1",
                 [id.to_string()],
             )
@@ -3053,7 +3138,7 @@ change via the relay reconstruct the full resource without a separate download.
                 if resource.deleted_at.is_some() {
                     return Err(StorageError::NotFound(id.to_string()));
                 }
-                let blob: Vec<u8> = row.get(12)?;
+                let blob: Vec<u8> = row.get(13)?;
                 Ok((resource, blob))
             }
         }
@@ -3140,7 +3225,7 @@ retained (reclaim is `purge_deleted_resources`); tombstone journal row.
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer,duration_ms,width,height
+                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer,duration_ms,width,height,note_id
                  FROM resources
                  WHERE deleted_at IS NULL
                    AND (?1 = '' OR created_at > ?2 OR (created_at = ?2 AND id > ?3))
@@ -3159,7 +3244,64 @@ retained (reclaim is `purge_deleted_resources`); tombstone journal row.
     }
 ```
 
-**What it does** — Live metadata (no BLOBs), `(created_at, id)` keyset.
+**What it does** — Live metadata (no BLOBs), `(created_at, id)` keyset. The `SELECT` now carries
+`note_id` (column 12) so `row_to_resource` fills `Resource.note_id`.
+
+### fn list_resources_for_note
+
+**Identification** — marker
+`// md:impl ResourceRepository for DbBackend > fn list_resources_for_note`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl ResourceRepository for DbBackend > fn list_resources_for_note
+    async fn list_resources_for_note(
+        &self,
+        note_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
+        let _read_guard = self.lock.read().await;
+        let limit = super::effective_page_size(page_size);
+        let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer,duration_ms,width,height,note_id
+                 FROM resources
+                 WHERE note_id = ?5 AND deleted_at IS NULL
+                   AND (?1 = '' OR created_at > ?2 OR (created_at = ?2 AND id > ?3))
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT ?4",
+                libsql::params![cursor_ts.clone(), cursor_ts, cursor_id, limit + 1, note_id.to_string()],
+            )
+            .await?;
+        let mut resources = Vec::new();
+        while let Some(row) = rows.next().await? {
+            resources.push(Self::row_to_resource(&row)?);
+        }
+        Ok(build_page(resources, limit as usize, |r| {
+            format!("{}|{}", r.created_at.to_sortable_rfc3339(), r.id)
+        }))
+    }
+```
+
+**What it does** — Native override of the trait's `list_resources_for_note` (issue #125): the
+live attachments of one note, `(created_at, id)` keyset, filtered in SQL by `note_id = ?5`
+(backed by the `idx_resources_note` index from migration v5) rather than exhausting
+`list_resources` and filtering in memory. A user-note query never matches
+`SYSTEM_RESOURCE_NOTE_ID`, so system resources stay out of per-note listings.
+
+**Dependencies** —
+- `parse_cursor`, `build_page`, `super::effective_page_size` — same keyset/pagination machinery
+  as `list_resources`; expect the `(created_at, id)` cursor format.
+- `Self::row_to_resource` — row → `Resource` incl. `note_id`; expects the `SELECT` column order.
+- the `idx_resources_note` index — expects `(note_id, created_at, id)` so the filter+order is
+  index-served.
+
+**Used by** — the daemon's `list_resources` RPC / REST handler when a `note_id` filter is
+present; tests.
 
 ### fn purge_deleted_resources
 
@@ -3284,6 +3426,19 @@ and skipped, never abort the sync.
                 }
                 self.begin().await?;
                 let r: Result<(), StorageError> = async {
+                    let prior_deleted = {
+                        let mut rows = self
+                            .conn
+                            .query(
+                                "SELECT deleted_at FROM notes WHERE id = ?1",
+                                [note.id.to_string()],
+                            )
+                            .await?;
+                        match rows.next().await? {
+                            Some(row) => row.get::<Option<String>>(0)?,
+                            None => None,
+                        }
+                    };
                     self.refresh_note_links(&note).await?;
                     self.conn
                         .execute(
@@ -3312,6 +3467,16 @@ and skipped, never abort the sync.
                             ],
                         )
                         .await?;
+                    if note.deleted_at.is_none() {
+                        if let Some(old_ts) = prior_deleted {
+                            self.conn
+                                .execute(
+                                    "UPDATE resources SET deleted_at = NULL WHERE note_id = ?1 AND deleted_at = ?2",
+                                    libsql::params![note.id.to_string(), old_ts],
+                                )
+                                .await?;
+                        }
+                    }
                     Ok(())
                 }
                 .await;
@@ -3359,6 +3524,12 @@ and skipped, never abort the sync.
                         )
                         .await?;
                 }
+                self.conn
+                    .execute(
+                        "UPDATE resources SET deleted_at = ?2 WHERE note_id = ?1 AND deleted_at IS NULL",
+                        libsql::params![id.to_string(), deleted_at.to_sortable_rfc3339()],
+                    )
+                    .await?;
             }
             Change::NotebookCreate { notebook } | Change::NotebookUpdate { notebook } => {
                 if !self
@@ -3519,8 +3690,8 @@ and skipped, never abort the sync.
                     let blob = data.unwrap_or_default();
                     self.conn
                         .execute(
-                            "INSERT OR REPLACE INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer,duration_ms,width,height)
-                             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                            "INSERT OR REPLACE INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer,duration_ms,width,height,note_id)
+                             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
                             libsql::params![
                                 id,
                                 resource.title,
@@ -3535,6 +3706,7 @@ and skipped, never abort the sync.
                                 resource.duration_ms.map(|d| d as i64),
                                 resource.dimensions.map(|(w, _)| w as i64),
                                 resource.dimensions.map(|(_, h)| h as i64),
+                                resource.note_id.to_string(),
                             ],
                         )
                         .await?;
@@ -4409,7 +4581,7 @@ fail here).
         let path = dir.path().join("resource_media.db");
         let be = DbBackend::new(&path, "", "").await.unwrap();
 
-        let mut r = Resource::new("clip", "video/mp4", "clip.mp4", 10);
+        let mut r = Resource::new(SYSTEM_RESOURCE_NOTE_ID, "clip", "video/mp4", "clip.mp4", 10);
         r.duration_ms = Some(4200);
         r.dimensions = Some((1920, 1080));
         let created = be.create_resource(r, vec![1, 2, 3]).await.unwrap();
@@ -4430,7 +4602,10 @@ fail here).
         );
 
         let plain = be
-            .create_resource(Resource::new("doc", "text/plain", "d.txt", 3), vec![9])
+            .create_resource(
+                Resource::new(SYSTEM_RESOURCE_NOTE_ID, "doc", "text/plain", "d.txt", 3),
+                vec![9],
+            )
             .await
             .unwrap();
         assert_eq!(plain.duration_ms, None, "non-media attachment stays None");
@@ -4634,86 +4809,88 @@ refresh with `graphify update .` after refactors.
 | 27 | `fn migrate_v2_ordering` | `// md:impl DbBackend > fn migrate_v2_ordering` |
 | 28 | `fn migrate_v3_tag_system` | `// md:impl DbBackend > fn migrate_v3_tag_system` |
 | 29 | `fn migrate_v4_resource_media` | `// md:impl DbBackend > fn migrate_v4_resource_media` |
-| 30 | `fn current_meta` | `// md:impl DbBackend > fn current_meta` |
-| 31 | `fn incoming_wins` | `// md:impl DbBackend > fn incoming_wins` |
-| 32 | `fn next_local_vv` | `// md:impl DbBackend > fn next_local_vv` |
-| 33 | `fn row_is_live` | `// md:impl DbBackend > fn row_is_live` |
-| 34 | `fn assoc_meta` | `// md:impl DbBackend > fn assoc_meta` |
-| 35 | `fn next_assoc_vv` | `// md:impl DbBackend > fn next_assoc_vv` |
-| 36 | `fn assoc_incoming_wins` | `// md:impl DbBackend > fn assoc_incoming_wins` |
-| 37 | `fn upsert_assoc` | `// md:impl DbBackend > fn upsert_assoc` |
-| 38 | `fn resource_meta` | `// md:impl DbBackend > fn resource_meta` |
-| 39 | `fn next_resource_vv` | `// md:impl DbBackend > fn next_resource_vv` |
-| 40 | `fn resource_incoming_wins` | `// md:impl DbBackend > fn resource_incoming_wins` |
-| 41 | `fn parse_cursor` | `// md:fn parse_cursor` |
-| 42 | `fn build_page` | `// md:fn build_page` |
-| 43 | `fn bookmarks_to_json` | `// md:fn bookmarks_to_json` |
-| 44 | `fn links_to_json` | `// md:fn links_to_json` |
-| 45 | `fn json_to_bookmarks` | `// md:fn json_to_bookmarks` |
-| 46 | `fn json_to_links` | `// md:fn json_to_links` |
-| 47 | `fn vv_to_json` | `// md:fn vv_to_json` |
-| 48 | `fn json_to_vv` | `// md:fn json_to_vv` |
-| 49 | `fn tombstone_data` | `// md:fn tombstone_data` |
-| 50 | `fn assoc_data` | `// md:fn assoc_data` |
-| 51 | `fn assoc_from_data` | `// md:fn assoc_from_data` |
-| 52 | `fn tombstone_from_data` | `// md:fn tombstone_from_data` |
-| 53 | `impl NoteRepository for DbBackend` (container) | `// md:impl NoteRepository for DbBackend` |
-| 54 | `fn create_note` | `// md:impl NoteRepository for DbBackend > fn create_note` |
-| 55 | `fn read_note` | `// md:impl NoteRepository for DbBackend > fn read_note` |
-| 56 | `fn update_note` | `// md:impl NoteRepository for DbBackend > fn update_note` |
-| 57 | `fn delete_note` | `// md:impl NoteRepository for DbBackend > fn delete_note` |
-| 58 | `fn list_notes` | `// md:impl NoteRepository for DbBackend > fn list_notes` |
-| 59 | `fn note_backlinks` | `// md:impl NoteRepository for DbBackend > fn note_backlinks` |
-| 60 | `fn list_notes_in_notebook` | `// md:impl NoteRepository for DbBackend > fn list_notes_in_notebook` |
-| 61 | `fn list_starred_notes` | `// md:impl NoteRepository for DbBackend > fn list_starred_notes` |
-| 62 | `fn notebook_sort_profile` | `// md:impl NoteRepository for DbBackend > fn notebook_sort_profile` |
-| 63 | `impl NotebookRepository for DbBackend` (container) | `// md:impl NotebookRepository for DbBackend` |
-| 64 | `fn create_notebook` | `// md:impl NotebookRepository for DbBackend > fn create_notebook` |
-| 65 | `fn read_notebook` | `// md:impl NotebookRepository for DbBackend > fn read_notebook` |
-| 66 | `fn update_notebook` | `// md:impl NotebookRepository for DbBackend > fn update_notebook` |
-| 67 | `fn delete_notebook` | `// md:impl NotebookRepository for DbBackend > fn delete_notebook` |
-| 68 | `fn list_notebooks` | `// md:impl NotebookRepository for DbBackend > fn list_notebooks` |
-| 69 | `impl TagRepository for DbBackend` (container) | `// md:impl TagRepository for DbBackend` |
-| 70 | `fn create_tag` | `// md:impl TagRepository for DbBackend > fn create_tag` |
-| 71 | `fn read_tag` | `// md:impl TagRepository for DbBackend > fn read_tag` |
-| 72 | `fn update_tag` | `// md:impl TagRepository for DbBackend > fn update_tag` |
-| 73 | `fn delete_tag` | `// md:impl TagRepository for DbBackend > fn delete_tag` |
-| 74 | `fn list_tags` | `// md:impl TagRepository for DbBackend > fn list_tags` |
-| 75 | `fn add_note_tag` | `// md:impl TagRepository for DbBackend > fn add_note_tag` |
-| 76 | `fn remove_note_tag` | `// md:impl TagRepository for DbBackend > fn remove_note_tag` |
-| 77 | `fn list_note_tags` | `// md:impl TagRepository for DbBackend > fn list_note_tags` |
-| 78 | `impl ResourceRepository for DbBackend` (container) | `// md:impl ResourceRepository for DbBackend` |
-| 79 | `fn create_resource` | `// md:impl ResourceRepository for DbBackend > fn create_resource` |
-| 80 | `fn read_resource` | `// md:impl ResourceRepository for DbBackend > fn read_resource` |
-| 81 | `fn delete_resource` | `// md:impl ResourceRepository for DbBackend > fn delete_resource` |
-| 82 | `fn list_resources` | `// md:impl ResourceRepository for DbBackend > fn list_resources` |
-| 83 | `fn purge_deleted_resources` | `// md:impl ResourceRepository for DbBackend > fn purge_deleted_resources` |
-| 84 | `impl SyncBackend for DbBackend` (container) | `// md:impl SyncBackend for DbBackend` |
-| 85 | `fn get_changes_since` | `// md:impl SyncBackend for DbBackend > fn get_changes_since` |
-| 86 | `fn apply_change` | `// md:impl SyncBackend for DbBackend > fn apply_change` |
-| 87 | `fn get_last_sync_time` | `// md:impl SyncBackend for DbBackend > fn get_last_sync_time` |
-| 88 | `fn update_sync_time` | `// md:impl SyncBackend for DbBackend > fn update_sync_time` |
-| 89 | `fn send_changes` | `// md:impl SyncBackend for DbBackend > fn send_changes` |
-| 90 | `fn receive_changes` | `// md:impl SyncBackend for DbBackend > fn receive_changes` |
-| 91 | `fn prune_change_journal` | `// md:impl SyncBackend for DbBackend > fn prune_change_journal` |
-| 92 | `fn get_device_id` | `// md:impl SyncBackend for DbBackend > fn get_device_id` |
-| 93 | `ServerVersion` | `// md:ServerVersion` |
-| 94 | `CapabilityCache` | `// md:CapabilityCache` |
-| 95 | `fn http_base_of` | `// md:fn http_base_of` |
-| 96 | `impl DbBackend (server history)` (container) | `// md:impl DbBackend (server history)` |
-| 97 | `fn server_http_base` | `// md:impl DbBackend (server history) > fn server_http_base` |
-| 98 | `fn server_has_capability` | `// md:impl DbBackend (server history) > fn server_has_capability` |
-| 99 | `fn server_entity_history` | `// md:impl DbBackend (server history) > fn server_entity_history` |
-| 100 | `fn entity_history` | `// md:impl DbBackend (server history) > fn entity_history` |
-| 101 | `impl HistoryRepository for DbBackend` (container) | `// md:impl HistoryRepository for DbBackend` |
-| 102 | `fn note_history` | `// md:impl HistoryRepository for DbBackend > fn note_history` |
-| 103 | `fn notebook_history` | `// md:impl HistoryRepository for DbBackend > fn notebook_history` |
-| 104 | `mod migration_tests` (container) | `// md:mod migration_tests` |
-| 105 | `fn raw_conn` | `// md:mod migration_tests > fn raw_conn` |
-| 106 | `fn user_version` | `// md:mod migration_tests > fn user_version` |
-| 107 | `fn note_history_reads_this_devices_versions_newest_first` | `// md:mod migration_tests > fn note_history_reads_this_devices_versions_newest_first` |
-| 108 | `fn fresh_database_is_stamped_current_and_reopen_is_a_noop` | `// md:mod migration_tests > fn fresh_database_is_stamped_current_and_reopen_is_a_noop` |
-| 109 | `fn tag_system_flag_round_trips` | `// md:mod migration_tests > fn tag_system_flag_round_trips` |
-| 110 | `fn resource_media_metadata_round_trips` | `// md:mod migration_tests > fn resource_media_metadata_round_trips` |
-| 111 | `fn migrates_a_pre_framework_database_without_losing_data` | `// md:mod migration_tests > fn migrates_a_pre_framework_database_without_losing_data` |
-| 112 | `fn refuses_to_open_a_newer_schema` | `// md:mod migration_tests > fn refuses_to_open_a_newer_schema` |
+| 30 | `fn migrate_v5_resource_note_id` | `// md:impl DbBackend > fn migrate_v5_resource_note_id` |
+| 31 | `fn current_meta` | `// md:impl DbBackend > fn current_meta` |
+| 32 | `fn incoming_wins` | `// md:impl DbBackend > fn incoming_wins` |
+| 33 | `fn next_local_vv` | `// md:impl DbBackend > fn next_local_vv` |
+| 34 | `fn row_is_live` | `// md:impl DbBackend > fn row_is_live` |
+| 35 | `fn assoc_meta` | `// md:impl DbBackend > fn assoc_meta` |
+| 36 | `fn next_assoc_vv` | `// md:impl DbBackend > fn next_assoc_vv` |
+| 37 | `fn assoc_incoming_wins` | `// md:impl DbBackend > fn assoc_incoming_wins` |
+| 38 | `fn upsert_assoc` | `// md:impl DbBackend > fn upsert_assoc` |
+| 39 | `fn resource_meta` | `// md:impl DbBackend > fn resource_meta` |
+| 40 | `fn next_resource_vv` | `// md:impl DbBackend > fn next_resource_vv` |
+| 41 | `fn resource_incoming_wins` | `// md:impl DbBackend > fn resource_incoming_wins` |
+| 42 | `fn parse_cursor` | `// md:fn parse_cursor` |
+| 43 | `fn build_page` | `// md:fn build_page` |
+| 44 | `fn bookmarks_to_json` | `// md:fn bookmarks_to_json` |
+| 45 | `fn links_to_json` | `// md:fn links_to_json` |
+| 46 | `fn json_to_bookmarks` | `// md:fn json_to_bookmarks` |
+| 47 | `fn json_to_links` | `// md:fn json_to_links` |
+| 48 | `fn vv_to_json` | `// md:fn vv_to_json` |
+| 49 | `fn json_to_vv` | `// md:fn json_to_vv` |
+| 50 | `fn tombstone_data` | `// md:fn tombstone_data` |
+| 51 | `fn assoc_data` | `// md:fn assoc_data` |
+| 52 | `fn assoc_from_data` | `// md:fn assoc_from_data` |
+| 53 | `fn tombstone_from_data` | `// md:fn tombstone_from_data` |
+| 54 | `impl NoteRepository for DbBackend` (container) | `// md:impl NoteRepository for DbBackend` |
+| 55 | `fn create_note` | `// md:impl NoteRepository for DbBackend > fn create_note` |
+| 56 | `fn read_note` | `// md:impl NoteRepository for DbBackend > fn read_note` |
+| 57 | `fn update_note` | `// md:impl NoteRepository for DbBackend > fn update_note` |
+| 58 | `fn delete_note` | `// md:impl NoteRepository for DbBackend > fn delete_note` |
+| 59 | `fn list_notes` | `// md:impl NoteRepository for DbBackend > fn list_notes` |
+| 60 | `fn note_backlinks` | `// md:impl NoteRepository for DbBackend > fn note_backlinks` |
+| 61 | `fn list_notes_in_notebook` | `// md:impl NoteRepository for DbBackend > fn list_notes_in_notebook` |
+| 62 | `fn list_starred_notes` | `// md:impl NoteRepository for DbBackend > fn list_starred_notes` |
+| 63 | `fn notebook_sort_profile` | `// md:impl NoteRepository for DbBackend > fn notebook_sort_profile` |
+| 64 | `impl NotebookRepository for DbBackend` (container) | `// md:impl NotebookRepository for DbBackend` |
+| 65 | `fn create_notebook` | `// md:impl NotebookRepository for DbBackend > fn create_notebook` |
+| 66 | `fn read_notebook` | `// md:impl NotebookRepository for DbBackend > fn read_notebook` |
+| 67 | `fn update_notebook` | `// md:impl NotebookRepository for DbBackend > fn update_notebook` |
+| 68 | `fn delete_notebook` | `// md:impl NotebookRepository for DbBackend > fn delete_notebook` |
+| 69 | `fn list_notebooks` | `// md:impl NotebookRepository for DbBackend > fn list_notebooks` |
+| 70 | `impl TagRepository for DbBackend` (container) | `// md:impl TagRepository for DbBackend` |
+| 71 | `fn create_tag` | `// md:impl TagRepository for DbBackend > fn create_tag` |
+| 72 | `fn read_tag` | `// md:impl TagRepository for DbBackend > fn read_tag` |
+| 73 | `fn update_tag` | `// md:impl TagRepository for DbBackend > fn update_tag` |
+| 74 | `fn delete_tag` | `// md:impl TagRepository for DbBackend > fn delete_tag` |
+| 75 | `fn list_tags` | `// md:impl TagRepository for DbBackend > fn list_tags` |
+| 76 | `fn add_note_tag` | `// md:impl TagRepository for DbBackend > fn add_note_tag` |
+| 77 | `fn remove_note_tag` | `// md:impl TagRepository for DbBackend > fn remove_note_tag` |
+| 78 | `fn list_note_tags` | `// md:impl TagRepository for DbBackend > fn list_note_tags` |
+| 79 | `impl ResourceRepository for DbBackend` (container) | `// md:impl ResourceRepository for DbBackend` |
+| 80 | `fn create_resource` | `// md:impl ResourceRepository for DbBackend > fn create_resource` |
+| 81 | `fn read_resource` | `// md:impl ResourceRepository for DbBackend > fn read_resource` |
+| 82 | `fn delete_resource` | `// md:impl ResourceRepository for DbBackend > fn delete_resource` |
+| 83 | `fn list_resources` | `// md:impl ResourceRepository for DbBackend > fn list_resources` |
+| 84 | `fn list_resources_for_note` | `// md:impl ResourceRepository for DbBackend > fn list_resources_for_note` |
+| 85 | `fn purge_deleted_resources` | `// md:impl ResourceRepository for DbBackend > fn purge_deleted_resources` |
+| 86 | `impl SyncBackend for DbBackend` (container) | `// md:impl SyncBackend for DbBackend` |
+| 87 | `fn get_changes_since` | `// md:impl SyncBackend for DbBackend > fn get_changes_since` |
+| 88 | `fn apply_change` | `// md:impl SyncBackend for DbBackend > fn apply_change` |
+| 89 | `fn get_last_sync_time` | `// md:impl SyncBackend for DbBackend > fn get_last_sync_time` |
+| 90 | `fn update_sync_time` | `// md:impl SyncBackend for DbBackend > fn update_sync_time` |
+| 91 | `fn send_changes` | `// md:impl SyncBackend for DbBackend > fn send_changes` |
+| 92 | `fn receive_changes` | `// md:impl SyncBackend for DbBackend > fn receive_changes` |
+| 93 | `fn prune_change_journal` | `// md:impl SyncBackend for DbBackend > fn prune_change_journal` |
+| 94 | `fn get_device_id` | `// md:impl SyncBackend for DbBackend > fn get_device_id` |
+| 95 | `ServerVersion` | `// md:ServerVersion` |
+| 96 | `CapabilityCache` | `// md:CapabilityCache` |
+| 97 | `fn http_base_of` | `// md:fn http_base_of` |
+| 98 | `impl DbBackend (server history)` (container) | `// md:impl DbBackend (server history)` |
+| 99 | `fn server_http_base` | `// md:impl DbBackend (server history) > fn server_http_base` |
+| 100 | `fn server_has_capability` | `// md:impl DbBackend (server history) > fn server_has_capability` |
+| 101 | `fn server_entity_history` | `// md:impl DbBackend (server history) > fn server_entity_history` |
+| 102 | `fn entity_history` | `// md:impl DbBackend (server history) > fn entity_history` |
+| 103 | `impl HistoryRepository for DbBackend` (container) | `// md:impl HistoryRepository for DbBackend` |
+| 104 | `fn note_history` | `// md:impl HistoryRepository for DbBackend > fn note_history` |
+| 105 | `fn notebook_history` | `// md:impl HistoryRepository for DbBackend > fn notebook_history` |
+| 106 | `mod migration_tests` (container) | `// md:mod migration_tests` |
+| 107 | `fn raw_conn` | `// md:mod migration_tests > fn raw_conn` |
+| 108 | `fn user_version` | `// md:mod migration_tests > fn user_version` |
+| 109 | `fn note_history_reads_this_devices_versions_newest_first` | `// md:mod migration_tests > fn note_history_reads_this_devices_versions_newest_first` |
+| 110 | `fn fresh_database_is_stamped_current_and_reopen_is_a_noop` | `// md:mod migration_tests > fn fresh_database_is_stamped_current_and_reopen_is_a_noop` |
+| 111 | `fn tag_system_flag_round_trips` | `// md:mod migration_tests > fn tag_system_flag_round_trips` |
+| 112 | `fn resource_media_metadata_round_trips` | `// md:mod migration_tests > fn resource_media_metadata_round_trips` |
+| 113 | `fn migrates_a_pre_framework_database_without_losing_data` | `// md:mod migration_tests > fn migrates_a_pre_framework_database_without_losing_data` |
+| 114 | `fn refuses_to_open_a_newer_schema` | `// md:mod migration_tests > fn refuses_to_open_a_newer_schema` |

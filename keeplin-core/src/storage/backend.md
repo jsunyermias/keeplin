@@ -452,6 +452,33 @@ pub trait ResourceRepository: Send + Sync + 'static {
         page_token: Option<String>,
     ) -> Result<(Vec<Resource>, Option<String>), StorageError>;
 
+    async fn list_resources_for_note(
+        &self,
+        note_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
+        let mut matches = Vec::new();
+        let mut token = None;
+        loop {
+            let (page, next) = self.list_resources(0, token).await?;
+            for resource in page {
+                if resource.note_id == note_id {
+                    matches.push(resource);
+                }
+            }
+            match next {
+                Some(t) => token = Some(t),
+                None => break,
+            }
+        }
+        Ok(paginate_resources(
+            matches,
+            page_size,
+            page_token.as_deref(),
+        ))
+    }
+
     async fn purge_deleted_resources(&self, older_than: DateTime<Utc>)
         -> Result<u64, StorageError>;
 }
@@ -470,6 +497,14 @@ soft delete. Methods:
   `NotFound` and is excluded from listings; the payload is retained.
 - `list_resources(size, token)` — metadata only, `(created_at, id)` order; fetch
   bytes per-id via `read_resource`.
+- `list_resources_for_note(note_id, size, token)` — **additive default** method
+  (issue #125): the attachments of one note, `created_at` order. The default impl
+  exhausts `list_resources`, filters by `note_id`, and paginates in memory via
+  `paginate_resources`; `fs`/`db` override it with a native filtered scan. Adding it
+  as a defaulted trait method (rather than changing `list_resources`'s signature) is
+  the trait's additive-evolution path — every existing impl keeps compiling. Known
+  caveat: decorators (`EncryptedBackend`) inherit the O(N) default, exactly like
+  `note_backlinks`; a follow-up may add native delegations.
 - `purge_deleted_resources(older_than) -> u64` — reclaims the payload bytes of
   tombstones older than the cutoff, returning how many were freed. Tombstone
   **metadata is always retained** (it must keep competing in resolution so the
@@ -486,6 +521,69 @@ soft delete. Methods:
 
 **Repeated context** — soft-delete-always applies to binaries too: only
 out-of-band maintenance reclaims space, never the delete itself.
+
+---
+
+## fn paginate_resources
+
+**Identification** — private free function
+`fn paginate_resources(items: Vec<Resource>, page_size: u32, token: Option<&str>) ->
+(Vec<Resource>, Option<String>)`; marker `// md:fn paginate_resources`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn paginate_resources
+fn paginate_resources(
+    items: Vec<Resource>,
+    page_size: u32,
+    token: Option<&str>,
+) -> (Vec<Resource>, Option<String>) {
+    let limit = super::effective_page_size(page_size) as usize;
+    let start = match token.filter(|t| !t.is_empty()) {
+        Some(cursor) => match cursor.split_once('|') {
+            Some((ts, id_str)) => {
+                let cursor_id = Uuid::parse_str(id_str).ok();
+                items.partition_point(|r| {
+                    let item_ts = r.created_at.to_sortable_rfc3339();
+                    item_ts.as_str() < ts
+                        || (item_ts.as_str() == ts && cursor_id.is_some_and(|c| r.id <= c))
+                })
+            }
+            None => 0,
+        },
+        None => 0,
+    };
+    let remaining: Vec<Resource> = items.into_iter().skip(start).collect();
+    let has_more = remaining.len() > limit;
+    let page: Vec<Resource> = remaining.into_iter().take(limit).collect();
+    let next = if has_more {
+        page.last()
+            .map(|r| format!("{}|{}", r.created_at.to_sortable_rfc3339(), r.id))
+    } else {
+        None
+    };
+    (page, next)
+}
+```
+
+**What it does** — In-memory cursor pagination over an already-sorted `Vec<Resource>`, the
+`Resource` twin of `paginate_notes`. The cursor is `"{sortable_rfc3339}|{uuid}"`; it
+`partition_point`s to the first item strictly after the cursor (same-timestamp ties broken by
+`id`), takes `effective_page_size` items, and emits a next-token only when more remain. Backs
+the default `list_resources_for_note`, so callers get identical cursor semantics whether a
+backend overrides that method natively or inherits the default.
+
+**Dependencies** —
+- `super::effective_page_size` — clamps `page_size` (0 ⇒ default); expects the same clamping
+  the native backends use, so page sizes match across impls.
+- `SortableRfc3339::to_sortable_rfc3339`, `Uuid::parse_str` — cursor encode/decode; expect the
+  lexical RFC-3339 order to match chronological order.
+
+**Used by** — `ResourceRepository::list_resources_for_note` (default impl).
+
+**Repeated context** — pagination cursors are `(sortable-timestamp, id)` pairs throughout the
+storage layer.
 
 ---
 
@@ -790,10 +888,11 @@ refresh with `graphify update .` after refactors.
 | 6 | `fn paginate_notes` | `// md:fn paginate_notes` |
 | 7 | `trait NotebookRepository` | `// md:trait NotebookRepository` |
 | 8 | `trait TagRepository` | `// md:trait TagRepository` |
-| 9 | `trait ResourceRepository` | `// md:trait ResourceRepository` |
-| 10 | `trait SyncBackend` | `// md:trait SyncBackend` |
-| 11 | `const DEFAULT_HISTORY_LIMIT` | `// md:DEFAULT_HISTORY_LIMIT` |
-| 12 | `struct EntityVersion<T>` | `// md:EntityVersion` |
-| 13 | `trait HistoryRepository` | `// md:trait HistoryRepository` |
-| 14 | `trait StorageBackend` | `// md:trait StorageBackend` |
-| 15 | blanket `impl StorageBackend for T` | `// md:impl StorageBackend for T` |
+| 9 | `trait ResourceRepository` (incl. default `list_resources_for_note`) | `// md:trait ResourceRepository` |
+| 10 | `fn paginate_resources` | `// md:fn paginate_resources` |
+| 11 | `trait SyncBackend` | `// md:trait SyncBackend` |
+| 12 | `const DEFAULT_HISTORY_LIMIT` | `// md:DEFAULT_HISTORY_LIMIT` |
+| 13 | `struct EntityVersion<T>` | `// md:EntityVersion` |
+| 14 | `trait HistoryRepository` | `// md:trait HistoryRepository` |
+| 15 | `trait StorageBackend` | `// md:trait StorageBackend` |
+| 16 | blanket `impl StorageBackend for T` | `// md:impl StorageBackend for T` |

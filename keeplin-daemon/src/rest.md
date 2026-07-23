@@ -2555,11 +2555,51 @@ struct ResourceMeta {
     width: Option<u32>,
     #[serde(default)]
     height: Option<u32>,
+    #[serde(default)]
+    note_id: Option<Uuid>,
 }
 ```
 
-**What it does** — `?title=&file_name=` query metadata for the two upload
-routes (both defaulted).
+**What it does** — `?title=&file_name=&note_id=` query metadata for the two upload
+routes. `note_id` is `Option` at parse time but **required by the handlers** (a missing
+`note_id` is a `400`, via `StorageError::InvalidInput`) — every attachment must name its
+owning note (issue #125).
+
+---
+
+## ListResourcesQuery
+
+**Identification** — `#[derive(Debug, Deserialize)] struct ListResourcesQuery`. Marker
+`// md:ListResourcesQuery`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:ListResourcesQuery
+#[derive(Debug, Deserialize)]
+struct ListResourcesQuery {
+    #[serde(default)]
+    page_size: u32,
+    #[serde(default)]
+    page_token: Option<String>,
+    #[serde(default)]
+    note_id: Option<Uuid>,
+}
+```
+
+**What it does** — Query for `GET /api/resources`: the pagination fields (mirroring
+`Pagination`) plus an **optional** `note_id` filter. When `note_id` is present the handler
+delegates to `list_resources_for_note`; when absent it lists every resource. Explicit fields
+(rather than `#[serde(flatten)]` of `Pagination`) because `serde_urlencoded` does not support
+flattening.
+
+**Dependencies** —
+- `serde` derive — urlencoded query parsing; expects `#[serde(default)]` so each field is
+  optional in the query string.
+
+**Used by** — `list_resources`.
+
+**Repeated context** — none.
 
 ---
 
@@ -2573,15 +2613,22 @@ routes (both defaulted).
 // md:fn list_resources
 async fn list_resources(
     State(s): State<Shared>,
-    Query(p): Query<Pagination>,
+    Query(p): Query<ListResourcesQuery>,
 ) -> Result<Json<Page<Resource>>, ApiError> {
-    Ok(page(
-        s.backend.list_resources(p.page_size, p.page_token).await?,
-    ))
+    let listed = match p.note_id {
+        Some(note_id) => {
+            s.backend
+                .list_resources_for_note(note_id, p.page_size, p.page_token)
+                .await?
+        }
+        None => s.backend.list_resources(p.page_size, p.page_token).await?,
+    };
+    Ok(page(listed))
 }
 ```
 
-**What it does** — `GET /api/resources`: paginated metadata.
+**What it does** — `GET /api/resources`: paginated metadata. With `?note_id=<uuid>` it returns
+just that note's attachments (via `list_resources_for_note`); without it, all resources.
 
 ---
 
@@ -2604,8 +2651,11 @@ async fn create_resource(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream")
         .to_string();
+    let note_id = meta
+        .note_id
+        .ok_or_else(|| StorageError::InvalidInput("note_id is required".into()))?;
     let data = body.to_vec();
-    let mut resource = Resource::new(meta.title, mime, meta.file_name, data.len() as u64);
+    let mut resource = Resource::new(note_id, meta.title, mime, meta.file_name, data.len() as u64);
     resource.duration_ms = meta.duration_ms;
     resource.dimensions = match (meta.width, meta.height) {
         (Some(w), Some(h)) => Some((w, h)),
@@ -2615,10 +2665,11 @@ async fn create_resource(
 }
 ```
 
-**What it does** — `POST /api/resources?title=&file_name=`: the raw request body
+**What it does** — `POST /api/resources?title=&file_name=&note_id=`: the raw request body
 is the payload (`Bytes`, bounded by the router's `max_body_bytes` layer), the
 `Content-Type` header is recorded as the MIME type
-(`application/octet-stream` default).
+(`application/octet-stream` default). `note_id` is **required** — a missing one is a `400`
+(`StorageError::InvalidInput`) — and becomes the attachment's owning note.
 
 ---
 
@@ -2659,7 +2710,14 @@ async fn upload_resource(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream")
         .to_string();
-    let mut resource = Resource::new(meta.title, mime, meta.file_name, data.len() as u64);
+    let note_id = match meta.note_id {
+        Some(id) => id,
+        None => {
+            return ApiError(StorageError::InvalidInput("note_id is required".into()))
+                .into_response()
+        }
+    };
+    let mut resource = Resource::new(note_id, meta.title, mime, meta.file_name, data.len() as u64);
     resource.duration_ms = meta.duration_ms;
     resource.dimensions = match (meta.width, meta.height) {
         (Some(w), Some(h)) => Some((w, h)),
@@ -3573,7 +3631,7 @@ rejection).
         let (code, body) = call(
             &st,
             "POST",
-            "/api/resources?title=pic&file_name=p.png",
+            "/api/resources?title=pic&file_name=p.png&note_id=00000000-0000-0000-0000-000000000001",
             Some("not really json but raw bytes"),
             None,
         )
@@ -3615,7 +3673,7 @@ rejection).
         let (code, body) = call(
             &st,
             "POST",
-            "/api/resources?title=big&file_name=big.bin",
+            "/api/resources?title=big&file_name=big.bin&note_id=00000000-0000-0000-0000-000000000001",
             Some(&big),
             None,
         )
@@ -3645,7 +3703,7 @@ router raises the limit to `max_body_bytes` (32 MiB in the test state).
         let (code, body) = call(
             &st,
             "POST",
-            "/api/resources/upload?title=vid&file_name=v.bin",
+            "/api/resources/upload?title=vid&file_name=v.bin&note_id=00000000-0000-0000-0000-000000000001",
             Some(payload),
             None,
         )
@@ -4268,41 +4326,42 @@ refresh with `graphify update .` after refactors.
 | 97 | `fn update_tag` | `// md:fn update_tag` |
 | 98 | `fn delete_tag` | `// md:fn delete_tag` |
 | 99 | `ResourceMeta` | `// md:ResourceMeta` |
-| 100 | `fn list_resources` | `// md:fn list_resources` |
-| 101 | `fn create_resource` | `// md:fn create_resource` |
-| 102 | `fn upload_resource` | `// md:fn upload_resource` |
-| 103 | `fn get_resource` | `// md:fn get_resource` |
-| 104 | `fn get_resource_data` | `// md:fn get_resource_data` |
-| 105 | `fn delete_resource` | `// md:fn delete_resource` |
-| 106 | `SyncSummary` | `// md:SyncSummary` |
-| 107 | `fn sync` | `// md:fn sync` |
-| 108 | `fn ws_handler` | `// md:fn ws_handler` |
-| 109 | `fn stream_changes` | `// md:fn stream_changes` |
-| 110 | `mod tests` (container) | `// md:mod tests` |
-| 111 | `fn state` | `// md:mod tests > fn state` |
-| 112 | `fn linking_state` | `// md:mod tests > fn linking_state` |
-| 113 | `fn call` | `// md:mod tests > fn call` |
-| 114 | `fn note_crud_round_trip` | `// md:mod tests > fn note_crud_round_trip` |
-| 115 | `fn permission_endpoints_require_server_mode` | `// md:mod tests > fn permission_endpoints_require_server_mode` |
-| 116 | `fn contact_import_list_export_delete_endpoints` | `// md:mod tests > fn contact_import_list_export_delete_endpoints` |
-| 117 | `fn todo_import_and_profile_vcard_endpoints` | `// md:mod tests > fn todo_import_and_profile_vcard_endpoints` |
-| 118 | `fn note_history_and_revert_endpoints` | `// md:mod tests > fn note_history_and_revert_endpoints` |
-| 119 | `fn updates_on_deleted_entities_are_404` | `// md:mod tests > fn updates_on_deleted_entities_are_404` |
-| 120 | `fn sync_endpoint_prunes_journal_within_retention` | `// md:mod tests > fn sync_endpoint_prunes_journal_within_retention` |
-| 121 | `fn operational_endpoints_bypass_auth` | `// md:mod tests > fn operational_endpoints_bypass_auth` |
-| 122 | `fn metrics_state` | `// md:mod tests > fn metrics_state` |
-| 123 | `fn metrics_reflect_operations_and_http_status` | `// md:mod tests > fn metrics_reflect_operations_and_http_status` |
-| 124 | `fn invalid_uuid_is_bad_request` | `// md:mod tests > fn invalid_uuid_is_bad_request` |
-| 125 | `fn auth_is_enforced_when_configured` | `// md:mod tests > fn auth_is_enforced_when_configured` |
-| 126 | `fn resource_upload_and_download` | `// md:mod tests > fn resource_upload_and_download` |
-| 127 | `fn resource_upload_above_axum_default_limit` | `// md:mod tests > fn resource_upload_above_axum_default_limit` |
-| 128 | `fn streaming_upload_round_trips` | `// md:mod tests > fn streaming_upload_round_trips` |
-| 129 | `fn streaming_upload_over_cap_is_413` | `// md:mod tests > fn streaming_upload_over_cap_is_413` |
-| 130 | `fn alias_and_links_endpoints` | `// md:mod tests > fn alias_and_links_endpoints` |
-| 131 | `fn alias_backlinks_and_resolve_endpoints` | `// md:mod tests > fn alias_backlinks_and_resolve_endpoints` |
-| 132 | `fn alias_conflicts_endpoint` | `// md:mod tests > fn alias_conflicts_endpoint` |
-| 133 | `fn state_with_events` | `// md:mod tests > fn state_with_events` |
-| 134 | `fn websocket_streams_note_create` | `// md:mod tests > fn websocket_streams_note_create` |
-| 135 | `fn note_presence` | `// md:fn note_presence` |
-| 136 | `CursorBody` | `// md:CursorBody` |
-| 137 | `fn set_cursor` | `// md:fn set_cursor` |
+| 100 | `ListResourcesQuery` | `// md:ListResourcesQuery` |
+| 101 | `fn list_resources` | `// md:fn list_resources` |
+| 102 | `fn create_resource` | `// md:fn create_resource` |
+| 103 | `fn upload_resource` | `// md:fn upload_resource` |
+| 104 | `fn get_resource` | `// md:fn get_resource` |
+| 105 | `fn get_resource_data` | `// md:fn get_resource_data` |
+| 106 | `fn delete_resource` | `// md:fn delete_resource` |
+| 107 | `SyncSummary` | `// md:SyncSummary` |
+| 108 | `fn sync` | `// md:fn sync` |
+| 109 | `fn ws_handler` | `// md:fn ws_handler` |
+| 110 | `fn stream_changes` | `// md:fn stream_changes` |
+| 111 | `mod tests` (container) | `// md:mod tests` |
+| 112 | `fn state` | `// md:mod tests > fn state` |
+| 113 | `fn linking_state` | `// md:mod tests > fn linking_state` |
+| 114 | `fn call` | `// md:mod tests > fn call` |
+| 115 | `fn note_crud_round_trip` | `// md:mod tests > fn note_crud_round_trip` |
+| 116 | `fn permission_endpoints_require_server_mode` | `// md:mod tests > fn permission_endpoints_require_server_mode` |
+| 117 | `fn contact_import_list_export_delete_endpoints` | `// md:mod tests > fn contact_import_list_export_delete_endpoints` |
+| 118 | `fn todo_import_and_profile_vcard_endpoints` | `// md:mod tests > fn todo_import_and_profile_vcard_endpoints` |
+| 119 | `fn note_history_and_revert_endpoints` | `// md:mod tests > fn note_history_and_revert_endpoints` |
+| 120 | `fn updates_on_deleted_entities_are_404` | `// md:mod tests > fn updates_on_deleted_entities_are_404` |
+| 121 | `fn sync_endpoint_prunes_journal_within_retention` | `// md:mod tests > fn sync_endpoint_prunes_journal_within_retention` |
+| 122 | `fn operational_endpoints_bypass_auth` | `// md:mod tests > fn operational_endpoints_bypass_auth` |
+| 123 | `fn metrics_state` | `// md:mod tests > fn metrics_state` |
+| 124 | `fn metrics_reflect_operations_and_http_status` | `// md:mod tests > fn metrics_reflect_operations_and_http_status` |
+| 125 | `fn invalid_uuid_is_bad_request` | `// md:mod tests > fn invalid_uuid_is_bad_request` |
+| 126 | `fn auth_is_enforced_when_configured` | `// md:mod tests > fn auth_is_enforced_when_configured` |
+| 127 | `fn resource_upload_and_download` | `// md:mod tests > fn resource_upload_and_download` |
+| 128 | `fn resource_upload_above_axum_default_limit` | `// md:mod tests > fn resource_upload_above_axum_default_limit` |
+| 129 | `fn streaming_upload_round_trips` | `// md:mod tests > fn streaming_upload_round_trips` |
+| 130 | `fn streaming_upload_over_cap_is_413` | `// md:mod tests > fn streaming_upload_over_cap_is_413` |
+| 131 | `fn alias_and_links_endpoints` | `// md:mod tests > fn alias_and_links_endpoints` |
+| 132 | `fn alias_backlinks_and_resolve_endpoints` | `// md:mod tests > fn alias_backlinks_and_resolve_endpoints` |
+| 133 | `fn alias_conflicts_endpoint` | `// md:mod tests > fn alias_conflicts_endpoint` |
+| 134 | `fn state_with_events` | `// md:mod tests > fn state_with_events` |
+| 135 | `fn websocket_streams_note_create` | `// md:mod tests > fn websocket_streams_note_create` |
+| 136 | `fn note_presence` | `// md:fn note_presence` |
+| 137 | `CursorBody` | `// md:CursorBody` |
+| 138 | `fn set_cursor` | `// md:fn set_cursor` |

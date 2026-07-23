@@ -24,7 +24,7 @@ here; grep it in either direction. Each block section covers, in this fixed orde
 use chrono::{DateTime, TimeZone, Utc};
 
 use crate::error::StorageError;
-use crate::models::{new_id, now, Note, Resource};
+use crate::models::{new_id, now, Note, Resource, SYSTEM_RESOURCE_NOTE_ID};
 use crate::storage::StorageBackend;
 ```
 
@@ -1215,6 +1215,7 @@ pub async fn save_contact(
     delete_contact(backend, &contact.uid).await?;
     let vcard = contact.to_vcard();
     let res = Resource::new(
+        SYSTEM_RESOURCE_NOTE_ID,
         contact.formatted_name.clone(),
         MIME_VCARD,
         uid_file_name(&contact.uid, "vcf"),
@@ -1394,6 +1395,7 @@ pub async fn save_event(
     delete_event(backend, &event.uid).await?;
     let ics = event.to_ics();
     let res = Resource::new(
+        SYSTEM_RESOURCE_NOTE_ID,
         event.summary.clone(),
         MIME_ICALENDAR,
         uid_file_name(&event.uid, "ics"),
