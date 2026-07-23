@@ -3828,6 +3828,7 @@ typed copies instead of a raw change bridge.
                             deleted_at: None,
                             vv: VersionVector::new(),
                             last_writer: String::new(),
+                            system: false,
                         },
                         Err(e) => return Err(e),
                     };

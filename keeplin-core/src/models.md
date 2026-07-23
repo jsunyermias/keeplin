@@ -450,12 +450,18 @@ pub struct Tag {
     pub vv: VersionVector,
     #[serde(default)]
     pub last_writer: String,
+    #[serde(default)]
+    pub system: bool,
 }
 ```
 
 **What it does** — A short label attachable to any number of notes: `id`, `title` (encrypted
 at rest), the three timestamps (`deleted_at` = soft delete), `vv`/`last_writer`
-(`#[serde(default)]`). Associations live in the separate `NoteTag` type.
+(`#[serde(default)]`). `system` (`#[serde(default)]` = `false`) is an internal-function
+marker the frontend sets on tags it uses to implement features (hidden from the user); the
+backend only transports and persists it — it never interprets the tag's `title` pattern
+(which arrives encrypted) nor filters tags by this flag. Associations live in the separate
+`NoteTag` type.
 
 **Dependencies** —
 - `VersionVector` — `vv`; expects `Default`.
@@ -492,12 +498,14 @@ at rest), the three timestamps (`deleted_at` = soft delete), `vv`/`last_writer`
             deleted_at: None,
             vv: VersionVector::new(),
             last_writer: String::new(),
+            system: false,
         }
     }
 ```
 
 **What it does** — Fresh UUID, given title, shared `now()`, `deleted_at: None`, empty
-`vv`/`last_writer`.
+`vv`/`last_writer`, `system: false` (a plain user tag; the frontend flips `system` on tags
+it uses internally).
 
 **Dependencies** —
 - `new_id`, `now`, `VersionVector::new` — id/timestamps/empty vv; same expectations as

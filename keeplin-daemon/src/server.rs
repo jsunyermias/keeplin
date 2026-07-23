@@ -124,6 +124,7 @@ fn tag_to_proto(t: CoreTag) -> Tag {
         created_at: t.created_at.to_rfc3339(),
         updated_at: t.updated_at.to_rfc3339(),
         deleted_at: t.deleted_at.map(|d| d.to_rfc3339()),
+        system: t.system,
     }
 }
 
@@ -738,6 +739,7 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
             deleted_at: parse_optional_dt(t.deleted_at)?,
             vv: Default::default(),
             last_writer: String::new(),
+            system: t.system,
         };
         ensure_not_deleted(self.backend.read_tag(tag.id).await, tag.id, |t| {
             t.deleted_at

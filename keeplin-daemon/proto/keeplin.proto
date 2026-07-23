@@ -68,6 +68,8 @@ message Tag {
   string updated_at = 4;  // RFC-3339
   // absent means the tag has not been deleted
   optional string deleted_at = 5;  // RFC-3339
+  // internal-function marker set by the frontend; the backend only transports it
+  bool system = 6;
 }
 
 message Resource {

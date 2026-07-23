@@ -121,7 +121,7 @@ impl DbBackend {
         })
     }
 
-    const SCHEMA_VERSION: u32 = 2;
+    const SCHEMA_VERSION: u32 = 3;
 
     // md:impl DbBackend > fn run_migrations
     async fn run_migrations(conn: &libsql::Connection) -> Result<(), StorageError> {
@@ -170,6 +170,7 @@ impl DbBackend {
         match version {
             1 => Self::migrate_v1_baseline(conn).await,
             2 => Self::migrate_v2_ordering(conn).await,
+            3 => Self::migrate_v3_tag_system(conn).await,
             other => Err(StorageError::InvalidState(format!(
                 "no migration defined for schema version {other}"
             ))),
@@ -493,6 +494,7 @@ impl DbBackend {
             deleted_at: Self::parse_optional_dt(row.get::<Option<String>>(4)?)?,
             vv: json_to_vv(&row.get::<String>(5)?),
             last_writer: row.get(6)?,
+            system: row.get::<i64>(7)? != 0,
         })
     }
 
@@ -659,6 +661,12 @@ impl DbBackend {
             ",
         )
         .await?;
+        Ok(())
+    }
+
+    // md:impl DbBackend > fn migrate_v3_tag_system
+    async fn migrate_v3_tag_system(conn: &libsql::Connection) -> Result<(), StorageError> {
+        Self::add_column_if_missing(conn, "tags", "system INTEGER NOT NULL DEFAULT 0").await?;
         Ok(())
     }
 
@@ -1556,8 +1564,8 @@ impl TagRepository for DbBackend {
         let r: Result<(), StorageError> = async {
             self.conn
                 .execute(
-                    "INSERT INTO tags (id,title,created_at,updated_at,deleted_at,vv,last_writer)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    "INSERT INTO tags (id,title,created_at,updated_at,deleted_at,vv,last_writer,system)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
                     libsql::params![
                         tag.id.to_string(),
                         tag.title.clone(),
@@ -1566,6 +1574,7 @@ impl TagRepository for DbBackend {
                         tag.deleted_at.map(|d| d.to_sortable_rfc3339()),
                         vv_to_json(&tag.vv),
                         tag.last_writer.clone(),
+                        tag.system as i64,
                     ],
                 )
                 .await?;
@@ -1593,7 +1602,7 @@ impl TagRepository for DbBackend {
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,created_at,updated_at,deleted_at,vv,last_writer
+                "SELECT id,title,created_at,updated_at,deleted_at,vv,last_writer,system
                  FROM tags WHERE id = ?1",
                 [id.to_string()],
             )
@@ -1614,7 +1623,7 @@ impl TagRepository for DbBackend {
             let affected = self
                 .conn
                 .execute(
-                    "UPDATE tags SET title=?2,updated_at=?3,deleted_at=?4,vv=?5,last_writer=?6 WHERE id=?1",
+                    "UPDATE tags SET title=?2,updated_at=?3,deleted_at=?4,vv=?5,last_writer=?6,system=?7 WHERE id=?1",
                     libsql::params![
                         tag.id.to_string(),
                         tag.title.clone(),
@@ -1622,6 +1631,7 @@ impl TagRepository for DbBackend {
                         tag.deleted_at.map(|d| d.to_sortable_rfc3339()),
                         vv_to_json(&tag.vv),
                         tag.last_writer.clone(),
+                        tag.system as i64,
                     ],
                 )
                 .await?;
@@ -1693,7 +1703,7 @@ impl TagRepository for DbBackend {
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,created_at,updated_at,deleted_at,vv,last_writer
+                "SELECT id,title,created_at,updated_at,deleted_at,vv,last_writer,system
                  FROM tags
                  WHERE deleted_at IS NULL
                    AND (
@@ -2797,6 +2807,41 @@ mod migration_tests {
             DbBackend::SCHEMA_VERSION
         );
         assert_eq!(reopened.read_note(note.id).await.unwrap().title, "t");
+    }
+
+    // md:mod migration_tests > fn tag_system_flag_round_trips
+    #[tokio::test]
+    async fn tag_system_flag_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tag_system.db");
+        let be = DbBackend::new(&path, "", "").await.unwrap();
+
+        let mut t = Tag::new("internal");
+        t.system = true;
+        let created = be.create_tag(t).await.unwrap();
+        assert!(created.system, "create_tag keeps the system flag it was given");
+        assert!(
+            be.read_tag(created.id).await.unwrap().system,
+            "system round-trips through the tags.system column"
+        );
+
+        let plain = be.create_tag(Tag::new("plain")).await.unwrap();
+        assert!(!plain.system, "Tag::new defaults system to false");
+
+        let mut upd = be.read_tag(plain.id).await.unwrap();
+        upd.system = true;
+        assert!(be.update_tag(upd).await.unwrap().system);
+        assert!(
+            be.read_tag(plain.id).await.unwrap().system,
+            "update_tag persists a flipped system flag"
+        );
+
+        let (tags, _) = be.list_tags(100, None).await.unwrap();
+        assert_eq!(
+            tags.iter().filter(|t| t.system).count(),
+            2,
+            "list_tags surfaces the system flag for every row"
+        );
     }
 
     // md:mod migration_tests > fn migrates_a_pre_framework_database_without_losing_data
