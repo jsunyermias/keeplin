@@ -142,6 +142,8 @@ pub struct Tag {
     pub vv: VersionVector,
     #[serde(default)]
     pub last_writer: String,
+    #[serde(default)]
+    pub system: bool,
 }
 
 // md:impl Tag
@@ -157,6 +159,7 @@ impl Tag {
             deleted_at: None,
             vv: VersionVector::new(),
             last_writer: String::new(),
+            system: false,
         }
     }
 }

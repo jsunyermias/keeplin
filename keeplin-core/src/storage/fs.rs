@@ -2191,6 +2191,7 @@ impl SyncBackend for FsBackend {
                             deleted_at: None,
                             vv: VersionVector::new(),
                             last_writer: String::new(),
+                            system: false,
                         },
                         Err(e) => return Err(e),
                     };

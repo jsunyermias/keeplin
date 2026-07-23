@@ -279,11 +279,13 @@ fn tag_to_proto(t: CoreTag) -> Tag {
         created_at: t.created_at.to_rfc3339(),
         updated_at: t.updated_at.to_rfc3339(),
         deleted_at: t.deleted_at.map(|d| d.to_rfc3339()),
+        system: t.system,
     }
 }
 ```
 
-**What it does** — Field map with RFC-3339 timestamps.
+**What it does** — Field map with RFC-3339 timestamps. `system` is copied straight through
+(the daemon transports the internal-function flag without interpreting it).
 
 **Used by** — the tag RPCs and tests.
 
@@ -1449,6 +1451,7 @@ UUIDs parsed; idempotent at the storage layer).
             deleted_at: parse_optional_dt(t.deleted_at)?,
             vv: Default::default(),
             last_writer: String::new(),
+            system: t.system,
         };
         ensure_not_deleted(self.backend.read_tag(tag.id).await, tag.id, |t| {
             t.deleted_at
@@ -1462,7 +1465,8 @@ UUIDs parsed; idempotent at the storage layer).
 
 **What it does** — Same shape as `update_notebook`: required message, parsed
 fields, server-side `updated_at = now()` (unspoofable ordering, issue #75),
-`ensure_not_deleted`, then `backend.update_tag`.
+`ensure_not_deleted`, then `backend.update_tag`. `system` is carried from the request
+message into the core `Tag` so an update can set or clear the internal-function flag.
 
 ### fn delete_tag
 
