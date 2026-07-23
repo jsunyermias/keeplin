@@ -565,6 +565,10 @@ pub struct Resource {
     pub mime_type: String,
     pub file_name: String,
     pub size: u64,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub dimensions: Option<(u32, u32)>,
     pub created_at: DateTime<Utc>,
     #[serde(default)]
     pub deleted_at: Option<DateTime<Utc>>,
@@ -579,7 +583,13 @@ pub struct Resource {
 `data` file on disk for `FsBackend`, a BLOB column for `DbBackend`) and fetched explicitly via
 `read_resource`. Fields: `id`, `title` / `mime_type` (IANA, e.g. `"image/png"`) / `file_name`
 — all encrypted at rest; `size` in **plaintext** (needed to validate uploads without
-decrypting); `created_at`; `deleted_at` (`#[serde(default)]`) — resources use a soft-delete
+decrypting); `duration_ms` (audio/video length) and `dimensions` (`(width, height)` for
+images) — both `Option`, `#[serde(default)]`, and in **plaintext** for the same reason as
+`size`: they are media metadata, not content, so a frontend can render/measure an attachment
+without downloading or decrypting the blob. The backend never computes or validates them — the
+producer of the attachment fills them in; a non-media attachment leaves both `None`. `dimensions`
+is both-or-neither (an image has width and height, or neither). `created_at`; `deleted_at`
+(`#[serde(default)]`) — resources use a soft-delete
 tombstone rather than physical removal so a delete converges with a concurrent create through
 `note_log::resolve`, with the payload retained on delete (reclaiming it is a separate
 compaction concern — `purge_deleted_resources`); `vv`/`last_writer` (`#[serde(default)]`).
@@ -622,6 +632,8 @@ parameters are `impl Into<String>`); marker `// md:impl Resource > fn new`.
             mime_type: mime_type.into(),
             file_name: file_name.into(),
             size,
+            duration_ms: None,
+            dimensions: None,
             created_at: now(),
             deleted_at: None,
             vv: VersionVector::new(),
@@ -630,7 +642,8 @@ parameters are `impl Into<String>`); marker `// md:impl Resource > fn new`.
     }
 ```
 
-**What it does** — Fresh UUID + `now()`; the binary payload is **not** stored here — it is
+**What it does** — Fresh UUID + `now()`; `duration_ms`/`dimensions` default to `None` (the
+producer sets them afterwards if the attachment is media); the binary payload is **not** stored here — it is
 passed separately to `create_resource`. `size` must be the exact byte length of that payload.
 
 **Dependencies** —

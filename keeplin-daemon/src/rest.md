@@ -2549,6 +2549,12 @@ struct ResourceMeta {
     title: String,
     #[serde(default)]
     file_name: String,
+    #[serde(default)]
+    duration_ms: Option<u64>,
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
 }
 ```
 
@@ -2599,7 +2605,12 @@ async fn create_resource(
         .unwrap_or("application/octet-stream")
         .to_string();
     let data = body.to_vec();
-    let resource = Resource::new(meta.title, mime, meta.file_name, data.len() as u64);
+    let mut resource = Resource::new(meta.title, mime, meta.file_name, data.len() as u64);
+    resource.duration_ms = meta.duration_ms;
+    resource.dimensions = match (meta.width, meta.height) {
+        (Some(w), Some(h)) => Some((w, h)),
+        _ => None,
+    };
     Ok(Json(s.backend.create_resource(resource, data).await?))
 }
 ```
@@ -2648,7 +2659,12 @@ async fn upload_resource(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream")
         .to_string();
-    let resource = Resource::new(meta.title, mime, meta.file_name, data.len() as u64);
+    let mut resource = Resource::new(meta.title, mime, meta.file_name, data.len() as u64);
+    resource.duration_ms = meta.duration_ms;
+    resource.dimensions = match (meta.width, meta.height) {
+        (Some(w), Some(h)) => Some((w, h)),
+        _ => None,
+    };
     match s.backend.create_resource(resource, data).await {
         Ok(r) => (StatusCode::OK, Json(r)).into_response(),
         Err(e) => ApiError(e).into_response(),
