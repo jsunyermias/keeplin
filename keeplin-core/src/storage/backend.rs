@@ -199,8 +199,64 @@ pub trait ResourceRepository: Send + Sync + 'static {
         page_token: Option<String>,
     ) -> Result<(Vec<Resource>, Option<String>), StorageError>;
 
+    async fn list_resources_for_note(
+        &self,
+        note_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
+        let mut matches = Vec::new();
+        let mut token = None;
+        loop {
+            let (page, next) = self.list_resources(0, token).await?;
+            for resource in page {
+                if resource.note_id == note_id {
+                    matches.push(resource);
+                }
+            }
+            match next {
+                Some(t) => token = Some(t),
+                None => break,
+            }
+        }
+        Ok(paginate_resources(matches, page_size, page_token.as_deref()))
+    }
+
     async fn purge_deleted_resources(&self, older_than: DateTime<Utc>)
         -> Result<u64, StorageError>;
+}
+
+// md:fn paginate_resources
+fn paginate_resources(
+    items: Vec<Resource>,
+    page_size: u32,
+    token: Option<&str>,
+) -> (Vec<Resource>, Option<String>) {
+    let limit = super::effective_page_size(page_size) as usize;
+    let start = match token.filter(|t| !t.is_empty()) {
+        Some(cursor) => match cursor.split_once('|') {
+            Some((ts, id_str)) => {
+                let cursor_id = Uuid::parse_str(id_str).ok();
+                items.partition_point(|r| {
+                    let item_ts = r.created_at.to_sortable_rfc3339();
+                    item_ts.as_str() < ts
+                        || (item_ts.as_str() == ts && cursor_id.is_some_and(|c| r.id <= c))
+                })
+            }
+            None => 0,
+        },
+        None => 0,
+    };
+    let remaining: Vec<Resource> = items.into_iter().skip(start).collect();
+    let has_more = remaining.len() > limit;
+    let page: Vec<Resource> = remaining.into_iter().take(limit).collect();
+    let next = if has_more {
+        page.last()
+            .map(|r| format!("{}|{}", r.created_at.to_sortable_rfc3339(), r.id))
+    } else {
+        None
+    };
+    (page, next)
 }
 
 // md:trait SyncBackend

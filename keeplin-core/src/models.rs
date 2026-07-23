@@ -171,10 +171,20 @@ pub struct NoteTag {
     pub tag_id: Uuid,
 }
 
+// md:SYSTEM_RESOURCE_NOTE_ID
+pub const SYSTEM_RESOURCE_NOTE_ID: Uuid = Uuid::from_u128(1);
+
+// md:fn system_resource_note_id
+fn system_resource_note_id() -> Uuid {
+    SYSTEM_RESOURCE_NOTE_ID
+}
+
 // md:Resource
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Resource {
     pub id: Uuid,
+    #[serde(default = "system_resource_note_id")]
+    pub note_id: Uuid,
     pub title: String,
     pub mime_type: String,
     pub file_name: String,
@@ -196,6 +206,7 @@ pub struct Resource {
 impl Resource {
     // md:impl Resource > fn new
     pub fn new(
+        note_id: Uuid,
         title: impl Into<String>,
         mime_type: impl Into<String>,
         file_name: impl Into<String>,
@@ -203,6 +214,7 @@ impl Resource {
     ) -> Self {
         Self {
             id: new_id(),
+            note_id,
             title: title.into(),
             mime_type: mime_type.into(),
             file_name: file_name.into(),
