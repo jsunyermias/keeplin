@@ -121,7 +121,7 @@ impl DbBackend {
         })
     }
 
-    const SCHEMA_VERSION: u32 = 3;
+    const SCHEMA_VERSION: u32 = 4;
 
     // md:impl DbBackend > fn run_migrations
     async fn run_migrations(conn: &libsql::Connection) -> Result<(), StorageError> {
@@ -171,6 +171,7 @@ impl DbBackend {
             1 => Self::migrate_v1_baseline(conn).await,
             2 => Self::migrate_v2_ordering(conn).await,
             3 => Self::migrate_v3_tag_system(conn).await,
+            4 => Self::migrate_v4_resource_media(conn).await,
             other => Err(StorageError::InvalidState(format!(
                 "no migration defined for schema version {other}"
             ))),
@@ -500,12 +501,20 @@ impl DbBackend {
 
     // md:impl DbBackend > fn row_to_resource
     fn row_to_resource(row: &libsql::Row) -> Result<Resource, StorageError> {
+        let width = row.get::<Option<i64>>(10)?;
+        let height = row.get::<Option<i64>>(11)?;
+        let dimensions = match (width, height) {
+            (Some(w), Some(h)) => Some((w as u32, h as u32)),
+            _ => None,
+        };
         Ok(Resource {
             id: Self::parse_uuid(row.get::<String>(0)?)?,
             title: row.get(1)?,
             mime_type: row.get(2)?,
             file_name: row.get(3)?,
             size: row.get::<i64>(4)? as u64,
+            duration_ms: row.get::<Option<i64>>(9)?.map(|v| v as u64),
+            dimensions,
             created_at: Self::parse_required_dt(row.get::<String>(5)?)?,
             deleted_at: Self::parse_optional_dt(row.get::<Option<String>>(6)?)?,
             vv: json_to_vv(&row.get::<String>(7)?),
@@ -667,6 +676,14 @@ impl DbBackend {
     // md:impl DbBackend > fn migrate_v3_tag_system
     async fn migrate_v3_tag_system(conn: &libsql::Connection) -> Result<(), StorageError> {
         Self::add_column_if_missing(conn, "tags", "system INTEGER NOT NULL DEFAULT 0").await?;
+        Ok(())
+    }
+
+    // md:impl DbBackend > fn migrate_v4_resource_media
+    async fn migrate_v4_resource_media(conn: &libsql::Connection) -> Result<(), StorageError> {
+        Self::add_column_if_missing(conn, "resources", "duration_ms INTEGER").await?;
+        Self::add_column_if_missing(conn, "resources", "width INTEGER").await?;
+        Self::add_column_if_missing(conn, "resources", "height INTEGER").await?;
         Ok(())
     }
 
@@ -1847,8 +1864,8 @@ impl ResourceRepository for DbBackend {
             let data_b64 = STANDARD.encode(&data);
             self.conn
                 .execute(
-                    "INSERT INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                    "INSERT INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer,duration_ms,width,height)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
                     libsql::params![
                         resource.id.to_string(),
                         resource.title.clone(),
@@ -1860,6 +1877,9 @@ impl ResourceRepository for DbBackend {
                         resource.deleted_at.map(|d| d.to_sortable_rfc3339()),
                         vv_to_json(&resource.vv),
                         resource.last_writer.clone(),
+                        resource.duration_ms.map(|d| d as i64),
+                        resource.dimensions.map(|(w, _)| w as i64),
+                        resource.dimensions.map(|(_, h)| h as i64),
                     ],
                 )
                 .await?;
@@ -1890,7 +1910,7 @@ impl ResourceRepository for DbBackend {
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer,data
+                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer,duration_ms,width,height,data
                  FROM resources WHERE id=?1",
                 [id.to_string()],
             )
@@ -1902,7 +1922,7 @@ impl ResourceRepository for DbBackend {
                 if resource.deleted_at.is_some() {
                     return Err(StorageError::NotFound(id.to_string()));
                 }
-                let blob: Vec<u8> = row.get(9)?;
+                let blob: Vec<u8> = row.get(12)?;
                 Ok((resource, blob))
             }
         }
@@ -1965,7 +1985,7 @@ impl ResourceRepository for DbBackend {
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer
+                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer,duration_ms,width,height
                  FROM resources
                  WHERE deleted_at IS NULL
                    AND (?1 = '' OR created_at > ?2 OR (created_at = ?2 AND id > ?3))
@@ -2300,8 +2320,8 @@ impl SyncBackend for DbBackend {
                     let blob = data.unwrap_or_default();
                     self.conn
                         .execute(
-                            "INSERT OR REPLACE INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer)
-                             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                            "INSERT OR REPLACE INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer,duration_ms,width,height)
+                             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
                             libsql::params![
                                 id,
                                 resource.title,
@@ -2313,6 +2333,9 @@ impl SyncBackend for DbBackend {
                                 resource.deleted_at.map(|d| d.to_sortable_rfc3339()),
                                 vv_to_json(&resource.vv),
                                 resource.last_writer,
+                                resource.duration_ms.map(|d| d as i64),
+                                resource.dimensions.map(|(w, _)| w as i64),
+                                resource.dimensions.map(|(_, h)| h as i64),
                             ],
                         )
                         .await?;
@@ -2845,6 +2868,48 @@ mod migration_tests {
             2,
             "list_tags surfaces the system flag for every row"
         );
+    }
+
+    // md:mod migration_tests > fn resource_media_metadata_round_trips
+    #[tokio::test]
+    async fn resource_media_metadata_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("resource_media.db");
+        let be = DbBackend::new(&path, "", "").await.unwrap();
+
+        let mut r = Resource::new("clip", "video/mp4", "clip.mp4", 10);
+        r.duration_ms = Some(4200);
+        r.dimensions = Some((1920, 1080));
+        let created = be.create_resource(r, vec![1, 2, 3]).await.unwrap();
+        assert_eq!(created.duration_ms, Some(4200));
+        assert_eq!(created.dimensions, Some((1920, 1080)));
+
+        let (read, blob) = be.read_resource(created.id).await.unwrap();
+        assert_eq!(
+            read.duration_ms,
+            Some(4200),
+            "duration survives create+read"
+        );
+        assert_eq!(read.dimensions, Some((1920, 1080)), "dimensions survive");
+        assert_eq!(
+            blob,
+            vec![1, 2, 3],
+            "blob still read from its shifted column"
+        );
+
+        let plain = be
+            .create_resource(Resource::new("doc", "text/plain", "d.txt", 3), vec![9])
+            .await
+            .unwrap();
+        assert_eq!(plain.duration_ms, None, "non-media attachment stays None");
+        assert_eq!(plain.dimensions, None);
+
+        let (listed, _) = be.list_resources(100, None).await.unwrap();
+        let clip = listed.iter().find(|x| x.id == created.id).unwrap();
+        assert_eq!(clip.duration_ms, Some(4200));
+        assert_eq!(clip.dimensions, Some((1920, 1080)));
+        let doc = listed.iter().find(|x| x.id == plain.id).unwrap();
+        assert!(doc.duration_ms.is_none() && doc.dimensions.is_none());
     }
 
     // md:mod migration_tests > fn migrates_a_pre_framework_database_without_losing_data

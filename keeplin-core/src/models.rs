@@ -179,6 +179,10 @@ pub struct Resource {
     pub mime_type: String,
     pub file_name: String,
     pub size: u64,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub dimensions: Option<(u32, u32)>,
     pub created_at: DateTime<Utc>,
     #[serde(default)]
     pub deleted_at: Option<DateTime<Utc>>,
@@ -203,6 +207,8 @@ impl Resource {
             mime_type: mime_type.into(),
             file_name: file_name.into(),
             size,
+            duration_ms: None,
+            dimensions: None,
             created_at: now(),
             deleted_at: None,
             vv: VersionVector::new(),

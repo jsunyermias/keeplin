@@ -3917,6 +3917,8 @@ typed copies instead of a raw change bridge.
                             mime_type: String::new(),
                             file_name: String::new(),
                             size: 0,
+                            duration_ms: None,
+                            dimensions: None,
                             created_at: deleted_at,
                             deleted_at: None,
                             vv: VersionVector::new(),

@@ -351,6 +351,7 @@ never-stamped database).
             1 => Self::migrate_v1_baseline(conn).await,
             2 => Self::migrate_v2_ordering(conn).await,
             3 => Self::migrate_v3_tag_system(conn).await,
+            4 => Self::migrate_v4_resource_media(conn).await,
             other => Err(StorageError::InvalidState(format!(
                 "no migration defined for schema version {other}"
             ))),
@@ -360,8 +361,8 @@ never-stamped database).
 
 **What it does** — Dispatches the step that advances **to** `version`: 1 →
 `migrate_v1_baseline`, 2 → `migrate_v2_ordering`, 3 → `migrate_v3_tag_system`,
-anything else → `InvalidState`. The caller wraps it in a transaction and bumps
-the stamp. `SCHEMA_VERSION` is now `3`.
+4 → `migrate_v4_resource_media`, anything else → `InvalidState`. The caller wraps
+it in a transaction and bumps the stamp. `SCHEMA_VERSION` is now `4`.
 
 **Used by** — `run_migrations`.
 
@@ -868,12 +869,20 @@ last.
 ```rust
     // md:impl DbBackend > fn row_to_resource
     fn row_to_resource(row: &libsql::Row) -> Result<Resource, StorageError> {
+        let width = row.get::<Option<i64>>(10)?;
+        let height = row.get::<Option<i64>>(11)?;
+        let dimensions = match (width, height) {
+            (Some(w), Some(h)) => Some((w as u32, h as u32)),
+            _ => None,
+        };
         Ok(Resource {
             id: Self::parse_uuid(row.get::<String>(0)?)?,
             title: row.get(1)?,
             mime_type: row.get(2)?,
             file_name: row.get(3)?,
             size: row.get::<i64>(4)? as u64,
+            duration_ms: row.get::<Option<i64>>(9)?.map(|v| v as u64),
+            dimensions,
             created_at: Self::parse_required_dt(row.get::<String>(5)?)?,
             deleted_at: Self::parse_optional_dt(row.get::<Option<String>>(6)?)?,
             vv: json_to_vv(&row.get::<String>(7)?),
@@ -882,7 +891,12 @@ last.
     }
 ```
 
-**What it does** — Maps the 9-column metadata row shape (no `data` BLOB).
+**What it does** — Maps the 12-column metadata row shape (no `data` BLOB). Columns `9/10/11`
+are `duration_ms`/`width`/`height`; `dimensions` is reconstructed as `Some((w, h))` only when
+both are present (mixed → `None`, defensively). Every `SELECT` feeding this mapper
+(`read_resource`, `list_resources`, the resource-create materialisation) must select the
+metadata columns in this order, `duration_ms, width, height` after `last_writer`; only
+`read_resource` appends `data` afterwards, so its blob is column `12`.
 
 ### fn row_to_change
 
@@ -1141,6 +1155,35 @@ a no-op.
   "duplicate column name" as success so the step is idempotent.
 
 **Used by** — `apply_migration` (arm `3`).
+
+### fn migrate_v4_resource_media
+
+**Identification** — marker `// md:impl DbBackend > fn migrate_v4_resource_media`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl DbBackend > fn migrate_v4_resource_media
+    async fn migrate_v4_resource_media(conn: &libsql::Connection) -> Result<(), StorageError> {
+        Self::add_column_if_missing(conn, "resources", "duration_ms INTEGER").await?;
+        Self::add_column_if_missing(conn, "resources", "width INTEGER").await?;
+        Self::add_column_if_missing(conn, "resources", "height INTEGER").await?;
+        Ok(())
+    }
+```
+
+**What it does** — Migration v4: adds three nullable columns to `resources` —
+`duration_ms`, `width`, `height` (all plain `INTEGER`, no `NOT NULL`). They back
+`Resource.duration_ms` and `Resource.dimensions` (`(width, height)`). Nullable means a
+pre-existing or non-media attachment simply has `NULL` in all three, which `row_to_resource`
+reads back as `None`. `width`/`height` are written and read as a pair (both-or-neither).
+`add_column_if_missing` swallows "duplicate column name", so re-running is a no-op.
+
+**Dependencies** —
+- `add_column_if_missing` — issues each `ALTER TABLE resources ADD COLUMN`; expects it to
+  treat "duplicate column name" as success so the step is idempotent.
+
+**Used by** — `apply_migration` (arm `4`).
 
 ### fn current_meta
 
@@ -2939,8 +2982,8 @@ per-method markers `> fn <name>`.
             let data_b64 = STANDARD.encode(&data);
             self.conn
                 .execute(
-                    "INSERT INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                    "INSERT INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer,duration_ms,width,height)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
                     libsql::params![
                         resource.id.to_string(),
                         resource.title.clone(),
@@ -2952,6 +2995,9 @@ per-method markers `> fn <name>`.
                         resource.deleted_at.map(|d| d.to_sortable_rfc3339()),
                         vv_to_json(&resource.vv),
                         resource.last_writer.clone(),
+                        resource.duration_ms.map(|d| d as i64),
+                        resource.dimensions.map(|(w, _)| w as i64),
+                        resource.dimensions.map(|(_, h)| h as i64),
                     ],
                 )
                 .await?;
@@ -2995,7 +3041,7 @@ change via the relay reconstruct the full resource without a separate download.
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer,data
+                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer,duration_ms,width,height,data
                  FROM resources WHERE id=?1",
                 [id.to_string()],
             )
@@ -3007,7 +3053,7 @@ change via the relay reconstruct the full resource without a separate download.
                 if resource.deleted_at.is_some() {
                     return Err(StorageError::NotFound(id.to_string()));
                 }
-                let blob: Vec<u8> = row.get(9)?;
+                let blob: Vec<u8> = row.get(12)?;
                 Ok((resource, blob))
             }
         }
@@ -3094,7 +3140,7 @@ retained (reclaim is `purge_deleted_resources`); tombstone journal row.
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer
+                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer,duration_ms,width,height
                  FROM resources
                  WHERE deleted_at IS NULL
                    AND (?1 = '' OR created_at > ?2 OR (created_at = ?2 AND id > ?3))
@@ -3473,8 +3519,8 @@ and skipped, never abort the sync.
                     let blob = data.unwrap_or_default();
                     self.conn
                         .execute(
-                            "INSERT OR REPLACE INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer)
-                             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                            "INSERT OR REPLACE INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer,duration_ms,width,height)
+                             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
                             libsql::params![
                                 id,
                                 resource.title,
@@ -3486,6 +3532,9 @@ and skipped, never abort the sync.
                                 resource.deleted_at.map(|d| d.to_sortable_rfc3339()),
                                 vv_to_json(&resource.vv),
                                 resource.last_writer,
+                                resource.duration_ms.map(|d| d as i64),
+                                resource.dimensions.map(|(w, _)| w as i64),
+                                resource.dimensions.map(|(_, h)| h as i64),
                             ],
                         )
                         .await?;
@@ -4175,7 +4224,7 @@ per-method markers `> fn <name>`.
 **Identification** — `#[cfg(test)] mod migration_tests`; marker
 `// md:mod migration_tests`. Two helpers + four tests.
 
-**Code** — container: members documented as sub-blocks below: fn raw_conn, fn user_version, fn note_history_reads_this_devices_versions_newest_first, fn fresh_database_is_stamped_current_and_reopen_is_a_noop, fn tag_system_flag_round_trips, fn migrates_a_pre_framework_database_without_losing_data, fn refuses_to_open_a_newer_schema.
+**Code** — container: members documented as sub-blocks below: fn raw_conn, fn user_version, fn note_history_reads_this_devices_versions_newest_first, fn fresh_database_is_stamped_current_and_reopen_is_a_noop, fn tag_system_flag_round_trips, fn resource_media_metadata_round_trips, fn migrates_a_pre_framework_database_without_losing_data, fn refuses_to_open_a_newer_schema.
 
 **What it does** — Pins the migration framework and the journal-derived
 history.
@@ -4342,6 +4391,69 @@ fail here).
 - `DbBackend::{create_tag, read_tag, update_tag, list_tags}` — the CRUD surface under test;
   expects each to read/write the `system` column consistently.
 - `Tag::new` — expects it to default `system` to `false`.
+
+**Used by** — test binary only.
+
+### fn resource_media_metadata_round_trips
+
+**Identification** — tokio test; marker
+`// md:mod migration_tests > fn resource_media_metadata_round_trips`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod migration_tests > fn resource_media_metadata_round_trips
+    #[tokio::test]
+    async fn resource_media_metadata_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("resource_media.db");
+        let be = DbBackend::new(&path, "", "").await.unwrap();
+
+        let mut r = Resource::new("clip", "video/mp4", "clip.mp4", 10);
+        r.duration_ms = Some(4200);
+        r.dimensions = Some((1920, 1080));
+        let created = be.create_resource(r, vec![1, 2, 3]).await.unwrap();
+        assert_eq!(created.duration_ms, Some(4200));
+        assert_eq!(created.dimensions, Some((1920, 1080)));
+
+        let (read, blob) = be.read_resource(created.id).await.unwrap();
+        assert_eq!(
+            read.duration_ms,
+            Some(4200),
+            "duration survives create+read"
+        );
+        assert_eq!(read.dimensions, Some((1920, 1080)), "dimensions survive");
+        assert_eq!(
+            blob,
+            vec![1, 2, 3],
+            "blob still read from its shifted column"
+        );
+
+        let plain = be
+            .create_resource(Resource::new("doc", "text/plain", "d.txt", 3), vec![9])
+            .await
+            .unwrap();
+        assert_eq!(plain.duration_ms, None, "non-media attachment stays None");
+        assert_eq!(plain.dimensions, None);
+
+        let (listed, _) = be.list_resources(100, None).await.unwrap();
+        let clip = listed.iter().find(|x| x.id == created.id).unwrap();
+        assert_eq!(clip.duration_ms, Some(4200));
+        assert_eq!(clip.dimensions, Some((1920, 1080)));
+        let doc = listed.iter().find(|x| x.id == plain.id).unwrap();
+        assert!(doc.duration_ms.is_none() && doc.dimensions.is_none());
+    }
+```
+
+**What it does** — Exercises the media columns end-to-end on `DbBackend`: a resource created
+with `duration_ms`/`dimensions` reads back with both preserved (and the blob still read from
+its now-shifted column `12`); a non-media attachment keeps both `None`; and `list_resources`
+surfaces both. Guards the column order `row_to_resource` and every resource `SELECT` depend on.
+
+**Dependencies** —
+- `DbBackend::{create_resource, read_resource, list_resources}` — the surface under test;
+  expects each to read/write `duration_ms`/`width`/`height` in the agreed column order.
+- `Resource::new` — expects it to default `duration_ms`/`dimensions` to `None`.
 
 **Used by** — test binary only.
 
@@ -4521,85 +4633,87 @@ refresh with `graphify update .` after refactors.
 | 26 | `fn ensure_ws` | `// md:impl DbBackend > fn ensure_ws` |
 | 27 | `fn migrate_v2_ordering` | `// md:impl DbBackend > fn migrate_v2_ordering` |
 | 28 | `fn migrate_v3_tag_system` | `// md:impl DbBackend > fn migrate_v3_tag_system` |
-| 29 | `fn current_meta` | `// md:impl DbBackend > fn current_meta` |
-| 30 | `fn incoming_wins` | `// md:impl DbBackend > fn incoming_wins` |
-| 31 | `fn next_local_vv` | `// md:impl DbBackend > fn next_local_vv` |
-| 32 | `fn row_is_live` | `// md:impl DbBackend > fn row_is_live` |
-| 33 | `fn assoc_meta` | `// md:impl DbBackend > fn assoc_meta` |
-| 34 | `fn next_assoc_vv` | `// md:impl DbBackend > fn next_assoc_vv` |
-| 35 | `fn assoc_incoming_wins` | `// md:impl DbBackend > fn assoc_incoming_wins` |
-| 36 | `fn upsert_assoc` | `// md:impl DbBackend > fn upsert_assoc` |
-| 37 | `fn resource_meta` | `// md:impl DbBackend > fn resource_meta` |
-| 38 | `fn next_resource_vv` | `// md:impl DbBackend > fn next_resource_vv` |
-| 39 | `fn resource_incoming_wins` | `// md:impl DbBackend > fn resource_incoming_wins` |
-| 40 | `fn parse_cursor` | `// md:fn parse_cursor` |
-| 41 | `fn build_page` | `// md:fn build_page` |
-| 42 | `fn bookmarks_to_json` | `// md:fn bookmarks_to_json` |
-| 43 | `fn links_to_json` | `// md:fn links_to_json` |
-| 44 | `fn json_to_bookmarks` | `// md:fn json_to_bookmarks` |
-| 45 | `fn json_to_links` | `// md:fn json_to_links` |
-| 46 | `fn vv_to_json` | `// md:fn vv_to_json` |
-| 47 | `fn json_to_vv` | `// md:fn json_to_vv` |
-| 48 | `fn tombstone_data` | `// md:fn tombstone_data` |
-| 49 | `fn assoc_data` | `// md:fn assoc_data` |
-| 50 | `fn assoc_from_data` | `// md:fn assoc_from_data` |
-| 51 | `fn tombstone_from_data` | `// md:fn tombstone_from_data` |
-| 52 | `impl NoteRepository for DbBackend` (container) | `// md:impl NoteRepository for DbBackend` |
-| 53 | `fn create_note` | `// md:impl NoteRepository for DbBackend > fn create_note` |
-| 54 | `fn read_note` | `// md:impl NoteRepository for DbBackend > fn read_note` |
-| 55 | `fn update_note` | `// md:impl NoteRepository for DbBackend > fn update_note` |
-| 56 | `fn delete_note` | `// md:impl NoteRepository for DbBackend > fn delete_note` |
-| 57 | `fn list_notes` | `// md:impl NoteRepository for DbBackend > fn list_notes` |
-| 58 | `fn note_backlinks` | `// md:impl NoteRepository for DbBackend > fn note_backlinks` |
-| 59 | `fn list_notes_in_notebook` | `// md:impl NoteRepository for DbBackend > fn list_notes_in_notebook` |
-| 60 | `fn list_starred_notes` | `// md:impl NoteRepository for DbBackend > fn list_starred_notes` |
-| 61 | `fn notebook_sort_profile` | `// md:impl NoteRepository for DbBackend > fn notebook_sort_profile` |
-| 62 | `impl NotebookRepository for DbBackend` (container) | `// md:impl NotebookRepository for DbBackend` |
-| 63 | `fn create_notebook` | `// md:impl NotebookRepository for DbBackend > fn create_notebook` |
-| 64 | `fn read_notebook` | `// md:impl NotebookRepository for DbBackend > fn read_notebook` |
-| 65 | `fn update_notebook` | `// md:impl NotebookRepository for DbBackend > fn update_notebook` |
-| 66 | `fn delete_notebook` | `// md:impl NotebookRepository for DbBackend > fn delete_notebook` |
-| 67 | `fn list_notebooks` | `// md:impl NotebookRepository for DbBackend > fn list_notebooks` |
-| 68 | `impl TagRepository for DbBackend` (container) | `// md:impl TagRepository for DbBackend` |
-| 69 | `fn create_tag` | `// md:impl TagRepository for DbBackend > fn create_tag` |
-| 70 | `fn read_tag` | `// md:impl TagRepository for DbBackend > fn read_tag` |
-| 71 | `fn update_tag` | `// md:impl TagRepository for DbBackend > fn update_tag` |
-| 72 | `fn delete_tag` | `// md:impl TagRepository for DbBackend > fn delete_tag` |
-| 73 | `fn list_tags` | `// md:impl TagRepository for DbBackend > fn list_tags` |
-| 74 | `fn add_note_tag` | `// md:impl TagRepository for DbBackend > fn add_note_tag` |
-| 75 | `fn remove_note_tag` | `// md:impl TagRepository for DbBackend > fn remove_note_tag` |
-| 76 | `fn list_note_tags` | `// md:impl TagRepository for DbBackend > fn list_note_tags` |
-| 77 | `impl ResourceRepository for DbBackend` (container) | `// md:impl ResourceRepository for DbBackend` |
-| 78 | `fn create_resource` | `// md:impl ResourceRepository for DbBackend > fn create_resource` |
-| 79 | `fn read_resource` | `// md:impl ResourceRepository for DbBackend > fn read_resource` |
-| 80 | `fn delete_resource` | `// md:impl ResourceRepository for DbBackend > fn delete_resource` |
-| 81 | `fn list_resources` | `// md:impl ResourceRepository for DbBackend > fn list_resources` |
-| 82 | `fn purge_deleted_resources` | `// md:impl ResourceRepository for DbBackend > fn purge_deleted_resources` |
-| 83 | `impl SyncBackend for DbBackend` (container) | `// md:impl SyncBackend for DbBackend` |
-| 84 | `fn get_changes_since` | `// md:impl SyncBackend for DbBackend > fn get_changes_since` |
-| 85 | `fn apply_change` | `// md:impl SyncBackend for DbBackend > fn apply_change` |
-| 86 | `fn get_last_sync_time` | `// md:impl SyncBackend for DbBackend > fn get_last_sync_time` |
-| 87 | `fn update_sync_time` | `// md:impl SyncBackend for DbBackend > fn update_sync_time` |
-| 88 | `fn send_changes` | `// md:impl SyncBackend for DbBackend > fn send_changes` |
-| 89 | `fn receive_changes` | `// md:impl SyncBackend for DbBackend > fn receive_changes` |
-| 90 | `fn prune_change_journal` | `// md:impl SyncBackend for DbBackend > fn prune_change_journal` |
-| 91 | `fn get_device_id` | `// md:impl SyncBackend for DbBackend > fn get_device_id` |
-| 92 | `ServerVersion` | `// md:ServerVersion` |
-| 93 | `CapabilityCache` | `// md:CapabilityCache` |
-| 94 | `fn http_base_of` | `// md:fn http_base_of` |
-| 95 | `impl DbBackend (server history)` (container) | `// md:impl DbBackend (server history)` |
-| 96 | `fn server_http_base` | `// md:impl DbBackend (server history) > fn server_http_base` |
-| 97 | `fn server_has_capability` | `// md:impl DbBackend (server history) > fn server_has_capability` |
-| 98 | `fn server_entity_history` | `// md:impl DbBackend (server history) > fn server_entity_history` |
-| 99 | `fn entity_history` | `// md:impl DbBackend (server history) > fn entity_history` |
-| 100 | `impl HistoryRepository for DbBackend` (container) | `// md:impl HistoryRepository for DbBackend` |
-| 101 | `fn note_history` | `// md:impl HistoryRepository for DbBackend > fn note_history` |
-| 102 | `fn notebook_history` | `// md:impl HistoryRepository for DbBackend > fn notebook_history` |
-| 103 | `mod migration_tests` (container) | `// md:mod migration_tests` |
-| 104 | `fn raw_conn` | `// md:mod migration_tests > fn raw_conn` |
-| 105 | `fn user_version` | `// md:mod migration_tests > fn user_version` |
-| 106 | `fn note_history_reads_this_devices_versions_newest_first` | `// md:mod migration_tests > fn note_history_reads_this_devices_versions_newest_first` |
-| 107 | `fn fresh_database_is_stamped_current_and_reopen_is_a_noop` | `// md:mod migration_tests > fn fresh_database_is_stamped_current_and_reopen_is_a_noop` |
-| 108 | `fn tag_system_flag_round_trips` | `// md:mod migration_tests > fn tag_system_flag_round_trips` |
-| 109 | `fn migrates_a_pre_framework_database_without_losing_data` | `// md:mod migration_tests > fn migrates_a_pre_framework_database_without_losing_data` |
-| 110 | `fn refuses_to_open_a_newer_schema` | `// md:mod migration_tests > fn refuses_to_open_a_newer_schema` |
+| 29 | `fn migrate_v4_resource_media` | `// md:impl DbBackend > fn migrate_v4_resource_media` |
+| 30 | `fn current_meta` | `// md:impl DbBackend > fn current_meta` |
+| 31 | `fn incoming_wins` | `// md:impl DbBackend > fn incoming_wins` |
+| 32 | `fn next_local_vv` | `// md:impl DbBackend > fn next_local_vv` |
+| 33 | `fn row_is_live` | `// md:impl DbBackend > fn row_is_live` |
+| 34 | `fn assoc_meta` | `// md:impl DbBackend > fn assoc_meta` |
+| 35 | `fn next_assoc_vv` | `// md:impl DbBackend > fn next_assoc_vv` |
+| 36 | `fn assoc_incoming_wins` | `// md:impl DbBackend > fn assoc_incoming_wins` |
+| 37 | `fn upsert_assoc` | `// md:impl DbBackend > fn upsert_assoc` |
+| 38 | `fn resource_meta` | `// md:impl DbBackend > fn resource_meta` |
+| 39 | `fn next_resource_vv` | `// md:impl DbBackend > fn next_resource_vv` |
+| 40 | `fn resource_incoming_wins` | `// md:impl DbBackend > fn resource_incoming_wins` |
+| 41 | `fn parse_cursor` | `// md:fn parse_cursor` |
+| 42 | `fn build_page` | `// md:fn build_page` |
+| 43 | `fn bookmarks_to_json` | `// md:fn bookmarks_to_json` |
+| 44 | `fn links_to_json` | `// md:fn links_to_json` |
+| 45 | `fn json_to_bookmarks` | `// md:fn json_to_bookmarks` |
+| 46 | `fn json_to_links` | `// md:fn json_to_links` |
+| 47 | `fn vv_to_json` | `// md:fn vv_to_json` |
+| 48 | `fn json_to_vv` | `// md:fn json_to_vv` |
+| 49 | `fn tombstone_data` | `// md:fn tombstone_data` |
+| 50 | `fn assoc_data` | `// md:fn assoc_data` |
+| 51 | `fn assoc_from_data` | `// md:fn assoc_from_data` |
+| 52 | `fn tombstone_from_data` | `// md:fn tombstone_from_data` |
+| 53 | `impl NoteRepository for DbBackend` (container) | `// md:impl NoteRepository for DbBackend` |
+| 54 | `fn create_note` | `// md:impl NoteRepository for DbBackend > fn create_note` |
+| 55 | `fn read_note` | `// md:impl NoteRepository for DbBackend > fn read_note` |
+| 56 | `fn update_note` | `// md:impl NoteRepository for DbBackend > fn update_note` |
+| 57 | `fn delete_note` | `// md:impl NoteRepository for DbBackend > fn delete_note` |
+| 58 | `fn list_notes` | `// md:impl NoteRepository for DbBackend > fn list_notes` |
+| 59 | `fn note_backlinks` | `// md:impl NoteRepository for DbBackend > fn note_backlinks` |
+| 60 | `fn list_notes_in_notebook` | `// md:impl NoteRepository for DbBackend > fn list_notes_in_notebook` |
+| 61 | `fn list_starred_notes` | `// md:impl NoteRepository for DbBackend > fn list_starred_notes` |
+| 62 | `fn notebook_sort_profile` | `// md:impl NoteRepository for DbBackend > fn notebook_sort_profile` |
+| 63 | `impl NotebookRepository for DbBackend` (container) | `// md:impl NotebookRepository for DbBackend` |
+| 64 | `fn create_notebook` | `// md:impl NotebookRepository for DbBackend > fn create_notebook` |
+| 65 | `fn read_notebook` | `// md:impl NotebookRepository for DbBackend > fn read_notebook` |
+| 66 | `fn update_notebook` | `// md:impl NotebookRepository for DbBackend > fn update_notebook` |
+| 67 | `fn delete_notebook` | `// md:impl NotebookRepository for DbBackend > fn delete_notebook` |
+| 68 | `fn list_notebooks` | `// md:impl NotebookRepository for DbBackend > fn list_notebooks` |
+| 69 | `impl TagRepository for DbBackend` (container) | `// md:impl TagRepository for DbBackend` |
+| 70 | `fn create_tag` | `// md:impl TagRepository for DbBackend > fn create_tag` |
+| 71 | `fn read_tag` | `// md:impl TagRepository for DbBackend > fn read_tag` |
+| 72 | `fn update_tag` | `// md:impl TagRepository for DbBackend > fn update_tag` |
+| 73 | `fn delete_tag` | `// md:impl TagRepository for DbBackend > fn delete_tag` |
+| 74 | `fn list_tags` | `// md:impl TagRepository for DbBackend > fn list_tags` |
+| 75 | `fn add_note_tag` | `// md:impl TagRepository for DbBackend > fn add_note_tag` |
+| 76 | `fn remove_note_tag` | `// md:impl TagRepository for DbBackend > fn remove_note_tag` |
+| 77 | `fn list_note_tags` | `// md:impl TagRepository for DbBackend > fn list_note_tags` |
+| 78 | `impl ResourceRepository for DbBackend` (container) | `// md:impl ResourceRepository for DbBackend` |
+| 79 | `fn create_resource` | `// md:impl ResourceRepository for DbBackend > fn create_resource` |
+| 80 | `fn read_resource` | `// md:impl ResourceRepository for DbBackend > fn read_resource` |
+| 81 | `fn delete_resource` | `// md:impl ResourceRepository for DbBackend > fn delete_resource` |
+| 82 | `fn list_resources` | `// md:impl ResourceRepository for DbBackend > fn list_resources` |
+| 83 | `fn purge_deleted_resources` | `// md:impl ResourceRepository for DbBackend > fn purge_deleted_resources` |
+| 84 | `impl SyncBackend for DbBackend` (container) | `// md:impl SyncBackend for DbBackend` |
+| 85 | `fn get_changes_since` | `// md:impl SyncBackend for DbBackend > fn get_changes_since` |
+| 86 | `fn apply_change` | `// md:impl SyncBackend for DbBackend > fn apply_change` |
+| 87 | `fn get_last_sync_time` | `// md:impl SyncBackend for DbBackend > fn get_last_sync_time` |
+| 88 | `fn update_sync_time` | `// md:impl SyncBackend for DbBackend > fn update_sync_time` |
+| 89 | `fn send_changes` | `// md:impl SyncBackend for DbBackend > fn send_changes` |
+| 90 | `fn receive_changes` | `// md:impl SyncBackend for DbBackend > fn receive_changes` |
+| 91 | `fn prune_change_journal` | `// md:impl SyncBackend for DbBackend > fn prune_change_journal` |
+| 92 | `fn get_device_id` | `// md:impl SyncBackend for DbBackend > fn get_device_id` |
+| 93 | `ServerVersion` | `// md:ServerVersion` |
+| 94 | `CapabilityCache` | `// md:CapabilityCache` |
+| 95 | `fn http_base_of` | `// md:fn http_base_of` |
+| 96 | `impl DbBackend (server history)` (container) | `// md:impl DbBackend (server history)` |
+| 97 | `fn server_http_base` | `// md:impl DbBackend (server history) > fn server_http_base` |
+| 98 | `fn server_has_capability` | `// md:impl DbBackend (server history) > fn server_has_capability` |
+| 99 | `fn server_entity_history` | `// md:impl DbBackend (server history) > fn server_entity_history` |
+| 100 | `fn entity_history` | `// md:impl DbBackend (server history) > fn entity_history` |
+| 101 | `impl HistoryRepository for DbBackend` (container) | `// md:impl HistoryRepository for DbBackend` |
+| 102 | `fn note_history` | `// md:impl HistoryRepository for DbBackend > fn note_history` |
+| 103 | `fn notebook_history` | `// md:impl HistoryRepository for DbBackend > fn notebook_history` |
+| 104 | `mod migration_tests` (container) | `// md:mod migration_tests` |
+| 105 | `fn raw_conn` | `// md:mod migration_tests > fn raw_conn` |
+| 106 | `fn user_version` | `// md:mod migration_tests > fn user_version` |
+| 107 | `fn note_history_reads_this_devices_versions_newest_first` | `// md:mod migration_tests > fn note_history_reads_this_devices_versions_newest_first` |
+| 108 | `fn fresh_database_is_stamped_current_and_reopen_is_a_noop` | `// md:mod migration_tests > fn fresh_database_is_stamped_current_and_reopen_is_a_noop` |
+| 109 | `fn tag_system_flag_round_trips` | `// md:mod migration_tests > fn tag_system_flag_round_trips` |
+| 110 | `fn resource_media_metadata_round_trips` | `// md:mod migration_tests > fn resource_media_metadata_round_trips` |
+| 111 | `fn migrates_a_pre_framework_database_without_losing_data` | `// md:mod migration_tests > fn migrates_a_pre_framework_database_without_losing_data` |
+| 112 | `fn refuses_to_open_a_newer_schema` | `// md:mod migration_tests > fn refuses_to_open_a_newer_schema` |

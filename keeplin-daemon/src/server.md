@@ -252,9 +252,16 @@ fn resource_to_proto(r: CoreResource) -> Resource {
         file_name: r.file_name,
         size: r.size as i64,
         created_at: r.created_at.to_rfc3339(),
+        duration_ms: r.duration_ms,
+        width: r.dimensions.map(|(w, _)| w),
+        height: r.dimensions.map(|(_, h)| h),
     }
 }
 ```
+
+The media metadata is copied straight through (the daemon transports `duration_ms` and
+`dimensions` without interpreting them); `dimensions` is split back into the proto's separate
+optional `width`/`height`.
 
 **What it does** — Metadata-only map (`id`, `title`, `mime_type`, `file_name`,
 `size as i64`, `created_at`); payload bytes travel separately.
@@ -662,7 +669,12 @@ Result<UploadResourceRequest, Status>> + Unpin`; marker
         }
 
         let size = data.len() as u64;
-        let resource = CoreResource::new(meta.title, meta.mime_type, meta.file_name, size);
+        let mut resource = CoreResource::new(meta.title, meta.mime_type, meta.file_name, size);
+        resource.duration_ms = meta.duration_ms;
+        resource.dimensions = match (meta.width, meta.height) {
+            (Some(w), Some(h)) => Some((w, h)),
+            _ => None,
+        };
         let created = self
             .backend
             .create_resource(resource, data)
@@ -1573,7 +1585,12 @@ one note.
     ) -> Result<Response<CreateResourceResponse>, Status> {
         let r = req.into_inner();
         let size = r.data.len() as u64;
-        let resource = CoreResource::new(r.title, r.mime_type, r.file_name, size);
+        let mut resource = CoreResource::new(r.title, r.mime_type, r.file_name, size);
+        resource.duration_ms = r.duration_ms;
+        resource.dimensions = match (r.width, r.height) {
+            (Some(w), Some(h)) => Some((w, h)),
+            _ => None,
+        };
         let created = self
             .backend
             .create_resource(resource, r.data)
@@ -2116,6 +2133,9 @@ the upload tests exercise assembly, not the cap.
                 title: title.into(),
                 mime_type: mime.into(),
                 file_name: file.into(),
+                duration_ms: None,
+                width: None,
+                height: None,
             })),
         }
     }

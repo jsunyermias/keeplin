@@ -1469,6 +1469,8 @@ async fn delete_for_unknown_entity_leaves_a_tombstone_blocking_a_stale_create() 
         mime_type: "text/plain".into(),
         file_name: "f.txt".into(),
         size: 3,
+        duration_ms: None,
+        dimensions: None,
         created_at: ts,
         deleted_at: None,
         vv: vv("peer", 1),
