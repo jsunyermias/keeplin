@@ -492,10 +492,7 @@ async fn fs_note_uses_three_file_layout() {
 
     let ndir = dir.path().join("notes").join(id.to_string());
     assert!(ndir.join("note.md").exists(), "note.md must exist");
-    assert!(
-        ndir.join("meta.ndjson").exists(),
-        "meta.ndjson must exist"
-    );
+    assert!(ndir.join("meta.ndjson").exists(), "meta.ndjson must exist");
 
     let mut found_log = false;
     for e in std::fs::read_dir(&ndir).unwrap() {
