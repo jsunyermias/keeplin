@@ -51,11 +51,11 @@ async fn storage_contains_ciphertext_not_plaintext() {
         !md.contains("plaintext-body"),
         "note.md should not contain plaintext body"
     );
-    let meta = std::fs::read(ndir.join("meta.msgpack")).unwrap();
+    let meta = std::fs::read(ndir.join("meta.ndjson")).unwrap();
     let title_needle = b"plaintext-title";
     assert!(
         !meta.windows(title_needle.len()).any(|w| w == title_needle),
-        "meta.msgpack should not contain plaintext title"
+        "meta.ndjson should not contain plaintext title"
     );
 }
 

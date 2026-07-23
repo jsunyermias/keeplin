@@ -52,15 +52,15 @@ that Syncthing (or any equivalent) replicates between devices. Two storage model
 
 - **Notes — per-device logs with version-vector merge.** Each note is a directory
   `notes/{id}/` holding `note.md` (materialised body; ciphertext under
-  encryption), `meta.msgpack` (materialised metadata + merged vector — a cache),
-  and `log.{device_id}.msgpack` — an append-only op log written **only** by that
+  encryption), `meta.ndjson` (materialised metadata + merged vector — a cache),
+  and `log.{device_id}.ndjson` — an append-only op log written **only** by that
   device. Single-writer logs never conflict under Syncthing; a note's true state
   is the merge of all its logs (`note_log::merge`). Projections are regenerated on
   every write and sync; **reads materialise live from the logs** and never write.
-- **Notebooks, tags, resources — sidecars + global change log.** One MessagePack
-  sidecar per entity, every mutation appended as an NDJSON line to
-  `logs/{device_id}.log`; `receive_changes` reads new foreign entries via a
-  byte-offset cursor.
+- **Notebooks, tags, resources — sidecars + global change log.** One NDJSON
+  sidecar per entity (a single JSON object per file), every mutation appended as
+  an NDJSON line to `logs/{device_id}.log`; `receive_changes` reads new foreign
+  entries via a byte-offset cursor.
 
 Log growth is bounded: per-note logs compact to their frontier past
 `NOTE_LOG_COMPACT_THRESHOLD` (256) entries (`note_log::compact_own_log`, lossless
@@ -71,8 +71,10 @@ re-reads the snapshot from the start; every entry is version-vector resolved and
 idempotent, so replaying converges. `prune_change_journal` stays a no-op —
 compaction, not time-based deletion, does the bounding.
 
-**Dependencies** — `tokio::fs`/io, `rmp_serde` (MessagePack), `serde_json`
-(NDJSON), `note_log`, the trait family, `SortableRfc3339`.
+**Dependencies** — `tokio::fs`/io, `serde_json` (NDJSON — every sidecar, log and
+`sync_state`), `note_log`, the trait family, `SortableRfc3339`. MessagePack
+(`rmp_serde`) is no longer used by this backend; it stays a crate dependency
+reserved for future binary containers.
 
 **Used by** — `keeplin-daemon/src/main.rs` (`storage = "filesystem"` mode, the
 default), `migrate.rs`, in-crate tests of many modules (the cheapest real
@@ -100,7 +102,7 @@ struct NoteMeta {
 ```
 
 **What it does** — The materialised projection written to
-`notes/{id}/meta.msgpack`: the merged note (body blanked — it lives in `note.md`)
+`notes/{id}/meta.ndjson`: the merged note (body blanked — it lives in `note.md`)
 plus the merged version vector. A local cache regenerated from the logs; never
 the source of truth for resolution.
 
@@ -244,7 +246,7 @@ struct NoteTagState {
 ```
 
 **What it does** — The versioned state of one note↔tag association, stored as
-the MessagePack contents of `note_tags/{note}/{tag}` (previously an empty
+the NDJSON contents of `note_tags/{note}/{tag}` (previously an empty
 marker file): `updated_at`, `deleted_at` (`None` = attached, `Some` = tombstone
 kept so a remove can beat a concurrent add), `vv`, `last_writer` — all
 `serde(default)` so old records parse.
@@ -420,14 +422,14 @@ fn snapshot_entry_from_sidecar<T: serde::Serialize + serde::de::DeserializeOwned
     id: Uuid,
     ts: DateTime<Utc>,
 ) -> Option<LogEntry> {
-    let concrete: T = rmp_serde::from_slice(bytes).ok()?;
+    let concrete: T = serde_json::from_slice(bytes).ok()?;
     let value = serde_json::to_value(&concrete).ok()?;
     Some(snapshot_entry_from_value(kind, id, ts, value))
 }
 ```
 
 **What it does** — Builds a snapshot `LogEntry` for a notebook/tag/resource by
-decoding its MessagePack sidecar into the concrete type and re-serialising
+decoding its NDJSON sidecar into the concrete type and re-serialising
 through `serde_json` — the same encoding `append_log` uses, so the entry
 round-trips through `log_entry_to_change` identically. `None` when the sidecar
 cannot be decoded.
@@ -684,6 +686,50 @@ entries carry metadata only, `data: None` — Syncthing replicates
 
 ---
 
+## fn parse_note_log
+
+**Identification** — `fn parse_note_log(bytes: &[u8]) -> Result<Vec<NoteLogEntry>, StorageError>`;
+marker `// md:fn parse_note_log`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn parse_note_log
+fn parse_note_log(bytes: &[u8]) -> Result<Vec<NoteLogEntry>, StorageError> {
+    let mut out = Vec::new();
+    for line in bytes.split(|b| *b == b'\n') {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let entry: NoteLogEntry = serde_json::from_slice(line)
+            .map_err(|e| StorageError::CorruptedData(format!("ndjson decode: {e}")))?;
+        out.push(entry);
+    }
+    Ok(out)
+}
+```
+
+**What it does** — Parses a per-device note log from NDJSON: splits on `\n`,
+skips blank/whitespace-only lines (so a trailing newline is tolerated), and
+decodes each remaining line into a `NoteLogEntry`. The first malformed line
+aborts with `CorruptedData` (all-or-nothing, matching the previous single-blob
+decode). This is the inverse of `write_note_log`.
+
+**Dependencies** —
+- `serde_json::from_slice` — decodes one line into a `NoteLogEntry`; expects
+  each non-blank line to be a complete JSON object — a truncated last line
+  surfaces as `CorruptedData`, not a partial entry.
+
+**Used by** — `read_note_logs` (all logs of a note, per-file error is logged and
+skipped there) and `append_note_op` (the own-device log, where a decode error
+propagates).
+
+**Repeated context** — Per-device logs are single-writer, so a well-formed log
+is only ever produced by this device's `write_note_log`; corruption means an
+external truncation.
+
+---
+
 ## fn atomic_write
 
 **Identification** — `async fn atomic_write(path: &Path, bytes: &[u8])`; marker
@@ -736,7 +782,7 @@ struct SyncState {
 }
 ```
 
-**What it does** — The contents of `.keeplin/sync_state.msgpack`: `last_sync`,
+**What it does** — The contents of `.keeplin/sync_state.ndjson`: `last_sync`,
 the watermark `get_changes_since` filters against.
 
 **Used by** — `get_last_sync_time`, `update_sync_time`.
@@ -765,14 +811,14 @@ pub struct FsBackend {
 ```text
 {root}/
   notes/{uuid}/note.md                    — materialized body
-  notes/{uuid}/meta.msgpack               — metadata + merged vv (cache)
-  notes/{uuid}/log.{device_id}.msgpack    — that device's op log (source of truth)
-  notebooks/{uuid}.msgpack                — sidecar
-  tags/{uuid}.msgpack                     — sidecar
+  notes/{uuid}/meta.ndjson               — metadata + merged vv (cache)
+  notes/{uuid}/log.{device_id}.ndjson    — that device's op log (source of truth)
+  notebooks/{uuid}.ndjson                — sidecar
+  tags/{uuid}.ndjson                     — sidecar
   note_tags/{note}/{tag}                  — versioned association state
-  resources/{uuid}/meta.msgpack + data    — metadata + raw payload
+  resources/{uuid}/meta.ndjson + data    — metadata + raw payload
   logs/{device_id}.log                    — global NDJSON log (optional epoch header)
-  .keeplin/device_id | format_version | sync_state.msgpack | offsets/{device_id}
+  .keeplin/device_id | format_version | sync_state.ndjson | offsets/{device_id}
 ```
 
 Fields: `root`; `device_id` (from `.keeplin/device_id`);
@@ -793,11 +839,11 @@ log; `note_index: RwLock<Option<NoteMetaIndex>>` — the lazy listing index.
 **Identification** — the first inherent impl; marker `// md:impl FsBackend`.
 Constructor, sweeps, format versioning, path helpers, log machinery,
 sidecar/association/resource versioning, the note merge pipeline. Contains the
-constants `FORMAT_VERSION = 5`, `NOTE_LOG_COMPACT_THRESHOLD = 256`,
+constants `FORMAT_VERSION = 7`, `NOTE_LOG_COMPACT_THRESHOLD = 256`,
 `GLOBAL_LOG_COMPACT_THRESHOLD = 512`, `GLOBAL_LOG_SOFT_BYTES = 64 KiB`
 (documented with the methods that use them).
 
-**Code** — container: members documented as sub-blocks below: fn new, fn sweep_orphan_tmp_files, fn scan_sync_conflicts, fn sweep_tmp_in_dir, fn format_version_path, fn ensure_format_version, fn apply_format_migration, fn note_dir, fn note_md_path, fn note_meta_path, fn note_log_path, fn device_log_path, fn notebook_path, fn tag_path, fn note_tag_dir, fn note_tag_path, fn resource_dir, fn resource_meta_path, fn resource_data_path, fn read_or_create_device_id, fn append_log, fn maybe_compact_global_log_locked, fn own_log_entry_count, fn read_own_epoch, fn compact_global_log_locked, fn build_global_snapshot, fn log_offset_path, fn read_log_offset, fn write_log_offset, fn read_log_header, fn read_other_logs_since, fn read_new_entries, fn write_sidecar, fn read_sidecar, fn sidecar_vv, fn next_sidecar_vv, fn sidecar_incoming_wins, fn read_assoc_state, fn next_assoc_vv, fn assoc_incoming_wins, fn write_assoc_state, fn read_resource_meta, fn next_resource_vv, fn resource_incoming_wins, fn note_vv, fn read_note_logs, fn merge_note, fn materialize, fn persist_note_projection, fn read_note_projection, fn with_note_index, fn build_note_index, fn materialize_page, fn append_note_op, fn collect_advanced_notes.
+**Code** — container: members documented as sub-blocks below: fn new, fn sweep_orphan_tmp_files, fn scan_sync_conflicts, fn sweep_tmp_in_dir, fn format_version_path, fn ensure_format_version, fn apply_format_migration, fn note_dir, fn note_md_path, fn note_meta_path, fn note_log_path, fn device_log_path, fn notebook_path, fn tag_path, fn note_tag_dir, fn note_tag_path, fn resource_dir, fn resource_meta_path, fn resource_data_path, fn read_or_create_device_id, fn append_log, fn maybe_compact_global_log_locked, fn own_log_entry_count, fn read_own_epoch, fn compact_global_log_locked, fn build_global_snapshot, fn log_offset_path, fn read_log_offset, fn write_log_offset, fn read_log_header, fn read_other_logs_since, fn read_new_entries, fn write_sidecar, fn write_note_log, fn read_sidecar, fn sidecar_vv, fn next_sidecar_vv, fn sidecar_incoming_wins, fn read_assoc_state, fn next_assoc_vv, fn assoc_incoming_wins, fn write_assoc_state, fn read_resource_meta, fn next_resource_vv, fn resource_incoming_wins, fn note_vv, fn read_note_logs, fn merge_note, fn materialize, fn persist_note_projection, fn read_note_projection, fn with_note_index, fn build_note_index, fn materialize_page, fn append_note_op, fn collect_advanced_notes.
 
 ### fn new
 
@@ -995,7 +1041,7 @@ the only good version; the caller logs the findings with remediation guidance
         removed
     }
 
-    const FORMAT_VERSION: u32 = 6;
+    const FORMAT_VERSION: u32 = 7;
 
     const NOTE_LOG_COMPACT_THRESHOLD: usize = 256;
 
@@ -1067,7 +1113,7 @@ one directory, skipping Syncthing temporaries.
     }
 ```
 
-**What it does** — Brings the store up to `FORMAT_VERSION` (5), stamping after
+**What it does** — Brings the store up to `FORMAT_VERSION` (7), stamping after
 **each** step so a crash mid-ladder resumes from the last completed step. A
 `fresh` store is stamped directly (no migration over empty data). A missing
 stamp on an existing store means format `1`; a stamp **newer** than this build
@@ -1085,7 +1131,7 @@ not understand. A final stamp write covers the already-current case.
     // md:impl FsBackend > fn apply_format_migration
     async fn apply_format_migration(&self, version: u32) -> Result<(), StorageError> {
         match version {
-            2..=6 => Ok(()),
+            2..=7 => Ok(()),
             other => Err(StorageError::InvalidState(format!(
                 "no filesystem migration defined for format version {other}"
             ))),
@@ -1139,11 +1185,11 @@ breaking change gets a real body here.
 ```rust
     // md:impl FsBackend > fn note_meta_path
     fn note_meta_path(&self, id: Uuid) -> PathBuf {
-        self.note_dir(id).join("meta.msgpack")
+        self.note_dir(id).join("meta.ndjson")
     }
 ```
 
-**What it does** — `…/meta.msgpack` (cache, not source of truth).
+**What it does** — `…/meta.ndjson` (cache, not source of truth).
 
 ### fn note_log_path
 
@@ -1154,11 +1200,11 @@ breaking change gets a real body here.
 ```rust
     // md:impl FsBackend > fn note_log_path
     fn note_log_path(&self, id: Uuid, device_id: &str) -> PathBuf {
-        self.note_dir(id).join(format!("log.{device_id}.msgpack"))
+        self.note_dir(id).join(format!("log.{device_id}.ndjson"))
     }
 ```
 
-**What it does** — `…/log.{device_id}.msgpack` (single-writer op log).
+**What it does** — `…/log.{device_id}.ndjson` (single-writer op log).
 
 ### fn device_log_path
 
@@ -1186,11 +1232,11 @@ breaking change gets a real body here.
 ```rust
     // md:impl FsBackend > fn notebook_path
     fn notebook_path(&self, id: Uuid) -> PathBuf {
-        self.root.join("notebooks").join(format!("{id}.msgpack"))
+        self.root.join("notebooks").join(format!("{id}.ndjson"))
     }
 ```
 
-**What it does** — `{root}/notebooks/{id}.msgpack`.
+**What it does** — `{root}/notebooks/{id}.ndjson`.
 
 ### fn tag_path
 
@@ -1201,11 +1247,11 @@ breaking change gets a real body here.
 ```rust
     // md:impl FsBackend > fn tag_path
     fn tag_path(&self, id: Uuid) -> PathBuf {
-        self.root.join("tags").join(format!("{id}.msgpack"))
+        self.root.join("tags").join(format!("{id}.ndjson"))
     }
 ```
 
-**What it does** — `{root}/tags/{id}.msgpack`.
+**What it does** — `{root}/tags/{id}.ndjson`.
 
 ### fn note_tag_dir
 
@@ -1261,11 +1307,11 @@ breaking change gets a real body here.
 ```rust
     // md:impl FsBackend > fn resource_meta_path
     fn resource_meta_path(&self, id: Uuid) -> PathBuf {
-        self.resource_dir(id).join("meta.msgpack")
+        self.resource_dir(id).join("meta.ndjson")
     }
 ```
 
-**What it does** — `…/meta.msgpack`.
+**What it does** — `…/meta.ndjson`.
 
 ### fn resource_data_path
 
@@ -1508,7 +1554,7 @@ repaired.
             };
             while let Some(e) = rd.next_entry().await? {
                 let fname = e.file_name().to_string_lossy().into_owned();
-                let Some(stem) = fname.strip_suffix(".msgpack") else {
+                let Some(stem) = fname.strip_suffix(".ndjson") else {
                     continue;
                 };
                 let Ok(id) = Uuid::parse_str(stem) else {
@@ -1847,14 +1893,60 @@ safely.
         path: &Path,
         value: &T,
     ) -> Result<(), StorageError> {
-        let bytes = rmp_serde::to_vec_named(value)
-            .map_err(|e| StorageError::InvalidState(format!("msgpack encode: {e}")))?;
+        let mut bytes = serde_json::to_vec(value)
+            .map_err(|e| StorageError::InvalidState(format!("ndjson encode: {e}")))?;
+        bytes.push(b'\n');
         atomic_write(path, &bytes).await
     }
 ```
 
-**What it does** — MessagePack-encode + `atomic_write` (encode failure →
-`InvalidState`).
+**What it does** — JSON-encode the whole value as a single NDJSON line
+(one object, trailing `\n`) + `atomic_write` (encode failure → `InvalidState`).
+Single-entity sidecars (note/notebook/tag/resource metadata, `sync_state`,
+note↔tag association state) are one JSON object per file; the per-device note
+log is the multi-line case handled by `write_note_log`.
+
+### fn write_note_log
+
+**Identification** — marker `// md:impl FsBackend > fn write_note_log`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl FsBackend > fn write_note_log
+    async fn write_note_log(
+        &self,
+        path: &Path,
+        entries: &[NoteLogEntry],
+    ) -> Result<(), StorageError> {
+        let mut bytes = Vec::new();
+        for entry in entries {
+            let line = serde_json::to_vec(entry)
+                .map_err(|e| StorageError::InvalidState(format!("ndjson encode: {e}")))?;
+            bytes.extend_from_slice(&line);
+            bytes.push(b'\n');
+        }
+        atomic_write(path, &bytes).await
+    }
+```
+
+**What it does** — Serialises a per-device note log as NDJSON: one
+`NoteLogEntry` JSON object per line, `\n`-terminated, then one atomic replace of
+the whole file (the log is rewritten wholesale on every append/compaction, so
+this is not append-in-place). An empty slice writes an empty file. Encode
+failure → `InvalidState`.
+
+**Dependencies** —
+- `serde_json::to_vec` — encodes one entry per line; expects `NoteLogEntry` to
+  be `Serialize` (it derives it) — a non-serialisable op would surface as
+  `InvalidState`, not a panic.
+- `atomic_write` — write-temp-then-rename; expects it to replace the file
+  atomically so a crash never leaves a half-written log.
+
+**Used by** — `append_note_op` (the only writer of the own-device log).
+
+**Repeated context** — Filesystem state is NDJSON, not MessagePack; the atomic
+write-temp-then-rename pattern is unchanged by the format.
 
 ### fn read_sidecar
 
@@ -1873,13 +1965,14 @@ safely.
             return Err(StorageError::NotFound(id.to_string()));
         }
         let bytes = tokio::fs::read(path).await?;
-        rmp_serde::from_slice(&bytes)
-            .map_err(|e| StorageError::CorruptedData(format!("msgpack decode: {e}")))
+        serde_json::from_slice(&bytes)
+            .map_err(|e| StorageError::CorruptedData(format!("ndjson decode: {e}")))
     }
 ```
 
-**What it does** — Read + decode; missing file → `NotFound(id)`, bad bytes →
-`CorruptedData`.
+**What it does** — Read + JSON-decode a single-entity sidecar; missing file →
+`NotFound(id)`, bad bytes → `CorruptedData`. `serde_json::from_slice` tolerates
+the trailing `\n` written by `write_sidecar`.
 
 ### fn sidecar_vv
 
@@ -1899,8 +1992,8 @@ safely.
             return Ok(VersionVector::new());
         }
         let bytes = tokio::fs::read(path).await?;
-        let probe: VvProbe = rmp_serde::from_slice(&bytes)
-            .map_err(|e| StorageError::CorruptedData(format!("msgpack decode: {e}")))?;
+        let probe: VvProbe = serde_json::from_slice(&bytes)
+            .map_err(|e| StorageError::CorruptedData(format!("ndjson decode: {e}")))?;
         Ok(probe.vv)
     }
 ```
@@ -1953,8 +2046,8 @@ current state.
             return Ok(true);
         }
         let bytes = tokio::fs::read(path).await?;
-        let m: MetaProbe = rmp_serde::from_slice(&bytes)
-            .map_err(|e| StorageError::CorruptedData(format!("msgpack decode: {e}")))?;
+        let m: MetaProbe = serde_json::from_slice(&bytes)
+            .map_err(|e| StorageError::CorruptedData(format!("ndjson decode: {e}")))?;
         Ok(matches!(
             resolve(
                 &m.vv,
@@ -1997,7 +2090,7 @@ local sidecar exists.
         if bytes.is_empty() {
             return Ok(Some(marker()));
         }
-        match rmp_serde::from_slice(&bytes) {
+        match serde_json::from_slice(&bytes) {
             Ok(state) => Ok(Some(state)),
             Err(e) => {
                 tracing::error!(
@@ -2336,9 +2429,9 @@ none) — the "what did we last materialise" reference for
         };
         while let Some(entry) = rd.next_entry().await? {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with("log.") && name.ends_with(".msgpack") {
+            if name.starts_with("log.") && name.ends_with(".ndjson") {
                 let bytes = tokio::fs::read(entry.path()).await?;
-                match rmp_serde::from_slice::<Vec<NoteLogEntry>>(&bytes) {
+                match parse_note_log(&bytes) {
                     Ok(v) => logs.push(v),
                     Err(e) => tracing::error!(
                         note_id = %id,
@@ -2354,7 +2447,7 @@ none) — the "what did we last materialise" reference for
     }
 ```
 
-**What it does** — Reads every `log.*.msgpack` for a note. A missing directory
+**What it does** — Reads every `log.*.ndjson` for a note. A missing directory
 yields empty; an unreadable individual log is **excluded from the merge and
 reported at error level** (that device's entire history is missing — a
 silent-data-loss risk, not routine). The file is left in place (it belongs to
@@ -2403,7 +2496,7 @@ the next sync should report. `None` when the note has no entries.
     }
 ```
 
-**What it does** — Merge + refresh the `note.md`/`meta.msgpack` projection
+**What it does** — Merge + refresh the `note.md`/`meta.ndjson` projection
 (used by write and sync paths, never reads); a resolved concurrent conflict is
 logged.
 
@@ -2441,7 +2534,7 @@ logged.
 ```
 
 **What it does** — Writes the body to `note.md` and the blanked-body metadata
-+ vector to `meta.msgpack` (both atomic). **The single choke point every note
++ vector to `meta.ndjson` (both atomic). **The single choke point every note
 write passes through**, so it also keeps the `NoteMetaIndex` current: on-disk
 first, then the index entry (only if built — an unbuilt index misses nothing,
 its eventual build reads the fresh projection). A crash between the two
@@ -2578,10 +2671,11 @@ cost is paid only for the returned page.
         let mut vv = note_log::merge(&self.read_note_logs(id).await?).vv;
         note_log::increment(&mut vv, &self.device_id);
         let log_path = self.note_log_path(id, &self.device_id);
-        let mut log: Vec<NoteLogEntry> = match self.read_sidecar(&log_path, id).await {
-            Ok(v) => v,
-            Err(StorageError::NotFound(_)) => Vec::new(),
-            Err(e) => return Err(e),
+        let mut log: Vec<NoteLogEntry> = if log_path.exists() {
+            let bytes = tokio::fs::read(&log_path).await?;
+            parse_note_log(&bytes)?
+        } else {
+            Vec::new()
         };
         log.push(NoteLogEntry {
             vv,
@@ -2592,7 +2686,7 @@ cost is paid only for the returned page.
         if log.len() > Self::NOTE_LOG_COMPACT_THRESHOLD {
             log = note_log::compact_own_log(&log);
         }
-        self.write_sidecar(&log_path, &log).await?;
+        self.write_note_log(&log_path, &log).await?;
         self.materialize(id)
             .await?
             .ok_or_else(|| StorageError::NotFound(id.to_string()))
@@ -3309,7 +3403,7 @@ write back, `"delete"` entry with `fs_tombstone_value`.
         let mut dir = tokio::fs::read_dir(self.root.join("notebooks")).await?;
         while let Some(entry) = dir.next_entry().await? {
             let fname = entry.file_name().to_string_lossy().to_string();
-            if let Some(stem) = fname.strip_suffix(".msgpack") {
+            if let Some(stem) = fname.strip_suffix(".ndjson") {
                 if let Ok(id) = Uuid::parse_str(stem) {
                     match self.read_sidecar::<Notebook>(&entry.path(), id).await {
                         Ok(nb) if nb.deleted_at.is_none() => notebooks.push(nb),
@@ -3456,7 +3550,7 @@ per-method markers `> fn <name>`.
         let mut dir = tokio::fs::read_dir(self.root.join("tags")).await?;
         while let Some(entry) = dir.next_entry().await? {
             let fname = entry.file_name().to_string_lossy().to_string();
-            if let Some(stem) = fname.strip_suffix(".msgpack") {
+            if let Some(stem) = fname.strip_suffix(".ndjson") {
                 if let Ok(id) = Uuid::parse_str(stem) {
                     match self.read_sidecar::<Tag>(&entry.path(), id).await {
                         Ok(t) if t.deleted_at.is_none() => tags.push(t),
@@ -3617,7 +3711,7 @@ per-method markers `> fn <name>`.
 
 **Code** — container: members documented as sub-blocks below: fn create_resource, fn read_resource, fn delete_resource, fn list_resources, fn purge_deleted_resources.
 
-**What it does** — resources as `meta.msgpack` + `data`.
+**What it does** — resources as `meta.ndjson` + `data`.
 
 ### fn create_resource
 
@@ -3653,7 +3747,7 @@ per-method markers `> fn <name>`.
 ```
 
 **What it does** — Stamp vv/writer, write the **data file first, metadata
-last**: `read_resource` treats `meta.msgpack` as proof of existence, so the
+last**: `read_resource` treats `meta.ndjson` as proof of existence, so the
 metadata write is the commit marker — a crash between the two leaves an
 orphan data file (harmless, overwritten on retry) rather than metadata
 pointing at a missing payload. Then a `"create"` log entry (metadata only).
@@ -4154,7 +4248,7 @@ typed copies instead of a raw change bridge.
 ```rust
     // md:impl SyncBackend for FsBackend > fn get_last_sync_time
     async fn get_last_sync_time(&self) -> Result<DateTime<Utc>, StorageError> {
-        let path = self.root.join(".keeplin").join("sync_state.msgpack");
+        let path = self.root.join(".keeplin").join("sync_state.ndjson");
         match self.read_sidecar::<SyncState>(&path, Uuid::nil()).await {
             Ok(state) => Ok(state.last_sync),
             Err(StorageError::NotFound(_)) => {
@@ -4165,7 +4259,7 @@ typed copies instead of a raw change bridge.
     }
 ```
 
-**What it does** — `.keeplin/sync_state.msgpack`, epoch when absent.
+**What it does** — `.keeplin/sync_state.ndjson`, epoch when absent.
 
 ### fn update_sync_time
 
@@ -4178,7 +4272,7 @@ typed copies instead of a raw change bridge.
     // md:impl SyncBackend for FsBackend > fn update_sync_time
     async fn update_sync_time(&self, ts: DateTime<Utc>) -> Result<(), StorageError> {
         let state = SyncState { last_sync: ts };
-        let path = self.root.join(".keeplin").join("sync_state.msgpack");
+        let path = self.root.join(".keeplin").join("sync_state.ndjson");
         self.write_sidecar(&path, &state).await
     }
 ```
@@ -4517,13 +4611,13 @@ dropped by a racing rename) — the `note_write_lock` guarantee.
 
         let read = backend.read_note(note.id).await.unwrap();
         assert_eq!(read.body, "body");
-        assert!(!meta.exists(), "read must not rewrite meta.msgpack");
+        assert!(!meta.exists(), "read must not rewrite meta.ndjson");
         assert!(!md.exists(), "read must not rewrite note.md");
     }
 ```
 
 **What it does** — Delete the projection files; `read_note` still answers
-from the logs and does **not** recreate `note.md`/`meta.msgpack` (reads are
+from the logs and does **not** recreate `note.md`/`meta.ndjson` (reads are
 pure).
 
 ### fn list_notes_pages_match_full_walk
@@ -4607,7 +4701,7 @@ like sort-then-`paginate`.
         let syncthing = dir
             .path()
             .join("notebooks")
-            .join(".syncthing.abc.msgpack.tmp");
+            .join(".syncthing.abc.ndjson.tmp");
         std::fs::write(&syncthing, b"in-flight transfer").unwrap();
 
         let be = FsBackend::new(dir.path()).await.unwrap();
@@ -4676,7 +4770,7 @@ file, and leaves the destination untouched.
             .join("note_tags")
             .join(note.id.to_string())
             .join(tag.id.to_string());
-        std::fs::write(&path, b"not msgpack at all").unwrap();
+        std::fs::write(&path, b"not ndjson at all").unwrap();
 
         let (tags, _) = be.list_note_tags(note.id, 0, None).await.unwrap();
         assert_eq!(tags.len(), 1, "corrupt state must not hide the association");
@@ -4723,7 +4817,7 @@ marker.
         let before = tokio::fs::read_to_string(&log_path).await.unwrap();
 
         let sidecar = be.notebook_path(nb.id);
-        std::fs::write(&sidecar, b"definitely not msgpack").unwrap();
+        std::fs::write(&sidecar, b"definitely not ndjson").unwrap();
         {
             let _guard = be.global_log_lock.lock().await;
             be.compact_global_log_locked().await.unwrap();
@@ -4736,7 +4830,8 @@ marker.
             "no snapshot generation was produced"
         );
 
-        let bytes = rmp_serde::to_vec_named(&nb).unwrap();
+        let mut bytes = serde_json::to_vec(&nb).unwrap();
+        bytes.push(b'\n');
         std::fs::write(&sidecar, bytes).unwrap();
         {
             let _guard = be.global_log_lock.lock().await;
@@ -4781,11 +4876,11 @@ containing the notebook.
                 .join("device_id.sync-conflict-20260702-120000-AAAAAAA"),
             dir.path()
                 .join("notebooks")
-                .join("junk.sync-conflict-20260702-120000-BBBBBBB.msgpack"),
+                .join("junk.sync-conflict-20260702-120000-BBBBBBB.ndjson"),
             dir.path()
                 .join("notes")
                 .join(note_id.to_string())
-                .join("log.dev.sync-conflict-20260702-120000-CCCCCCC.msgpack"),
+                .join("log.dev.sync-conflict-20260702-120000-CCCCCCC.ndjson"),
         ];
         for p in &conflicts {
             std::fs::write(p, b"conflict copy").unwrap();
@@ -5016,134 +5111,136 @@ refresh with `graphify update .` after refactors.
 | 18 | `fn fs_assoc_from_data` | `// md:fn fs_assoc_from_data` |
 | 19 | `fn fs_tombstone_from_data` | `// md:fn fs_tombstone_from_data` |
 | 20 | `fn log_entry_to_change` | `// md:fn log_entry_to_change` |
-| 21 | `fn atomic_write` | `// md:fn atomic_write` |
-| 22 | `SyncState` | `// md:SyncState` |
-| 23 | `FsBackend` | `// md:FsBackend` |
-| 24 | `impl FsBackend` (container) | `// md:impl FsBackend` |
-| 25 | `fn new` | `// md:impl FsBackend > fn new` |
-| 26 | `fn sweep_orphan_tmp_files` | `// md:impl FsBackend > fn sweep_orphan_tmp_files` |
-| 27 | `fn scan_sync_conflicts` | `// md:impl FsBackend > fn scan_sync_conflicts` |
-| 28 | `fn sweep_tmp_in_dir` | `// md:impl FsBackend > fn sweep_tmp_in_dir` |
-| 29 | `fn format_version_path` | `// md:impl FsBackend > fn format_version_path` |
-| 30 | `fn ensure_format_version` | `// md:impl FsBackend > fn ensure_format_version` |
-| 31 | `fn apply_format_migration` | `// md:impl FsBackend > fn apply_format_migration` |
-| 32 | `fn note_dir` | `// md:impl FsBackend > fn note_dir` |
-| 33 | `fn note_md_path` | `// md:impl FsBackend > fn note_md_path` |
-| 34 | `fn note_meta_path` | `// md:impl FsBackend > fn note_meta_path` |
-| 35 | `fn note_log_path` | `// md:impl FsBackend > fn note_log_path` |
-| 36 | `fn device_log_path` | `// md:impl FsBackend > fn device_log_path` |
-| 37 | `fn notebook_path` | `// md:impl FsBackend > fn notebook_path` |
-| 38 | `fn tag_path` | `// md:impl FsBackend > fn tag_path` |
-| 39 | `fn note_tag_dir` | `// md:impl FsBackend > fn note_tag_dir` |
-| 40 | `fn note_tag_path` | `// md:impl FsBackend > fn note_tag_path` |
-| 41 | `fn resource_dir` | `// md:impl FsBackend > fn resource_dir` |
-| 42 | `fn resource_meta_path` | `// md:impl FsBackend > fn resource_meta_path` |
-| 43 | `fn resource_data_path` | `// md:impl FsBackend > fn resource_data_path` |
-| 44 | `fn read_or_create_device_id` | `// md:impl FsBackend > fn read_or_create_device_id` |
-| 45 | `fn append_log` | `// md:impl FsBackend > fn append_log` |
-| 46 | `fn maybe_compact_global_log_locked` | `// md:impl FsBackend > fn maybe_compact_global_log_locked` |
-| 47 | `fn own_log_entry_count` | `// md:impl FsBackend > fn own_log_entry_count` |
-| 48 | `fn read_own_epoch` | `// md:impl FsBackend > fn read_own_epoch` |
-| 49 | `fn compact_global_log_locked` | `// md:impl FsBackend > fn compact_global_log_locked` |
-| 50 | `fn build_global_snapshot` | `// md:impl FsBackend > fn build_global_snapshot` |
-| 51 | `fn log_offset_path` | `// md:impl FsBackend > fn log_offset_path` |
-| 52 | `fn read_log_offset` | `// md:impl FsBackend > fn read_log_offset` |
-| 53 | `fn write_log_offset` | `// md:impl FsBackend > fn write_log_offset` |
-| 54 | `fn read_log_header` | `// md:impl FsBackend > fn read_log_header` |
-| 55 | `fn read_other_logs_since` | `// md:impl FsBackend > fn read_other_logs_since` |
-| 56 | `fn read_new_entries` | `// md:impl FsBackend > fn read_new_entries` |
-| 57 | `fn write_sidecar` | `// md:impl FsBackend > fn write_sidecar` |
-| 58 | `fn read_sidecar` | `// md:impl FsBackend > fn read_sidecar` |
-| 59 | `fn sidecar_vv` | `// md:impl FsBackend > fn sidecar_vv` |
-| 60 | `fn next_sidecar_vv` | `// md:impl FsBackend > fn next_sidecar_vv` |
-| 61 | `fn sidecar_incoming_wins` | `// md:impl FsBackend > fn sidecar_incoming_wins` |
-| 62 | `fn read_assoc_state` | `// md:impl FsBackend > fn read_assoc_state` |
-| 63 | `fn next_assoc_vv` | `// md:impl FsBackend > fn next_assoc_vv` |
-| 64 | `fn assoc_incoming_wins` | `// md:impl FsBackend > fn assoc_incoming_wins` |
-| 65 | `fn write_assoc_state` | `// md:impl FsBackend > fn write_assoc_state` |
-| 66 | `fn read_resource_meta` | `// md:impl FsBackend > fn read_resource_meta` |
-| 67 | `fn next_resource_vv` | `// md:impl FsBackend > fn next_resource_vv` |
-| 68 | `fn resource_incoming_wins` | `// md:impl FsBackend > fn resource_incoming_wins` |
-| 69 | `fn cascade_stamp_resources` | `// md:impl FsBackend > fn cascade_stamp_resources` |
-| 70 | `fn cascade_unstamp_resources` | `// md:impl FsBackend > fn cascade_unstamp_resources` |
-| 71 | `fn note_vv` | `// md:impl FsBackend > fn note_vv` |
-| 72 | `fn read_note_logs` | `// md:impl FsBackend > fn read_note_logs` |
-| 73 | `fn merge_note` | `// md:impl FsBackend > fn merge_note` |
-| 74 | `fn materialize` | `// md:impl FsBackend > fn materialize` |
-| 75 | `fn persist_note_projection` | `// md:impl FsBackend > fn persist_note_projection` |
-| 76 | `fn read_note_projection` | `// md:impl FsBackend > fn read_note_projection` |
-| 77 | `fn with_note_index` | `// md:impl FsBackend > fn with_note_index` |
-| 78 | `fn build_note_index` | `// md:impl FsBackend > fn build_note_index` |
-| 79 | `fn materialize_page` | `// md:impl FsBackend > fn materialize_page` |
-| 80 | `fn append_note_op` | `// md:impl FsBackend > fn append_note_op` |
-| 81 | `fn collect_advanced_notes` | `// md:impl FsBackend > fn collect_advanced_notes` |
-| 82 | `KeyedItem` | `// md:KeyedItem` |
-| 83 | `impl PartialEq for KeyedItem` | `// md:impl PartialEq for KeyedItem` |
-| 84 | `impl Eq for KeyedItem` | `// md:impl Eq for KeyedItem` |
-| 85 | `impl PartialOrd for KeyedItem` | `// md:impl PartialOrd for KeyedItem` |
-| 86 | `impl Ord for KeyedItem` | `// md:impl Ord for KeyedItem` |
-| 87 | `PageCollector` | `// md:PageCollector` |
-| 88 | `impl PageCollector` (container) | `// md:impl PageCollector` |
-| 89 | `fn new` | `// md:impl PageCollector > fn new` |
-| 90 | `fn push` | `// md:impl PageCollector > fn push` |
-| 91 | `fn into_page` | `// md:impl PageCollector > fn into_page` |
-| 92 | `fn paginate` | `// md:fn paginate` |
-| 93 | `impl NoteRepository for FsBackend` (container) | `// md:impl NoteRepository for FsBackend` |
-| 94 | `fn create_note` | `// md:impl NoteRepository for FsBackend > fn create_note` |
-| 95 | `fn read_note` | `// md:impl NoteRepository for FsBackend > fn read_note` |
-| 96 | `fn update_note` | `// md:impl NoteRepository for FsBackend > fn update_note` |
-| 97 | `fn delete_note` | `// md:impl NoteRepository for FsBackend > fn delete_note` |
-| 98 | `fn list_notes` | `// md:impl NoteRepository for FsBackend > fn list_notes` |
-| 99 | `fn list_notes_in_notebook` | `// md:impl NoteRepository for FsBackend > fn list_notes_in_notebook` |
-| 100 | `fn list_starred_notes` | `// md:impl NoteRepository for FsBackend > fn list_starred_notes` |
-| 101 | `fn notebook_sort_profile` | `// md:impl NoteRepository for FsBackend > fn notebook_sort_profile` |
-| 102 | `impl NotebookRepository for FsBackend` (container) | `// md:impl NotebookRepository for FsBackend` |
-| 103 | `fn create_notebook` | `// md:impl NotebookRepository for FsBackend > fn create_notebook` |
-| 104 | `fn read_notebook` | `// md:impl NotebookRepository for FsBackend > fn read_notebook` |
-| 105 | `fn update_notebook` | `// md:impl NotebookRepository for FsBackend > fn update_notebook` |
-| 106 | `fn delete_notebook` | `// md:impl NotebookRepository for FsBackend > fn delete_notebook` |
-| 107 | `fn list_notebooks` | `// md:impl NotebookRepository for FsBackend > fn list_notebooks` |
-| 108 | `impl TagRepository for FsBackend` (container) | `// md:impl TagRepository for FsBackend` |
-| 109 | `fn create_tag` | `// md:impl TagRepository for FsBackend > fn create_tag` |
-| 110 | `fn read_tag` | `// md:impl TagRepository for FsBackend > fn read_tag` |
-| 111 | `fn update_tag` | `// md:impl TagRepository for FsBackend > fn update_tag` |
-| 112 | `fn delete_tag` | `// md:impl TagRepository for FsBackend > fn delete_tag` |
-| 113 | `fn list_tags` | `// md:impl TagRepository for FsBackend > fn list_tags` |
-| 114 | `fn add_note_tag` | `// md:impl TagRepository for FsBackend > fn add_note_tag` |
-| 115 | `fn remove_note_tag` | `// md:impl TagRepository for FsBackend > fn remove_note_tag` |
-| 116 | `fn list_note_tags` | `// md:impl TagRepository for FsBackend > fn list_note_tags` |
-| 117 | `impl ResourceRepository for FsBackend` (container) | `// md:impl ResourceRepository for FsBackend` |
-| 118 | `fn create_resource` | `// md:impl ResourceRepository for FsBackend > fn create_resource` |
-| 119 | `fn read_resource` | `// md:impl ResourceRepository for FsBackend > fn read_resource` |
-| 120 | `fn delete_resource` | `// md:impl ResourceRepository for FsBackend > fn delete_resource` |
-| 121 | `fn list_resources` | `// md:impl ResourceRepository for FsBackend > fn list_resources` |
-| 122 | `fn list_resources_for_note` | `// md:impl ResourceRepository for FsBackend > fn list_resources_for_note` |
-| 123 | `fn purge_deleted_resources` | `// md:impl ResourceRepository for FsBackend > fn purge_deleted_resources` |
-| 124 | `impl SyncBackend for FsBackend` (container) | `// md:impl SyncBackend for FsBackend` |
-| 125 | `fn get_changes_since` | `// md:impl SyncBackend for FsBackend > fn get_changes_since` |
-| 126 | `fn apply_change` | `// md:impl SyncBackend for FsBackend > fn apply_change` |
-| 127 | `fn get_last_sync_time` | `// md:impl SyncBackend for FsBackend > fn get_last_sync_time` |
-| 128 | `fn update_sync_time` | `// md:impl SyncBackend for FsBackend > fn update_sync_time` |
-| 129 | `fn send_changes` | `// md:impl SyncBackend for FsBackend > fn send_changes` |
-| 130 | `fn receive_changes` | `// md:impl SyncBackend for FsBackend > fn receive_changes` |
-| 131 | `fn get_device_id` | `// md:impl SyncBackend for FsBackend > fn get_device_id` |
-| 132 | `fn prune_change_journal` | `// md:impl SyncBackend for FsBackend > fn prune_change_journal` |
-| 133 | `impl FsBackend (global history)` (container) | `// md:impl FsBackend (global history)` |
-| 134 | `fn read_all_global_entries` | `// md:impl FsBackend (global history) > fn read_all_global_entries` |
-| 135 | `impl HistoryRepository for FsBackend` (container) | `// md:impl HistoryRepository for FsBackend` |
-| 136 | `fn note_history` | `// md:impl HistoryRepository for FsBackend > fn note_history` |
-| 137 | `fn notebook_history` | `// md:impl HistoryRepository for FsBackend > fn notebook_history` |
-| 138 | `fn sort_and_cap` | `// md:fn sort_and_cap` |
-| 139 | `mod tests` (container) | `// md:mod tests` |
-| 140 | `fn concurrent_same_note_updates_keep_every_log_entry` | `// md:mod tests > fn concurrent_same_note_updates_keep_every_log_entry` |
-| 141 | `fn read_does_not_rewrite_projection` | `// md:mod tests > fn read_does_not_rewrite_projection` |
-| 142 | `fn list_notes_pages_match_full_walk` | `// md:mod tests > fn list_notes_pages_match_full_walk` |
-| 143 | `fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones` | `// md:mod tests > fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones` |
-| 144 | `fn failed_atomic_write_cleans_up_its_temp_file` | `// md:mod tests > fn failed_atomic_write_cleans_up_its_temp_file` |
-| 145 | `fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it` | `// md:mod tests > fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it` |
-| 146 | `fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair` | `// md:mod tests > fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair` |
-| 147 | `fn detects_syncthing_conflict_copies_without_removing_them` | `// md:mod tests > fn detects_syncthing_conflict_copies_without_removing_them` |
-| 148 | `fn purge_reclaims_old_tombstoned_payloads_only` | `// md:mod tests > fn purge_reclaims_old_tombstoned_payloads_only` |
-| 149 | `fn fresh_store_is_stamped_current_version` | `// md:mod tests > fn fresh_store_is_stamped_current_version` |
-| 150 | `fn migrates_a_legacy_stamp_and_preserves_data` | `// md:mod tests > fn migrates_a_legacy_stamp_and_preserves_data` |
-| 151 | `fn refuses_to_open_a_newer_format` | `// md:mod tests > fn refuses_to_open_a_newer_format` |
+| 21 | `fn parse_note_log` | `// md:fn parse_note_log` |
+| 22 | `fn atomic_write` | `// md:fn atomic_write` |
+| 23 | `SyncState` | `// md:SyncState` |
+| 24 | `FsBackend` | `// md:FsBackend` |
+| 25 | `impl FsBackend` (container) | `// md:impl FsBackend` |
+| 26 | `fn new` | `// md:impl FsBackend > fn new` |
+| 27 | `fn sweep_orphan_tmp_files` | `// md:impl FsBackend > fn sweep_orphan_tmp_files` |
+| 28 | `fn scan_sync_conflicts` | `// md:impl FsBackend > fn scan_sync_conflicts` |
+| 29 | `fn sweep_tmp_in_dir` | `// md:impl FsBackend > fn sweep_tmp_in_dir` |
+| 30 | `fn format_version_path` | `// md:impl FsBackend > fn format_version_path` |
+| 31 | `fn ensure_format_version` | `// md:impl FsBackend > fn ensure_format_version` |
+| 32 | `fn apply_format_migration` | `// md:impl FsBackend > fn apply_format_migration` |
+| 33 | `fn note_dir` | `// md:impl FsBackend > fn note_dir` |
+| 34 | `fn note_md_path` | `// md:impl FsBackend > fn note_md_path` |
+| 35 | `fn note_meta_path` | `// md:impl FsBackend > fn note_meta_path` |
+| 36 | `fn note_log_path` | `// md:impl FsBackend > fn note_log_path` |
+| 37 | `fn device_log_path` | `// md:impl FsBackend > fn device_log_path` |
+| 38 | `fn notebook_path` | `// md:impl FsBackend > fn notebook_path` |
+| 39 | `fn tag_path` | `// md:impl FsBackend > fn tag_path` |
+| 40 | `fn note_tag_dir` | `// md:impl FsBackend > fn note_tag_dir` |
+| 41 | `fn note_tag_path` | `// md:impl FsBackend > fn note_tag_path` |
+| 42 | `fn resource_dir` | `// md:impl FsBackend > fn resource_dir` |
+| 43 | `fn resource_meta_path` | `// md:impl FsBackend > fn resource_meta_path` |
+| 44 | `fn resource_data_path` | `// md:impl FsBackend > fn resource_data_path` |
+| 45 | `fn read_or_create_device_id` | `// md:impl FsBackend > fn read_or_create_device_id` |
+| 46 | `fn append_log` | `// md:impl FsBackend > fn append_log` |
+| 47 | `fn maybe_compact_global_log_locked` | `// md:impl FsBackend > fn maybe_compact_global_log_locked` |
+| 48 | `fn own_log_entry_count` | `// md:impl FsBackend > fn own_log_entry_count` |
+| 49 | `fn read_own_epoch` | `// md:impl FsBackend > fn read_own_epoch` |
+| 50 | `fn compact_global_log_locked` | `// md:impl FsBackend > fn compact_global_log_locked` |
+| 51 | `fn build_global_snapshot` | `// md:impl FsBackend > fn build_global_snapshot` |
+| 52 | `fn log_offset_path` | `// md:impl FsBackend > fn log_offset_path` |
+| 53 | `fn read_log_offset` | `// md:impl FsBackend > fn read_log_offset` |
+| 54 | `fn write_log_offset` | `// md:impl FsBackend > fn write_log_offset` |
+| 55 | `fn read_log_header` | `// md:impl FsBackend > fn read_log_header` |
+| 56 | `fn read_other_logs_since` | `// md:impl FsBackend > fn read_other_logs_since` |
+| 57 | `fn read_new_entries` | `// md:impl FsBackend > fn read_new_entries` |
+| 58 | `fn write_sidecar` | `// md:impl FsBackend > fn write_sidecar` |
+| 59 | `fn write_note_log` | `// md:impl FsBackend > fn write_note_log` |
+| 60 | `fn read_sidecar` | `// md:impl FsBackend > fn read_sidecar` |
+| 61 | `fn sidecar_vv` | `// md:impl FsBackend > fn sidecar_vv` |
+| 62 | `fn next_sidecar_vv` | `// md:impl FsBackend > fn next_sidecar_vv` |
+| 63 | `fn sidecar_incoming_wins` | `// md:impl FsBackend > fn sidecar_incoming_wins` |
+| 64 | `fn read_assoc_state` | `// md:impl FsBackend > fn read_assoc_state` |
+| 65 | `fn next_assoc_vv` | `// md:impl FsBackend > fn next_assoc_vv` |
+| 66 | `fn assoc_incoming_wins` | `// md:impl FsBackend > fn assoc_incoming_wins` |
+| 67 | `fn write_assoc_state` | `// md:impl FsBackend > fn write_assoc_state` |
+| 68 | `fn read_resource_meta` | `// md:impl FsBackend > fn read_resource_meta` |
+| 69 | `fn next_resource_vv` | `// md:impl FsBackend > fn next_resource_vv` |
+| 70 | `fn resource_incoming_wins` | `// md:impl FsBackend > fn resource_incoming_wins` |
+| 71 | `fn cascade_stamp_resources` | `// md:impl FsBackend > fn cascade_stamp_resources` |
+| 72 | `fn cascade_unstamp_resources` | `// md:impl FsBackend > fn cascade_unstamp_resources` |
+| 73 | `fn note_vv` | `// md:impl FsBackend > fn note_vv` |
+| 74 | `fn read_note_logs` | `// md:impl FsBackend > fn read_note_logs` |
+| 75 | `fn merge_note` | `// md:impl FsBackend > fn merge_note` |
+| 76 | `fn materialize` | `// md:impl FsBackend > fn materialize` |
+| 77 | `fn persist_note_projection` | `// md:impl FsBackend > fn persist_note_projection` |
+| 78 | `fn read_note_projection` | `// md:impl FsBackend > fn read_note_projection` |
+| 79 | `fn with_note_index` | `// md:impl FsBackend > fn with_note_index` |
+| 80 | `fn build_note_index` | `// md:impl FsBackend > fn build_note_index` |
+| 81 | `fn materialize_page` | `// md:impl FsBackend > fn materialize_page` |
+| 82 | `fn append_note_op` | `// md:impl FsBackend > fn append_note_op` |
+| 83 | `fn collect_advanced_notes` | `// md:impl FsBackend > fn collect_advanced_notes` |
+| 84 | `KeyedItem` | `// md:KeyedItem` |
+| 85 | `impl PartialEq for KeyedItem` | `// md:impl PartialEq for KeyedItem` |
+| 86 | `impl Eq for KeyedItem` | `// md:impl Eq for KeyedItem` |
+| 87 | `impl PartialOrd for KeyedItem` | `// md:impl PartialOrd for KeyedItem` |
+| 88 | `impl Ord for KeyedItem` | `// md:impl Ord for KeyedItem` |
+| 89 | `PageCollector` | `// md:PageCollector` |
+| 90 | `impl PageCollector` (container) | `// md:impl PageCollector` |
+| 91 | `fn new` | `// md:impl PageCollector > fn new` |
+| 92 | `fn push` | `// md:impl PageCollector > fn push` |
+| 93 | `fn into_page` | `// md:impl PageCollector > fn into_page` |
+| 94 | `fn paginate` | `// md:fn paginate` |
+| 95 | `impl NoteRepository for FsBackend` (container) | `// md:impl NoteRepository for FsBackend` |
+| 96 | `fn create_note` | `// md:impl NoteRepository for FsBackend > fn create_note` |
+| 97 | `fn read_note` | `// md:impl NoteRepository for FsBackend > fn read_note` |
+| 98 | `fn update_note` | `// md:impl NoteRepository for FsBackend > fn update_note` |
+| 99 | `fn delete_note` | `// md:impl NoteRepository for FsBackend > fn delete_note` |
+| 100 | `fn list_notes` | `// md:impl NoteRepository for FsBackend > fn list_notes` |
+| 101 | `fn list_notes_in_notebook` | `// md:impl NoteRepository for FsBackend > fn list_notes_in_notebook` |
+| 102 | `fn list_starred_notes` | `// md:impl NoteRepository for FsBackend > fn list_starred_notes` |
+| 103 | `fn notebook_sort_profile` | `// md:impl NoteRepository for FsBackend > fn notebook_sort_profile` |
+| 104 | `impl NotebookRepository for FsBackend` (container) | `// md:impl NotebookRepository for FsBackend` |
+| 105 | `fn create_notebook` | `// md:impl NotebookRepository for FsBackend > fn create_notebook` |
+| 106 | `fn read_notebook` | `// md:impl NotebookRepository for FsBackend > fn read_notebook` |
+| 107 | `fn update_notebook` | `// md:impl NotebookRepository for FsBackend > fn update_notebook` |
+| 108 | `fn delete_notebook` | `// md:impl NotebookRepository for FsBackend > fn delete_notebook` |
+| 109 | `fn list_notebooks` | `// md:impl NotebookRepository for FsBackend > fn list_notebooks` |
+| 110 | `impl TagRepository for FsBackend` (container) | `// md:impl TagRepository for FsBackend` |
+| 111 | `fn create_tag` | `// md:impl TagRepository for FsBackend > fn create_tag` |
+| 112 | `fn read_tag` | `// md:impl TagRepository for FsBackend > fn read_tag` |
+| 113 | `fn update_tag` | `// md:impl TagRepository for FsBackend > fn update_tag` |
+| 114 | `fn delete_tag` | `// md:impl TagRepository for FsBackend > fn delete_tag` |
+| 115 | `fn list_tags` | `// md:impl TagRepository for FsBackend > fn list_tags` |
+| 116 | `fn add_note_tag` | `// md:impl TagRepository for FsBackend > fn add_note_tag` |
+| 117 | `fn remove_note_tag` | `// md:impl TagRepository for FsBackend > fn remove_note_tag` |
+| 118 | `fn list_note_tags` | `// md:impl TagRepository for FsBackend > fn list_note_tags` |
+| 119 | `impl ResourceRepository for FsBackend` (container) | `// md:impl ResourceRepository for FsBackend` |
+| 120 | `fn create_resource` | `// md:impl ResourceRepository for FsBackend > fn create_resource` |
+| 121 | `fn read_resource` | `// md:impl ResourceRepository for FsBackend > fn read_resource` |
+| 122 | `fn delete_resource` | `// md:impl ResourceRepository for FsBackend > fn delete_resource` |
+| 123 | `fn list_resources` | `// md:impl ResourceRepository for FsBackend > fn list_resources` |
+| 124 | `fn list_resources_for_note` | `// md:impl ResourceRepository for FsBackend > fn list_resources_for_note` |
+| 125 | `fn purge_deleted_resources` | `// md:impl ResourceRepository for FsBackend > fn purge_deleted_resources` |
+| 126 | `impl SyncBackend for FsBackend` (container) | `// md:impl SyncBackend for FsBackend` |
+| 127 | `fn get_changes_since` | `// md:impl SyncBackend for FsBackend > fn get_changes_since` |
+| 128 | `fn apply_change` | `// md:impl SyncBackend for FsBackend > fn apply_change` |
+| 129 | `fn get_last_sync_time` | `// md:impl SyncBackend for FsBackend > fn get_last_sync_time` |
+| 130 | `fn update_sync_time` | `// md:impl SyncBackend for FsBackend > fn update_sync_time` |
+| 131 | `fn send_changes` | `// md:impl SyncBackend for FsBackend > fn send_changes` |
+| 132 | `fn receive_changes` | `// md:impl SyncBackend for FsBackend > fn receive_changes` |
+| 133 | `fn get_device_id` | `// md:impl SyncBackend for FsBackend > fn get_device_id` |
+| 134 | `fn prune_change_journal` | `// md:impl SyncBackend for FsBackend > fn prune_change_journal` |
+| 135 | `impl FsBackend (global history)` (container) | `// md:impl FsBackend (global history)` |
+| 136 | `fn read_all_global_entries` | `// md:impl FsBackend (global history) > fn read_all_global_entries` |
+| 137 | `impl HistoryRepository for FsBackend` (container) | `// md:impl HistoryRepository for FsBackend` |
+| 138 | `fn note_history` | `// md:impl HistoryRepository for FsBackend > fn note_history` |
+| 139 | `fn notebook_history` | `// md:impl HistoryRepository for FsBackend > fn notebook_history` |
+| 140 | `fn sort_and_cap` | `// md:fn sort_and_cap` |
+| 141 | `mod tests` (container) | `// md:mod tests` |
+| 142 | `fn concurrent_same_note_updates_keep_every_log_entry` | `// md:mod tests > fn concurrent_same_note_updates_keep_every_log_entry` |
+| 143 | `fn read_does_not_rewrite_projection` | `// md:mod tests > fn read_does_not_rewrite_projection` |
+| 144 | `fn list_notes_pages_match_full_walk` | `// md:mod tests > fn list_notes_pages_match_full_walk` |
+| 145 | `fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones` | `// md:mod tests > fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones` |
+| 146 | `fn failed_atomic_write_cleans_up_its_temp_file` | `// md:mod tests > fn failed_atomic_write_cleans_up_its_temp_file` |
+| 147 | `fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it` | `// md:mod tests > fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it` |
+| 148 | `fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair` | `// md:mod tests > fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair` |
+| 149 | `fn detects_syncthing_conflict_copies_without_removing_them` | `// md:mod tests > fn detects_syncthing_conflict_copies_without_removing_them` |
+| 150 | `fn purge_reclaims_old_tombstoned_payloads_only` | `// md:mod tests > fn purge_reclaims_old_tombstoned_payloads_only` |
+| 151 | `fn fresh_store_is_stamped_current_version` | `// md:mod tests > fn fresh_store_is_stamped_current_version` |
+| 152 | `fn migrates_a_legacy_stamp_and_preserves_data` | `// md:mod tests > fn migrates_a_legacy_stamp_and_preserves_data` |
+| 153 | `fn refuses_to_open_a_newer_format` | `// md:mod tests > fn refuses_to_open_a_newer_format` |

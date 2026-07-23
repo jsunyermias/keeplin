@@ -149,7 +149,7 @@ fn snapshot_entry_from_sidecar<T: serde::Serialize + serde::de::DeserializeOwned
     id: Uuid,
     ts: DateTime<Utc>,
 ) -> Option<LogEntry> {
-    let concrete: T = rmp_serde::from_slice(bytes).ok()?;
+    let concrete: T = serde_json::from_slice(bytes).ok()?;
     let value = serde_json::to_value(&concrete).ok()?;
     Some(snapshot_entry_from_value(kind, id, ts, value))
 }
@@ -331,6 +331,20 @@ fn log_entry_to_change(entry: LogEntry) -> Option<Change> {
     }
 }
 
+// md:fn parse_note_log
+fn parse_note_log(bytes: &[u8]) -> Result<Vec<NoteLogEntry>, StorageError> {
+    let mut out = Vec::new();
+    for line in bytes.split(|b| *b == b'\n') {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let entry: NoteLogEntry = serde_json::from_slice(line)
+            .map_err(|e| StorageError::CorruptedData(format!("ndjson decode: {e}")))?;
+        out.push(entry);
+    }
+    Ok(out)
+}
+
 // md:fn atomic_write
 async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     let tmp = path.with_extension("tmp");
@@ -510,7 +524,7 @@ impl FsBackend {
         removed
     }
 
-    const FORMAT_VERSION: u32 = 6;
+    const FORMAT_VERSION: u32 = 7;
 
     const NOTE_LOG_COMPACT_THRESHOLD: usize = 256;
 
@@ -563,7 +577,7 @@ impl FsBackend {
     // md:impl FsBackend > fn apply_format_migration
     async fn apply_format_migration(&self, version: u32) -> Result<(), StorageError> {
         match version {
-            2..=6 => Ok(()),
+            2..=7 => Ok(()),
             other => Err(StorageError::InvalidState(format!(
                 "no filesystem migration defined for format version {other}"
             ))),
@@ -582,12 +596,12 @@ impl FsBackend {
 
     // md:impl FsBackend > fn note_meta_path
     fn note_meta_path(&self, id: Uuid) -> PathBuf {
-        self.note_dir(id).join("meta.msgpack")
+        self.note_dir(id).join("meta.ndjson")
     }
 
     // md:impl FsBackend > fn note_log_path
     fn note_log_path(&self, id: Uuid, device_id: &str) -> PathBuf {
-        self.note_dir(id).join(format!("log.{device_id}.msgpack"))
+        self.note_dir(id).join(format!("log.{device_id}.ndjson"))
     }
 
     // md:impl FsBackend > fn device_log_path
@@ -599,12 +613,12 @@ impl FsBackend {
 
     // md:impl FsBackend > fn notebook_path
     fn notebook_path(&self, id: Uuid) -> PathBuf {
-        self.root.join("notebooks").join(format!("{id}.msgpack"))
+        self.root.join("notebooks").join(format!("{id}.ndjson"))
     }
 
     // md:impl FsBackend > fn tag_path
     fn tag_path(&self, id: Uuid) -> PathBuf {
-        self.root.join("tags").join(format!("{id}.msgpack"))
+        self.root.join("tags").join(format!("{id}.ndjson"))
     }
 
     // md:impl FsBackend > fn note_tag_dir
@@ -624,7 +638,7 @@ impl FsBackend {
 
     // md:impl FsBackend > fn resource_meta_path
     fn resource_meta_path(&self, id: Uuid) -> PathBuf {
-        self.resource_dir(id).join("meta.msgpack")
+        self.resource_dir(id).join("meta.ndjson")
     }
 
     // md:impl FsBackend > fn resource_data_path
@@ -765,7 +779,7 @@ impl FsBackend {
             };
             while let Some(e) = rd.next_entry().await? {
                 let fname = e.file_name().to_string_lossy().into_owned();
-                let Some(stem) = fname.strip_suffix(".msgpack") else {
+                let Some(stem) = fname.strip_suffix(".ndjson") else {
                     continue;
                 };
                 let Ok(id) = Uuid::parse_str(stem) else {
@@ -1013,8 +1027,25 @@ impl FsBackend {
         path: &Path,
         value: &T,
     ) -> Result<(), StorageError> {
-        let bytes = rmp_serde::to_vec_named(value)
-            .map_err(|e| StorageError::InvalidState(format!("msgpack encode: {e}")))?;
+        let mut bytes = serde_json::to_vec(value)
+            .map_err(|e| StorageError::InvalidState(format!("ndjson encode: {e}")))?;
+        bytes.push(b'\n');
+        atomic_write(path, &bytes).await
+    }
+
+    // md:impl FsBackend > fn write_note_log
+    async fn write_note_log(
+        &self,
+        path: &Path,
+        entries: &[NoteLogEntry],
+    ) -> Result<(), StorageError> {
+        let mut bytes = Vec::new();
+        for entry in entries {
+            let line = serde_json::to_vec(entry)
+                .map_err(|e| StorageError::InvalidState(format!("ndjson encode: {e}")))?;
+            bytes.extend_from_slice(&line);
+            bytes.push(b'\n');
+        }
         atomic_write(path, &bytes).await
     }
 
@@ -1028,8 +1059,8 @@ impl FsBackend {
             return Err(StorageError::NotFound(id.to_string()));
         }
         let bytes = tokio::fs::read(path).await?;
-        rmp_serde::from_slice(&bytes)
-            .map_err(|e| StorageError::CorruptedData(format!("msgpack decode: {e}")))
+        serde_json::from_slice(&bytes)
+            .map_err(|e| StorageError::CorruptedData(format!("ndjson decode: {e}")))
     }
 
     // md:impl FsBackend > fn sidecar_vv
@@ -1043,8 +1074,8 @@ impl FsBackend {
             return Ok(VersionVector::new());
         }
         let bytes = tokio::fs::read(path).await?;
-        let probe: VvProbe = rmp_serde::from_slice(&bytes)
-            .map_err(|e| StorageError::CorruptedData(format!("msgpack decode: {e}")))?;
+        let probe: VvProbe = serde_json::from_slice(&bytes)
+            .map_err(|e| StorageError::CorruptedData(format!("ndjson decode: {e}")))?;
         Ok(probe.vv)
     }
 
@@ -1075,8 +1106,8 @@ impl FsBackend {
             return Ok(true);
         }
         let bytes = tokio::fs::read(path).await?;
-        let m: MetaProbe = rmp_serde::from_slice(&bytes)
-            .map_err(|e| StorageError::CorruptedData(format!("msgpack decode: {e}")))?;
+        let m: MetaProbe = serde_json::from_slice(&bytes)
+            .map_err(|e| StorageError::CorruptedData(format!("ndjson decode: {e}")))?;
         Ok(matches!(
             resolve(
                 &m.vv,
@@ -1105,7 +1136,7 @@ impl FsBackend {
         if bytes.is_empty() {
             return Ok(Some(marker()));
         }
-        match rmp_serde::from_slice(&bytes) {
+        match serde_json::from_slice(&bytes) {
             Ok(state) => Ok(Some(state)),
             Err(e) => {
                 tracing::error!(
@@ -1297,9 +1328,9 @@ impl FsBackend {
         };
         while let Some(entry) = rd.next_entry().await? {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with("log.") && name.ends_with(".msgpack") {
+            if name.starts_with("log.") && name.ends_with(".ndjson") {
                 let bytes = tokio::fs::read(entry.path()).await?;
-                match rmp_serde::from_slice::<Vec<NoteLogEntry>>(&bytes) {
+                match parse_note_log(&bytes) {
                     Ok(v) => logs.push(v),
                     Err(e) => tracing::error!(
                         note_id = %id,
@@ -1437,10 +1468,11 @@ impl FsBackend {
         let mut vv = note_log::merge(&self.read_note_logs(id).await?).vv;
         note_log::increment(&mut vv, &self.device_id);
         let log_path = self.note_log_path(id, &self.device_id);
-        let mut log: Vec<NoteLogEntry> = match self.read_sidecar(&log_path, id).await {
-            Ok(v) => v,
-            Err(StorageError::NotFound(_)) => Vec::new(),
-            Err(e) => return Err(e),
+        let mut log: Vec<NoteLogEntry> = if log_path.exists() {
+            let bytes = tokio::fs::read(&log_path).await?;
+            parse_note_log(&bytes)?
+        } else {
+            Vec::new()
         };
         log.push(NoteLogEntry {
             vv,
@@ -1451,7 +1483,7 @@ impl FsBackend {
         if log.len() > Self::NOTE_LOG_COMPACT_THRESHOLD {
             log = note_log::compact_own_log(&log);
         }
-        self.write_sidecar(&log_path, &log).await?;
+        self.write_note_log(&log_path, &log).await?;
         self.materialize(id)
             .await?
             .ok_or_else(|| StorageError::NotFound(id.to_string()))
@@ -1823,7 +1855,7 @@ impl NotebookRepository for FsBackend {
         let mut dir = tokio::fs::read_dir(self.root.join("notebooks")).await?;
         while let Some(entry) = dir.next_entry().await? {
             let fname = entry.file_name().to_string_lossy().to_string();
-            if let Some(stem) = fname.strip_suffix(".msgpack") {
+            if let Some(stem) = fname.strip_suffix(".ndjson") {
                 if let Ok(id) = Uuid::parse_str(stem) {
                     match self.read_sidecar::<Notebook>(&entry.path(), id).await {
                         Ok(nb) if nb.deleted_at.is_none() => notebooks.push(nb),
@@ -1907,7 +1939,7 @@ impl TagRepository for FsBackend {
         let mut dir = tokio::fs::read_dir(self.root.join("tags")).await?;
         while let Some(entry) = dir.next_entry().await? {
             let fname = entry.file_name().to_string_lossy().to_string();
-            if let Some(stem) = fname.strip_suffix(".msgpack") {
+            if let Some(stem) = fname.strip_suffix(".ndjson") {
                 if let Ok(id) = Uuid::parse_str(stem) {
                     match self.read_sidecar::<Tag>(&entry.path(), id).await {
                         Ok(t) if t.deleted_at.is_none() => tags.push(t),
@@ -2407,7 +2439,7 @@ impl SyncBackend for FsBackend {
 
     // md:impl SyncBackend for FsBackend > fn get_last_sync_time
     async fn get_last_sync_time(&self) -> Result<DateTime<Utc>, StorageError> {
-        let path = self.root.join(".keeplin").join("sync_state.msgpack");
+        let path = self.root.join(".keeplin").join("sync_state.ndjson");
         match self.read_sidecar::<SyncState>(&path, Uuid::nil()).await {
             Ok(state) => Ok(state.last_sync),
             Err(StorageError::NotFound(_)) => {
@@ -2420,7 +2452,7 @@ impl SyncBackend for FsBackend {
     // md:impl SyncBackend for FsBackend > fn update_sync_time
     async fn update_sync_time(&self, ts: DateTime<Utc>) -> Result<(), StorageError> {
         let state = SyncState { last_sync: ts };
-        let path = self.root.join(".keeplin").join("sync_state.msgpack");
+        let path = self.root.join(".keeplin").join("sync_state.ndjson");
         self.write_sidecar(&path, &state).await
     }
 
@@ -2605,7 +2637,7 @@ mod tests {
 
         let read = backend.read_note(note.id).await.unwrap();
         assert_eq!(read.body, "body");
-        assert!(!meta.exists(), "read must not rewrite meta.msgpack");
+        assert!(!meta.exists(), "read must not rewrite meta.ndjson");
         assert!(!md.exists(), "read must not rewrite note.md");
     }
 
@@ -2669,7 +2701,7 @@ mod tests {
         let syncthing = dir
             .path()
             .join("notebooks")
-            .join(".syncthing.abc.msgpack.tmp");
+            .join(".syncthing.abc.ndjson.tmp");
         std::fs::write(&syncthing, b"in-flight transfer").unwrap();
 
         let be = FsBackend::new(dir.path()).await.unwrap();
@@ -2714,7 +2746,7 @@ mod tests {
             .join("note_tags")
             .join(note.id.to_string())
             .join(tag.id.to_string());
-        std::fs::write(&path, b"not msgpack at all").unwrap();
+        std::fs::write(&path, b"not ndjson at all").unwrap();
 
         let (tags, _) = be.list_note_tags(note.id, 0, None).await.unwrap();
         assert_eq!(tags.len(), 1, "corrupt state must not hide the association");
@@ -2748,7 +2780,7 @@ mod tests {
         let before = tokio::fs::read_to_string(&log_path).await.unwrap();
 
         let sidecar = be.notebook_path(nb.id);
-        std::fs::write(&sidecar, b"definitely not msgpack").unwrap();
+        std::fs::write(&sidecar, b"definitely not ndjson").unwrap();
         {
             let _guard = be.global_log_lock.lock().await;
             be.compact_global_log_locked().await.unwrap();
@@ -2761,7 +2793,8 @@ mod tests {
             "no snapshot generation was produced"
         );
 
-        let bytes = rmp_serde::to_vec_named(&nb).unwrap();
+        let mut bytes = serde_json::to_vec(&nb).unwrap();
+        bytes.push(b'\n');
         std::fs::write(&sidecar, bytes).unwrap();
         {
             let _guard = be.global_log_lock.lock().await;
@@ -2793,11 +2826,11 @@ mod tests {
                 .join("device_id.sync-conflict-20260702-120000-AAAAAAA"),
             dir.path()
                 .join("notebooks")
-                .join("junk.sync-conflict-20260702-120000-BBBBBBB.msgpack"),
+                .join("junk.sync-conflict-20260702-120000-BBBBBBB.ndjson"),
             dir.path()
                 .join("notes")
                 .join(note_id.to_string())
-                .join("log.dev.sync-conflict-20260702-120000-CCCCCCC.msgpack"),
+                .join("log.dev.sync-conflict-20260702-120000-CCCCCCC.ndjson"),
         ];
         for p in &conflicts {
             std::fs::write(p, b"conflict copy").unwrap();
