@@ -2874,7 +2874,7 @@ concurrent add) + a `"remove"` journal row. Idempotent.
         let mut rows = self
             .conn
             .query(
-                "SELECT t.id,t.title,t.created_at,t.updated_at,t.deleted_at,t.vv,t.last_writer
+                "SELECT t.id,t.title,t.created_at,t.updated_at,t.deleted_at,t.vv,t.last_writer,t.system
                  FROM tags t
                  JOIN note_tags nt ON t.id = nt.tag_id
                  WHERE nt.note_id = ?1 AND nt.deleted_at IS NULL AND t.deleted_at IS NULL
@@ -4303,7 +4303,10 @@ round-trips, and reopening runs no migrations while preserving data.
         let mut t = Tag::new("internal");
         t.system = true;
         let created = be.create_tag(t).await.unwrap();
-        assert!(created.system, "create_tag keeps the system flag it was given");
+        assert!(
+            created.system,
+            "create_tag keeps the system flag it was given"
+        );
         assert!(
             be.read_tag(created.id).await.unwrap().system,
             "system round-trips through the tags.system column"
