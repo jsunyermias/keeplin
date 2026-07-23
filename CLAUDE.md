@@ -13,3 +13,38 @@ Rules:
 Companion .md format: docs/templates/source-module.md (v2.3.1, block-complete).
 Read it fully before touching any companion .md. Its 9 HARD RULES are
 contractual and scripts/check-docs.sh enforces them mechanically.
+
+## Documentation & Knowledge Consistency Policy
+
+Documentation is part of the implementation, not a post-development task. A task is not
+complete until the codebase, knowledge graph and documentation consistently describe the
+same state of the project.
+
+### Mandatory completion checks
+
+Before marking any task as complete, perform the following verification steps:
+
+1. Update every companion document corresponding to any modified source file so it
+   accurately reflects the current implementation.
+2. Regenerate Graphify whenever the changes affect architecture, dependencies, modules,
+   classes, functions, relationships or any information represented in the knowledge
+   graph.
+3. Update every affected project document (for example: `ARCHITECTURE.md`, `README.md`,
+   `SECURITY.md`, `CLAUDE.md`, ADRs or any other relevant documentation).
+4. Verify that:
+   - code and companions are consistent;
+   - Graphify represents the current codebase;
+   - documentation matches the implementation;
+   - internal references and cross-references remain valid.
+5. If any inconsistency is detected, resolve it before completing the task.
+
+### Completion rule
+
+Never consider a task finished while any known discrepancy exists between:
+
+- source code;
+- companion documentation;
+- Graphify knowledge graph;
+- project documentation.
+
+The repository must always remain in a self-consistent state after every completed task.
