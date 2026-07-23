@@ -25,7 +25,7 @@ conventions are deliberately re-explained here (hyper-redundancy is intended).
 use chrono::{Duration, Utc};
 use keeplin_core::{
     error::StorageError,
-    models::{Change, Note, NoteTag, Notebook, Resource, Tag},
+    models::{Change, Note, NoteTag, Notebook, Resource, Tag, SYSTEM_RESOURCE_NOTE_ID},
     storage::{
         db::DbBackend, fs::FsBackend, NoteRepository, NotebookRepository, ResourceRepository,
         SyncBackend, TagRepository,
@@ -485,7 +485,7 @@ async fn db_resource_delete_propagates_and_converges() {
     let a = device().await;
     let b = device().await;
 
-    let res = Resource::new("f", "text/plain", "f.txt", 3);
+    let res = Resource::new(SYSTEM_RESOURCE_NOTE_ID, "f", "text/plain", "f.txt", 3);
     let id = res.id;
     a.create_resource(res, b"abc".to_vec()).await.unwrap();
     for c in a.get_changes_since(epoch).await.unwrap() {

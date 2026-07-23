@@ -24,7 +24,7 @@ conventions are deliberately re-explained here (hyper-redundancy is intended).
 
 use keeplin_core::{
     error::StorageError,
-    models::{Change, Note, NoteTag, Notebook, Resource, Tag},
+    models::{Change, Note, NoteTag, Notebook, Resource, Tag, SYSTEM_RESOURCE_NOTE_ID},
     storage::{
         db::DbBackend, NoteRepository, NotebookRepository, ResourceRepository, SyncBackend,
         TagRepository,
@@ -774,7 +774,7 @@ async fn remove_note_tag() {
 async fn purge_reclaims_old_tombstoned_payloads_only() {
     let backend = in_memory_backend().await;
 
-    let dead = Resource::new("dead", "text/plain", "d.txt", 4);
+    let dead = Resource::new(SYSTEM_RESOURCE_NOTE_ID, "dead", "text/plain", "d.txt", 4);
     let dead_id = dead.id;
     backend
         .create_resource(dead, b"dead".to_vec())
@@ -782,7 +782,7 @@ async fn purge_reclaims_old_tombstoned_payloads_only() {
         .unwrap();
     backend.delete_resource(dead_id).await.unwrap();
 
-    let live = Resource::new("live", "text/plain", "l.txt", 4);
+    let live = Resource::new(SYSTEM_RESOURCE_NOTE_ID, "live", "text/plain", "l.txt", 4);
     let live_id = live.id;
     backend
         .create_resource(live, b"live".to_vec())
@@ -834,7 +834,13 @@ async fn create_and_read_resource() {
     let backend = in_memory_backend().await;
 
     let data = b"binary content".to_vec();
-    let res = Resource::new("img", "image/png", "img.png", data.len() as u64);
+    let res = Resource::new(
+        SYSTEM_RESOURCE_NOTE_ID,
+        "img",
+        "image/png",
+        "img.png",
+        data.len() as u64,
+    );
     let id = res.id;
     backend.create_resource(res, data.clone()).await.unwrap();
 
@@ -864,6 +870,7 @@ async fn list_resources_excludes_data() {
     for i in 0..3u8 {
         let data = vec![i];
         let res = Resource::new(
+            SYSTEM_RESOURCE_NOTE_ID,
             format!("file{i}"),
             "application/octet-stream",
             format!("f{i}.bin"),
@@ -893,7 +900,7 @@ async fn list_resources_excludes_data() {
 async fn delete_resource() {
     let backend = in_memory_backend().await;
 
-    let res = Resource::new("doc", "text/plain", "doc.txt", 0);
+    let res = Resource::new(SYSTEM_RESOURCE_NOTE_ID, "doc", "text/plain", "doc.txt", 0);
     let id = res.id;
     backend.create_resource(res, vec![]).await.unwrap();
     backend.delete_resource(id).await.unwrap();
@@ -1465,6 +1472,7 @@ async fn delete_for_unknown_entity_leaves_a_tombstone_blocking_a_stale_create() 
         .unwrap();
     let res = Resource {
         id: res_id,
+        note_id: SYSTEM_RESOURCE_NOTE_ID,
         title: "resurrected?".into(),
         mime_type: "text/plain".into(),
         file_name: "f.txt".into(),
@@ -1498,6 +1506,248 @@ arm does this when the `UPDATE` hits no row), so the causally older create
 (vv `{peer:1}`) that arrives afterwards loses against the stored tombstone —
 nothing is resurrected, listings stay empty, and the note's tombstone reads
 back with `deleted_at` set.
+
+---
+
+## fn note_delete_cascades_to_attachments_and_restore_recovers_dragged
+
+**Identification** — `#[tokio::test]`. Marker
+`// md:fn note_delete_cascades_to_attachments_and_restore_recovers_dragged`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn note_delete_cascades_to_attachments_and_restore_recovers_dragged
+#[tokio::test]
+async fn note_delete_cascades_to_attachments_and_restore_recovers_dragged() {
+    let backend = in_memory_backend().await;
+    let note = backend.create_note(Note::new("N", "")).await.unwrap();
+
+    let r1 = backend
+        .create_resource(
+            Resource::new(note.id, "a", "text/plain", "a.txt", 1),
+            vec![1],
+        )
+        .await
+        .unwrap();
+    let r2 = backend
+        .create_resource(
+            Resource::new(note.id, "b", "text/plain", "b.txt", 1),
+            vec![2],
+        )
+        .await
+        .unwrap();
+    let r3 = backend
+        .create_resource(
+            Resource::new(note.id, "c", "text/plain", "c.txt", 1),
+            vec![3],
+        )
+        .await
+        .unwrap();
+
+    backend.delete_resource(r3.id).await.unwrap();
+    backend.delete_note(note.id).await.unwrap();
+
+    assert!(matches!(
+        backend.read_resource(r1.id).await,
+        Err(StorageError::NotFound(_))
+    ));
+    assert!(matches!(
+        backend.read_resource(r2.id).await,
+        Err(StorageError::NotFound(_))
+    ));
+
+    let mut revived = backend.read_note(note.id).await.unwrap();
+    revived.deleted_at = None;
+    backend.update_note(revived).await.unwrap();
+
+    assert!(
+        backend.read_resource(r1.id).await.is_ok(),
+        "r1 dragged back"
+    );
+    assert!(
+        backend.read_resource(r2.id).await.is_ok(),
+        "r2 dragged back"
+    );
+    assert!(
+        matches!(
+            backend.read_resource(r3.id).await,
+            Err(StorageError::NotFound(_))
+        ),
+        "a directly-deleted attachment keeps its own tombstone through the restore"
+    );
+}
+```
+
+**What it does** — The core cascade guarantee (issue #125) on `DbBackend`: deleting a note
+soft-deletes its live attachments (`r1`, `r2` read back `NotFound`), and restoring the note
+(an `update_note` clearing `deleted_at`) revives **only** the ones the note dragged down —
+those stamped with the note's tombstone ts. `r3`, deleted directly beforehand with its own
+distinct ts, keeps its tombstone through the restore.
+
+**Dependencies** —
+- `delete_note`/`update_note` — apply the cascade stamp/un-stamp; expect the un-stamp to match
+  resources on `deleted_at = <the note's prior tombstone ts>`.
+- `create_resource`/`read_resource`/`delete_resource` — attachment lifecycle.
+
+**Used by** — n/a (integration test).
+
+**Repeated context** — soft-delete everywhere; a tombstoned resource reads back `NotFound`.
+
+---
+
+## fn moving_note_between_notebooks_leaves_attachments_untouched
+
+**Identification** — `#[tokio::test]`. Marker
+`// md:fn moving_note_between_notebooks_leaves_attachments_untouched`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn moving_note_between_notebooks_leaves_attachments_untouched
+#[tokio::test]
+async fn moving_note_between_notebooks_leaves_attachments_untouched() {
+    let backend = in_memory_backend().await;
+    let mut note = backend.create_note(Note::new("N", "")).await.unwrap();
+    let res = backend
+        .create_resource(
+            Resource::new(note.id, "a", "text/plain", "a.txt", 1),
+            vec![1],
+        )
+        .await
+        .unwrap();
+
+    note.notebook_id = uuid::Uuid::new_v4();
+    backend.update_note(note.clone()).await.unwrap();
+
+    let (read, _) = backend.read_resource(res.id).await.unwrap();
+    assert_eq!(read.note_id, note.id, "note_id is unchanged by a move");
+    assert!(
+        read.deleted_at.is_none(),
+        "a move never tombstones attachments"
+    );
+}
+```
+
+**What it does** — Confirms the "move ≠ touch attachments" invariant: the link is to the note,
+not the notebook, so changing a note's `notebook_id` leaves its resources' `note_id` and
+`deleted_at` untouched.
+
+**Dependencies** —
+- `update_note` — no path here writes `resources`; expects the notebook move to be resource-inert.
+
+**Used by** — n/a (integration test).
+
+**Repeated context** — `note_id` is immutable after creation; attachments are never reparented.
+
+---
+
+## fn list_resources_for_note_orders_and_excludes_others
+
+**Identification** — `#[tokio::test]`. Marker
+`// md:fn list_resources_for_note_orders_and_excludes_others`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn list_resources_for_note_orders_and_excludes_others
+#[tokio::test]
+async fn list_resources_for_note_orders_and_excludes_others() {
+    let backend = in_memory_backend().await;
+    let a = backend.create_note(Note::new("A", "")).await.unwrap();
+    let b = backend.create_note(Note::new("B", "")).await.unwrap();
+
+    let a1 = backend
+        .create_resource(
+            Resource::new(a.id, "a1", "text/plain", "a1.txt", 1),
+            vec![1],
+        )
+        .await
+        .unwrap();
+    let a2 = backend
+        .create_resource(
+            Resource::new(a.id, "a2", "text/plain", "a2.txt", 1),
+            vec![2],
+        )
+        .await
+        .unwrap();
+    backend
+        .create_resource(
+            Resource::new(b.id, "b1", "text/plain", "b1.txt", 1),
+            vec![3],
+        )
+        .await
+        .unwrap();
+    backend
+        .create_resource(
+            Resource::new(SYSTEM_RESOURCE_NOTE_ID, "sys", "text/plain", "s.txt", 1),
+            vec![4],
+        )
+        .await
+        .unwrap();
+
+    let (listed, _) = backend
+        .list_resources_for_note(a.id, 0, None)
+        .await
+        .unwrap();
+    let ids: Vec<_> = listed.iter().map(|r| r.id).collect();
+    assert_eq!(
+        ids,
+        vec![a1.id, a2.id],
+        "only note A's attachments, in created_at order, no note B or system resources"
+    );
+}
+```
+
+**What it does** — `list_resources_for_note` returns exactly the target note's attachments in
+`created_at` order, excluding another note's attachments and system-sentinel resources.
+
+**Dependencies** —
+- `list_resources_for_note` — native filtered query; expects `WHERE note_id = ? ORDER BY
+  created_at, id` and that a real note id never equals `SYSTEM_RESOURCE_NOTE_ID`.
+
+**Used by** — n/a (integration test).
+
+**Repeated context** — pagination/order key is `(created_at, id)`; per-note listings exclude
+the system sentinel.
+
+---
+
+## fn resource_note_id_round_trips
+
+**Identification** — `#[tokio::test]`. Marker `// md:fn resource_note_id_round_trips`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn resource_note_id_round_trips
+#[tokio::test]
+async fn resource_note_id_round_trips() {
+    let backend = in_memory_backend().await;
+    let note = backend.create_note(Note::new("N", "")).await.unwrap();
+    let created = backend
+        .create_resource(
+            Resource::new(note.id, "a", "text/plain", "a.txt", 1),
+            vec![1],
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.note_id, note.id);
+    let (read, _) = backend.read_resource(created.id).await.unwrap();
+    assert_eq!(read.note_id, note.id, "note_id survives create + read");
+}
+```
+
+**What it does** — `note_id` survives the full `create_resource` → `read_resource` round trip
+through the SQLite column and `row_to_resource`.
+
+**Dependencies** —
+- `create_resource`/`read_resource` — persist and read `note_id`; expect the INSERT column and
+  the `row_to_resource` mapping to stay in sync.
+
+**Used by** — n/a (integration test).
+
+**Repeated context** — `note_id` is plaintext, stored as `TEXT` like every UUID in the schema.
 
 ---
 
@@ -1576,3 +1826,7 @@ refresh with `graphify update .` after refactors.
 | 37 | `fn ordering_fields_round_trip_and_manual_order_query` | `// md:fn ordering_fields_round_trip_and_manual_order_query` |
 | 38 | `fn sync_applied_change_carries_ordering_fields` | `// md:fn sync_applied_change_carries_ordering_fields` |
 | 39 | `fn delete_for_unknown_entity_leaves_a_tombstone_blocking_a_stale_create` | `// md:fn delete_for_unknown_entity_leaves_a_tombstone_blocking_a_stale_create` |
+| 40 | `fn note_delete_cascades_to_attachments_and_restore_recovers_dragged` | `// md:fn note_delete_cascades_to_attachments_and_restore_recovers_dragged` |
+| 41 | `fn moving_note_between_notebooks_leaves_attachments_untouched` | `// md:fn moving_note_between_notebooks_leaves_attachments_untouched` |
+| 42 | `fn list_resources_for_note_orders_and_excludes_others` | `// md:fn list_resources_for_note_orders_and_excludes_others` |
+| 43 | `fn resource_note_id_round_trips` | `// md:fn resource_note_id_round_trips` |

@@ -12,7 +12,9 @@ use uuid::Uuid;
 
 use crate::{
     error::StorageError,
-    models::{new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag},
+    models::{
+        new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag, SYSTEM_RESOURCE_NOTE_ID,
+    },
 };
 
 use super::backend::DEFAULT_HISTORY_LIMIT;
@@ -508,7 +510,7 @@ impl FsBackend {
         removed
     }
 
-    const FORMAT_VERSION: u32 = 5;
+    const FORMAT_VERSION: u32 = 6;
 
     const NOTE_LOG_COMPACT_THRESHOLD: usize = 256;
 
@@ -561,7 +563,7 @@ impl FsBackend {
     // md:impl FsBackend > fn apply_format_migration
     async fn apply_format_migration(&self, version: u32) -> Result<(), StorageError> {
         match version {
-            2..=5 => Ok(()),
+            2..=6 => Ok(()),
             other => Err(StorageError::InvalidState(format!(
                 "no filesystem migration defined for format version {other}"
             ))),
@@ -1214,6 +1216,64 @@ impl FsBackend {
         }
     }
 
+    // md:impl FsBackend > fn cascade_stamp_resources
+    async fn cascade_stamp_resources(
+        &self,
+        note_id: Uuid,
+        deleted_at: DateTime<Utc>,
+    ) -> Result<(), StorageError> {
+        let mut dir = match tokio::fs::read_dir(self.root.join("resources")).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(entry) = dir.next_entry().await? {
+            let Ok(id) = Uuid::parse_str(&entry.file_name().to_string_lossy()) else {
+                continue;
+            };
+            let meta_path = self.resource_meta_path(id);
+            let mut resource: Resource = match self.read_sidecar(&meta_path, id).await {
+                Ok(r) => r,
+                Err(StorageError::NotFound(_)) => continue,
+                Err(e) => return Err(e),
+            };
+            if resource.note_id == note_id && resource.deleted_at.is_none() {
+                resource.deleted_at = Some(deleted_at);
+                self.write_sidecar(&meta_path, &resource).await?;
+            }
+        }
+        Ok(())
+    }
+
+    // md:impl FsBackend > fn cascade_unstamp_resources
+    async fn cascade_unstamp_resources(
+        &self,
+        note_id: Uuid,
+        deleted_at: DateTime<Utc>,
+    ) -> Result<(), StorageError> {
+        let mut dir = match tokio::fs::read_dir(self.root.join("resources")).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(entry) = dir.next_entry().await? {
+            let Ok(id) = Uuid::parse_str(&entry.file_name().to_string_lossy()) else {
+                continue;
+            };
+            let meta_path = self.resource_meta_path(id);
+            let mut resource: Resource = match self.read_sidecar(&meta_path, id).await {
+                Ok(r) => r,
+                Err(StorageError::NotFound(_)) => continue,
+                Err(e) => return Err(e),
+            };
+            if resource.note_id == note_id && resource.deleted_at == Some(deleted_at) {
+                resource.deleted_at = None;
+                self.write_sidecar(&meta_path, &resource).await?;
+            }
+        }
+        Ok(())
+    }
+
     // md:impl FsBackend > fn note_vv
     async fn note_vv(&self, id: Uuid) -> Result<VersionVector, StorageError> {
         match self
@@ -1581,7 +1641,14 @@ impl NoteRepository for FsBackend {
         if self.read_note_logs(note.id).await?.is_empty() {
             return Err(StorageError::NotFound(note.id.to_string()));
         }
-        let merged = self.append_note_op(note.id, NoteOp::Upsert(note)).await?;
+        let id = note.id;
+        let prior_deleted = self.merge_note(id).await?.and_then(|n| n.deleted_at);
+        let merged = self.append_note_op(id, NoteOp::Upsert(note)).await?;
+        if merged.deleted_at.is_none() {
+            if let Some(old_ts) = prior_deleted {
+                self.cascade_unstamp_resources(id, old_ts).await?;
+            }
+        }
         tracing::info!(id = %merged.id, "Note updated");
         Ok(merged)
     }
@@ -1591,8 +1658,10 @@ impl NoteRepository for FsBackend {
         if self.read_note_logs(id).await?.is_empty() {
             return Err(StorageError::NotFound(id.to_string()));
         }
-        self.append_note_op(id, NoteOp::Tombstone { deleted_at: now() })
+        let ts = now();
+        self.append_note_op(id, NoteOp::Tombstone { deleted_at: ts })
             .await?;
+        self.cascade_stamp_resources(id, ts).await?;
         tracing::info!(%id, "Note deleted");
         Ok(())
     }
@@ -2036,6 +2105,33 @@ impl ResourceRepository for FsBackend {
         }))
     }
 
+    // md:impl ResourceRepository for FsBackend > fn list_resources_for_note
+    async fn list_resources_for_note(
+        &self,
+        note_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
+        let limit = super::effective_page_size(page_size) as usize;
+        let mut resources = Vec::new();
+        let mut dir = tokio::fs::read_dir(self.root.join("resources")).await?;
+        while let Some(entry) = dir.next_entry().await? {
+            let id_str = entry.file_name().to_string_lossy().to_string();
+            if let Ok(id) = Uuid::parse_str(&id_str) {
+                let meta_path = self.resource_meta_path(id);
+                match self.read_sidecar::<Resource>(&meta_path, id).await {
+                    Ok(r) if r.deleted_at.is_none() && r.note_id == note_id => resources.push(r),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("Could not load resource {id}: {e}"),
+                }
+            }
+        }
+        resources.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        Ok(paginate(resources, limit, page_token.as_deref(), |r| {
+            (r.created_at.to_sortable_rfc3339(), r.id)
+        }))
+    }
+
     // md:impl ResourceRepository for FsBackend > fn purge_deleted_resources
     async fn purge_deleted_resources(
         &self,
@@ -2101,11 +2197,18 @@ impl SyncBackend for FsBackend {
     async fn apply_change(&self, change: Change) -> Result<(), StorageError> {
         match change {
             Change::NoteCreate { note } | Change::NoteUpdate { note } => {
-                self.materialize(note.id).await?;
+                let prior_deleted = self.merge_note(note.id).await?.and_then(|n| n.deleted_at);
+                let materialized = self.materialize(note.id).await?;
+                if materialized.is_some_and(|n| n.deleted_at.is_none()) {
+                    if let Some(old_ts) = prior_deleted {
+                        self.cascade_unstamp_resources(note.id, old_ts).await?;
+                    }
+                }
                 tracing::debug!(id = %note.id, "Materialized remote note change");
             }
-            Change::NoteDelete { id, .. } => {
+            Change::NoteDelete { id, deleted_at, .. } => {
                 self.materialize(id).await?;
+                self.cascade_stamp_resources(id, deleted_at).await?;
                 tracing::debug!(%id, "Materialized remote note delete");
             }
             Change::NotebookCreate { notebook } | Change::NotebookUpdate { notebook } => {
@@ -2276,6 +2379,7 @@ impl SyncBackend for FsBackend {
                         Some(r) => r,
                         None => Resource {
                             id,
+                            note_id: SYSTEM_RESOURCE_NOTE_ID,
                             title: String::new(),
                             mime_type: String::new(),
                             file_name: String::new(),
@@ -2723,12 +2827,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let be = FsBackend::new(dir.path()).await.unwrap();
 
-        let dead = Resource::new("dead", "text/plain", "d.txt", 4);
+        let dead = Resource::new(SYSTEM_RESOURCE_NOTE_ID, "dead", "text/plain", "d.txt", 4);
         let dead_id = dead.id;
         be.create_resource(dead, b"dead".to_vec()).await.unwrap();
         be.delete_resource(dead_id).await.unwrap();
 
-        let live = Resource::new("live", "text/plain", "l.txt", 4);
+        let live = Resource::new(SYSTEM_RESOURCE_NOTE_ID, "live", "text/plain", "l.txt", 4);
         let live_id = live.id;
         be.create_resource(live, b"live".to_vec()).await.unwrap();
 
@@ -2750,7 +2854,8 @@ mod tests {
         assert_eq!(bytes, b"live", "live resources are untouched");
 
         assert_eq!(be.purge_deleted_resources(now()).await.unwrap(), 0);
-        let mut revived = Resource::new("revived", "text/plain", "r.txt", 3);
+        let mut revived =
+            Resource::new(SYSTEM_RESOURCE_NOTE_ID, "revived", "text/plain", "r.txt", 3);
         revived.id = dead_id;
         be.create_resource(revived, b"new".to_vec()).await.unwrap();
         let (_, bytes) = be.read_resource(dead_id).await.unwrap();

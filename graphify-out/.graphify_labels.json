@@ -48,7 +48,6 @@
   "46": "`linking.rs` — `LinkingBackend` decorator + reference resolution",
   "47": "`rest.rs` — REST/JSON API + WebSocket feed (axum)",
   "48": "compat.rs",
-  "49": "Notebook",
   "50": "`links.rs` — bookmark & link types and pure parsing",
   "51": "`migrate.rs` — one-shot state copy between backends",
   "52": "`storage/backend.rs` — the `StorageBackend` supertrait",
@@ -124,6 +123,5 @@
   "130": "impl Contact",
   "131": "impl HistoryRepository for DbBackend",
   "132": "impl HistoryRepository for FsBackend",
-  "133": "impl KeeplinServer",
-  "134": ".set_notebook_alias"
+  "133": "impl KeeplinServer"
 }

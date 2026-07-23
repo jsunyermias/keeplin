@@ -247,6 +247,7 @@ exposed.
 fn resource_to_proto(r: CoreResource) -> Resource {
     Resource {
         id: r.id.to_string(),
+        note_id: r.note_id.to_string(),
         title: r.title,
         mime_type: r.mime_type,
         file_name: r.file_name,
@@ -669,7 +670,8 @@ Result<UploadResourceRequest, Status>> + Unpin`; marker
         }
 
         let size = data.len() as u64;
-        let mut resource = CoreResource::new(meta.title, meta.mime_type, meta.file_name, size);
+        let note_id = parse_uuid(&meta.note_id, "note_id")?;
+        let mut resource = CoreResource::new(note_id, meta.title, meta.mime_type, meta.file_name, size);
         resource.duration_ms = meta.duration_ms;
         resource.dimensions = match (meta.width, meta.height) {
             (Some(w), Some(h)) => Some((w, h)),
@@ -1556,11 +1558,18 @@ one note.
         } else {
             Some(r.page_token)
         };
-        let (resources, next_page_token) = self
-            .backend
-            .list_resources(r.page_size, token)
-            .await
-            .map_err(storage_err)?;
+        let (resources, next_page_token) = if r.note_id.is_empty() {
+            self.backend
+                .list_resources(r.page_size, token)
+                .await
+                .map_err(storage_err)?
+        } else {
+            let note_id = parse_uuid(&r.note_id, "note_id")?;
+            self.backend
+                .list_resources_for_note(note_id, r.page_size, token)
+                .await
+                .map_err(storage_err)?
+        };
         Ok(Response::new(ListResourcesResponse {
             resources: resources.into_iter().map(resource_to_proto).collect(),
             next_page_token: next_page_token.unwrap_or_default(),
@@ -1568,7 +1577,9 @@ one note.
     }
 ```
 
-**What it does** — Paginated `backend.list_resources` (metadata only).
+**What it does** — Paginated resource metadata. With an empty `note_id` it lists every
+resource; with a non-empty `note_id` it filters to that note via
+`list_resources_for_note` (issue #125).
 
 ### fn create_resource
 
@@ -1584,8 +1595,9 @@ one note.
         req: Request<CreateResourceRequest>,
     ) -> Result<Response<CreateResourceResponse>, Status> {
         let r = req.into_inner();
+        let note_id = parse_uuid(&r.note_id, "note_id")?;
         let size = r.data.len() as u64;
-        let mut resource = CoreResource::new(r.title, r.mime_type, r.file_name, size);
+        let mut resource = CoreResource::new(note_id, r.title, r.mime_type, r.file_name, size);
         resource.duration_ms = r.duration_ms;
         resource.dimensions = match (r.width, r.height) {
             (Some(w), Some(h)) => Some((w, h)),
@@ -2136,6 +2148,7 @@ the upload tests exercise assembly, not the cap.
                 duration_ms: None,
                 width: None,
                 height: None,
+                note_id: keeplin_core::models::SYSTEM_RESOURCE_NOTE_ID.to_string(),
             })),
         }
     }

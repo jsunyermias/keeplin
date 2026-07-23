@@ -549,6 +549,69 @@ store that state natively.
 
 ---
 
+## SYSTEM_RESOURCE_NOTE_ID
+
+**Identification** — module-level `pub const` of type `Uuid`; marker
+`// md:SYSTEM_RESOURCE_NOTE_ID`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:SYSTEM_RESOURCE_NOTE_ID
+pub const SYSTEM_RESOURCE_NOTE_ID: Uuid = Uuid::from_u128(1);
+```
+
+**What it does** — The reserved **non-nil** sentinel `note_id` for a "system resource" — an
+attachment that does not hang off a user note (vCard contacts and iCal events produced by
+`interop.rs`). `Uuid::nil()` is already the Inbox notebook id (`ordering::INBOX_ID`), so the
+sentinel is deliberately `Uuid::from_u128(1)` (`00000000-0000-0000-0000-000000000001`) to avoid
+reusing it. Per-note listings filter by a real note id, which never equals this value, so system
+resources are naturally excluded from them. It is also the `#[serde(default)]` for
+`Resource.note_id`, so a pre-#125 record with no `note_id` deserialises as a system resource.
+
+**Dependencies** —
+- `uuid::Uuid::from_u128` — const constructor; expects a stable numeric literal (changing it
+  would silently reclassify every system resource).
+
+**Used by** — `system_resource_note_id` (the serde default fn); `Resource::new` callers in
+`interop.rs`; the `fs`/`db` backends and the server as the migration default and cascade
+boundary; tests.
+
+**Repeated context** — the id-plaintext convention: `note_id` is never encrypted (like
+`notebook_id`) so queries and cascades work under `EncryptedBackend`.
+
+---
+
+## fn system_resource_note_id
+
+**Identification** — private free function `fn system_resource_note_id() -> Uuid`; marker
+`// md:fn system_resource_note_id`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn system_resource_note_id
+fn system_resource_note_id() -> Uuid {
+    SYSTEM_RESOURCE_NOTE_ID
+}
+```
+
+**What it does** — The `#[serde(default = "…")]` provider for `Resource.note_id`: a record
+missing `note_id` (any pre-#125 journal entry) deserialises to the system sentinel rather than
+failing. Construction-time obligation (a real `note_id` for user attachments) is enforced by
+`Resource::new`, not by the parser — so `#[serde(default)]` is cheap defensive compatibility,
+consistent with the additive-evolution rule in this module.
+
+**Dependencies** —
+- `SYSTEM_RESOURCE_NOTE_ID` — the value returned; expects the sentinel to stay non-nil and
+  distinct from `Uuid::nil()`.
+
+**Used by** — serde, via `#[serde(default = "system_resource_note_id")]` on `Resource.note_id`.
+
+**Repeated context** — none.
+
+---
+
 ## Resource
 
 **Identification** — struct deriving `Debug, Clone, Serialize, Deserialize, PartialEq, Eq,
@@ -561,6 +624,8 @@ Hash`; marker `// md:Resource`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Resource {
     pub id: Uuid,
+    #[serde(default = "system_resource_note_id")]
+    pub note_id: Uuid,
     pub title: String,
     pub mime_type: String,
     pub file_name: String,
@@ -581,7 +646,12 @@ pub struct Resource {
 
 **What it does** — Metadata for a binary file attachment; the payload is stored separately (a
 `data` file on disk for `FsBackend`, a BLOB column for `DbBackend`) and fetched explicitly via
-`read_resource`. Fields: `id`, `title` / `mime_type` (IANA, e.g. `"image/png"`) / `file_name`
+`read_resource`. Every attachment belongs to **exactly one note**: `note_id` is **plaintext**
+(an id, like `notebook_id`, so per-note queries and the soft-delete cascade work under
+`EncryptedBackend`), `#[serde(default = "system_resource_note_id")]` (missing ⇒ system
+sentinel), and **immutable** after creation (attachments are never reparented; the obligation
+to pass a real note is enforced by `Resource::new`, not the parser). Other fields: `id`,
+`title` / `mime_type` (IANA, e.g. `"image/png"`) / `file_name`
 — all encrypted at rest; `size` in **plaintext** (needed to validate uploads without
 decrypting); `duration_ms` (audio/video length) and `dimensions` (`(width, height)` for
 images) — both `Option`, `#[serde(default)]`, and in **plaintext** for the same reason as
@@ -596,6 +666,8 @@ compaction concern — `purge_deleted_resources`); `vv`/`last_writer` (`#[serde(
 
 **Dependencies** —
 - `VersionVector` — `vv`; expects `Default`.
+- `system_resource_note_id` — the `note_id` serde default; expects it to return the reserved
+  sentinel.
 - `chrono`, `uuid`, `serde` derive — same shared conventions.
 
 **Used by** — `ResourceRepository`; `interop.rs` (contacts/events are stored as resources);
@@ -613,14 +685,15 @@ compaction concern — `purge_deleted_resources`); `vv`/`last_writer` (`#[serde(
 
 ### fn new
 
-**Identification** — `pub fn new(title, mime_type, file_name, size: u64) -> Self` (the string
-parameters are `impl Into<String>`); marker `// md:impl Resource > fn new`.
+**Identification** — `pub fn new(note_id: Uuid, title, mime_type, file_name, size: u64) -> Self`
+(the string parameters are `impl Into<String>`); marker `// md:impl Resource > fn new`.
 
 **Code** — complete and verbatim:
 
 ```rust
     // md:impl Resource > fn new
     pub fn new(
+        note_id: Uuid,
         title: impl Into<String>,
         mime_type: impl Into<String>,
         file_name: impl Into<String>,
@@ -628,6 +701,7 @@ parameters are `impl Into<String>`); marker `// md:impl Resource > fn new`.
     ) -> Self {
         Self {
             id: new_id(),
+            note_id,
             title: title.into(),
             mime_type: mime_type.into(),
             file_name: file_name.into(),
@@ -642,7 +716,10 @@ parameters are `impl Into<String>`); marker `// md:impl Resource > fn new`.
     }
 ```
 
-**What it does** — Fresh UUID + `now()`; `duration_ms`/`dimensions` default to `None` (the
+**What it does** — Fresh UUID + `now()`; `note_id` is **required in construction** — this is
+where the "every attachment belongs to exactly one note" invariant is enforced (a user
+attachment passes its owning note; `interop.rs` passes `SYSTEM_RESOURCE_NOTE_ID`).
+`duration_ms`/`dimensions` default to `None` (the
 producer sets them afterwards if the attachment is media); the binary payload is **not** stored here — it is
 passed separately to `create_resource`. `size` must be the exact byte length of that payload.
 
@@ -1003,10 +1080,12 @@ after refactors.
 | 14 | `impl Tag` (container) | `// md:impl Tag` |
 | 15 | `fn new` (Tag) | `// md:impl Tag > fn new` |
 | 16 | `struct NoteTag` | `// md:NoteTag` |
-| 17 | `struct Resource` | `// md:Resource` |
-| 18 | `impl Resource` (container) | `// md:impl Resource` |
-| 19 | `fn new` (Resource) | `// md:impl Resource > fn new` |
-| 20 | `enum Change` | `// md:Change` |
-| 21 | `mod tests` (container) | `// md:mod tests` |
-| 22 | `fn pre_ordering_note_json_lands_in_the_inbox_with_defaults` | `// md:mod tests > fn pre_ordering_note_json_lands_in_the_inbox_with_defaults` |
-| 23 | `fn pre_ordering_note_msgpack_round_trips` | `// md:mod tests > fn pre_ordering_note_msgpack_round_trips` |
+| 17 | `const SYSTEM_RESOURCE_NOTE_ID` | `// md:SYSTEM_RESOURCE_NOTE_ID` |
+| 18 | `fn system_resource_note_id` | `// md:fn system_resource_note_id` |
+| 19 | `struct Resource` | `// md:Resource` |
+| 20 | `impl Resource` (container) | `// md:impl Resource` |
+| 21 | `fn new` (Resource) | `// md:impl Resource > fn new` |
+| 22 | `enum Change` | `// md:Change` |
+| 23 | `mod tests` (container) | `// md:mod tests` |
+| 24 | `fn pre_ordering_note_json_lands_in_the_inbox_with_defaults` | `// md:mod tests > fn pre_ordering_note_json_lands_in_the_inbox_with_defaults` |
+| 25 | `fn pre_ordering_note_msgpack_round_trips` | `// md:mod tests > fn pre_ordering_note_msgpack_round_trips` |

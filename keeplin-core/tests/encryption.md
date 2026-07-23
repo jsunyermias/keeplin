@@ -24,7 +24,7 @@ conventions are deliberately re-explained here (hyper-redundancy is intended).
 
 use keeplin_core::{
     encryption::EncryptedBackend,
-    models::{Note, NoteTag, Notebook, Resource, Tag},
+    models::{Note, NoteTag, Notebook, Resource, Tag, SYSTEM_RESOURCE_NOTE_ID},
     storage::{
         fs::FsBackend, NoteRepository, NotebookRepository, ResourceRepository, TagRepository,
     },
@@ -376,6 +376,7 @@ async fn resource_round_trips() {
 
     let data = b"secret binary content".to_vec();
     let res = Resource::new(
+        SYSTEM_RESOURCE_NOTE_ID,
         "attachment",
         "application/octet-stream",
         "file.bin",
@@ -410,7 +411,7 @@ async fn resource_data_stored_encrypted() {
     let backend = enc_backend(dir.path()).await;
 
     let data = b"supersecret".to_vec();
-    let res = Resource::new("r", "text/plain", "r.txt", data.len() as u64);
+    let res = Resource::new(SYSTEM_RESOURCE_NOTE_ID, "r", "text/plain", "r.txt", data.len() as u64);
     let id = res.id;
     backend.create_resource(res, data).await.unwrap();
 

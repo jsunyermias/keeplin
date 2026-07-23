@@ -34,7 +34,9 @@ use uuid::Uuid;
 
 use crate::{
     error::StorageError,
-    models::{new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag},
+    models::{
+        new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag, SYSTEM_RESOURCE_NOTE_ID,
+    },
 };
 
 use super::backend::DEFAULT_HISTORY_LIMIT;
@@ -993,7 +995,7 @@ the only good version; the caller logs the findings with remediation guidance
         removed
     }
 
-    const FORMAT_VERSION: u32 = 5;
+    const FORMAT_VERSION: u32 = 6;
 
     const NOTE_LOG_COMPACT_THRESHOLD: usize = 256;
 
@@ -1083,7 +1085,7 @@ not understand. A final stamp write covers the already-current case.
     // md:impl FsBackend > fn apply_format_migration
     async fn apply_format_migration(&self, version: u32) -> Result<(), StorageError> {
         match version {
-            2..=5 => Ok(()),
+            2..=6 => Ok(()),
             other => Err(StorageError::InvalidState(format!(
                 "no filesystem migration defined for format version {other}"
             ))),
@@ -2181,6 +2183,117 @@ file.
 `deleted_at` when tombstoned else `created_at` (resources have no
 `updated_at`); `true` with no local metadata.
 
+### fn cascade_stamp_resources
+
+**Identification** — `async fn cascade_stamp_resources(&self, note_id: Uuid, deleted_at:
+DateTime<Utc>) -> Result<(), StorageError>`; marker
+`// md:impl FsBackend > fn cascade_stamp_resources`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl FsBackend > fn cascade_stamp_resources
+    async fn cascade_stamp_resources(
+        &self,
+        note_id: Uuid,
+        deleted_at: DateTime<Utc>,
+    ) -> Result<(), StorageError> {
+        let mut dir = match tokio::fs::read_dir(self.root.join("resources")).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(entry) = dir.next_entry().await? {
+            let Ok(id) = Uuid::parse_str(&entry.file_name().to_string_lossy()) else {
+                continue;
+            };
+            let meta_path = self.resource_meta_path(id);
+            let mut resource: Resource = match self.read_sidecar(&meta_path, id).await {
+                Ok(r) => r,
+                Err(StorageError::NotFound(_)) => continue,
+                Err(e) => return Err(e),
+            };
+            if resource.note_id == note_id && resource.deleted_at.is_none() {
+                resource.deleted_at = Some(deleted_at);
+                self.write_sidecar(&meta_path, &resource).await?;
+            }
+        }
+        Ok(())
+    }
+```
+
+**What it does** — The soft-delete cascade (issue #125, D3): when a note is tombstoned, every
+**live** resource with that `note_id` is stamped `deleted_at = <the note's tombstone ts>`. It
+scans the `resources/` sidecars, and for each match rewrites only the `deleted_at` field —
+deliberately **without** bumping `vv`/`last_writer` (so replicas don't diverge on version
+vectors) and **without** `append_log` (so the cascade never echoes into the relay broadcast).
+Convergence comes from every replica applying the same cascade when it applies the `NoteDelete`.
+A missing `resources/` dir (no attachments yet) is a no-op.
+
+**Dependencies** —
+- `resource_meta_path`, `read_sidecar`, `write_sidecar` — per-resource sidecar IO; expect
+  `read_sidecar` to surface `NotFound` for a resource with no meta (skipped, not fatal).
+- `Resource.note_id` / `Resource.deleted_at` — the match predicate; expect `note_id` plaintext.
+
+**Used by** — `delete_note` (local delete) and `apply_change(NoteDelete)` (sync).
+
+**Repeated context** — the cascade is derived state, never journaled: no `vv`/`last_writer`
+bump, no `append_log`.
+
+### fn cascade_unstamp_resources
+
+**Identification** — `async fn cascade_unstamp_resources(&self, note_id: Uuid, deleted_at:
+DateTime<Utc>) -> Result<(), StorageError>`; marker
+`// md:impl FsBackend > fn cascade_unstamp_resources`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl FsBackend > fn cascade_unstamp_resources
+    async fn cascade_unstamp_resources(
+        &self,
+        note_id: Uuid,
+        deleted_at: DateTime<Utc>,
+    ) -> Result<(), StorageError> {
+        let mut dir = match tokio::fs::read_dir(self.root.join("resources")).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(entry) = dir.next_entry().await? {
+            let Ok(id) = Uuid::parse_str(&entry.file_name().to_string_lossy()) else {
+                continue;
+            };
+            let meta_path = self.resource_meta_path(id);
+            let mut resource: Resource = match self.read_sidecar(&meta_path, id).await {
+                Ok(r) => r,
+                Err(StorageError::NotFound(_)) => continue,
+                Err(e) => return Err(e),
+            };
+            if resource.note_id == note_id && resource.deleted_at == Some(deleted_at) {
+                resource.deleted_at = None;
+                self.write_sidecar(&meta_path, &resource).await?;
+            }
+        }
+        Ok(())
+    }
+```
+
+**What it does** — The restore side of the cascade: when a tombstoned note is revived, only the
+resources the note **actually dragged down** are recovered — those whose `deleted_at` equals the
+note's old tombstone ts (`== Some(deleted_at)`). A resource deleted directly on its own carries
+a different `deleted_at` and survives the restore. Like the stamp, it rewrites only `deleted_at`,
+without a `vv`/`last_writer` bump or `append_log`.
+
+**Dependencies** —
+- `resource_meta_path`, `read_sidecar`, `write_sidecar` — same sidecar IO as the stamp.
+- `Resource.deleted_at == Some(deleted_at)` — the exact-timestamp match; expects the caller to
+  pass the note's prior tombstone ts (from `merge_note` before the revival).
+
+**Used by** — `update_note` (local revive) and `apply_change(NoteCreate|NoteUpdate)` (sync).
+
+**Repeated context** — derived state, never journaled (see `cascade_stamp_resources`).
+
 ### fn note_vv
 
 **Identification** — marker `// md:impl FsBackend > fn note_vv`.
@@ -2882,14 +2995,24 @@ after Syncthing delivers a peer log — and never writes the projection back.
         if self.read_note_logs(note.id).await?.is_empty() {
             return Err(StorageError::NotFound(note.id.to_string()));
         }
-        let merged = self.append_note_op(note.id, NoteOp::Upsert(note)).await?;
+        let id = note.id;
+        let prior_deleted = self.merge_note(id).await?.and_then(|n| n.deleted_at);
+        let merged = self.append_note_op(id, NoteOp::Upsert(note)).await?;
+        if merged.deleted_at.is_none() {
+            if let Some(old_ts) = prior_deleted {
+                self.cascade_unstamp_resources(id, old_ts).await?;
+            }
+        }
         tracing::info!(id = %merged.id, "Note updated");
         Ok(merged)
     }
 ```
 
 **What it does** — `NotFound` when the note has no logs at all, else
-`append_note_op(Upsert)`.
+`append_note_op(Upsert)`. **Restore cascade (issue #125):** the note's `deleted_at`
+is read (via `merge_note`) before the upsert; if the upsert makes it live again and it
+was previously tombstoned, the resources it dragged down (whose `deleted_at` equals the
+old tombstone ts) are un-stamped via `cascade_unstamp_resources`.
 
 ### fn delete_note
 
@@ -2904,15 +3027,19 @@ after Syncthing delivers a peer log — and never writes the projection back.
         if self.read_note_logs(id).await?.is_empty() {
             return Err(StorageError::NotFound(id.to_string()));
         }
-        self.append_note_op(id, NoteOp::Tombstone { deleted_at: now() })
+        let ts = now();
+        self.append_note_op(id, NoteOp::Tombstone { deleted_at: ts })
             .await?;
+        self.cascade_stamp_resources(id, ts).await?;
         tracing::info!(%id, "Note deleted");
         Ok(())
     }
 ```
 
 **What it does** — `NotFound` without logs, else
-`append_note_op(Tombstone { deleted_at: now })`.
+`append_note_op(Tombstone { deleted_at: ts })`. **Delete cascade (issue #125):** after
+the tombstone is appended, `cascade_stamp_resources(id, ts)` stamps every live resource
+with this `note_id` at the same tombstone ts, so attachments follow their note down.
 
 ### fn list_notes
 
@@ -3627,6 +3754,57 @@ payload is retained; `"delete"` entry.
 **What it does** — Scan resource dirs, keep live decodable metadata, sort,
 `paginate` (no payloads).
 
+### fn list_resources_for_note
+
+**Identification** — marker
+`// md:impl ResourceRepository for FsBackend > fn list_resources_for_note`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl ResourceRepository for FsBackend > fn list_resources_for_note
+    async fn list_resources_for_note(
+        &self,
+        note_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
+        let limit = super::effective_page_size(page_size) as usize;
+        let mut resources = Vec::new();
+        let mut dir = tokio::fs::read_dir(self.root.join("resources")).await?;
+        while let Some(entry) = dir.next_entry().await? {
+            let id_str = entry.file_name().to_string_lossy().to_string();
+            if let Ok(id) = Uuid::parse_str(&id_str) {
+                let meta_path = self.resource_meta_path(id);
+                match self.read_sidecar::<Resource>(&meta_path, id).await {
+                    Ok(r) if r.deleted_at.is_none() && r.note_id == note_id => resources.push(r),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("Could not load resource {id}: {e}"),
+                }
+            }
+        }
+        resources.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        Ok(paginate(resources, limit, page_token.as_deref(), |r| {
+            (r.created_at.to_sortable_rfc3339(), r.id)
+        }))
+    }
+```
+
+**What it does** — Native override of the trait's `list_resources_for_note` (issue #125): the
+same dir scan as `list_resources` but additionally filtered to `r.note_id == note_id`, then
+sorted by `(created_at, id)` and paginated. A user-note query never matches
+`SYSTEM_RESOURCE_NOTE_ID`, so system resources stay out of per-note listings. (For `fs` the
+scan cost is the same as the default impl, but keeping a native override matches the `db`
+backend and documents the per-note listing as first-class.)
+
+**Dependencies** —
+- `resource_meta_path`, `read_sidecar`, `paginate`, `super::effective_page_size` — identical
+  machinery to `list_resources`; expect the `(sortable-created_at, id)` cursor.
+- `Resource.note_id` — the added filter; expects it plaintext.
+
+**Used by** — the daemon's `list_resources` RPC / REST handler when a `note_id` filter is
+present; tests.
+
 ### fn purge_deleted_resources
 
 **Identification** — marker
@@ -3738,11 +3916,18 @@ typed copies instead of a raw change bridge.
     async fn apply_change(&self, change: Change) -> Result<(), StorageError> {
         match change {
             Change::NoteCreate { note } | Change::NoteUpdate { note } => {
-                self.materialize(note.id).await?;
+                let prior_deleted = self.merge_note(note.id).await?.and_then(|n| n.deleted_at);
+                let materialized = self.materialize(note.id).await?;
+                if materialized.is_some_and(|n| n.deleted_at.is_none()) {
+                    if let Some(old_ts) = prior_deleted {
+                        self.cascade_unstamp_resources(note.id, old_ts).await?;
+                    }
+                }
                 tracing::debug!(id = %note.id, "Materialized remote note change");
             }
-            Change::NoteDelete { id, .. } => {
+            Change::NoteDelete { id, deleted_at, .. } => {
                 self.materialize(id).await?;
+                self.cascade_stamp_resources(id, deleted_at).await?;
                 tracing::debug!(%id, "Materialized remote note delete");
             }
             Change::NotebookCreate { notebook } | Change::NotebookUpdate { notebook } => {
@@ -3913,6 +4098,7 @@ typed copies instead of a raw change bridge.
                         Some(r) => r,
                         None => Resource {
                             id,
+                            note_id: SYSTEM_RESOURCE_NOTE_ID,
                             title: String::new(),
                             mime_type: String::new(),
                             file_name: String::new(),
@@ -4641,12 +4827,12 @@ dir are all detected, never deleted, and never block startup.
         let dir = tempfile::tempdir().unwrap();
         let be = FsBackend::new(dir.path()).await.unwrap();
 
-        let dead = Resource::new("dead", "text/plain", "d.txt", 4);
+        let dead = Resource::new(SYSTEM_RESOURCE_NOTE_ID, "dead", "text/plain", "d.txt", 4);
         let dead_id = dead.id;
         be.create_resource(dead, b"dead".to_vec()).await.unwrap();
         be.delete_resource(dead_id).await.unwrap();
 
-        let live = Resource::new("live", "text/plain", "l.txt", 4);
+        let live = Resource::new(SYSTEM_RESOURCE_NOTE_ID, "live", "text/plain", "l.txt", 4);
         let live_id = live.id;
         be.create_resource(live, b"live".to_vec()).await.unwrap();
 
@@ -4668,7 +4854,7 @@ dir are all detected, never deleted, and never block startup.
         assert_eq!(bytes, b"live", "live resources are untouched");
 
         assert_eq!(be.purge_deleted_resources(now()).await.unwrap(), 0);
-        let mut revived = Resource::new("revived", "text/plain", "r.txt", 3);
+        let mut revived = Resource::new(SYSTEM_RESOURCE_NOTE_ID, "revived", "text/plain", "r.txt", 3);
         revived.id = dead_id;
         be.create_resource(revived, b"new".to_vec()).await.unwrap();
         let (_, bytes) = be.read_resource(dead_id).await.unwrap();
@@ -4878,83 +5064,86 @@ refresh with `graphify update .` after refactors.
 | 66 | `fn read_resource_meta` | `// md:impl FsBackend > fn read_resource_meta` |
 | 67 | `fn next_resource_vv` | `// md:impl FsBackend > fn next_resource_vv` |
 | 68 | `fn resource_incoming_wins` | `// md:impl FsBackend > fn resource_incoming_wins` |
-| 69 | `fn note_vv` | `// md:impl FsBackend > fn note_vv` |
-| 70 | `fn read_note_logs` | `// md:impl FsBackend > fn read_note_logs` |
-| 71 | `fn merge_note` | `// md:impl FsBackend > fn merge_note` |
-| 72 | `fn materialize` | `// md:impl FsBackend > fn materialize` |
-| 73 | `fn persist_note_projection` | `// md:impl FsBackend > fn persist_note_projection` |
-| 74 | `fn read_note_projection` | `// md:impl FsBackend > fn read_note_projection` |
-| 75 | `fn with_note_index` | `// md:impl FsBackend > fn with_note_index` |
-| 76 | `fn build_note_index` | `// md:impl FsBackend > fn build_note_index` |
-| 77 | `fn materialize_page` | `// md:impl FsBackend > fn materialize_page` |
-| 78 | `fn append_note_op` | `// md:impl FsBackend > fn append_note_op` |
-| 79 | `fn collect_advanced_notes` | `// md:impl FsBackend > fn collect_advanced_notes` |
-| 80 | `KeyedItem` | `// md:KeyedItem` |
-| 81 | `impl PartialEq for KeyedItem` | `// md:impl PartialEq for KeyedItem` |
-| 82 | `impl Eq for KeyedItem` | `// md:impl Eq for KeyedItem` |
-| 83 | `impl PartialOrd for KeyedItem` | `// md:impl PartialOrd for KeyedItem` |
-| 84 | `impl Ord for KeyedItem` | `// md:impl Ord for KeyedItem` |
-| 85 | `PageCollector` | `// md:PageCollector` |
-| 86 | `impl PageCollector` (container) | `// md:impl PageCollector` |
-| 87 | `fn new` | `// md:impl PageCollector > fn new` |
-| 88 | `fn push` | `// md:impl PageCollector > fn push` |
-| 89 | `fn into_page` | `// md:impl PageCollector > fn into_page` |
-| 90 | `fn paginate` | `// md:fn paginate` |
-| 91 | `impl NoteRepository for FsBackend` (container) | `// md:impl NoteRepository for FsBackend` |
-| 92 | `fn create_note` | `// md:impl NoteRepository for FsBackend > fn create_note` |
-| 93 | `fn read_note` | `// md:impl NoteRepository for FsBackend > fn read_note` |
-| 94 | `fn update_note` | `// md:impl NoteRepository for FsBackend > fn update_note` |
-| 95 | `fn delete_note` | `// md:impl NoteRepository for FsBackend > fn delete_note` |
-| 96 | `fn list_notes` | `// md:impl NoteRepository for FsBackend > fn list_notes` |
-| 97 | `fn list_notes_in_notebook` | `// md:impl NoteRepository for FsBackend > fn list_notes_in_notebook` |
-| 98 | `fn list_starred_notes` | `// md:impl NoteRepository for FsBackend > fn list_starred_notes` |
-| 99 | `fn notebook_sort_profile` | `// md:impl NoteRepository for FsBackend > fn notebook_sort_profile` |
-| 100 | `impl NotebookRepository for FsBackend` (container) | `// md:impl NotebookRepository for FsBackend` |
-| 101 | `fn create_notebook` | `// md:impl NotebookRepository for FsBackend > fn create_notebook` |
-| 102 | `fn read_notebook` | `// md:impl NotebookRepository for FsBackend > fn read_notebook` |
-| 103 | `fn update_notebook` | `// md:impl NotebookRepository for FsBackend > fn update_notebook` |
-| 104 | `fn delete_notebook` | `// md:impl NotebookRepository for FsBackend > fn delete_notebook` |
-| 105 | `fn list_notebooks` | `// md:impl NotebookRepository for FsBackend > fn list_notebooks` |
-| 106 | `impl TagRepository for FsBackend` (container) | `// md:impl TagRepository for FsBackend` |
-| 107 | `fn create_tag` | `// md:impl TagRepository for FsBackend > fn create_tag` |
-| 108 | `fn read_tag` | `// md:impl TagRepository for FsBackend > fn read_tag` |
-| 109 | `fn update_tag` | `// md:impl TagRepository for FsBackend > fn update_tag` |
-| 110 | `fn delete_tag` | `// md:impl TagRepository for FsBackend > fn delete_tag` |
-| 111 | `fn list_tags` | `// md:impl TagRepository for FsBackend > fn list_tags` |
-| 112 | `fn add_note_tag` | `// md:impl TagRepository for FsBackend > fn add_note_tag` |
-| 113 | `fn remove_note_tag` | `// md:impl TagRepository for FsBackend > fn remove_note_tag` |
-| 114 | `fn list_note_tags` | `// md:impl TagRepository for FsBackend > fn list_note_tags` |
-| 115 | `impl ResourceRepository for FsBackend` (container) | `// md:impl ResourceRepository for FsBackend` |
-| 116 | `fn create_resource` | `// md:impl ResourceRepository for FsBackend > fn create_resource` |
-| 117 | `fn read_resource` | `// md:impl ResourceRepository for FsBackend > fn read_resource` |
-| 118 | `fn delete_resource` | `// md:impl ResourceRepository for FsBackend > fn delete_resource` |
-| 119 | `fn list_resources` | `// md:impl ResourceRepository for FsBackend > fn list_resources` |
-| 120 | `fn purge_deleted_resources` | `// md:impl ResourceRepository for FsBackend > fn purge_deleted_resources` |
-| 121 | `impl SyncBackend for FsBackend` (container) | `// md:impl SyncBackend for FsBackend` |
-| 122 | `fn get_changes_since` | `// md:impl SyncBackend for FsBackend > fn get_changes_since` |
-| 123 | `fn apply_change` | `// md:impl SyncBackend for FsBackend > fn apply_change` |
-| 124 | `fn get_last_sync_time` | `// md:impl SyncBackend for FsBackend > fn get_last_sync_time` |
-| 125 | `fn update_sync_time` | `// md:impl SyncBackend for FsBackend > fn update_sync_time` |
-| 126 | `fn send_changes` | `// md:impl SyncBackend for FsBackend > fn send_changes` |
-| 127 | `fn receive_changes` | `// md:impl SyncBackend for FsBackend > fn receive_changes` |
-| 128 | `fn get_device_id` | `// md:impl SyncBackend for FsBackend > fn get_device_id` |
-| 129 | `fn prune_change_journal` | `// md:impl SyncBackend for FsBackend > fn prune_change_journal` |
-| 130 | `impl FsBackend (global history)` (container) | `// md:impl FsBackend (global history)` |
-| 131 | `fn read_all_global_entries` | `// md:impl FsBackend (global history) > fn read_all_global_entries` |
-| 132 | `impl HistoryRepository for FsBackend` (container) | `// md:impl HistoryRepository for FsBackend` |
-| 133 | `fn note_history` | `// md:impl HistoryRepository for FsBackend > fn note_history` |
-| 134 | `fn notebook_history` | `// md:impl HistoryRepository for FsBackend > fn notebook_history` |
-| 135 | `fn sort_and_cap` | `// md:fn sort_and_cap` |
-| 136 | `mod tests` (container) | `// md:mod tests` |
-| 137 | `fn concurrent_same_note_updates_keep_every_log_entry` | `// md:mod tests > fn concurrent_same_note_updates_keep_every_log_entry` |
-| 138 | `fn read_does_not_rewrite_projection` | `// md:mod tests > fn read_does_not_rewrite_projection` |
-| 139 | `fn list_notes_pages_match_full_walk` | `// md:mod tests > fn list_notes_pages_match_full_walk` |
-| 140 | `fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones` | `// md:mod tests > fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones` |
-| 141 | `fn failed_atomic_write_cleans_up_its_temp_file` | `// md:mod tests > fn failed_atomic_write_cleans_up_its_temp_file` |
-| 142 | `fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it` | `// md:mod tests > fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it` |
-| 143 | `fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair` | `// md:mod tests > fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair` |
-| 144 | `fn detects_syncthing_conflict_copies_without_removing_them` | `// md:mod tests > fn detects_syncthing_conflict_copies_without_removing_them` |
-| 145 | `fn purge_reclaims_old_tombstoned_payloads_only` | `// md:mod tests > fn purge_reclaims_old_tombstoned_payloads_only` |
-| 146 | `fn fresh_store_is_stamped_current_version` | `// md:mod tests > fn fresh_store_is_stamped_current_version` |
-| 147 | `fn migrates_a_legacy_stamp_and_preserves_data` | `// md:mod tests > fn migrates_a_legacy_stamp_and_preserves_data` |
-| 148 | `fn refuses_to_open_a_newer_format` | `// md:mod tests > fn refuses_to_open_a_newer_format` |
+| 69 | `fn cascade_stamp_resources` | `// md:impl FsBackend > fn cascade_stamp_resources` |
+| 70 | `fn cascade_unstamp_resources` | `// md:impl FsBackend > fn cascade_unstamp_resources` |
+| 71 | `fn note_vv` | `// md:impl FsBackend > fn note_vv` |
+| 72 | `fn read_note_logs` | `// md:impl FsBackend > fn read_note_logs` |
+| 73 | `fn merge_note` | `// md:impl FsBackend > fn merge_note` |
+| 74 | `fn materialize` | `// md:impl FsBackend > fn materialize` |
+| 75 | `fn persist_note_projection` | `// md:impl FsBackend > fn persist_note_projection` |
+| 76 | `fn read_note_projection` | `// md:impl FsBackend > fn read_note_projection` |
+| 77 | `fn with_note_index` | `// md:impl FsBackend > fn with_note_index` |
+| 78 | `fn build_note_index` | `// md:impl FsBackend > fn build_note_index` |
+| 79 | `fn materialize_page` | `// md:impl FsBackend > fn materialize_page` |
+| 80 | `fn append_note_op` | `// md:impl FsBackend > fn append_note_op` |
+| 81 | `fn collect_advanced_notes` | `// md:impl FsBackend > fn collect_advanced_notes` |
+| 82 | `KeyedItem` | `// md:KeyedItem` |
+| 83 | `impl PartialEq for KeyedItem` | `// md:impl PartialEq for KeyedItem` |
+| 84 | `impl Eq for KeyedItem` | `// md:impl Eq for KeyedItem` |
+| 85 | `impl PartialOrd for KeyedItem` | `// md:impl PartialOrd for KeyedItem` |
+| 86 | `impl Ord for KeyedItem` | `// md:impl Ord for KeyedItem` |
+| 87 | `PageCollector` | `// md:PageCollector` |
+| 88 | `impl PageCollector` (container) | `// md:impl PageCollector` |
+| 89 | `fn new` | `// md:impl PageCollector > fn new` |
+| 90 | `fn push` | `// md:impl PageCollector > fn push` |
+| 91 | `fn into_page` | `// md:impl PageCollector > fn into_page` |
+| 92 | `fn paginate` | `// md:fn paginate` |
+| 93 | `impl NoteRepository for FsBackend` (container) | `// md:impl NoteRepository for FsBackend` |
+| 94 | `fn create_note` | `// md:impl NoteRepository for FsBackend > fn create_note` |
+| 95 | `fn read_note` | `// md:impl NoteRepository for FsBackend > fn read_note` |
+| 96 | `fn update_note` | `// md:impl NoteRepository for FsBackend > fn update_note` |
+| 97 | `fn delete_note` | `// md:impl NoteRepository for FsBackend > fn delete_note` |
+| 98 | `fn list_notes` | `// md:impl NoteRepository for FsBackend > fn list_notes` |
+| 99 | `fn list_notes_in_notebook` | `// md:impl NoteRepository for FsBackend > fn list_notes_in_notebook` |
+| 100 | `fn list_starred_notes` | `// md:impl NoteRepository for FsBackend > fn list_starred_notes` |
+| 101 | `fn notebook_sort_profile` | `// md:impl NoteRepository for FsBackend > fn notebook_sort_profile` |
+| 102 | `impl NotebookRepository for FsBackend` (container) | `// md:impl NotebookRepository for FsBackend` |
+| 103 | `fn create_notebook` | `// md:impl NotebookRepository for FsBackend > fn create_notebook` |
+| 104 | `fn read_notebook` | `// md:impl NotebookRepository for FsBackend > fn read_notebook` |
+| 105 | `fn update_notebook` | `// md:impl NotebookRepository for FsBackend > fn update_notebook` |
+| 106 | `fn delete_notebook` | `// md:impl NotebookRepository for FsBackend > fn delete_notebook` |
+| 107 | `fn list_notebooks` | `// md:impl NotebookRepository for FsBackend > fn list_notebooks` |
+| 108 | `impl TagRepository for FsBackend` (container) | `// md:impl TagRepository for FsBackend` |
+| 109 | `fn create_tag` | `// md:impl TagRepository for FsBackend > fn create_tag` |
+| 110 | `fn read_tag` | `// md:impl TagRepository for FsBackend > fn read_tag` |
+| 111 | `fn update_tag` | `// md:impl TagRepository for FsBackend > fn update_tag` |
+| 112 | `fn delete_tag` | `// md:impl TagRepository for FsBackend > fn delete_tag` |
+| 113 | `fn list_tags` | `// md:impl TagRepository for FsBackend > fn list_tags` |
+| 114 | `fn add_note_tag` | `// md:impl TagRepository for FsBackend > fn add_note_tag` |
+| 115 | `fn remove_note_tag` | `// md:impl TagRepository for FsBackend > fn remove_note_tag` |
+| 116 | `fn list_note_tags` | `// md:impl TagRepository for FsBackend > fn list_note_tags` |
+| 117 | `impl ResourceRepository for FsBackend` (container) | `// md:impl ResourceRepository for FsBackend` |
+| 118 | `fn create_resource` | `// md:impl ResourceRepository for FsBackend > fn create_resource` |
+| 119 | `fn read_resource` | `// md:impl ResourceRepository for FsBackend > fn read_resource` |
+| 120 | `fn delete_resource` | `// md:impl ResourceRepository for FsBackend > fn delete_resource` |
+| 121 | `fn list_resources` | `// md:impl ResourceRepository for FsBackend > fn list_resources` |
+| 122 | `fn list_resources_for_note` | `// md:impl ResourceRepository for FsBackend > fn list_resources_for_note` |
+| 123 | `fn purge_deleted_resources` | `// md:impl ResourceRepository for FsBackend > fn purge_deleted_resources` |
+| 124 | `impl SyncBackend for FsBackend` (container) | `// md:impl SyncBackend for FsBackend` |
+| 125 | `fn get_changes_since` | `// md:impl SyncBackend for FsBackend > fn get_changes_since` |
+| 126 | `fn apply_change` | `// md:impl SyncBackend for FsBackend > fn apply_change` |
+| 127 | `fn get_last_sync_time` | `// md:impl SyncBackend for FsBackend > fn get_last_sync_time` |
+| 128 | `fn update_sync_time` | `// md:impl SyncBackend for FsBackend > fn update_sync_time` |
+| 129 | `fn send_changes` | `// md:impl SyncBackend for FsBackend > fn send_changes` |
+| 130 | `fn receive_changes` | `// md:impl SyncBackend for FsBackend > fn receive_changes` |
+| 131 | `fn get_device_id` | `// md:impl SyncBackend for FsBackend > fn get_device_id` |
+| 132 | `fn prune_change_journal` | `// md:impl SyncBackend for FsBackend > fn prune_change_journal` |
+| 133 | `impl FsBackend (global history)` (container) | `// md:impl FsBackend (global history)` |
+| 134 | `fn read_all_global_entries` | `// md:impl FsBackend (global history) > fn read_all_global_entries` |
+| 135 | `impl HistoryRepository for FsBackend` (container) | `// md:impl HistoryRepository for FsBackend` |
+| 136 | `fn note_history` | `// md:impl HistoryRepository for FsBackend > fn note_history` |
+| 137 | `fn notebook_history` | `// md:impl HistoryRepository for FsBackend > fn notebook_history` |
+| 138 | `fn sort_and_cap` | `// md:fn sort_and_cap` |
+| 139 | `mod tests` (container) | `// md:mod tests` |
+| 140 | `fn concurrent_same_note_updates_keep_every_log_entry` | `// md:mod tests > fn concurrent_same_note_updates_keep_every_log_entry` |
+| 141 | `fn read_does_not_rewrite_projection` | `// md:mod tests > fn read_does_not_rewrite_projection` |
+| 142 | `fn list_notes_pages_match_full_walk` | `// md:mod tests > fn list_notes_pages_match_full_walk` |
+| 143 | `fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones` | `// md:mod tests > fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones` |
+| 144 | `fn failed_atomic_write_cleans_up_its_temp_file` | `// md:mod tests > fn failed_atomic_write_cleans_up_its_temp_file` |
+| 145 | `fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it` | `// md:mod tests > fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it` |
+| 146 | `fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair` | `// md:mod tests > fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair` |
+| 147 | `fn detects_syncthing_conflict_copies_without_removing_them` | `// md:mod tests > fn detects_syncthing_conflict_copies_without_removing_them` |
+| 148 | `fn purge_reclaims_old_tombstoned_payloads_only` | `// md:mod tests > fn purge_reclaims_old_tombstoned_payloads_only` |
+| 149 | `fn fresh_store_is_stamped_current_version` | `// md:mod tests > fn fresh_store_is_stamped_current_version` |
+| 150 | `fn migrates_a_legacy_stamp_and_preserves_data` | `// md:mod tests > fn migrates_a_legacy_stamp_and_preserves_data` |
+| 151 | `fn refuses_to_open_a_newer_format` | `// md:mod tests > fn refuses_to_open_a_newer_format` |

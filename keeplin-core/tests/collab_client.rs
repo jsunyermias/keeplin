@@ -8,7 +8,7 @@ use keeplin_core::collab::protocol::{
 };
 use keeplin_core::collab::state::NoteLines;
 use keeplin_core::collab::{device_id_from_token, CollabBackend, CollabConfig};
-use keeplin_core::models::{Change, Note, Resource};
+use keeplin_core::models::{Change, Note, Resource, SYSTEM_RESOURCE_NOTE_ID};
 use keeplin_core::storage::{
     db::DbBackend, NoteRepository, ResourceRepository, StorageBackend, SyncBackend,
 };
@@ -292,7 +292,13 @@ async fn resource_blob_uploads_out_of_band_and_downloads_on_read() {
     let bytes = b"opaque-ciphertext-bytes".to_vec();
     let resource = a
         .create_resource(
-            Resource::new("photo", "image/png", "photo.png", bytes.len() as u64),
+            Resource::new(
+                SYSTEM_RESOURCE_NOTE_ID,
+                "photo",
+                "image/png",
+                "photo.png",
+                bytes.len() as u64,
+            ),
             bytes.clone(),
         )
         .await

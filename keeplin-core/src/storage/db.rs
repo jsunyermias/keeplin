@@ -13,7 +13,9 @@ use uuid::Uuid;
 use crate::{
     error::StorageError,
     links::{Bookmark, NoteLink},
-    models::{new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag},
+    models::{
+        new_id, now, Change, Note, NoteTag, Notebook, Resource, Tag, SYSTEM_RESOURCE_NOTE_ID,
+    },
 };
 
 use super::backend::DEFAULT_HISTORY_LIMIT;
@@ -121,7 +123,7 @@ impl DbBackend {
         })
     }
 
-    const SCHEMA_VERSION: u32 = 4;
+    const SCHEMA_VERSION: u32 = 5;
 
     // md:impl DbBackend > fn run_migrations
     async fn run_migrations(conn: &libsql::Connection) -> Result<(), StorageError> {
@@ -172,6 +174,7 @@ impl DbBackend {
             2 => Self::migrate_v2_ordering(conn).await,
             3 => Self::migrate_v3_tag_system(conn).await,
             4 => Self::migrate_v4_resource_media(conn).await,
+            5 => Self::migrate_v5_resource_note_id(conn).await,
             other => Err(StorageError::InvalidState(format!(
                 "no migration defined for schema version {other}"
             ))),
@@ -509,6 +512,7 @@ impl DbBackend {
         };
         Ok(Resource {
             id: Self::parse_uuid(row.get::<String>(0)?)?,
+            note_id: Self::parse_uuid(row.get::<String>(12)?)?,
             title: row.get(1)?,
             mime_type: row.get(2)?,
             file_name: row.get(3)?,
@@ -684,6 +688,23 @@ impl DbBackend {
         Self::add_column_if_missing(conn, "resources", "duration_ms INTEGER").await?;
         Self::add_column_if_missing(conn, "resources", "width INTEGER").await?;
         Self::add_column_if_missing(conn, "resources", "height INTEGER").await?;
+        Ok(())
+    }
+
+    // md:impl DbBackend > fn migrate_v5_resource_note_id
+    async fn migrate_v5_resource_note_id(conn: &libsql::Connection) -> Result<(), StorageError> {
+        let sentinel = SYSTEM_RESOURCE_NOTE_ID.to_string();
+        Self::add_column_if_missing(
+            conn,
+            "resources",
+            &format!("note_id TEXT NOT NULL DEFAULT '{sentinel}'"),
+        )
+        .await?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_resources_note ON resources(note_id, created_at, id)",
+            (),
+        )
+        .await?;
         Ok(())
     }
 
@@ -1128,6 +1149,19 @@ impl NoteRepository for DbBackend {
         note.vv = self.next_local_vv("notes", &note.id.to_string()).await?;
         note.last_writer = self.device_id.clone();
         let r: Result<(), StorageError> = async {
+            let prior_deleted = {
+                let mut rows = self
+                    .conn
+                    .query(
+                        "SELECT deleted_at FROM notes WHERE id = ?1",
+                        [note.id.to_string()],
+                    )
+                    .await?;
+                match rows.next().await? {
+                    Some(row) => row.get::<Option<String>>(0)?,
+                    None => None,
+                }
+            };
             let affected = self
                 .conn
                 .execute(
@@ -1160,6 +1194,16 @@ impl NoteRepository for DbBackend {
                 .await?;
             if affected == 0 {
                 return Err(StorageError::NotFound(note.id.to_string()));
+            }
+            if note.deleted_at.is_none() {
+                if let Some(old_ts) = prior_deleted {
+                    self.conn
+                        .execute(
+                            "UPDATE resources SET deleted_at = NULL WHERE note_id = ?1 AND deleted_at = ?2",
+                            libsql::params![note.id.to_string(), old_ts],
+                        )
+                        .await?;
+                }
             }
             self.refresh_note_links(&note).await?;
             let data = serde_json::to_value(&note).ok().map(|v| v.to_string());
@@ -1198,6 +1242,12 @@ impl NoteRepository for DbBackend {
             if affected == 0 {
                 return Err(StorageError::NotFound(id.to_string()));
             }
+            self.conn
+                .execute(
+                    "UPDATE resources SET deleted_at = ?2 WHERE note_id = ?1 AND deleted_at IS NULL",
+                    libsql::params![id.to_string(), ts.to_sortable_rfc3339()],
+                )
+                .await?;
             self.record_change("note", &id.to_string(), "delete", Some(tombstone_data(ts, &vv, &writer)))
                 .await
         }
@@ -1864,8 +1914,8 @@ impl ResourceRepository for DbBackend {
             let data_b64 = STANDARD.encode(&data);
             self.conn
                 .execute(
-                    "INSERT INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer,duration_ms,width,height)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                    "INSERT INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer,duration_ms,width,height,note_id)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
                     libsql::params![
                         resource.id.to_string(),
                         resource.title.clone(),
@@ -1880,6 +1930,7 @@ impl ResourceRepository for DbBackend {
                         resource.duration_ms.map(|d| d as i64),
                         resource.dimensions.map(|(w, _)| w as i64),
                         resource.dimensions.map(|(_, h)| h as i64),
+                        resource.note_id.to_string(),
                     ],
                 )
                 .await?;
@@ -1910,7 +1961,7 @@ impl ResourceRepository for DbBackend {
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer,duration_ms,width,height,data
+                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer,duration_ms,width,height,note_id,data
                  FROM resources WHERE id=?1",
                 [id.to_string()],
             )
@@ -1922,7 +1973,7 @@ impl ResourceRepository for DbBackend {
                 if resource.deleted_at.is_some() {
                     return Err(StorageError::NotFound(id.to_string()));
                 }
-                let blob: Vec<u8> = row.get(12)?;
+                let blob: Vec<u8> = row.get(13)?;
                 Ok((resource, blob))
             }
         }
@@ -1985,13 +2036,44 @@ impl ResourceRepository for DbBackend {
         let mut rows = self
             .conn
             .query(
-                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer,duration_ms,width,height
+                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer,duration_ms,width,height,note_id
                  FROM resources
                  WHERE deleted_at IS NULL
                    AND (?1 = '' OR created_at > ?2 OR (created_at = ?2 AND id > ?3))
                  ORDER BY created_at ASC, id ASC
                  LIMIT ?4",
                 libsql::params![cursor_ts.clone(), cursor_ts, cursor_id, limit + 1],
+            )
+            .await?;
+        let mut resources = Vec::new();
+        while let Some(row) = rows.next().await? {
+            resources.push(Self::row_to_resource(&row)?);
+        }
+        Ok(build_page(resources, limit as usize, |r| {
+            format!("{}|{}", r.created_at.to_sortable_rfc3339(), r.id)
+        }))
+    }
+
+    // md:impl ResourceRepository for DbBackend > fn list_resources_for_note
+    async fn list_resources_for_note(
+        &self,
+        note_id: Uuid,
+        page_size: u32,
+        page_token: Option<String>,
+    ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
+        let _read_guard = self.lock.read().await;
+        let limit = super::effective_page_size(page_size);
+        let (cursor_ts, cursor_id) = parse_cursor(page_token.as_deref());
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT id,title,mime_type,file_name,size,created_at,deleted_at,vv,last_writer,duration_ms,width,height,note_id
+                 FROM resources
+                 WHERE note_id = ?5 AND deleted_at IS NULL
+                   AND (?1 = '' OR created_at > ?2 OR (created_at = ?2 AND id > ?3))
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT ?4",
+                libsql::params![cursor_ts.clone(), cursor_ts, cursor_id, limit + 1, note_id.to_string()],
             )
             .await?;
         let mut resources = Vec::new();
@@ -2085,6 +2167,19 @@ impl SyncBackend for DbBackend {
                 }
                 self.begin().await?;
                 let r: Result<(), StorageError> = async {
+                    let prior_deleted = {
+                        let mut rows = self
+                            .conn
+                            .query(
+                                "SELECT deleted_at FROM notes WHERE id = ?1",
+                                [note.id.to_string()],
+                            )
+                            .await?;
+                        match rows.next().await? {
+                            Some(row) => row.get::<Option<String>>(0)?,
+                            None => None,
+                        }
+                    };
                     self.refresh_note_links(&note).await?;
                     self.conn
                         .execute(
@@ -2113,6 +2208,16 @@ impl SyncBackend for DbBackend {
                             ],
                         )
                         .await?;
+                    if note.deleted_at.is_none() {
+                        if let Some(old_ts) = prior_deleted {
+                            self.conn
+                                .execute(
+                                    "UPDATE resources SET deleted_at = NULL WHERE note_id = ?1 AND deleted_at = ?2",
+                                    libsql::params![note.id.to_string(), old_ts],
+                                )
+                                .await?;
+                        }
+                    }
                     Ok(())
                 }
                 .await;
@@ -2160,6 +2265,12 @@ impl SyncBackend for DbBackend {
                         )
                         .await?;
                 }
+                self.conn
+                    .execute(
+                        "UPDATE resources SET deleted_at = ?2 WHERE note_id = ?1 AND deleted_at IS NULL",
+                        libsql::params![id.to_string(), deleted_at.to_sortable_rfc3339()],
+                    )
+                    .await?;
             }
             Change::NotebookCreate { notebook } | Change::NotebookUpdate { notebook } => {
                 if !self
@@ -2320,8 +2431,8 @@ impl SyncBackend for DbBackend {
                     let blob = data.unwrap_or_default();
                     self.conn
                         .execute(
-                            "INSERT OR REPLACE INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer,duration_ms,width,height)
-                             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                            "INSERT OR REPLACE INTO resources (id,title,mime_type,file_name,size,data,created_at,deleted_at,vv,last_writer,duration_ms,width,height,note_id)
+                             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
                             libsql::params![
                                 id,
                                 resource.title,
@@ -2336,6 +2447,7 @@ impl SyncBackend for DbBackend {
                                 resource.duration_ms.map(|d| d as i64),
                                 resource.dimensions.map(|(w, _)| w as i64),
                                 resource.dimensions.map(|(_, h)| h as i64),
+                                resource.note_id.to_string(),
                             ],
                         )
                         .await?;
@@ -2877,7 +2989,7 @@ mod migration_tests {
         let path = dir.path().join("resource_media.db");
         let be = DbBackend::new(&path, "", "").await.unwrap();
 
-        let mut r = Resource::new("clip", "video/mp4", "clip.mp4", 10);
+        let mut r = Resource::new(SYSTEM_RESOURCE_NOTE_ID, "clip", "video/mp4", "clip.mp4", 10);
         r.duration_ms = Some(4200);
         r.dimensions = Some((1920, 1080));
         let created = be.create_resource(r, vec![1, 2, 3]).await.unwrap();
@@ -2898,7 +3010,10 @@ mod migration_tests {
         );
 
         let plain = be
-            .create_resource(Resource::new("doc", "text/plain", "d.txt", 3), vec![9])
+            .create_resource(
+                Resource::new(SYSTEM_RESOURCE_NOTE_ID, "doc", "text/plain", "d.txt", 3),
+                vec![9],
+            )
             .await
             .unwrap();
         assert_eq!(plain.duration_ms, None, "non-media attachment stays None");
