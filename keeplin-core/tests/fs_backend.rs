@@ -475,7 +475,7 @@ async fn replicate_note(from_root: &std::path::Path, to_root: &std::path::Path, 
     let mut rd = tokio::fs::read_dir(&from).await.unwrap();
     while let Some(e) = rd.next_entry().await.unwrap() {
         let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with("log.") && name.ends_with(".msgpack") {
+        if name.starts_with("log.") && name.ends_with(".ndjson") {
             tokio::fs::copy(e.path(), to.join(&name)).await.unwrap();
         }
     }
@@ -492,15 +492,12 @@ async fn fs_note_uses_three_file_layout() {
 
     let ndir = dir.path().join("notes").join(id.to_string());
     assert!(ndir.join("note.md").exists(), "note.md must exist");
-    assert!(
-        ndir.join("meta.msgpack").exists(),
-        "meta.msgpack must exist"
-    );
+    assert!(ndir.join("meta.ndjson").exists(), "meta.ndjson must exist");
 
     let mut found_log = false;
     for e in std::fs::read_dir(&ndir).unwrap() {
         let n = e.unwrap().file_name().to_string_lossy().into_owned();
-        if n.starts_with("log.") && n.ends_with(".msgpack") {
+        if n.starts_with("log.") && n.ends_with(".ndjson") {
             found_log = true;
         }
     }
@@ -508,6 +505,88 @@ async fn fs_note_uses_three_file_layout() {
 
     let body = std::fs::read_to_string(ndir.join("note.md")).unwrap();
     assert_eq!(body, "# Markdown body");
+}
+
+// md:fn fs_on_disk_serialization_is_ndjson
+#[tokio::test]
+async fn fs_on_disk_serialization_is_ndjson() {
+    use keeplin_core::storage::note_log::NoteLogEntry;
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    let note = Note::new("Title", "body v0");
+    let id = note.id;
+    backend.create_note(note.clone()).await.unwrap();
+    for i in 1..=3 {
+        let mut edited = note.clone();
+        edited.body = format!("body v{i}");
+        backend.update_note(edited).await.unwrap();
+    }
+    let notebook = backend.create_notebook(Notebook::new("nb")).await.unwrap();
+    let tag = backend.create_tag(Tag::new("t")).await.unwrap();
+    backend
+        .create_resource(
+            Resource::new(id, "r", "text/plain", "r.txt", 3),
+            b"abc".to_vec(),
+        )
+        .await
+        .unwrap();
+
+    let ndir = dir.path().join("notes").join(id.to_string());
+    let mut log_path = None;
+    for e in std::fs::read_dir(&ndir).unwrap() {
+        let n = e.unwrap().file_name().to_string_lossy().into_owned();
+        if n.starts_with("log.") && n.ends_with(".ndjson") {
+            log_path = Some(ndir.join(n));
+        }
+    }
+    let log_bytes = std::fs::read(log_path.expect("per-device log")).unwrap();
+    let lines: Vec<&[u8]> = log_bytes
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.iter().all(u8::is_ascii_whitespace))
+        .collect();
+    assert!(
+        lines.len() >= 4,
+        "one NDJSON line per log entry, got {}",
+        lines.len()
+    );
+    for line in &lines {
+        serde_json::from_slice::<NoteLogEntry>(line).unwrap();
+    }
+
+    let meta_bytes = std::fs::read(ndir.join("meta.ndjson")).unwrap();
+    assert_eq!(
+        meta_bytes.iter().filter(|b| **b == b'\n').count(),
+        1,
+        "a single-entity sidecar is one JSON object on one line"
+    );
+    serde_json::from_slice::<serde_json::Value>(&meta_bytes).unwrap();
+
+    for sidecar in [
+        dir.path()
+            .join("notebooks")
+            .join(format!("{}.ndjson", notebook.id)),
+        dir.path().join("tags").join(format!("{}.ndjson", tag.id)),
+    ] {
+        let bytes = std::fs::read(&sidecar).unwrap();
+        serde_json::from_slice::<serde_json::Value>(&bytes).unwrap();
+    }
+
+    let mut stack = vec![dir.path().to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                assert!(
+                    !p.to_string_lossy().ends_with(".msgpack"),
+                    "no msgpack files may remain: {}",
+                    p.display()
+                );
+            }
+        }
+    }
 }
 
 // md:fn fs_two_device_causal_sync
@@ -730,9 +809,13 @@ async fn note_log_len(root: &std::path::Path, id: uuid::Uuid) -> usize {
     let mut rd = tokio::fs::read_dir(&dir).await.unwrap();
     while let Some(e) = rd.next_entry().await.unwrap() {
         let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with("log.") && name.ends_with(".msgpack") {
+        if name.starts_with("log.") && name.ends_with(".ndjson") {
             let bytes = tokio::fs::read(e.path()).await.unwrap();
-            let entries: Vec<NoteLogEntry> = rmp_serde::from_slice(&bytes).unwrap();
+            let entries = bytes
+                .split(|b| *b == b'\n')
+                .filter(|l| !l.iter().all(u8::is_ascii_whitespace))
+                .map(|l| serde_json::from_slice::<NoteLogEntry>(l).unwrap())
+                .collect::<Vec<_>>();
             return entries.len();
         }
     }
@@ -799,7 +882,7 @@ async fn replicate_logs(from: &std::path::Path, to: &std::path::Path) {
             let mut files = tokio::fs::read_dir(note_dir.path()).await.unwrap();
             while let Some(f) = files.next_entry().await.unwrap() {
                 let name = f.file_name().to_string_lossy().into_owned();
-                if name.starts_with("log.") && name.ends_with(".msgpack") {
+                if name.starts_with("log.") && name.ends_with(".ndjson") {
                     tokio::fs::copy(f.path(), to_note_dir.join(&name))
                         .await
                         .unwrap();

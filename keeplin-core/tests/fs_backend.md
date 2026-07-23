@@ -45,8 +45,8 @@ journal** with generation-epoch snapshot compaction, the in-memory note index,
 ordering/starring fields, and tombstone-first races (#71).
 
 **Repeated context** — FsBackend layout: each note lives in `notes/{id}/` as
-`note.md` (body), `meta.msgpack` (metadata projection), and one
-`log.{device}.msgpack` per device (the **single-writer source of truth**);
+`note.md` (body), `meta.ndjson` (metadata projection), and one
+`log.{device}.ndjson` per device (the **single-writer source of truth**);
 global entities journal to `logs/{device}.log` (NDJSON). Replication copies
 **only** the single-writer logs — projections are per-device caches regenerated
 on sync. Conflicts resolve through `note_log::resolve` with the
@@ -487,7 +487,7 @@ async fn list_notebooks_includes_created() {
 }
 ```
 
-**What it does** — Regression: the sidecar is written as `{id}.msgpack`, so the
+**What it does** — Regression: the sidecar is written as `{id}.ndjson`, so the
 listing must filter on that extension — a previous `.json` filter matched
 nothing and returned an empty list.
 
@@ -573,7 +573,7 @@ async fn list_tags_includes_created() {
 }
 ```
 
-**What it does** — Regression: the same `.msgpack`-vs-`.json` listing bug as
+**What it does** — Regression: the same `.ndjson`-vs-`.json` listing bug as
 notebooks, for tags.
 
 ---
@@ -867,7 +867,7 @@ async fn replicate_note(from_root: &std::path::Path, to_root: &std::path::Path, 
     let mut rd = tokio::fs::read_dir(&from).await.unwrap();
     while let Some(e) = rd.next_entry().await.unwrap() {
         let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with("log.") && name.ends_with(".msgpack") {
+        if name.starts_with("log.") && name.ends_with(".ndjson") {
             tokio::fs::copy(e.path(), to.join(&name)).await.unwrap();
         }
     }
@@ -875,7 +875,7 @@ async fn replicate_note(from_root: &std::path::Path, to_root: &std::path::Path, 
 ```
 
 **What it does** — Simulates Syncthing replicating one note between roots by
-copying **only** its per-device `log.*.msgpack` files (the single-writer
+copying **only** its per-device `log.*.ndjson` files (the single-writer
 source of truth) — never the local projections.
 
 **Used by** — the two-device note tests and the note-log compaction test.
@@ -901,15 +901,12 @@ async fn fs_note_uses_three_file_layout() {
 
     let ndir = dir.path().join("notes").join(id.to_string());
     assert!(ndir.join("note.md").exists(), "note.md must exist");
-    assert!(
-        ndir.join("meta.msgpack").exists(),
-        "meta.msgpack must exist"
-    );
+    assert!(ndir.join("meta.ndjson").exists(), "meta.ndjson must exist");
 
     let mut found_log = false;
     for e in std::fs::read_dir(&ndir).unwrap() {
         let n = e.unwrap().file_name().to_string_lossy().into_owned();
-        if n.starts_with("log.") && n.ends_with(".msgpack") {
+        if n.starts_with("log.") && n.ends_with(".ndjson") {
             found_log = true;
         }
     }
@@ -921,8 +918,112 @@ async fn fs_note_uses_three_file_layout() {
 ```
 
 **What it does** — After a create, `notes/{id}/` contains `note.md`,
-`meta.msgpack`, and a per-device `log.*.msgpack`; the markdown body is stored
+`meta.ndjson`, and a per-device `log.*.ndjson`; the markdown body is stored
 verbatim (unencrypted backend).
+
+---
+
+## fn fs_on_disk_serialization_is_ndjson
+
+**Identification** — `#[tokio::test]`. Marker
+`// md:fn fs_on_disk_serialization_is_ndjson`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn fs_on_disk_serialization_is_ndjson
+#[tokio::test]
+async fn fs_on_disk_serialization_is_ndjson() {
+    use keeplin_core::storage::note_log::NoteLogEntry;
+    let dir = tempdir().unwrap();
+    let backend = FsBackend::new(dir.path()).await.unwrap();
+
+    let note = Note::new("Title", "body v0");
+    let id = note.id;
+    backend.create_note(note.clone()).await.unwrap();
+    for i in 1..=3 {
+        let mut edited = note.clone();
+        edited.body = format!("body v{i}");
+        backend.update_note(edited).await.unwrap();
+    }
+    let notebook = backend.create_notebook(Notebook::new("nb")).await.unwrap();
+    let tag = backend.create_tag(Tag::new("t")).await.unwrap();
+    backend
+        .create_resource(
+            Resource::new(id, "r", "text/plain", "r.txt", 3),
+            b"abc".to_vec(),
+        )
+        .await
+        .unwrap();
+
+    let ndir = dir.path().join("notes").join(id.to_string());
+    let mut log_path = None;
+    for e in std::fs::read_dir(&ndir).unwrap() {
+        let n = e.unwrap().file_name().to_string_lossy().into_owned();
+        if n.starts_with("log.") && n.ends_with(".ndjson") {
+            log_path = Some(ndir.join(n));
+        }
+    }
+    let log_bytes = std::fs::read(log_path.expect("per-device log")).unwrap();
+    let lines: Vec<&[u8]> = log_bytes
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.iter().all(u8::is_ascii_whitespace))
+        .collect();
+    assert!(
+        lines.len() >= 4,
+        "one NDJSON line per log entry, got {}",
+        lines.len()
+    );
+    for line in &lines {
+        serde_json::from_slice::<NoteLogEntry>(line).unwrap();
+    }
+
+    let meta_bytes = std::fs::read(ndir.join("meta.ndjson")).unwrap();
+    assert_eq!(
+        meta_bytes.iter().filter(|b| **b == b'\n').count(),
+        1,
+        "a single-entity sidecar is one JSON object on one line"
+    );
+    serde_json::from_slice::<serde_json::Value>(&meta_bytes).unwrap();
+
+    for sidecar in [
+        dir.path()
+            .join("notebooks")
+            .join(format!("{}.ndjson", notebook.id)),
+        dir.path().join("tags").join(format!("{}.ndjson", tag.id)),
+    ] {
+        let bytes = std::fs::read(&sidecar).unwrap();
+        serde_json::from_slice::<serde_json::Value>(&bytes).unwrap();
+    }
+
+    let mut stack = vec![dir.path().to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                stack.push(p);
+            } else {
+                assert!(
+                    !p.to_string_lossy().ends_with(".msgpack"),
+                    "no msgpack files may remain: {}",
+                    p.display()
+                );
+            }
+        }
+    }
+}
+```
+
+**What it does** — Locks in the on-disk NDJSON format (issue #126): the
+per-device note log is multi-line NDJSON (one JSON `NoteLogEntry` per line, ≥4
+after create + 3 edits), each entity sidecar (`meta.ndjson`, `notebooks/{id}.ndjson`,
+`tags/{id}.ndjson`) is a single JSON object on one line, and a recursive walk of
+the store root asserts **no** `.msgpack` file survives anywhere.
+
+**Used by** — the test harness (`cargo test`).
+
+**Repeated context** — Single-entity sidecars are one NDJSON line; per-device
+logs are one entry per line. MessagePack is fully retired from the fs backend.
 
 ---
 
@@ -1058,7 +1159,7 @@ async fn note_alias_bookmarks_links_persist_in_meta() {
 ```
 
 **What it does** — Alias, bookmarks, and a manual link survive the round-trip
-through `log.{device}.msgpack` + `meta.msgpack` (reads materialise from the
+through `log.{device}.ndjson` + `meta.ndjson` (reads materialise from the
 per-device log); a second backend over the same root (a different "device")
 materialises the same state from the replicated log.
 
@@ -1249,9 +1350,13 @@ async fn note_log_len(root: &std::path::Path, id: uuid::Uuid) -> usize {
     let mut rd = tokio::fs::read_dir(&dir).await.unwrap();
     while let Some(e) = rd.next_entry().await.unwrap() {
         let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with("log.") && name.ends_with(".msgpack") {
+        if name.starts_with("log.") && name.ends_with(".ndjson") {
             let bytes = tokio::fs::read(e.path()).await.unwrap();
-            let entries: Vec<NoteLogEntry> = rmp_serde::from_slice(&bytes).unwrap();
+            let entries = bytes
+                .split(|b| *b == b'\n')
+                .filter(|l| !l.iter().all(u8::is_ascii_whitespace))
+                .map(|l| serde_json::from_slice::<NoteLogEntry>(l).unwrap())
+                .collect::<Vec<_>>();
             return entries.len();
         }
     }
@@ -1260,7 +1365,7 @@ async fn note_log_len(root: &std::path::Path, id: uuid::Uuid) -> usize {
 ```
 
 **What it does** — Counts the entries in a note's single per-device
-`log.*.msgpack` (rmp-serde-decoded `Vec<NoteLogEntry>`); panics if no log
+`log.*.ndjson` (one JSON `NoteLogEntry` per line); panics if no log
 exists.
 
 **Used by** — `fs_note_log_compacts_and_still_converges`.
@@ -1354,7 +1459,7 @@ async fn replicate_logs(from: &std::path::Path, to: &std::path::Path) {
             let mut files = tokio::fs::read_dir(note_dir.path()).await.unwrap();
             while let Some(f) = files.next_entry().await.unwrap() {
                 let name = f.file_name().to_string_lossy().into_owned();
-                if name.starts_with("log.") && name.ends_with(".msgpack") {
+                if name.starts_with("log.") && name.ends_with(".ndjson") {
                     tokio::fs::copy(f.path(), to_note_dir.join(&name))
                         .await
                         .unwrap();
@@ -1367,8 +1472,8 @@ async fn replicate_logs(from: &std::path::Path, to: &std::path::Path) {
 
 **What it does** — Simulates Syncthing replicating one device's **single-writer
 log files**: every global `logs/*.log` plus every per-note
-`notes/{id}/log.*.msgpack`. Each has a single writer, so this never conflicts.
-Projections (`note.md`, `meta.msgpack`) are **not** copied — they are
+`notes/{id}/log.*.ndjson`. Each has a single writer, so this never conflicts.
+Projections (`note.md`, `meta.ndjson`) are **not** copied — they are
 per-device caches the receiver regenerates from the logs on sync.
 
 **Used by** — the global-log and note-index tests.
@@ -2066,7 +2171,7 @@ refresh with `graphify update .` after refactors.
 
 **Invariants** (restated on purpose; a change to this file must keep these true)
 
-- Replication copies only single-writer logs; projections are regenerated — the tests must never copy `note.md`/`meta.msgpack` between roots.
+- Replication copies only single-writer logs; projections are regenerated — the tests must never copy `note.md`/`meta.ndjson` between roots.
 - Convergence (causal, concurrent equal-timestamp, add/remove races) and both compaction bounds (per-note 256, global 512 with epoch snapshots) are pinned here.
 - Tombstone-first races (#71) stay covered for the sidecar entity types; note deletes converge through the per-note logs.
 
@@ -2103,23 +2208,24 @@ refresh with `graphify update .` after refactors.
 | 27 | `fn list_notes_paginates_without_duplicates_or_gaps` | `// md:fn list_notes_paginates_without_duplicates_or_gaps` |
 | 28 | `fn replicate_note` | `// md:fn replicate_note` |
 | 29 | `fn fs_note_uses_three_file_layout` | `// md:fn fs_note_uses_three_file_layout` |
-| 30 | `fn fs_two_device_causal_sync` | `// md:fn fs_two_device_causal_sync` |
-| 31 | `fn fs_two_device_concurrent_edits_converge` | `// md:fn fs_two_device_concurrent_edits_converge` |
-| 32 | `fn note_alias_bookmarks_links_persist_in_meta` | `// md:fn note_alias_bookmarks_links_persist_in_meta` |
-| 33 | `fn backlinks_default_scan_is_paginated` | `// md:fn backlinks_default_scan_is_paginated` |
-| 34 | `fn fs_notebook_concurrent_equal_timestamp_edits_converge` | `// md:fn fs_notebook_concurrent_equal_timestamp_edits_converge` |
-| 35 | `fn fs_concurrent_note_tag_add_remove_converges` | `// md:fn fs_concurrent_note_tag_add_remove_converges` |
-| 36 | `fn note_log_len` | `// md:fn note_log_len` |
-| 37 | `fn fs_note_log_compacts_and_still_converges` | `// md:fn fs_note_log_compacts_and_still_converges` |
-| 38 | `fn replicate_logs` | `// md:fn replicate_logs` |
-| 39 | `fn drain_sync` | `// md:fn drain_sync` |
-| 40 | `fn own_log_stats` | `// md:fn own_log_stats` |
-| 41 | `fn fs_global_log_compacts_and_peer_converges` | `// md:fn fs_global_log_compacts_and_peer_converges` |
-| 42 | `fn fs_global_log_snapshot_covers_all_entity_types` | `// md:fn fs_global_log_snapshot_covers_all_entity_types` |
-| 43 | `fn ordering_fields_round_trip_and_manual_order_query` | `// md:fn ordering_fields_round_trip_and_manual_order_query` |
-| 44 | `fn note_index_reflects_local_writes_after_it_is_built` | `// md:fn note_index_reflects_local_writes_after_it_is_built` |
-| 45 | `fn note_index_reflects_changes_pulled_from_a_peer` | `// md:fn note_index_reflects_changes_pulled_from_a_peer` |
-| 46 | `fn delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_create` | `// md:fn delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_create` |
-| 47 | `fn fs_note_delete_cascades_to_attachments_and_restore_recovers_dragged` | `// md:fn fs_note_delete_cascades_to_attachments_and_restore_recovers_dragged` |
-| 48 | `fn fs_moving_note_between_notebooks_leaves_attachments_untouched` | `// md:fn fs_moving_note_between_notebooks_leaves_attachments_untouched` |
-| 49 | `fn fs_list_resources_for_note_orders_and_excludes_others` | `// md:fn fs_list_resources_for_note_orders_and_excludes_others` |
+| 30 | `fn fs_on_disk_serialization_is_ndjson` | `// md:fn fs_on_disk_serialization_is_ndjson` |
+| 31 | `fn fs_two_device_causal_sync` | `// md:fn fs_two_device_causal_sync` |
+| 32 | `fn fs_two_device_concurrent_edits_converge` | `// md:fn fs_two_device_concurrent_edits_converge` |
+| 33 | `fn note_alias_bookmarks_links_persist_in_meta` | `// md:fn note_alias_bookmarks_links_persist_in_meta` |
+| 34 | `fn backlinks_default_scan_is_paginated` | `// md:fn backlinks_default_scan_is_paginated` |
+| 35 | `fn fs_notebook_concurrent_equal_timestamp_edits_converge` | `// md:fn fs_notebook_concurrent_equal_timestamp_edits_converge` |
+| 36 | `fn fs_concurrent_note_tag_add_remove_converges` | `// md:fn fs_concurrent_note_tag_add_remove_converges` |
+| 37 | `fn note_log_len` | `// md:fn note_log_len` |
+| 38 | `fn fs_note_log_compacts_and_still_converges` | `// md:fn fs_note_log_compacts_and_still_converges` |
+| 39 | `fn replicate_logs` | `// md:fn replicate_logs` |
+| 40 | `fn drain_sync` | `// md:fn drain_sync` |
+| 41 | `fn own_log_stats` | `// md:fn own_log_stats` |
+| 42 | `fn fs_global_log_compacts_and_peer_converges` | `// md:fn fs_global_log_compacts_and_peer_converges` |
+| 43 | `fn fs_global_log_snapshot_covers_all_entity_types` | `// md:fn fs_global_log_snapshot_covers_all_entity_types` |
+| 44 | `fn ordering_fields_round_trip_and_manual_order_query` | `// md:fn ordering_fields_round_trip_and_manual_order_query` |
+| 45 | `fn note_index_reflects_local_writes_after_it_is_built` | `// md:fn note_index_reflects_local_writes_after_it_is_built` |
+| 46 | `fn note_index_reflects_changes_pulled_from_a_peer` | `// md:fn note_index_reflects_changes_pulled_from_a_peer` |
+| 47 | `fn delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_create` | `// md:fn delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_create` |
+| 48 | `fn fs_note_delete_cascades_to_attachments_and_restore_recovers_dragged` | `// md:fn fs_note_delete_cascades_to_attachments_and_restore_recovers_dragged` |
+| 49 | `fn fs_moving_note_between_notebooks_leaves_attachments_untouched` | `// md:fn fs_moving_note_between_notebooks_leaves_attachments_untouched` |
+| 50 | `fn fs_list_resources_for_note_orders_and_excludes_others` | `// md:fn fs_list_resources_for_note_orders_and_excludes_others` |
