@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Keep graphify-out/ current on every commit. Enable once per clone with:
+#   git config core.hooksPath .githooks
+#
+# Re-extracts the AST graph (no LLM/API cost) and stages the refreshed artifacts
+# so a commit never lands with a stale graph — the same freshness CI enforces via
+# scripts/check-graph.sh, but applied automatically at commit time.
+#
+# If graphify is not installed the hook prints a hint and lets the commit through
+# (CI is the backstop). Set SKIP_GRAPHIFY=1 to bypass for a single commit.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+if [[ "${SKIP_GRAPHIFY:-0}" == "1" ]]; then
+  exit 0
+fi
+
+if ! command -v graphify >/dev/null 2>&1; then
+  echo "pre-commit: graphify not installed (pip install graphifyy==0.9.25); skipping graph refresh" >&2
+  exit 0
+fi
+
+graphify update . >/dev/null
+git add graphify-out/graph.json graphify-out/GRAPH_REPORT.md graphify-out/.graphify_labels.json

@@ -40,6 +40,19 @@ Runs on `ubuntu-latest`.
 | Install cargo-audit | `taiki-e/install-action@v2` (`tool: cargo-audit`) | Downloads a prebuilt `cargo-audit` binary; compiling it from source with `cargo install` added minutes to every run for no additional coverage |
 | cargo audit | `cargo audit` | Checks `Cargo.lock` against the RustSec advisory database |
 
+### `graph` — Knowledge graph up to date
+
+Runs on `ubuntu-latest`, in parallel with `test` (no Rust toolchain needed). Enforces
+LAYER 1 of the navigation model: the committed `graphify-out/graph.json` must match the
+code.
+
+| Step | Action / Command | Purpose |
+|------|-----------------|---------|
+| Checkout | `actions/checkout@v4` | Clones the repository at the triggering commit |
+| Install Python | `actions/setup-python@v5` (`python-version: 3.12`) | Provides the Python runtime graphify needs |
+| Install graphify | `python -m pip install "graphifyy==0.9.25"` | Installs the pinned graphify so extraction matches the version the committed graph was built with |
+| Check knowledge graph | `./scripts/check-graph.sh` (env `GRAPHIFY_REQUIRED=1`) | Re-runs `graphify update .` and fails if the committed graph's code structure is stale. `GRAPHIFY_REQUIRED=1` turns a missing install into a hard failure instead of a silent skip. |
+
 ## Caching strategy
 
 `Swatinem/rust-cache@v2` caches the following directories between runs:

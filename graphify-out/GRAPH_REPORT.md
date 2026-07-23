@@ -1,16 +1,16 @@
 # Graph Report - keeplin  (2026-07-23)
 
 ## Corpus Check
-- 101 files · ~249,860 words
+- 105 files · ~251,326 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 3210 nodes · 7831 edges · 129 communities (120 shown, 9 thin omitted)
+- 3231 nodes · 7848 edges · 133 communities (123 shown, 10 thin omitted)
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 24 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `c95015f9`
+- Built from commit: `9e642e46`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -107,18 +107,22 @@
 - Design decisions
 - Architecture
 - Encryption
-- .delete_tag
+- EncryptedBackend<B>
 - .get_tag
 - build.sh
 - CLAUDE.md
 - check-docs.sh
 - impl NoteMetaEntry
 - impl FsBackend (global history)
+- NoteLines
+- `scripts/check-graph.sh` — knowledge-graph freshness check
+- `.githooks/pre-commit` — auto-refresh the knowledge graph on commit
 - mod tests
 - mod tests
 - impl LinkingBackend
 - impl AliasIndex
 - `Cargo.toml` — workspace root
+- pre-commit script
 - impl NoteRepository for DbBackend
 - impl TagRepository for DbBackend
 - impl SyncBackend for DbBackend
@@ -169,7 +173,7 @@
 ## Import Cycles
 - None detected.
 
-## Communities (129 total, 9 thin omitted)
+## Communities (133 total, 10 thin omitted)
 
 ### Community 0 - "FsBackend"
 Cohesion: 0.06
@@ -180,32 +184,32 @@ Cohesion: 0.06
 Nodes (159): Body, Bytes, HeaderMap, IntoResponse, Json, Client, HashMap, Shared (+151 more)
 
 ### Community 2 - "StorageError"
-Cohesion: 0.27
-Nodes (17): batch_revert_of_a_notebook_rolls_back_every_note(), fs(), note_history_lists_versions_newest_first(), revert_note(), revert_notebook(), revert_notebook_notes_to(), revert_notes_to(), revert_restores_an_earlier_version() (+9 more)
+Cohesion: 0.32
+Nodes (15): batch_revert_of_a_notebook_rolls_back_every_note(), fs(), note_history_lists_versions_newest_first(), revert_note(), revert_notebook(), revert_notebook_notes_to(), revert_notes_to(), revert_restores_an_earlier_version() (+7 more)
 
 ### Community 3 - "DbBackend"
 Cohesion: 0.07
-Nodes (47): AtomicBool, Bookmark, assoc_data(), assoc_from_data(), bookmarks_to_json(), build_page(), fresh_database_is_stamped_current_and_reopen_is_a_noop(), http_base_of() (+39 more)
+Nodes (46): AtomicBool, assoc_data(), assoc_from_data(), bookmarks_to_json(), build_page(), fresh_database_is_stamped_current_and_reopen_is_a_noop(), http_base_of(), json_to_bookmarks() (+38 more)
 
 ### Community 4 - "CollabBackend<B>"
-Cohesion: 0.06
-Nodes (50): Clone, HashSet, IntoIterator, Item, CollabBackend<B>, connect_once(), device_id_from_token(), discover_and_join() (+42 more)
+Cohesion: 0.05
+Nodes (53): Clone, HashSet, IntoIterator, Item, CollabBackend<B>, connect_once(), device_id_from_token(), discover_and_join() (+45 more)
 
 ### Community 5 - "StorageBackend"
-Cohesion: 0.08
-Nodes (68): FnMut, contact_resources(), contact_round_trips_through_vcard(), contact_save_list_get_delete_over_storage(), delete_contact(), delete_event(), escape_text(), event_resources() (+60 more)
+Cohesion: 0.06
+Nodes (102): D, FnMut, contact_resources(), contact_round_trips_through_vcard(), contact_save_list_get_delete_over_storage(), delete_contact(), delete_event(), escape_text() (+94 more)
 
 ### Community 6 - "main.rs"
 Cohesion: 0.06
 Nodes (69): File, base(), default_grpc_addr(), default_journal_retention_days(), default_max_message_size(), default_max_upload_bytes(), multiple_issues_accumulate(), network_grpc_without_auth_is_flagged() (+61 more)
 
 ### Community 7 - "MetricsBackend<B>"
-Cohesion: 0.16
-Nodes (24): DateTime, CollabClientMsg, CollabServerMsg, Cursor, LineOp, LineSnapshot, NoteLinesSnapshot, PresenceInfo (+16 more)
+Cohesion: 0.22
+Nodes (16): collect(), migrate(), F, MigrationReport, Result, Vec, assert_migrated(), db() (+8 more)
 
 ### Community 8 - "ws_sync.rs"
-Cohesion: 0.05
-Nodes (59): SyncError, String, B, F, SyncEngine, SyncStage, Result, Self (+51 more)
+Cohesion: 0.07
+Nodes (48): client(), created_note_body_survives_the_join_welcome(), cursor_updates_flow_into_presence(), edits_travel_between_two_daemons(), mock_server(), resource_blob_uploads_out_of_band_and_downloads_on_read(), Arc, SocketAddr (+40 more)
 
 ### Community 9 - "fs_backend.rs"
 Cohesion: 0.06
@@ -221,7 +225,7 @@ Nodes (32): Database, apply_change(), denormalize(), empty_query_lists_by_recenc
 
 ### Community 12 - "KeeplinServer<B>"
 Cohesion: 0.07
-Nodes (25): DeleteResourceRequest, DeleteResourceResponse, KeeplinServer<B>, Request, KeeplinService, ListAliasConflictsRequest, ListAliasConflictsResponse, ListBacklinksRequest (+17 more)
+Nodes (27): DeleteNotebookRequest, DeleteNotebookResponse, GetNotebookRequest, GetNotebookResponse, GetTagRequest, GetTagResponse, KeeplinServer<B>, Request (+19 more)
 
 ### Community 13 - "in_memory_backend"
 Cohesion: 0.10
@@ -236,24 +240,24 @@ Cohesion: 0.09
 Nodes (33): CoreBookmark, CoreNotebook, CoreNoteLink, CoreTag, CreateNotebookRequest, CreateNotebookResponse, CreateTagRequest, CreateTagResponse (+25 more)
 
 ### Community 16 - "note_log.rs"
-Cohesion: 0.14
-Nodes (34): BTreeMap, causal_edit_after_delete_resurrects(), causal_update_wins_without_conflict(), compact_own_log(), compact_own_log_preserves_merge(), concurrent_edits_conflict_and_break_by_timestamp(), dominates(), entry() (+26 more)
+Cohesion: 0.15
+Nodes (33): causal_edit_after_delete_resurrects(), causal_update_wins_without_conflict(), compact_own_log(), compact_own_log_preserves_merge(), concurrent_edits_conflict_and_break_by_timestamp(), dominates(), entry(), increment() (+25 more)
 
 ### Community 17 - "LinkingBackend<B>"
-Cohesion: 0.05
-Nodes (93): BTreeSet, add_and_remove_manual_link(), add_manual_link(), alias_and_link_edits_reject_deleted_entities(), alias_conflicts(), alias_conflicts_lists_duplicates(), alias_index_tracks_deletes_and_renames(), aliased() (+85 more)
+Cohesion: 0.06
+Nodes (63): BTreeMap, BTreeSet, add_and_remove_manual_link(), add_manual_link(), alias_and_link_edits_reject_deleted_entities(), alias_conflicts(), alias_conflicts_lists_duplicates(), alias_index_tracks_deletes_and_renames() (+55 more)
 
 ### Community 18 - "linking.rs"
 Cohesion: 0.10
 Nodes (20): backend(), counts_applied_sync_changes(), counts_operations_and_errors(), http_status_buckets(), MetricsBackend<B>, Arc, AtomicU64, B (+12 more)
 
 ### Community 19 - "links.rs"
-Cohesion: 0.15
-Nodes (22): bookmark_re(), content_link_re(), extracts_bookmarks_with_and_without_alias_in_order(), extracts_content_links_excluding_bookmarks(), parse_bookmarks(), parse_content_links(), parse_link_ref(), parses_one_two_three_segments() (+14 more)
+Cohesion: 0.14
+Nodes (23): bookmark_re(), content_link_re(), extracts_bookmarks_with_and_without_alias_in_order(), extracts_content_links_excluding_bookmarks(), parse_bookmarks(), parse_content_links(), parse_link_ref(), parses_one_two_three_segments() (+15 more)
 
 ### Community 20 - "Change"
-Cohesion: 0.07
-Nodes (40): D, strip_resource_blob(), change_affects_aliases(), de_notebook_id(), new_id(), now(), pre_ordering_note_msgpack_round_trips(), DateTime (+32 more)
+Cohesion: 0.08
+Nodes (30): SyncError, String, Change, Vec, B, F, SyncEngine, SyncStage (+22 more)
 
 ### Community 21 - "`storage/db.rs` — DbBackend (LibSQL + WebSocket storage)"
 Cohesion: 0.09
@@ -277,7 +281,7 @@ Nodes (24): Coverage checklist, fn bookmark_to_proto, fn ensure_not_deleted, fn 
 
 ### Community 27 - "Response"
 Cohesion: 0.15
-Nodes (12): CoreResource, CreateResourceRequest, CreateResourceResponse, GetNotebookRequest, GetNotebookResponse, GetResourceRequest, GetResourceResponse, resource_to_proto() (+4 more)
+Nodes (12): CoreResource, CreateResourceRequest, CreateResourceResponse, GetResourceRequest, GetResourceResponse, resource_to_proto(), Response, ListAliasConflictsRequest (+4 more)
 
 ### Community 28 - "`models.rs` — domain data types"
 Cohesion: 0.07
@@ -289,7 +293,7 @@ Nodes (13): CreateNoteRequest, CreateNoteResponse, ensure_not_deleted(), parse_o
 
 ### Community 30 - "Status"
 Cohesion: 0.13
-Nodes (12): GetTagRequest, GetTagResponse, Status, stage_to_proto(), storage_err(), ListNotesInNotebookRequest, ListNotesInNotebookResponse, ListNoteTagsRequest (+4 more)
+Nodes (12): DeleteNoteRequest, DeleteNoteResponse, DeleteTagRequest, DeleteTagResponse, Status, stage_to_proto(), storage_err(), ListNotebooksRequest (+4 more)
 
 ### Community 31 - "Note"
 Cohesion: 0.05
@@ -363,10 +367,6 @@ Nodes (116): Coverage checklist, fn add_link, fn add_note_tag, fn auth_mw, fn ba
 Cohesion: 0.29
 Nodes (9): compatible_with(), incompatible_message(), incompatible_message_names_the_side_to_upgrade(), negotiate(), Client, Handshake, ServerInfo, String (+1 more)
 
-### Community 49 - "EncryptedBackend<B>"
-Cohesion: 0.10
-Nodes (13): Aes256Gcm, derive_key(), EncryptedBackend<B>, B, DateTime, EncryptedBackend, Option, Result (+5 more)
-
 ### Community 50 - "`links.rs` — bookmark & link types and pure parsing"
 Cohesion: 0.06
 Nodes (30): Coverage checklist, fn bookmark_re, fn bookmark_ref_zero_is_alias, fn content_link_re, fn extracts_bookmarks_with_and_without_alias_in_order, fn extracts_content_links_excluding_bookmarks, fn from_raw, fn parse (+22 more)
@@ -388,8 +388,8 @@ Cohesion: 0.08
 Nodes (25): fn alias_and_links_endpoints, fn alias_backlinks_and_resolve_endpoints, fn alias_conflicts_endpoint, fn auth_is_enforced_when_configured, fn call, fn contact_import_list_export_delete_endpoints, fn invalid_uuid_is_bad_request, fn linking_state (+17 more)
 
 ### Community 55 - "`.github/workflows/ci.yml` — CI pipeline"
-Cohesion: 0.20
-Nodes (9): Caching strategy, Environment variables, `.github/workflows/ci.yml` — CI pipeline, Jobs, Notes, Purpose, Related files, `test` — Check, Test & Lint (+1 more)
+Cohesion: 0.18
+Nodes (10): Caching strategy, Environment variables, `.github/workflows/ci.yml` — CI pipeline, `graph` — Knowledge graph up to date, Jobs, Notes, Purpose, Related files (+2 more)
 
 ### Community 56 - "`collab/state.rs` — client line state and body↔lines translation"
 Cohesion: 0.14
@@ -531,6 +531,22 @@ Nodes (4): Architecture, Backups, Multi‑device setup with Syncthing, Storage m
 Cohesion: 0.50
 Nodes (4): Collaborative (server) mode stores note title/body in cleartext on the server, Encrypted at rest, Encryption, Stored in plaintext by design
 
+### Community 92 - "EncryptedBackend<B>"
+Cohesion: 0.10
+Nodes (14): Aes256Gcm, derive_key(), EncryptedBackend<B>, B, DateTime, EncryptedBackend, Option, Result (+6 more)
+
+### Community 102 - "NoteLines"
+Cohesion: 0.16
+Nodes (24): DateTime, CollabClientMsg, CollabServerMsg, Cursor, LineOp, LineSnapshot, NoteLinesSnapshot, PresenceInfo (+16 more)
+
+### Community 103 - "`scripts/check-graph.sh` — knowledge-graph freshness check"
+Cohesion: 0.22
+Nodes (8): graphify not installed, How it works, Purpose, Related files, `scripts/check-graph.sh` — knowledge-graph freshness check, Side effect, Version pinning, What it compares — and what it ignores
+
+### Community 104 - "`.githooks/pre-commit` — auto-refresh the knowledge graph on commit"
+Cohesion: 0.29
+Nodes (6): Behaviour, Enabling, `.githooks/pre-commit` — auto-refresh the knowledge graph on commit, Purpose, Related files, Version
+
 ### Community 105 - "mod tests"
 Cohesion: 0.14
 Nodes (14): fn contact_round_trips_through_vcard, fn contact_save_list_get_delete_over_storage, fn event_round_trips_through_ics, fn event_round_trips_through_storage, fn fs, fn import_todo_creates_a_todo_note, fn missing_component_yields_none, fn multi_component_calendar_parses_every_event_and_todo (+6 more)
@@ -640,24 +656,24 @@ Cohesion: 0.67
 Nodes (3): fn assemble_upload, fn from_shared, impl KeeplinServer
 
 ## Knowledge Gaps
-- **1363 isolated node(s):** `EpochHeader`, `build.sh script`, `Purpose`, `Build profiles do **not** belong here`, ``[target.<triple>]` — cross-compilation (commented out)` (+1358 more)
+- **1377 isolated node(s):** `EpochHeader`, `build.sh script`, `check-graph.sh script`, `Purpose`, `Build profiles do **not** belong here` (+1372 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **9 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **10 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `StorageError` connect `FsBackend` to `rest.rs`, `StorageError`, `DbBackend`, `CollabBackend<B>`, `StorageBackend`, `ws_sync.rs`, `EncryptedBackend<B>`, `LinkingBackend<B>`, `linking.rs`, `Change`, `.update_notebook`, `Status`?**
-  _High betweenness centrality (0.105) - this node is a cross-community bridge._
-- **Why does `Note` connect `LinkingBackend<B>` to `FsBackend`, `rest.rs`, `StorageError`, `DbBackend`, `CollabBackend<B>`, `StorageBackend`, `search.rs`, `Result`, `note_log.rs`, `EncryptedBackend<B>`, `linking.rs`, `links.rs`, `Change`?**
-  _High betweenness centrality (0.057) - this node is a cross-community bridge._
+- **Why does `StorageError` connect `FsBackend` to `rest.rs`, `StorageError`, `DbBackend`, `CollabBackend<B>`, `StorageBackend`, `MetricsBackend<B>`, `LinkingBackend<B>`, `linking.rs`, `Change`, `EncryptedBackend<B>`, `.update_notebook`, `Status`?**
+  _High betweenness centrality (0.099) - this node is a cross-community bridge._
+- **Why does `Note` connect `StorageBackend` to `FsBackend`, `rest.rs`, `StorageError`, `DbBackend`, `CollabBackend<B>`, `search.rs`, `Result`, `note_log.rs`, `LinkingBackend<B>`, `linking.rs`, `links.rs`, `Change`, `EncryptedBackend<B>`?**
+  _High betweenness centrality (0.063) - this node is a cross-community bridge._
 - **Why does `FsBackend` connect `FsBackend` to `StorageError`, `CollabBackend<B>`, `StorageBackend`, `enc_backend`, `fs_backend.rs`, `server.rs`, `LinkingBackend<B>`, `linking.rs`, `Change`?**
-  _High betweenness centrality (0.039) - this node is a cross-community bridge._
-- **What connects `EpochHeader`, `build.sh script`, `Purpose` to the rest of the system?**
-  _1363 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _High betweenness centrality (0.044) - this node is a cross-community bridge._
+- **What connects `EpochHeader`, `build.sh script`, `check-graph.sh script` to the rest of the system?**
+  _1377 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `FsBackend` be split into smaller, more focused modules?**
   _Cohesion score 0.0574055829228243 - nodes in this community are weakly interconnected._
 - **Should `rest.rs` be split into smaller, more focused modules?**
   _Cohesion score 0.06023651145602365 - nodes in this community are weakly interconnected._
 - **Should `DbBackend` be split into smaller, more focused modules?**
-  _Cohesion score 0.07286589176352956 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.07377777777777778 - nodes in this community are weakly interconnected._
