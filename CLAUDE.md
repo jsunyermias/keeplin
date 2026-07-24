@@ -48,3 +48,20 @@ Never consider a task finished while any known discrepancy exists between:
 - project documentation.
 
 The repository must always remain in a self-consistent state after every completed task.
+
+## Cross-repo compatibility (keeplin ↔ keeplin-srv)
+
+`keeplin` (client/daemon) and `keeplin-srv` (server) share a wire/format contract: the
+collab protocol (`keeplin-core::collab::protocol`), `PROTOCOL_VERSION`
+(`keeplin-core::compat`), the `Change` model, the format limits, and the encryption
+envelope. Any change that touches a shared surface must keep both sides intercompatible —
+it is not complete until that is guaranteed.
+
+- `keeplin-core` is the single source of truth for shared wire/format types and constants;
+  `keeplin-srv` imports them rather than redefining them.
+- `keeplin-srv` pins `keeplin-core` to a concrete immutable reference (an exact `tag`/`rev`,
+  never a branch or "latest") so the server can never silently drift from the client.
+- A breaking change to a shared surface bumps `PROTOCOL_VERSION` on both sides in lockstep.
+- A change to a shared surface is not complete until a cross-repo compatibility test covers
+  it: a round-trip of every protocol message and shared constant against `keeplin-core`'s
+  real types.
