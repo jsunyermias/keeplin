@@ -3,7 +3,7 @@
 ## Purpose
 
 The mechanical arbiter of the block-complete companion-doc contract (LAYER 2 of the
-navigation model, `docs/templates/source-module.md` v2.4). Its structural checks use
+navigation model, `docs/templates/source-module.md` v2.5). Its structural checks use
 standard shell tools and its exact-fidelity/context checks use standard-library Python, so
 it still runs before any Rust toolchain exists. Run it locally before pushing; CI fails the
 build on any violation.
@@ -30,7 +30,9 @@ For every `.rs` file in the repo (pruning `target/`, `graphify-out/`, `.git/`), 
 8. **Exact fence fidelity** — `sync-companion-code --check` maps every Rust fence to one
    source leaf and compares the full marker, attributes, signature, body and whitespace.
    Only CRLF/LF line endings are normalized; all other text must match. Stale, truncated,
-   reordered, missing, orphan and duplicate fences fail (HARD RULE 7).
+   reordered, missing, orphan and duplicate fences fail (HARD RULE 7). A container's
+   preamble may carry only its declaration, attributes and braces: an unmarked import,
+   const or nested item before the first child marker fails as UNCOVERED (HARD RULE 6).
 9. **Generated context index** — `context-pack manifest --check` fails if
    `docs/context-manifest.json` no longer matches the source/companion corpus.
 
@@ -56,7 +58,7 @@ output.
 
 ## Related files
 
-- `docs/templates/source-module.md` — v2.4 block-complete template; its 9 HARD RULES are
+- `docs/templates/source-module.md` — v2.5 block-complete template; its 9 HARD RULES are
   what this script enforces.
 - `sync-companion-code` / `context-pack` — exact-fidelity and context-index entry points.
 - `.github/workflows/ci.yml` — where this runs in CI (first step).

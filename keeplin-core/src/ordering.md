@@ -795,6 +795,16 @@ verbatim.
 **What it does** — Brings the parent module API and test-only dependencies into
 scope.
 
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+- `crate::storage::fs::FsBackend` — a real filesystem-backed store built over a temporary directory; expects: it honours the same repository traits as production, so what passes here says something about the real backend.
+- `crate::storage::{NoteRepository, NotebookRepository}` — the repository traits whose methods the assertions drive; expects: their async signatures and error types stay as documented; a widened error type silently changes what these tests prove.
+
+**Used by** — every block of `mod tests` in this file: `fn backend`, `fn create_placed`, `fn move_note`, `fn titles`, `fn ensure_inbox_is_idempotent_and_fixed`, `fn placement_inbox_top_notebook_bottom`, `fn pin_unpin_round_trip_and_inbox_rejection`, `fn reorder_respects_bands`, `fn starring_is_global_and_never_moves_the_note`, `fn inbox_top_insert_survives_underflow_by_resequencing`, `fn moving_a_note_replaces_it_in_the_destination_band`, `fn moving_a_pinned_note_into_the_inbox_unpins_it`, `fn a_same_notebook_edit_keeps_the_position`, `fn the_sort_profile_counts_the_live_notes_the_notebook_cap_reads`, `fn lowest_free_pinned_key_fills_gaps_and_detects_full`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn backend
 
 **Identification** — helper `async fn backend() -> FsBackend`; marker

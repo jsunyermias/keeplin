@@ -2137,6 +2137,17 @@ verbatim.
 **What it does** — Brings the parent module API and test-only dependencies into
 scope.
 
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+- `crate::proto::keeplin::{ResourceMeta, UploadResourceRequest}` — the generated proto messages the upload tests stream; expects: field numbers and names stay additive; a renumbered field changes what these frames mean on the wire without failing to compile.
+- `keeplin_core::storage::fs::FsBackend` — a real filesystem-backed store built over a temporary directory; expects: it honours the same repository traits as production, so what passes here says something about the real backend.
+- `keeplin_core::storage::{NoteRepository, NotebookRepository, ResourceRepository, TagRepository}` — the four repository traits the RPC tests drive behind the service; expects: each keeps its trait methods in scope for the concrete backend; dropping one from the import makes the affected calls stop resolving rather than silently no-op.
+
+**Used by** — every block of `mod tests` in this file: `fn server`, `fn meta_frame`, `fn chunk_frame`, `fn upload_resource_assembles_chunks_in_order`, `fn upload_resource_requires_metadata_first`, `fn upload_resource_enforces_the_cap`, `fn update_rpcs_reject_soft_deleted_entities`, `fn update_notebook_and_tag_refresh_updated_at_server_side`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn server
 
 **Identification** — helper; marker `// md:mod tests > fn server`.

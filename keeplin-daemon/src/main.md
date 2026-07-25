@@ -1064,6 +1064,16 @@ verbatim.
 **What it does** — Brings the parent module API and test-only dependencies into
 scope.
 
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+- `base64::{engine::general_purpose::STANDARD, Engine}` — encodes and decodes the payloads exchanged with the daemon; expects: `STANDARD` stays the padded alphabet the rest of the code uses; an unpadded engine would round-trip here and fail in production.
+- `keeplin_core::storage::SyncBackend as _` — the trait, imported anonymously for method resolution only; expects: its methods stay trait methods; if they move to an inherent impl this import becomes dead and the call sites change meaning.
+
+**Used by** — every block of `mod tests` in this file: `fn store_lock_is_exclusive_per_store_and_released_on_drop`, `fn cfg_at`, `fn key_salt_config_value_wins_and_persists_nothing`, `fn key_salt_fallback_is_persisted_and_stable`, `fn key_salt_file_survives_a_regenerated_device_id`, `fn make_req`, `fn basic`, `fn auth_not_configured_allows_all`, `fn auth_valid_credentials_pass`, `fn auth_wrong_password_rejected`, `fn auth_wrong_user_rejected`, `fn auth_missing_header_rejected`, `fn auth_bearer_scheme_rejected`, `fn auth_malformed_base64_rejected`, `fn auth_no_colon_in_credentials_rejected`, `fn auth_password_containing_colon_works`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn store_lock_is_exclusive_per_store_and_released_on_drop
 
 **Identification** — `#[test]`; marker

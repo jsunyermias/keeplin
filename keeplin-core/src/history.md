@@ -369,6 +369,19 @@ verbatim.
 **What it does** — Brings the parent module API and test-only dependencies into
 scope.
 
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+- `crate::storage::fs::FsBackend` — a real filesystem-backed store built over a temporary directory; expects: it honours the same repository traits as production, so what passes here says something about the real backend.
+- `crate::storage::{HistoryRepository, NoteRepository}` — the repository traits whose methods the assertions drive; expects: their async signatures and error types stay as documented; a widened error type silently changes what these tests prove.
+- `chrono::TimeZone` — builds fixed timestamps instead of reading the clock; expects: `with_ymd_and_hms` keeps resolving for the fixed dates used here, so the tests stay deterministic.
+- `std::time::Duration` — expresses the offsets and waits the assertions rely on; expects: it stays the unit the module under test accepts, so no conversion is hidden here.
+- `tempfile::tempdir` — gives each test an isolated directory removed on drop; expects: the returned handle keeps the directory alive while bound; dropping it early deletes the store under the test.
+
+**Used by** — every block of `mod tests` in this file: `fn ver`, `fn state_at_picks_newest_at_or_before`, `fn fs`, `fn note_history_lists_versions_newest_first`, `fn revert_restores_an_earlier_version`, `fn revert_to_a_deleted_instant_deletes_the_note`, `fn batch_revert_of_a_notebook_rolls_back_every_note`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn ver
 
 **Identification** — test helper `fn ver(secs: i64, entity: Option<u32>) -> EntityVersion<u32>`;

@@ -70,6 +70,11 @@ class CompanionToolTests(unittest.TestCase):
         self.source.write_text(text, encoding="utf-8")
         self.assertTrue(any("UNCOVERED" in error for error in self.errors()))
 
+    def test_type_definition_container_names_the_rule_it_breaks(self) -> None:
+        with self.source.open("a", encoding="utf-8") as handle:
+            handle.write("\n// md:enum Kind\npub enum Kind {\n    // md:enum Kind > A\n    A,\n}\n")
+        self.assertTrue(any("must be an impl, mod or trait" in error for error in self.errors()))
+
     def test_reordered_fences_are_detected(self) -> None:
         text = self.companion.read_text(encoding="utf-8")
         overview = "```rust\n// md:Overview\nuse std::fmt::Debug;\n```"

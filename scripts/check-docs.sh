@@ -14,7 +14,8 @@
 #      Caveat: the trailing-comment pattern can false-positive on a string
 #      literal containing ' // ' — reword the string if that ever fires.
 #   8. every Rust fence maps 1:1 to a source leaf and is identical after LF-only
-#      line-ending normalization; stale, truncated, orphan and duplicate fences fail
+#      line-ending normalization; stale, truncated, orphan and duplicate fences fail,
+#      and so does unmarked code between a container marker and its first child
 #   9. the generated context manifest is current.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -97,7 +98,7 @@ fi
 if [[ $fail -ne 0 ]]; then
   echo
   echo "Every .rs needs a companion .md in the block-complete format:"
-  echo "docs/templates/source-module.md (v2.4). See its 9 HARD RULES."
+  echo "docs/templates/source-module.md (v2.5). See its 9 HARD RULES."
   exit 1
 fi
 echo "docs check OK: structure, exact fences and context manifest are consistent"

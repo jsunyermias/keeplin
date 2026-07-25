@@ -738,6 +738,14 @@ verbatim.
 **What it does** — Brings the parent module API and test-only dependencies into
 scope.
 
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+
+**Used by** — every block of `mod tests` in this file: `fn note`, `fn idx`, `fn matches_title_and_body_by_prefix`, `fn matches_tag_and_notebook_names`, `fn structured_filters_narrow_results`, `fn empty_query_lists_by_recency_with_filters`, `fn indexes_from_rebuild_and_the_event_stream`, `fn remove_drops_the_note`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn note
 
 **Identification** — helper; marker `// md:mod tests > fn note`.

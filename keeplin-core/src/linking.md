@@ -1883,6 +1883,15 @@ verbatim.
 **What it does** — Brings the parent module API and test-only dependencies into
 scope.
 
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+- `crate::storage::fs::FsBackend` — a real filesystem-backed store built over a temporary directory; expects: it honours the same repository traits as production, so what passes here says something about the real backend.
+
+**Used by** — every block of `mod tests` in this file: `fn backend`, `fn nb`, `fn aliased`, `fn derives_bookmarks_and_content_links`, `fn bookmark_alias_comes_from_the_body_title`, `fn resolves_link_by_alias_and_uuid`, `fn rejects_duplicate_note_alias`, `fn same_alias_in_different_notebooks_is_allowed`, `fn inbox_note_cannot_carry_an_alias`, `fn set_note_alias_rejects_inbox_notes`, `fn moving_a_note_to_inbox_clears_its_alias`, `fn inbox_note_does_not_link_out`, `fn nothing_links_to_an_inbox_note`, `fn bare_alias_resolves_globally_when_unique_else_scoped`, `fn alias_and_link_edits_reject_deleted_entities`, `fn add_and_remove_manual_link`, `fn resolves_two_segment_note_bookmark_shorthand`, `fn two_segment_prefers_notebook_note`, `fn alias_conflicts_lists_duplicates`, `fn alias_index_tracks_deletes_and_renames`, `fn sync_applied_change_invalidates_alias_index`, `fn concurrent_duplicate_alias_yields_exactly_one_winner`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn backend
 
 **Identification** — helper `async fn backend() -> LinkingBackend<FsBackend>`;

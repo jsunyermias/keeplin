@@ -1,16 +1,16 @@
-# Graph Report - keeplin  (2026-07-26)
+# Graph Report - keeplin  (2026-07-25)
 
 ## Corpus Check
-- 126 files · ~286,511 words
+- 126 files · ~290,556 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 3511 nodes · 8258 edges · 154 communities (143 shown, 11 thin omitted)
+- 3512 nodes · 8260 edges · 156 communities (143 shown, 13 thin omitted)
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 25 edges (avg confidence: 0.79)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `2ba84010`
+- Built from commit: `70d25b0b`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -154,6 +154,7 @@
 - `{{path/to/module.rs}}` — {{one-line purpose}}
 - Architecture decision records
 - Documentation templates
+- templates/README.md
 - .get_notebook
 - .get_tag
 - `scripts/companion_tool.py` — deterministic companion fidelity engine
@@ -163,8 +164,10 @@
 - .list_backlinks
 - impl NoteMetaIndex
 - impl NoteMetaEntry
+- impl NoteMetaEntry
 - context-pack script
 - sync-companion-code script
+- impl FsBackend (global history)
 
 ## God Nodes (most connected - your core abstractions)
 1. `Note` - 151 edges
@@ -193,7 +196,7 @@
 ## Import Cycles
 - None detected.
 
-## Communities (154 total, 11 thin omitted)
+## Communities (156 total, 13 thin omitted)
 
 ### Community 0 - "FsBackend"
 Cohesion: 0.06
@@ -245,7 +248,7 @@ Nodes (32): Database, apply_change(), denormalize(), empty_query_lists_by_recenc
 
 ### Community 12 - "KeeplinServer<B>"
 Cohesion: 0.07
-Nodes (25): DeleteNoteRequest, DeleteNoteResponse, DeleteTagRequest, DeleteTagResponse, GetNotebookRequest, GetNotebookResponse, KeeplinServer<B>, Request (+17 more)
+Nodes (27): DeleteNotebookRequest, DeleteNotebookResponse, GetNotebookRequest, GetNotebookResponse, GetTagRequest, GetTagResponse, KeeplinServer<B>, Request (+19 more)
 
 ### Community 13 - "in_memory_backend"
 Cohesion: 0.10
@@ -304,8 +307,8 @@ Cohesion: 0.08
 Nodes (24): Coverage checklist, fn bookmark_to_proto, fn ensure_not_deleted, fn link_source_str, fn note_to_proto, fn notebook_to_proto, fn notelink_to_proto, fn parse_optional_dt (+16 more)
 
 ### Community 27 - "Response"
-Cohesion: 0.15
-Nodes (12): CoreResource, CreateResourceRequest, CreateResourceResponse, GetResourceRequest, GetResourceResponse, GetTagRequest, GetTagResponse, resource_to_proto() (+4 more)
+Cohesion: 0.20
+Nodes (10): CoreResource, CreateResourceRequest, CreateResourceResponse, GetResourceRequest, GetResourceResponse, resource_to_proto(), Response, S (+2 more)
 
 ### Community 28 - "`models.rs` — domain data types"
 Cohesion: 0.07
@@ -317,15 +320,15 @@ Nodes (12): CreateNoteRequest, CreateNoteResponse, ensure_not_deleted(), parse_o
 
 ### Community 30 - "Status"
 Cohesion: 0.13
-Nodes (12): DeleteNotebookRequest, DeleteNotebookResponse, DeleteResourceRequest, DeleteResourceResponse, Status, stage_to_proto(), storage_err(), ListNotesInNotebookRequest (+4 more)
+Nodes (12): DeleteResourceRequest, DeleteResourceResponse, Status, stage_to_proto(), storage_err(), ListNotebooksRequest, ListNotebooksResponse, ListNoteTagsRequest (+4 more)
 
 ### Community 31 - "Note"
 Cohesion: 0.05
 Nodes (38): fn add_column_if_missing, fn apply_migration, fn assoc_incoming_wins, fn assoc_meta, fn begin, fn commit, fn connect_ws, fn current_meta (+30 more)
 
 ### Community 32 - "`storage/fs.rs` — FsBackend (filesystem storage)"
-Cohesion: 0.05
-Nodes (39): Coverage checklist, fn apply, fn atomic_write, fn content_hash, fn default_entity_type, fn from_note, fn fs_assoc_from_data, fn fs_assoc_value (+31 more)
+Cohesion: 0.06
+Nodes (33): Coverage checklist, fn atomic_write, fn content_hash, fn default_entity_type, fn fs_assoc_from_data, fn fs_assoc_value, fn fs_tombstone_from_data, fn fs_tombstone_value (+25 more)
 
 ### Community 33 - "`src/main.rs` — daemon entry point"
 Cohesion: 0.05
@@ -468,7 +471,7 @@ Cohesion: 0.06
 Nodes (35): Coverage checklist, fn apply_change, fn bit, fn clear, fn denormalize, fn empty_query_lists_by_recency_with_filters, fn fts_match, fn idx (+27 more)
 
 ### Community 68 - "Security"
-Cohesion: 0.14
+Cohesion: 0.13
 Nodes (14): Collaborative (server) mode stores note title/body in cleartext on the server, Conflict resolution is unified on version vectors, Credentials and TLS, Design decisions, Encrypted at rest, Encryption, Known limitations, Multi-device encryption constraint (+6 more)
 
 ### Community 69 - "`.cargo/config.toml` — workspace Cargo configuration"
@@ -551,6 +554,10 @@ Nodes (4): Box, Error, main(), Result
 Cohesion: 0.27
 Nodes (12): client(), created_note_body_survives_the_join_welcome(), cursor_updates_flow_into_presence(), edits_travel_between_two_daemons(), mock_server(), resource_blob_uploads_out_of_band_and_downloads_on_read(), Arc, SocketAddr (+4 more)
 
+### Community 90 - "Architecture"
+Cohesion: 0.40
+Nodes (5): Branch protection contract, Contributing to Keeplin, Contribution flow, Cross-repository changes, Prompt roles
+
 ### Community 91 - "Encryption"
 Cohesion: 0.26
 Nodes (13): collab_start_applies_the_same_rule(), compatible_version_connects_and_primes_capabilities(), db_path(), fake_token(), incompatible_version_fails_construction_loudly(), missing_version_warns_and_continues(), Arc, AtomicU64 (+5 more)
@@ -564,8 +571,8 @@ Cohesion: 0.20
 Nodes (10): Compatibility, migration, and rollback, Consequences and risks, Context and problem, Decision and justification, Equivalent decision in the other repository, Forces and requirements, NNNN — Decision title, Options considered (+2 more)
 
 ### Community 98 - "CLAUDE.md"
-Cohesion: 0.10
-Nodes (16): Branch protection contract, Contributing to Keeplin, Contribution flow, Cross-repository changes, Prompt roles, 0.A — Contexto común y preparación del issue, Entrada, Instrucciones (+8 more)
+Cohesion: 0.12
+Nodes (8): Claude Code instructions, 0.A — Contexto común y preparación del issue, Entrada, Instrucciones, Salida, 0.C — Revisión independiente y adversarial, Método, Salida
 
 ### Community 100 - "Metrics"
 Cohesion: 0.20
@@ -712,7 +719,7 @@ Cohesion: 0.29
 Nodes (7): Configuration / key reference, Graph context, Notes & gotchas, `{{path/to/file}}` — {{what it configures / generates}}, Purpose, Related files, What it {{generates | defines | runs}}
 
 ### Community 137 - "0.B — Implementación de un issue"
-Cohesion: 0.29
+Cohesion: 0.25
 Nodes (7): {{1. The concept / the model}}, {{2. How it works across the system}}, {{3. Guarantees and non-guarantees}}, {{4. Operational implications}}, Related documents, {{Title}} — {{one-line framing}}, Trade-offs & rejected alternatives
 
 ### Community 138 - "sync_until"
@@ -720,16 +727,16 @@ Cohesion: 0.67
 Nodes (3): Option, Uuid, sync_until()
 
 ### Community 139 - "`{{path/to/module.rs}}` — {{one-line purpose}}"
-Cohesion: 0.29
-Nodes (6): {{Block name — type / fn / impl / mod, as in the source}}, Coverage checklist, Graph context, {{Module-specific mechanism — optional}}, Overview, `{{path/to/module.rs}}` — {{one-line purpose}}
+Cohesion: 0.12
+Nodes (12): Documentation templates, House style, Placeholders in the templates, The convention in one sentence, The two-layer navigation model, Which template to use, {{Block name — type / fn / impl / mod, as in the source}}, Coverage checklist (+4 more)
 
 ### Community 140 - "Architecture decision records"
 Cohesion: 0.33
 Nodes (6): Architecture decision records, Author and reviewer workflow, Lifecycle, Numbering and links, Registry, When an ADR is required
 
 ### Community 141 - "Documentation templates"
-Cohesion: 0.33
-Nodes (6): Documentation templates, House style, Placeholders in the templates, The convention in one sentence, The two-layer navigation model, Which template to use
+Cohesion: 0.40
+Nodes (4): 0.B — Implementación de un issue, Antes de editar, Implementación, Verificación y entrega
 
 ### Community 144 - ".get_tag"
 Cohesion: 0.25
@@ -754,7 +761,7 @@ Nodes (4): Purpose, Related files, `scripts/sync-companion-code` — synchronize
 ## Knowledge Gaps
 - **1521 isolated node(s):** `EpochHeader`, `build.sh script`, `check-graph.sh script`, `Purpose`, `Build profiles do **not** belong here` (+1516 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **11 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **13 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
