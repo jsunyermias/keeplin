@@ -1,6 +1,6 @@
 # 0002 — Keep the shared domain model in keeplin-core and materialize server projections
 
-- Status: proposed (retrospective)
+- Status: accepted (retrospective)
 - Date: 2026-07-25
 - Decision owners: maintainer
 - Scope: cross-repo

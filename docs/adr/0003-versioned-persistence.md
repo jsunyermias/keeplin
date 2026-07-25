@@ -1,6 +1,6 @@
 # 0003 — Version persistent formats and migrate them forward explicitly
 
-- Status: proposed (retrospective)
+- Status: accepted (retrospective)
 - Date: 2026-07-25
 - Decision owners: maintainer
 - Scope: cross-repo

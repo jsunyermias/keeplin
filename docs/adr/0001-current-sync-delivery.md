@@ -1,6 +1,6 @@
 # 0001 — Record the current synchronization delivery semantics
 
-- Status: proposed (retrospective)
+- Status: accepted (retrospective)
 - Date: 2026-07-25
 - Decision owners: maintainer
 - Scope: cross-repo
