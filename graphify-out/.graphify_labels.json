@@ -101,7 +101,6 @@
   "99": "check-docs.sh",
   "100": "Metrics",
   "101": "Keeplin agent guide",
-  "102": "drain_sync",
   "103": "`scripts/check-graph.sh` — knowledge-graph freshness check",
   "104": "`.githooks/pre-commit` — auto-refresh the knowledge graph on commit",
   "105": "mod tests",
@@ -133,12 +132,8 @@
   "131": "impl HistoryRepository for DbBackend",
   "132": "impl HistoryRepository for FsBackend",
   "133": "impl KeeplinServer",
-  "134": "resolve",
   "135": "SyncError",
   "136": "Contributing to Keeplin",
   "137": "0.B — Implementación de un issue",
-  "138": "sync_until",
-  "139": "impl NoteMetaIndex",
-  "140": "impl NoteMetaEntry",
-  "141": "impl FsBackend (global history)"
+  "138": "sync_until"
 }

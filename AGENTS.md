@@ -35,13 +35,23 @@ cargo test --workspace
 ```
 
 For `keeplin`, the focused suites are `cargo test -p keeplin-core` and
-`cargo test -p keeplin-daemon`. `keeplin-srv` integration tests require PostgreSQL as
-described in its README. When source changes affect the knowledge graph, also run:
+`cargo test -p keeplin-daemon`. For `keeplin-srv`, `cargo test --workspace` must run
+against PostgreSQL and includes the `sqlx::test` integration tests described in its README.
+When source changes affect the knowledge graph, install the CI-pinned version and also run:
 
 ```bash
+pip install graphifyy==0.9.25
 graphify update .
 ./scripts/check-graph.sh
 ```
+
+Enable the repository's auto-refresh hook once with:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+After `graphify update .`, commit the refreshed `graphify-out/` for code changes.
 
 Never report a check as passing unless it ran successfully. Record unavailable checks and
 their reason in the PR.
@@ -55,6 +65,7 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- `graphify update .` run and the refreshed `graphify-out/` committed (code changes only). CI (`scripts/check-graph.sh`) fails if the graph is stale; enable the auto-refresh hook once with `git config core.hooksPath .githooks`. Requires `pip install graphifyy==0.9.25`.
 
 ## Companion .md format
 
@@ -133,6 +144,23 @@ it is not complete until that is guaranteed.
   it: a round-trip of every protocol message and shared constant against `keeplin-core`'s
   real types.
 
+## Persistence and wire invariants
+
+These repository-specific rules are mandatory and are preserved verbatim from the previous
+pull request templates.
+
+### `keeplin`
+
+- Proto changes (if any) are **additive** — new field numbers only, existing numbers never renumbered or reused.
+- On-disk / on-wire format changes bump the relevant version (`FsBackend::FORMAT_VERSION`, `DbBackend::SCHEMA_VERSION`) with a migration step, and the change is documented in the companion.
+
+### `keeplin-srv`
+
+- New migrations are **forward-only** and idempotent (`ADD COLUMN IF NOT EXISTS`, `CREATE … IF NOT EXISTS`); existing migrations are never edited after being applied.
+- New `NOT NULL` columns carry a `DEFAULT` so existing rows stay valid without a table rewrite.
+- Every migration `.sql` has its companion `.md`.
+- Any `SELECT` feeding a `sqlx::FromRow` struct includes all of that struct's columns (a missing column fails the row decode at runtime, not at compile time).
+
 ## Workflow and review independence
 
 1. Start from an issue with observable acceptance criteria.
@@ -141,13 +169,14 @@ it is not complete until that is guaranteed.
 4. Run the applicable checks and record evidence without conflating author claims with CI.
 5. Have a different model family or a human independently review the objective and diff.
 6. Resolve findings and conversations, obtain green required checks on the exact commit,
-   then mark the PR ready and merge through GitHub.
+   then mark the PR ready for the maintainer to merge.
 
-The default role split is advisory: Claude documents and prepares issues, Kimi implements
-with `docs/prompts/0.B-prompt-implementacion-issue.md`, and Codex reviews with
+Start shared analysis with `docs/prompts/0.A-prompt-comun.md`. The default role split is
+advisory: Claude documents and prepares issues, Kimi implements with
+`docs/prompts/0.B-prompt-implementacion-issue.md`, and Codex reviews with
 `docs/prompts/0.C-prompt-revision-seguridad.md`. The hard rule is that the implementer is
-not the only reviewer. Independent review starts from the issue objective and the diff, not
-from the author's defense as its sole source.
+not the only reviewer. Independent review starts from the issue objective and the diff,
+not from the author's defense as its sole source.
 
 ## ADR requirements
 
