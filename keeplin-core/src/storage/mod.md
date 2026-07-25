@@ -253,6 +253,15 @@ verbatim.
 **What it does** — Brings the parent module API and test-only dependencies into
 scope.
 
+**Dependencies** —
+
+- `super::SortableRfc3339` — the exact item under test; expects: it stays public to the module tree and keeps its ordering semantics.
+- `chrono::{DateTime, TimeZone, Utc}` — builds fixed UTC timestamps instead of reading the clock; expects: the `Utc` offset stays fixed and `with_ymd_and_hms` keeps resolving for these dates, so ordering assertions stay deterministic.
+
+**Used by** — every block of `mod tests` in this file: `fn effective_page_size_defaults_and_clamps`, `fn sortable_rfc3339_has_fixed_shape`, `fn lexicographic_order_matches_chronological_even_mixed_with_old_format`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn effective_page_size_defaults_and_clamps
 
 **Identification** — unit test; marker

@@ -2971,6 +2971,19 @@ verbatim.
 **What it does** — Brings the parent module API and test-only dependencies into
 scope.
 
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+- `axum::body::Body` — builds the request bodies driven through the router; expects: it stays the body type the router is generic over.
+- `axum::http::Request` — builds the requests driven through the router; expects: header and URI construction stay infallible for the fixed inputs used here.
+- `base64::{engine::general_purpose::STANDARD, Engine}` — encodes and decodes the payloads exchanged with the daemon; expects: `STANDARD` stays the padded alphabet the rest of the code uses; an unpadded engine would round-trip here and fail in production.
+- `keeplin_core::storage::fs::FsBackend` — a real filesystem-backed store built over a temporary directory; expects: it honours the same repository traits as production, so what passes here says something about the real backend.
+- `tower::ServiceExt` — provides `oneshot`, which drives the router without binding a socket; expects: `oneshot` keeps consuming the service and returning the full response, so the tests exercise the real routing stack rather than a handler call.
+
+**Used by** — every block of `mod tests` in this file: `fn state`, `fn linking_state`, `fn call`, `fn note_crud_round_trip`, `fn permission_endpoints_require_server_mode`, `fn contact_import_list_export_delete_endpoints`, `fn todo_import_and_profile_vcard_endpoints`, `fn note_history_and_revert_endpoints`, `fn updates_on_deleted_entities_are_404`, `fn sync_endpoint_prunes_journal_within_retention`, `fn operational_endpoints_bypass_auth`, `fn metrics_state`, `fn metrics_reflect_operations_and_http_status`, `fn invalid_uuid_is_bad_request`, `fn auth_is_enforced_when_configured`, `fn resource_upload_and_download`, `fn resource_upload_above_axum_default_limit`, `fn streaming_upload_round_trips`, `fn streaming_upload_over_cap_is_413`, `fn alias_and_links_endpoints`, `fn alias_backlinks_and_resolve_endpoints`, `fn alias_conflicts_endpoint`, `fn state_with_events`, `fn websocket_streams_note_create`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn state
 
 **Identification** — helper; marker `// md:mod tests > fn state`.

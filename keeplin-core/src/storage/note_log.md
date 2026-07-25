@@ -559,6 +559,15 @@ verbatim.
 **What it does** — Brings the parent module API and test-only dependencies into
 scope.
 
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+- `crate::models::Note` — the domain type the assertions construct; expects: its public fields and constructor stay usable standalone, without a live store.
+
+**Used by** — every block of `mod tests` in this file: `fn vv`, `fn ts`, `fn resolve_incoming_causally_newer_wins`, `fn resolve_stale_incoming_loses`, `fn resolve_equal_vectors_is_noop`, `fn resolve_concurrent_equal_timestamp_converges_by_device`, `fn resolve_concurrent_breaks_by_timestamp`, `fn entry`, `fn note`, `fn single_device_history_picks_latest`, `fn merge_exposes_winning_heads_own_vv_and_device`, `fn merge_empty_has_empty_winner_fields`, `fn causal_update_wins_without_conflict`, `fn concurrent_edits_conflict_and_break_by_timestamp`, `fn tombstone_wins_over_concurrent_older_edit`, `fn compact_own_log_preserves_merge`, `fn causal_edit_after_delete_resurrects`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn vv
 
 **Identification** — helper `fn vv(pairs: &[(&str, u64)]) -> VersionVector`;

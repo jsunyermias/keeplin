@@ -16,7 +16,9 @@ belong only to surrounding containers are excluded.
 Only attributes, the container declaration (including multiline `where` clauses),
 braces and blank lines may appear between a container marker and its first child.
 Any real item or import in that gap is reported as `UNCOVERED` and must become an
-explicit leaf.
+explicit leaf. Only `impl`, `mod` and `trait` are containers (RULE 6); a marker whose
+sub-blocks hang off a type definition is reported as such instead of as `UNCOVERED`,
+because the fix is to make the type a leaf block (RULE 5), not to mark its declaration.
 
 Line endings are normalized to LF. No other whitespace is normalized. This catches stale,
 truncated, altered or reordered blocks, duplicate source markers/fences, orphan fences and
@@ -47,8 +49,8 @@ derived entirely from repository files.
 `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` covers functions, attributes,
 leaf impls, containers, test modules, one-line drift, stale/truncated/orphan/duplicate or
 reordered fences, repeatable read-only checks, sync prose preservation and byte-for-byte
-pack reproducibility. It also covers uncovered container preambles and detailed
-`EXTRACTED` origin annotations.
+pack reproducibility. It also covers uncovered container preambles, type definitions used
+as containers, and detailed `EXTRACTED` origin annotations.
 
 ## Related files
 

@@ -69,7 +69,7 @@ Rules:
 
 ## Companion .md format
 
-Companion .md format: docs/templates/source-module.md (v2.4.0, mechanically verified).
+Companion .md format: docs/templates/source-module.md (v2.5.0, mechanically verified).
 Read it fully before touching any companion .md. Its 9 HARD RULES are
 contractual and scripts/check-docs.sh enforces them mechanically.
 
@@ -84,10 +84,12 @@ The nine rules, summarized without replacing the template, are:
    correspondence.
 5. A block implements one function, type, feature or inseparable small helper group and
    follows source order.
-6. Containers document members as sub-blocks and do not duplicate their code; structural
-   container scaffolding is exempt exactly as the template defines.
+6. Containers document members as sub-blocks and do not duplicate their code; only a
+   container's declaration, attributes and braces are scaffolding, so anything else in its
+   preamble — imports included — needs its own marker and leaf section.
 7. Fidelity is mechanical: `scripts/sync-companion-code --check` maps every leaf fence to
-   source exactly (LF/CRLF normalization only) and runs inside the repository-wide docs check.
+   source exactly (LF/CRLF normalization only), rejects unmarked code in a container
+   preamble, and runs inside the repository-wide docs check.
 8. Dependencies name the exact symbols used and the behavioral contract each use expects.
 9. Rust source contains no comments except `// md:` markers; explanation belongs in the
    companion.

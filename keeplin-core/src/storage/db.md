@@ -4418,6 +4418,14 @@ verbatim.
 **What it does** — Brings the parent module API and test-only dependencies into
 scope.
 
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+
+**Used by** — every block of `mod migration_tests` in this file: `fn raw_conn`, `fn user_version`, `fn note_history_reads_this_devices_versions_newest_first`, `fn fresh_database_is_stamped_current_and_reopen_is_a_noop`, `fn tag_system_flag_round_trips`, `fn resource_media_metadata_round_trips`, `fn migrates_a_pre_framework_database_without_losing_data`, `fn refuses_to_open_a_newer_schema`. Nothing outside the module can use it: the preamble is private to `mod migration_tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn raw_conn
 
 **Identification** — helper; marker `// md:mod migration_tests > fn raw_conn`.

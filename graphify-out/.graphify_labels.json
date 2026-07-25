@@ -151,6 +151,8 @@
   "149": ".list_backlinks",
   "150": "impl NoteMetaIndex",
   "151": "impl NoteMetaEntry",
+  "152": "impl NoteMetaEntry",
   "153": "context-pack script",
-  "154": "sync-companion-code script"
+  "154": "sync-companion-code script",
+  "155": "impl FsBackend (global history)"
 }

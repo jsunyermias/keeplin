@@ -1658,6 +1658,15 @@ verbatim.
 **What it does** — Brings the parent module API and test-only dependencies into
 scope.
 
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+- `crate::models::Note` — the domain type the assertions construct; expects: its public fields and constructor stay usable standalone, without a live store.
+
+**Used by** — every block of `mod tests` in this file: `fn contact_round_trips_through_vcard`, `fn vcard_escaping_survives`, `fn user_vcard_carries_name_and_email`, `fn event_round_trips_through_ics`, `fn todo_round_trips_and_marks_completion`, `fn todo_maps_to_and_from_a_note`, `fn unfolds_wrapped_lines`, `fn missing_component_yields_none`, `fn multi_component_calendar_parses_every_event_and_todo`, `fn fs`, `fn contact_save_list_get_delete_over_storage`, `fn event_round_trips_through_storage`, `fn import_todo_creates_a_todo_note`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn contact_round_trips_through_vcard
 
 **Identification** — unit test; marker

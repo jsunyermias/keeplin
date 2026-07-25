@@ -249,6 +249,17 @@ def _container_preamble_error(
         else:
             position = body_open + 1
     else:
+        # RULE 6 admits only impl/mod/trait as containers; a type definition is a leaf
+        # (RULE 5). Saying so beats reporting the type's own declaration as UNCOVERED.
+        type_item = re.match(
+            r"(?:(?:pub(?:\s*\([^)]*\))?)\s+)?(?:enum|struct|union)\b", masked[position:]
+        )
+        if type_item:
+            line_number = marker_index + 2 + masked[:position].count("\n")
+            return (
+                f"CONTAINER '// md:{name}' must be an impl, mod or trait (RULE 6); "
+                f"{source}:{line_number} declares a type, which is a leaf block (RULE 5)"
+            )
         # Documentation-only grouping containers can have an empty preamble.
         position = declaration_start
 

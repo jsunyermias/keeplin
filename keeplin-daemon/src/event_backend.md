@@ -558,6 +558,16 @@ verbatim.
 **What it does** — Brings the parent module API and test-only dependencies into
 scope.
 
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+- `keeplin_core::storage::fs::FsBackend` — a real filesystem-backed store built over a temporary directory; expects: it honours the same repository traits as production, so what passes here says something about the real backend.
+- `tokio::sync::broadcast::error::TryRecvError` — distinguishes empty from lagged when draining the channel without blocking; expects: the variants keep their meaning: `Empty` is 'nothing yet', `Lagged` is 'events were dropped' — collapsing them would hide real loss.
+
+**Used by** — every block of `mod tests` in this file: `fn backend`, `fn create_update_delete_emit_changes`, `fn reads_do_not_emit_changes`, `fn failed_mutation_emits_nothing`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn backend
 
 **Identification** — helper; marker `// md:mod tests > fn backend`.

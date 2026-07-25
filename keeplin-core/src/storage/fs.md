@@ -4880,6 +4880,14 @@ verbatim.
 **What it does** — Brings the parent module API and test-only dependencies into
 scope.
 
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+
+**Used by** — every block of `mod tests` in this file: `fn concurrent_same_note_updates_keep_every_log_entry`, `fn read_does_not_rewrite_projection`, `fn list_notes_pages_match_full_walk`, `fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones`, `fn failed_atomic_write_cleans_up_its_temp_file`, `fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it`, `fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair`, `fn detects_syncthing_conflict_copies_without_removing_them`, `fn purge_reclaims_old_tombstoned_payloads_only`, `fn attachments_live_as_content_hashed_knrs_in_their_note_folder`, `fn identical_attachments_in_a_note_share_one_blob`, `fn fresh_store_is_stamped_current_version`, `fn migrates_a_legacy_stamp_and_preserves_data`, `fn refuses_to_open_a_newer_format`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn concurrent_same_note_updates_keep_every_log_entry
 
 **Identification** — multi-thread tokio test; marker
