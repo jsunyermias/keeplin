@@ -51,7 +51,8 @@ Enable the repository's auto-refresh hook once with:
 git config core.hooksPath .githooks
 ```
 
-After `graphify update .`, commit the refreshed `graphify-out/` for code changes.
+After `graphify update .`, commit the refreshed `graphify-out/` for code changes; CI
+(`scripts/check-graph.sh`) fails when the committed graph is stale.
 
 Never report a check as passing unless it ran successfully. Record unavailable checks and
 their reason in the PR.
@@ -65,7 +66,6 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
-- `graphify update .` run and the refreshed `graphify-out/` committed (code changes only). CI (`scripts/check-graph.sh`) fails if the graph is stale; enable the auto-refresh hook once with `git config core.hooksPath .githooks`. Requires `pip install graphifyy==0.9.25`.
 
 ## Companion .md format
 
