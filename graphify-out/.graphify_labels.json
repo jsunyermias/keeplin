@@ -100,6 +100,8 @@
   "98": "CLAUDE.md",
   "99": "check-docs.sh",
   "100": "Metrics",
+  "101": "Keeplin agent guide",
+  "102": ".set_notebook_alias",
   "103": "`scripts/check-graph.sh` — knowledge-graph freshness check",
   "104": "`.githooks/pre-commit` — auto-refresh the knowledge graph on commit",
   "105": "mod tests",
@@ -130,5 +132,9 @@
   "130": "impl Contact",
   "131": "impl HistoryRepository for DbBackend",
   "132": "impl HistoryRepository for FsBackend",
-  "133": "impl KeeplinServer"
+  "133": "impl KeeplinServer",
+  "135": "SyncError",
+  "136": "Contributing to Keeplin",
+  "137": "0.B — Implementación de un issue",
+  "138": "sync_until"
 }
