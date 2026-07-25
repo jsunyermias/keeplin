@@ -1,7 +1,7 @@
 # Graph Report - keeplin  (2026-07-25)
 
 ## Corpus Check
-- 117 files · ~268,948 words
+- 117 files · ~269,097 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -10,7 +10,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `5bbf5b95`
+- Built from commit: `4c9ed5bb`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -236,7 +236,7 @@ Nodes (32): Database, apply_change(), denormalize(), empty_query_lists_by_recenc
 
 ### Community 12 - "KeeplinServer<B>"
 Cohesion: 0.07
-Nodes (27): DeleteNoteRequest, DeleteNoteResponse, DeleteTagRequest, DeleteTagResponse, KeeplinServer<B>, Request, KeeplinService, ListAliasConflictsRequest (+19 more)
+Nodes (27): DeleteResourceRequest, DeleteResourceResponse, GetNotebookRequest, GetNotebookResponse, KeeplinServer<B>, Request, KeeplinService, ListAliasConflictsRequest (+19 more)
 
 ### Community 13 - "in_memory_backend"
 Cohesion: 0.10
@@ -296,7 +296,7 @@ Nodes (24): Coverage checklist, fn bookmark_to_proto, fn ensure_not_deleted, fn 
 
 ### Community 27 - "Response"
 Cohesion: 0.15
-Nodes (12): CoreResource, CreateResourceRequest, CreateResourceResponse, GetResourceRequest, GetResourceResponse, resource_to_proto(), Response, ListNoteTagsRequest (+4 more)
+Nodes (12): CoreResource, CreateResourceRequest, CreateResourceResponse, DeleteTagRequest, DeleteTagResponse, GetResourceRequest, GetResourceResponse, resource_to_proto() (+4 more)
 
 ### Community 28 - "`models.rs` — domain data types"
 Cohesion: 0.07
@@ -308,7 +308,7 @@ Nodes (12): CreateNoteRequest, CreateNoteResponse, ensure_not_deleted(), parse_o
 
 ### Community 30 - "Status"
 Cohesion: 0.13
-Nodes (12): DeleteNotebookRequest, DeleteNotebookResponse, DeleteResourceRequest, DeleteResourceResponse, Status, stage_to_proto(), storage_err(), ListResourcesRequest (+4 more)
+Nodes (12): DeleteNoteRequest, DeleteNoteResponse, Status, stage_to_proto(), storage_err(), ListNotesInNotebookRequest, ListNotesInNotebookResponse, ListResourcesRequest (+4 more)
 
 ### Community 31 - "Note"
 Cohesion: 0.05

@@ -7,7 +7,7 @@
 - Issue: [keeplin#149](https://github.com/jsunyermias/keeplin/issues/149)
 - Acceptance PR: [keeplin#164](https://github.com/jsunyermias/keeplin/pull/164)
 - Supersedes: none
-- Superseded by: pending the accepted design for [keeplin#150](https://github.com/jsunyermias/keeplin/issues/150)
+- Superseded by: none
 
 ## Context and problem
 

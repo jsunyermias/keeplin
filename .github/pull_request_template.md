@@ -8,8 +8,6 @@
 - Companion PR:
 - Accepted ADR or `not required` with reason:
 
-<!-- Resolves #…; companion PR; accepted ADR if required. -->
-
 ## Author assertions
 
 These are claims made by the implementer and must remain distinct from CI evidence.

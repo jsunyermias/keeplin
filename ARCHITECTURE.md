@@ -258,5 +258,5 @@ remote host unless `insecure = true`. See `keeplin-daemon/src/main.md` and `conf
 - Bookmarks/links: `keeplin-core/src/links.md`, `keeplin-core/src/linking.md`.
 - Surfaces: `keeplin-daemon/src/{server,rest,event_backend,auth}.md` and
   `keeplin-daemon/proto/keeplin.proto.md`.
-- Accepted architecture decisions and their history: [`docs/adr/`](docs/adr/README.md).
+- Architecture decisions, their status and history: [`docs/adr/`](docs/adr/README.md).
 - User-facing overview and API tables: `README.md`.

@@ -71,8 +71,8 @@ operation that physically cascades server-owned data.
 Shared model or wire changes are implemented in `keeplin-core` first, pinned by immutable revision
 in `keeplin-srv`, and covered by cross-repository compatibility tests. Breaking wire changes bump
 the shared protocol version in lockstep. Storage-specific shape changes follow the migration rules
-in ADR 0003. Rolling back one repository independently is unsafe when its pinned core contract no
-longer matches.
+in keeplin ADR 0003. Rolling back one repository independently is unsafe when its pinned core
+contract no longer matches.
 
 ## Verification plan
 

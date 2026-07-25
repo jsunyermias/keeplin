@@ -47,7 +47,11 @@ outside this ADR.
 The filesystem backend stores a format stamp in `.keeplin/format_version`, treats a missing legacy
 stamp as version 1, applies every migration in order, writes the stamp after each completed step,
 and refuses a store newer than the running build. The current recorded implementation is filesystem
-format version 8.
+format version 8. Verified state: every step from 2 to 8 is currently a no-op —
+`apply_format_migration` performs no data transformation, so the stamp acts as a compatibility gate
+rather than a data migration. This is unlike the local database ladder, whose versions 1 to 5 apply
+real DDL, and the PostgreSQL migrations. A future filesystem change that alters the on-disk layout
+must add a real migration step, not only bump the version.
 
 The local database uses SQLite `PRAGMA user_version`, runs each migration in order, and refuses a
 schema newer than the running build. The current recorded implementation is schema version 5.
@@ -59,7 +63,7 @@ that preserves existing rows. Every SQL migration has a companion Markdown docum
 recorded migration tip is `0016_resource_note_id.sql`.
 
 Physical formats may differ, but shared serialized/wire fields and constants remain owned by
-`keeplin-core` and follow ADR 0002.
+`keeplin-core` and follow keeplin ADR 0002.
 
 ## Consequences and risks
 
@@ -82,7 +86,9 @@ silently abandon user data.
 
 For local stores: test fresh stamping, every supported legacy-to-current path, data preservation,
 restart after an interrupted step where the mechanism permits, and refusal of future versions. For
-PostgreSQL: test migration from the previous schema with populated rows, repeated safe application
+the filesystem backend these paths are currently trivial because no step transforms data; the first
+non-trivial step must add data-preserving coverage before it lands. For PostgreSQL: test migration
+from the previous schema with populated rows, repeated safe application
 where intended, full `sqlx::FromRow` projections, and backup/restore drills from `RUNBOOK.md`. Run
 cross-repository compatibility tests whenever serialized shared fields change.
 

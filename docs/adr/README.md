@@ -40,7 +40,10 @@ a new number and marks the old ADR `superseded`. The only edits allowed to an ac
 status/cross-link metadata that point to its replacement and corrections that do not alter the
 decision; substantive corrections require a new ADR.
 
-Retrospective ADRs record verified behavior already present on `main`. `accepted
+Retrospective ADRs record verified behavior already present on `main`. `(retrospective)` is a
+qualifier that may accompany any status, so `proposed (retrospective)` and `accepted
+(retrospective)` are both valid: the status tracks maintainer approval, while the qualifier records
+that the ADR documents implemented behavior rather than proposing new behavior. `accepted
 (retrospective)` means "this is the implemented state", not "this state is ideal". Known defects
 remain defects and are linked explicitly; fixing one requires the normal issue/ADR process when
 the fix crosses a decision boundary.
@@ -50,6 +53,8 @@ the fix crosses a decision boundary.
 - Copy [`0000-template.md`](0000-template.md) to the next unused four-digit number.
 - Use `NNNN-short-kebab-title.md`. Numbers are permanent and never reused, including after a
   rejection.
+- Numbering is per repository, so a bare number is ambiguous across the two registries. Always
+  qualify a cross-file reference with its repository: `keeplin ADR 0002`, `keeplin-srv ADR 0001`.
 - Every ADR links its originating issue and the PR that accepts it. Issues and PR descriptions
   link back to the ADR.
 - A superseding ADR links the superseded ADR; the old ADR receives only the reciprocal metadata
