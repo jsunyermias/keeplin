@@ -23,6 +23,19 @@ here; grep it in either direction. Each block section covers, in this fixed orde
 ```rust
 // md:Overview
 pub mod collab;
+pub mod compat;
+pub mod encryption;
+pub mod error;
+pub mod format;
+pub mod history;
+pub mod interop;
+pub mod linking;
+pub mod links;
+pub mod migrate;
+pub mod models;
+pub mod ordering;
+pub mod storage;
+pub mod sync;
 ```
 
 **What it does** — The crate root of `keeplin-core`, the library every other Keeplin

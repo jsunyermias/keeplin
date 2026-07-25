@@ -23,6 +23,28 @@ Marker `// md:Overview`.
 ```rust
 // md:Overview
 pub mod protocol;
+pub mod state;
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::{mpsc, Mutex};
+use tokio_tungstenite::tungstenite::Message;
+use uuid::Uuid;
+
+use crate::error::StorageError;
+use crate::format;
+use crate::models::{Change, Note, NoteTag, Notebook, Resource, Tag};
+use crate::storage::{
+    NoteRepository, NotebookRepository, ResourceRepository, StorageBackend, SyncBackend,
+    TagRepository,
+};
+use protocol::{CollabClientMsg, CollabServerMsg};
+use state::NoteLines;
 ```
 
 **What it does** — The client side of keeplin-srv's collaborative channel.

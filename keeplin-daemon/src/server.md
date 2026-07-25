@@ -37,6 +37,34 @@ use keeplin_core::{
     storage::StorageBackend,
     sync::{run_sync, SyncStage},
 };
+use tokio_stream::{wrappers::UnboundedReceiverStream, Stream};
+use tonic::{Request, Response, Status};
+use uuid::Uuid;
+
+use crate::proto::keeplin::upload_resource_request::Payload as UploadPayload;
+use crate::proto::keeplin::{
+    keeplin_service_server::KeeplinService, sync_progress::Stage, AddNoteLinkRequest,
+    AddNoteLinkResponse, AddNoteTagRequest, AddNoteTagResponse, Bookmark as ProtoBookmark,
+    CreateNoteRequest, CreateNoteResponse, CreateNotebookRequest, CreateNotebookResponse,
+    CreateResourceRequest, CreateResourceResponse, CreateTagRequest, CreateTagResponse,
+    DeleteNoteRequest, DeleteNoteResponse, DeleteNotebookRequest, DeleteNotebookResponse,
+    DeleteResourceRequest, DeleteResourceResponse, DeleteTagRequest, DeleteTagResponse,
+    GetNoteRequest, GetNoteResponse, GetNotebookRequest, GetNotebookResponse, GetResourceRequest,
+    GetResourceResponse, GetTagRequest, GetTagResponse, ListAliasConflictsRequest,
+    ListAliasConflictsResponse, ListBacklinksRequest, ListBacklinksResponse, ListNoteTagsRequest,
+    ListNoteTagsResponse, ListNotebooksRequest, ListNotebooksResponse, ListNotesInNotebookRequest,
+    ListNotesInNotebookResponse, ListNotesRequest, ListNotesResponse, ListResourcesRequest,
+    ListResourcesResponse, ListStarredNotesRequest, ListStarredNotesResponse, ListTagsRequest,
+    ListTagsResponse, Note, NoteAliasConflict, NoteLink as ProtoNoteLink, Notebook,
+    NotebookAliasConflict, PinNoteRequest, PinNoteResponse, RemoveNoteLinkRequest,
+    RemoveNoteLinkResponse, RemoveNoteTagRequest, RemoveNoteTagResponse, ReorderNotesRequest,
+    ReorderNotesResponse, ResolveReferenceRequest, ResolveReferenceResponse, Resource,
+    SetNoteAliasRequest, SetNoteAliasResponse, SetNotebookAliasRequest, SetNotebookAliasResponse,
+    StarNoteRequest, StarNoteResponse, SyncProgress, SyncRequest, Tag, UnpinNoteRequest,
+    UnpinNoteResponse, UnstarNoteRequest, UnstarNoteResponse, UpdateNoteRequest,
+    UpdateNoteResponse, UpdateNotebookRequest, UpdateNotebookResponse, UpdateTagRequest,
+    UpdateTagResponse, UploadResourceRequest, UploadResourceResponse,
+};
 ```
 
 **What it does** — Defines `KeeplinServer<B>`, the implementation of the
