@@ -1,11 +1,11 @@
 # 0003 — Version persistent formats and migrate them forward explicitly
 
-- Status: proposed (retrospective)
+- Status: accepted (retrospective)
 - Date: 2026-07-25
 - Decision owners: maintainer
 - Scope: cross-repo
 - Issue: [keeplin#149](https://github.com/jsunyermias/keeplin/issues/149)
-- Acceptance PR: [keeplin#164](https://github.com/jsunyermias/keeplin/pull/164)
+- Acceptance PR: [keeplin#165](https://github.com/jsunyermias/keeplin/pull/165) (accepted); introduced by [keeplin#164](https://github.com/jsunyermias/keeplin/pull/164)
 - Supersedes: none
 - Superseded by: none
 
