@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use crate::{
     error::StorageError,
+    format,
     models::{Note, Notebook},
     storage::{NotebookSortProfile, StorageBackend},
 };
@@ -54,6 +55,7 @@ pub async fn place_new_note(
         return Ok(());
     }
     let profile = backend.notebook_sort_profile(note.notebook_id).await?;
+    format::check_notebook_capacity(profile.live_notes)?;
     note.sort_key = if is_inbox(note.notebook_id) {
         match profile.min_key {
             Some(min) if min <= 1 => resequence_inbox(backend).await? - 1,
@@ -456,6 +458,40 @@ mod tests {
 
         let (page, _) = be.list_notes_in_notebook(nb.id, 0, None).await.unwrap();
         assert_eq!(titles(&page), ["a-edited", "b"]);
+    }
+
+    // md:mod tests > fn the_sort_profile_counts_the_live_notes_the_notebook_cap_reads
+    #[tokio::test]
+    async fn the_sort_profile_counts_the_live_notes_the_notebook_cap_reads() {
+        let be = backend().await;
+        ensure_inbox(&be).await.unwrap();
+        let nb = be.create_notebook(Notebook::new("nb")).await.unwrap();
+        assert_eq!(be.notebook_sort_profile(nb.id).await.unwrap().live_notes, 0);
+
+        create_placed(&be, "a", nb.id).await;
+        let b = create_placed(&be, "b", nb.id).await;
+        assert_eq!(be.notebook_sort_profile(nb.id).await.unwrap().live_notes, 2);
+
+        move_note(&be, b.id, INBOX_ID).await;
+        assert_eq!(be.notebook_sort_profile(nb.id).await.unwrap().live_notes, 1);
+        assert_eq!(
+            be.notebook_sort_profile(INBOX_ID).await.unwrap().live_notes,
+            1
+        );
+
+        be.delete_note(b.id).await.unwrap();
+        assert_eq!(
+            be.notebook_sort_profile(INBOX_ID).await.unwrap().live_notes,
+            0
+        );
+
+        assert!(format::check_notebook_capacity(format::MAX_NOTES_PER_NOTEBOOK - 1).is_ok());
+        let full = format::check_notebook_capacity(format::MAX_NOTES_PER_NOTEBOOK).unwrap_err();
+        assert_eq!(full.code(), format::CODE_NOTEBOOK_FULL);
+        assert!(matches!(
+            StorageError::from(full),
+            StorageError::TooLarge(_)
+        ));
     }
 
     // md:mod tests > fn lowest_free_pinned_key_fills_gaps_and_detects_full

@@ -3,6 +3,7 @@ pub mod collab;
 pub mod compat;
 pub mod encryption;
 pub mod error;
+pub mod format;
 pub mod history;
 pub mod interop;
 pub mod linking;

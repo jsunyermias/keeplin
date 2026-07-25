@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 use crate::{
     error::StorageError,
+    format,
     models::{Note, Notebook},
     storage::{NotebookSortProfile, StorageBackend},
 };
@@ -58,7 +59,10 @@ devices pinning concurrently can pick the same key — ordering stays determinis
 (`id` breaks ties) and the next reorder can separate them. Old peers ignore the
 new fields (serde/protobuf defaults) and their notes keep `sort_key = 0`.
 
-**Dependencies** — `uuid`, `crate::{error, models, storage}`.
+**Dependencies** — `uuid`, `crate::{error, format, models, storage}`; `format`
+supplies the notes-per-notebook cap (`check_notebook_capacity`,
+`MAX_NOTES_PER_NOTEBOOK`) this module enforces at placement time — it expects the
+predicate to stay pure and to take the count *before* the new note.
 
 **Used by** — the daemon's create/update/pin/reorder/star surfaces (REST + gRPC
 call the same free functions for identical behaviour), `linking.rs` (`is_inbox`
@@ -292,6 +296,7 @@ pub async fn place_new_note(
         return Ok(());
     }
     let profile = backend.notebook_sort_profile(note.notebook_id).await?;
+    format::check_notebook_capacity(profile.live_notes)?;
     note.sort_key = if is_inbox(note.notebook_id) {
         match profile.min_key {
             Some(min) if min <= 1 => resequence_inbox(backend).await? - 1,
@@ -307,15 +312,27 @@ pub async fn place_new_note(
 
 **What it does** — Assigns a brand-new note its initial position, honouring a
 caller-chosen `sort_key` when one was set (`!= 0` → early return). Reads the
-notebook's `NotebookSortProfile`; in the **Inbox** the note goes to the top:
+notebook's `NotebookSortProfile` and first enforces the **notes-per-notebook
+cap** (issue keeplin#130): `format::check_notebook_capacity(profile.live_notes)`
+refuses the note with `StorageError::TooLarge` once the destination already holds
+`format::MAX_NOTES_PER_NOTEBOOK` (2²⁴) live notes. Because
+`reconcile_notebook_move` resets `sort_key` to `0` and delegates here, that single
+call covers both **creating** a note in a notebook and **moving** one into it, and
+the Inbox is capped like any other notebook. A caller that pre-assigns a non-zero
+`sort_key` skips placement entirely and therefore also skips the cap — that
+early return is pre-existing behaviour, and no daemon surface uses it.
+Then, in the **Inbox** the note goes to the top:
 `min(existing) - 1`, but when the minimum would fall to the `0` sentinel
 (`min <= 1`) the Inbox is resequenced first and the note lands above the new
 minimum; an empty Inbox starts at `NORMAL_START`. In a **normal notebook** it
 enters the normal band after its current last note (`next_normal_key`). Call
 **before** `create_note` — the daemon does on every create surface.
 
-**Dependencies** — `notebook_sort_profile`, `is_inbox`, `resequence_inbox`,
-`next_normal_key`.
+**Dependencies** — `notebook_sort_profile` (expects `NotebookSortProfile::live_notes`
+to count only non-deleted notes of that notebook — both backends build the profile
+from live rows, and an over-count here would refuse notes early),
+`format::check_notebook_capacity` (expects `>=` semantics: it is handed the count
+*before* the new note), `is_inbox`, `resequence_inbox`, `next_normal_key`.
 
 **Used by** — the daemon's create paths; `reconcile_notebook_move`; the tests'
 `create_placed` helper.
@@ -744,12 +761,13 @@ for resolution); user-facing ops re-check.
 ## mod tests
 
 **Identification** — `#[cfg(test)]` test module; marker `// md:mod tests`. Four
-helpers + ten tests against a real `FsBackend` in a tempdir.
+helpers + eleven tests against a real `FsBackend` in a tempdir.
 
-**Code** — container: members documented as sub-blocks below: fn backend, fn create_placed, fn move_note, fn titles, fn ensure_inbox_is_idempotent_and_fixed, fn placement_inbox_top_notebook_bottom, fn pin_unpin_round_trip_and_inbox_rejection, fn reorder_respects_bands, fn starring_is_global_and_never_moves_the_note, fn inbox_top_insert_survives_underflow_by_resequencing, fn moving_a_note_replaces_it_in_the_destination_band, fn moving_a_pinned_note_into_the_inbox_unpins_it, fn a_same_notebook_edit_keeps_the_position, fn lowest_free_pinned_key_fills_gaps_and_detects_full.
+**Code** — container: members documented as sub-blocks below: fn backend, fn create_placed, fn move_note, fn titles, fn ensure_inbox_is_idempotent_and_fixed, fn placement_inbox_top_notebook_bottom, fn pin_unpin_round_trip_and_inbox_rejection, fn reorder_respects_bands, fn starring_is_global_and_never_moves_the_note, fn inbox_top_insert_survives_underflow_by_resequencing, fn moving_a_note_replaces_it_in_the_destination_band, fn moving_a_pinned_note_into_the_inbox_unpins_it, fn a_same_notebook_edit_keeps_the_position, fn the_sort_profile_counts_the_live_notes_the_notebook_cap_reads, fn lowest_free_pinned_key_fills_gaps_and_detects_full.
 
 **What it does** — End-to-end coverage of placement, pinning, reordering,
-starring, moves, resequencing, and the pure gap-scan.
+starring, moves, resequencing, the live-note counting the notes-per-notebook cap
+reads, and the pure gap-scan.
 
 **Dependencies** — `super::*`, `storage::fs::FsBackend`,
 `storage::{NoteRepository, NotebookRepository}`, `tempfile`, `tokio`.
@@ -1143,6 +1161,69 @@ unpinned.
 **What it does** — A title-only edit through the reconcile path keeps
 `sort_key` — no re-placement on a plain edit.
 
+### fn the_sort_profile_counts_the_live_notes_the_notebook_cap_reads
+
+**Identification** — `#[tokio::test]` integration-style unit test; marker
+`// md:mod tests > fn the_sort_profile_counts_the_live_notes_the_notebook_cap_reads`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn the_sort_profile_counts_the_live_notes_the_notebook_cap_reads
+    #[tokio::test]
+    async fn the_sort_profile_counts_the_live_notes_the_notebook_cap_reads() {
+        let be = backend().await;
+        ensure_inbox(&be).await.unwrap();
+        let nb = be.create_notebook(Notebook::new("nb")).await.unwrap();
+        assert_eq!(be.notebook_sort_profile(nb.id).await.unwrap().live_notes, 0);
+
+        create_placed(&be, "a", nb.id).await;
+        let b = create_placed(&be, "b", nb.id).await;
+        assert_eq!(be.notebook_sort_profile(nb.id).await.unwrap().live_notes, 2);
+
+        move_note(&be, b.id, INBOX_ID).await;
+        assert_eq!(be.notebook_sort_profile(nb.id).await.unwrap().live_notes, 1);
+        assert_eq!(
+            be.notebook_sort_profile(INBOX_ID).await.unwrap().live_notes,
+            1
+        );
+
+        be.delete_note(b.id).await.unwrap();
+        assert_eq!(
+            be.notebook_sort_profile(INBOX_ID).await.unwrap().live_notes,
+            0
+        );
+
+        assert!(format::check_notebook_capacity(format::MAX_NOTES_PER_NOTEBOOK - 1).is_ok());
+        let full = format::check_notebook_capacity(format::MAX_NOTES_PER_NOTEBOOK).unwrap_err();
+        assert_eq!(full.code(), format::CODE_NOTEBOOK_FULL);
+        assert!(matches!(
+            StorageError::from(full),
+            StorageError::TooLarge(_)
+        ));
+    }
+```
+
+**What it does** — Proves the input to the notes-per-notebook cap is the right
+number, which is the half of the gate a boundary test cannot reach: creating 2²⁴
+notes to hit the real limit is not a test anyone can run, so the limit's edge is
+pinned in `format.rs` and the **counting** is pinned here. It asserts
+`live_notes` is `0` for an empty notebook, tracks creates, follows a **move**
+(the destination gains, the source loses — the path `reconcile_notebook_move`
+takes), and drops back to `0` after a soft delete, proving tombstones are
+excluded. The tail re-asserts that the value the profile feeds
+`check_notebook_capacity` produces `CODE_NOTEBOOK_FULL` and converts to
+`StorageError::TooLarge`, the error the daemon turns into HTTP 413.
+
+**Dependencies** — `NotebookSortProfile::live_notes`, `create_placed`,
+`move_note`, `delete_note`, `format::check_notebook_capacity`,
+`LimitViolation::code`, `StorageError::TooLarge`.
+
+**Used by** — CI only.
+
+**Repeated context** — a soft-deleted note is not live: both backends build the
+sort profile from rows with no `deleted_at`, and the cap counts live notes only.
+
 ### fn lowest_free_pinned_key_fills_gaps_and_detects_full
 
 **Identification** — unit test; marker
@@ -1244,4 +1325,5 @@ refresh with `graphify update .` after refactors.
 | 33 | `fn moving_a_note_replaces_it_in_the_destination_band` | `// md:mod tests > fn moving_a_note_replaces_it_in_the_destination_band` |
 | 34 | `fn moving_a_pinned_note_into_the_inbox_unpins_it` | `// md:mod tests > fn moving_a_pinned_note_into_the_inbox_unpins_it` |
 | 35 | `fn a_same_notebook_edit_keeps_the_position` | `// md:mod tests > fn a_same_notebook_edit_keeps_the_position` |
-| 36 | `fn lowest_free_pinned_key_fills_gaps_and_detects_full` | `// md:mod tests > fn lowest_free_pinned_key_fills_gaps_and_detects_full` |
+| 36 | `fn the_sort_profile_counts_the_live_notes_the_notebook_cap_reads` | `// md:mod tests > fn the_sort_profile_counts_the_live_notes_the_notebook_cap_reads` |
+| 37 | `fn lowest_free_pinned_key_fills_gaps_and_detects_full` | `// md:mod tests > fn lowest_free_pinned_key_fills_gaps_and_detects_full` |

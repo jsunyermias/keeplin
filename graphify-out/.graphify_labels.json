@@ -130,8 +130,5 @@
   "130": "impl Contact",
   "131": "impl HistoryRepository for DbBackend",
   "132": "impl HistoryRepository for FsBackend",
-  "133": "impl KeeplinServer",
-  "134": "impl NoteMetaIndex",
-  "135": "impl NoteMetaEntry",
-  "136": "impl FsBackend (global history)"
+  "133": "impl KeeplinServer"
 }

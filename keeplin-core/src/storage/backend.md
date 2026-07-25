@@ -188,6 +188,7 @@ pub struct NotebookSortProfile {
     pub pinned_keys: Vec<u32>,
     pub min_key: Option<u32>,
     pub max_normal_key: Option<u32>,
+    pub live_notes: usize,
 }
 ```
 
@@ -196,13 +197,20 @@ computed natively by each backend (an indexed scan of sort keys — never the no
 bodies): `pinned_keys` (keys currently used in the pinned band `1..=999`,
 ascending), `min_key` (smallest effective key, `None` when the notebook has no
 live notes), `max_normal_key` (largest key in the normal band `>= 1000`, `None`
-when that band is empty). All keys are *effective* keys — the legacy `0` sentinel
-already mapped to `Note::DEFAULT_SORT_KEY`.
+when that band is empty), `live_notes` (how many live notes the notebook holds).
+All keys are *effective* keys — the legacy `0` sentinel already mapped to
+`Note::DEFAULT_SORT_KEY`.
+
+`live_notes` exists so the notes-per-notebook cap (`format::MAX_NOTES_PER_NOTEBOOK`,
+issue keeplin#130) can be enforced from the profile the placement path already
+fetches, without a second query: `ordering::place_new_note` refuses a note once the
+destination is full. It counts **live** notes only — both backends build the profile
+from non-deleted rows — so tombstones never consume capacity.
 
 **Dependencies** — none.
 
 **Used by** — `NoteRepository::notebook_sort_profile`; `crate::ordering`'s
-placement rules (new-note position, pin, unpin).
+placement rules (new-note position, pin, unpin) and its notes-per-notebook cap.
 
 **Repeated context** — the sort-key model: `1..=999` is the pinned band,
 `>= 1000` the normal band; placement logic works from this profile so it stays
@@ -230,6 +238,7 @@ method.
     pub fn from_effective_keys(keys: impl IntoIterator<Item = u32>) -> Self {
         let mut profile = Self::default();
         for key in keys {
+            profile.live_notes += 1;
             profile.min_key = Some(profile.min_key.map_or(key, |min| min.min(key)));
             if (1..1000).contains(&key) {
                 profile.pinned_keys.push(key);
@@ -244,14 +253,18 @@ method.
 ```
 
 **What it does** — Builds a profile from an iterator of the notebook's live
-effective sort keys: tracks the global minimum, routes `1..1000` keys into
-`pinned_keys` and everything else into the `max_normal_key` maximum, then sorts
-`pinned_keys` ascending. Pure, total.
+effective sort keys: counts them into `live_notes`, tracks the global minimum,
+routes `1..1000` keys into `pinned_keys` and everything else into the
+`max_normal_key` maximum, then sorts `pinned_keys` ascending. Pure, total.
+Because `live_notes` is incremented once per key, the caller's iterator defines
+what "live" means — both backends already filter soft-deleted notes out, which is
+the contract the notes-per-notebook cap depends on.
 
 **Dependencies** — none.
 
 **Used by** — the backends' `notebook_sort_profile` implementations (`fs.rs`,
-`db.rs`).
+`db.rs`); every field including `live_notes` is populated here, so a backend that
+built a profile by hand would silently report a capacity of zero.
 
 **Repeated context** — none.
 

@@ -79,6 +79,7 @@ pub struct NotebookSortProfile {
     pub pinned_keys: Vec<u32>,
     pub min_key: Option<u32>,
     pub max_normal_key: Option<u32>,
+    pub live_notes: usize,
 }
 
 // md:impl NotebookSortProfile
@@ -87,6 +88,7 @@ impl NotebookSortProfile {
     pub fn from_effective_keys(keys: impl IntoIterator<Item = u32>) -> Self {
         let mut profile = Self::default();
         for key in keys {
+            profile.live_notes += 1;
             profile.min_key = Some(profile.min_key.map_or(key, |min| min.min(key)));
             if (1..1000).contains(&key) {
                 profile.pinned_keys.push(key);

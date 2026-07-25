@@ -26,6 +26,7 @@ pub mod collab;
 pub mod compat;
 pub mod encryption;
 pub mod error;
+pub mod format;
 pub mod history;
 pub mod interop;
 pub mod linking;
@@ -48,6 +49,7 @@ map:
 | `compat` | the keeplin-srv `GET /version` handshake: `PROTOCOL_VERSION`, the `compatible_with` rule, `negotiate` — the one place this repo defines server-protocol compatibility |
 | `encryption` | `EncryptedBackend<B>`: transparent AES-256-GCM at-rest encryption decorator for any `storage::StorageBackend` |
 | `error` | all error types used across the crate (`StorageError`, `SyncError`) |
+| `format` | the hard format limits (bytes per line, lines per note, notes per notebook) and their wire codes — the single source of truth both this client and keeplin-srv enforce |
 | `history` | change-history reads + forward-revert on top of the entity logs |
 | `interop` | vCard & iCalendar format compatibility (contacts/events as resources) |
 | `linking` | `LinkingBackend<B>`: derives bookmarks/links from note bodies, resolves `#…` references, enforces alias uniqueness |
@@ -58,7 +60,9 @@ map:
 | `storage` | the `StorageBackend` trait plus `FsBackend` and `DbBackend` implementations and the `note_log` version-vector resolution |
 | `sync` | `SyncEngine`: orchestrates a full push-then-pull sync cycle |
 
-Intra-crate dependency shape: `error` and `links` are leaves; `models` uses
+Intra-crate dependency shape: `error` and `links` are leaves; `format` sits just
+above `error` (it converts into `StorageError`) and is depended on by `collab`,
+`ordering` and the daemon; `models` uses
 `error`+`links`; `storage::backend` uses `error`+`models`; the decorators
 (`encryption`, `linking`, `collab`, daemon-side `EventBackend`/metrics) wrap any
 `StorageBackend`; `sync::engine` drives one.

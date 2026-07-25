@@ -27,7 +27,7 @@ use std::{pin::Pin, sync::Arc};
 
 use keeplin_core::{
     error::{StorageError, SyncError},
-    linking,
+    format, linking,
     links::{Bookmark as CoreBookmark, LinkSource, NoteLink as CoreNoteLink},
     models::{
         now, Note as CoreNote, NoteTag, Notebook as CoreNotebook, Resource as CoreResource,
@@ -78,7 +78,9 @@ shared with the REST surface.
 
 **Dependencies** — `tonic` (RPC framework), `tokio_stream` (the `Sync` response
 stream), `uuid`, `chrono` (via parsing), and `keeplin_core` (`models`, `ordering`,
-`linking`, `sync::run_sync`, `storage::StorageBackend`).
+`format`, `linking`, `sync::run_sync`, `storage::StorageBackend`). `format`
+supplies the hard limit checks the note RPCs apply before writing; it expects the
+same constants keeplin-srv enforces, so the two surfaces cannot disagree.
 
 **Used by** — `main.rs` (`KeeplinServer::from_shared` wrapped in
 `KeeplinServiceServer`), `rest.rs` (`prune_journal_after_sync`,
@@ -314,6 +316,7 @@ fn storage_err(e: StorageError) -> Status {
         StorageError::CorruptedData(_) => Status::data_loss(e.to_string()),
         StorageError::Conflict(_) => Status::already_exists(e.to_string()),
         StorageError::InvalidInput(_) => Status::invalid_argument(e.to_string()),
+        StorageError::TooLarge(_) => Status::out_of_range(e.to_string()),
         _ => Status::internal(e.to_string()),
     }
 }
@@ -328,6 +331,7 @@ RPC:
 | `CorruptedData` | `DATA_LOSS` | AES-GCM tag failure (wrong key / tampered ciphertext): data exists but cannot be recovered in a trustworthy form |
 | `Conflict` | `ALREADY_EXISTS` | duplicate alias or similar uniqueness violation |
 | `InvalidInput` | `INVALID_ARGUMENT` | domain-rule rejection (pin an Inbox note, out-of-band sort key, …) |
+| `TooLarge` | `OUT_OF_RANGE` | a hard format limit was exceeded — line > 4096 bytes, note > 65 536 lines, notebook already at 2²⁴ notes. `OUT_OF_RANGE` rather than `INVALID_ARGUMENT` because the request is well-formed and only the magnitude is wrong; it is the gRPC counterpart of the REST surface's 413 |
 | everything else | `INTERNAL` | general server failure |
 
 **Used by** — every RPC handler in this file and the `sync` error path.
@@ -671,7 +675,8 @@ Result<UploadResourceRequest, Status>> + Unpin`; marker
 
         let size = data.len() as u64;
         let note_id = parse_uuid(&meta.note_id, "note_id")?;
-        let mut resource = CoreResource::new(note_id, meta.title, meta.mime_type, meta.file_name, size);
+        let mut resource =
+            CoreResource::new(note_id, meta.title, meta.mime_type, meta.file_name, size);
         resource.duration_ms = meta.duration_ms;
         resource.dimensions = match (meta.width, meta.height) {
             (Some(w), Some(h)) => Some((w, h)),
@@ -825,6 +830,9 @@ backend contract).
         if !r.notebook_id.is_empty() {
             note.notebook_id = parse_uuid(&r.notebook_id, "notebook_id")?;
         }
+        format::check_body(&note.body)
+            .map_err(StorageError::from)
+            .map_err(storage_err)?;
         ordering::place_new_note(self.backend.as_ref(), &mut note)
             .await
             .map_err(storage_err)?;
@@ -837,10 +845,14 @@ backend contract).
 
 **What it does** — Builds `CoreNote::new(title, body)`, applies `is_todo` and an
 optional `todo_due` (empty string = absent), parses a non-empty `notebook_id`
-(absent → the Inbox nil UUID from `CoreNote::new`). Then
+(absent → the Inbox nil UUID from `CoreNote::new`). `format::check_body` then
+enforces the hard format limits (≤ 4096 bytes per line, ≤ 65 536 lines) and fails
+the RPC with `OUT_OF_RANGE` instead of storing an over-sized note — the gRPC twin
+of the REST surface's 413, so both entry points reject the same content. Finally
 `ordering::place_new_note` gives the note its initial manual position — top of
-the Inbox, or the end of a normal notebook's unpinned band — before
-`backend.create_note`.
+the Inbox, or the end of a normal notebook's unpinned band — and refuses the note
+when the destination notebook is already at `format::MAX_NOTES_PER_NOTEBOOK` live
+notes, before `backend.create_note`.
 
 ### fn get_note
 
@@ -889,6 +901,9 @@ the update path that answers `NOT_FOUND`.
         if stored.deleted_at.is_some() {
             return Err(Status::not_found(note.id.to_string()));
         }
+        format::check_body(&note.body)
+            .map_err(StorageError::from)
+            .map_err(storage_err)?;
         ordering::reconcile_notebook_move(self.backend.as_ref(), stored.notebook_id, &mut note)
             .await
             .map_err(storage_err)?;
@@ -903,10 +918,13 @@ the update path that answers `NOT_FOUND`.
 **What it does** — Requires the `note` message (`INVALID_ARGUMENT` if absent);
 `proto_to_note`; reads the stored note and rejects the update with `NOT_FOUND`
 when it is tombstoned (an update whose body defaults `deleted_at` to none would
-silently revive it — revival is reserved for sync's `apply_change`). Then
+silently revive it — revival is reserved for sync's `apply_change`).
+`format::check_body` rejects an over-limit body with `OUT_OF_RANGE` before
+anything is written. Then
 `ordering::reconcile_notebook_move(stored.notebook_id, &mut note)`: moving the
 note to a different notebook re-places it (its old position and pinned state
-belonged to the source notebook); a plain edit keeps its position. Stamps
+belonged to the source notebook), subject to the destination's notes-per-notebook
+cap; a plain edit keeps its position. Stamps
 `updated_at = now()` server-side and calls `backend.update_note`.
 
 ### fn delete_note

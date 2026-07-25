@@ -87,6 +87,9 @@ pub enum StorageError {
 
     #[error("Corrupted data: {0}")]
     CorruptedData(String),
+
+    #[error("Too large: {0}")]
+    TooLarge(String),
 }
 ```
 
@@ -107,6 +110,7 @@ always constructed explicitly at the call site. Variant table:
 | `InvalidState(String)` | call site | unexpected internal state (key-derivation errors etc.) — the server's problem: HTTP `500` / gRPC `INTERNAL` |
 | `InvalidInput(String)` | call site | the caller broke a domain rule — pinning an inbox note, a sort key outside the note's band, deleting the inbox. The client's mistake: HTTP `400` / gRPC `INVALID_ARGUMENT` |
 | `CorruptedData(String)` | call site | stored data failed to decrypt: AES-GCM tag verification failed (wrong password or tampered ciphertext), bad base64, short buffer, or non-UTF-8 plaintext |
+| `TooLarge(String)` | `From<format::LimitViolation>` | a hard format limit was exceeded — a line over `format::MAX_LINE_BYTES`, a note over `format::MAX_LINES_PER_NOTE`, or a notebook already at `format::MAX_NOTES_PER_NOTEBOOK`. Distinct from `InvalidInput` on purpose: the input is well-formed, just too big, and the daemon answers HTTP `413` / gRPC `OUT_OF_RANGE` so a client can tell "malformed" from "too big" |
 
 **Dependencies** —
 - `thiserror::Error` (derive) — generates `Display` from each `#[error("…")]` and

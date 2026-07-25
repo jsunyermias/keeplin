@@ -27,6 +27,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::protocol::{LineOp, LineSnapshot, NoteLinesSnapshot};
+use crate::format::{self, LimitViolation};
 use crate::storage::note_log::VersionVector;
 ```
 
@@ -40,7 +41,10 @@ body then applying the resulting ops reproduces exactly that body.
 
 **Dependencies** — `std::collections::HashMap`, `chrono` (op timestamps), `uuid`
 (line ids), `collab/protocol.rs` wire types, `storage::note_log::VersionVector`
-(the same version-vector type the rest of the project resolves with).
+(the same version-vector type the rest of the project resolves with),
+`crate::format` (`check_body` and `LimitViolation`) — expects the format limits to
+be the *same* constants keeplin-srv enforces, so a body this module accepts is
+never rejected by the server for length reasons.
 
 **Used by** — `collab/mod.rs` (calls `diff_body` on local edits,
 `apply`/`from_snapshot` on inbound frames); `keeplin-core/tests/collab_client.rs`.
@@ -311,14 +315,16 @@ concurrent content edits and reorders from falsely conflicting.
 ### fn diff_body
 
 **Identification** —
-`pub fn diff_body(&mut self, body: &str, device: &str) -> Vec<LineOp>`; marker
+`pub fn diff_body(&mut self, body: &str, device: &str) -> Result<Vec<LineOp>, LimitViolation>`;
+marker
 `// md:impl NoteLines > fn diff_body`.
 
 **Code** — complete and verbatim:
 
 ```rust
     // md:impl NoteLines > fn diff_body
-    pub fn diff_body(&mut self, body: &str, device: &str) -> Vec<LineOp> {
+    pub fn diff_body(&mut self, body: &str, device: &str) -> Result<Vec<LineOp>, LimitViolation> {
+        format::check_body(body)?;
         let now = Utc::now();
         let new_lines: Vec<&str> = if body.is_empty() {
             Vec::new()
@@ -406,7 +412,7 @@ concurrent content edits and reorders from falsely conflicting.
         for op in &ops {
             self.apply(op);
         }
-        ops
+        Ok(ops)
     }
 ```
 
@@ -414,6 +420,12 @@ concurrent content edits and reorders from falsely conflicting.
 `body` and returns the ops that turn one into the other, applying them to the
 mirror as they are generated (optimistic local echo). Algorithm:
 
+0. **Validate first** (issue keeplin#130): `format::check_body(body)?` rejects the
+   whole edit before anything is read or mutated, so a body with an over-long line
+   or too many lines produces a `LimitViolation` and leaves the mirror byte-for-byte
+   unchanged — no partial ops, no optimistic echo of an edit the server would
+   refuse. This is the client half of the format contract: the client no longer
+   depends on the server's rejection to discover the limit.
 1. Split `body` on `'\n'` (empty body → zero lines, so a cleared note tombstones
    everything).
 2. Trim the common **prefix** and **suffix** of unchanged lines against `live()`.
@@ -437,10 +449,13 @@ block shows up as deletes+inserts (the explicit `Move` op is for reorder UX, nev
 inferred here). All ops share one `Utc::now()` timestamp and `device` as
 `last_writer`.
 
-**Dependencies** — `live`, `bump`, `apply`, `chrono`, `uuid`.
+**Dependencies** — `format::check_body` (the pre-flight gate; expects it to be
+total and to reject *before* any mutation, which is what makes a failed diff a
+no-op), `live`, `bump`, `apply`, `chrono`, `uuid`.
 
-**Used by** — `collab/mod.rs` on every local body edit;
-`tests/collab_client.rs`.
+**Used by** — `collab/mod.rs` on every local body edit (and on the `Welcome`
+pending-push path, where a violation makes the client adopt the server snapshot
+instead); `tests/collab_client.rs`; the two boundary tests below.
 
 **Repeated context** — the `device` argument is the vv actor — the device id,
 matching the protocol's authorship rule (the server rejects ops whose
@@ -508,6 +523,114 @@ the state it was derived from.
 
 ---
 
+## mod tests
+
+**Identification** — `#[cfg(test)]` unit-test module; marker `// md:mod tests`. Two
+tests.
+
+**Code** — container: members documented as sub-blocks below: fn
+diff_body_accepts_a_line_at_the_byte_limit_and_rejects_one_byte_more, fn
+diff_body_accepts_the_line_count_limit_and_rejects_one_line_more.
+
+**What it does** — The client half of issue keeplin#130's boundary coverage: at the
+limit the edit is accepted and materialises, one unit over it is rejected **and
+leaves the mirror untouched**. The "untouched" assertion is the load-bearing one —
+it is what proves a rejected edit cannot leave the client showing content the
+server never accepted.
+
+**Dependencies** — `super::*` (which re-exports `format` and `NoteLines`).
+
+**Used by** — CI (`cargo test --workspace`).
+
+**Repeated context** — project test convention: pure logic in in-file
+`#[cfg(test)]` tests; anything needing sockets in `keeplin-core/tests/`.
+
+### fn diff_body_accepts_a_line_at_the_byte_limit_and_rejects_one_byte_more
+
+**Identification** — unit test; marker
+`// md:mod tests > fn diff_body_accepts_a_line_at_the_byte_limit_and_rejects_one_byte_more`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn diff_body_accepts_a_line_at_the_byte_limit_and_rejects_one_byte_more
+    #[test]
+    fn diff_body_accepts_a_line_at_the_byte_limit_and_rejects_one_byte_more() {
+        let mut lines = NoteLines::default();
+        let at_limit = "a".repeat(format::MAX_LINE_BYTES);
+        assert_eq!(lines.diff_body(&at_limit, "dev").unwrap().len(), 1);
+        assert_eq!(lines.materialize(), at_limit);
+
+        let over_limit = "a".repeat(format::MAX_LINE_BYTES + 1);
+        let violation = lines.diff_body(&over_limit, "dev").unwrap_err();
+        assert_eq!(violation.code(), format::CODE_LINE_TOO_LONG);
+        assert_eq!(
+            lines.materialize(),
+            at_limit,
+            "a rejected edit leaves the note untouched"
+        );
+    }
+```
+
+**What it does** — A 4096-byte line diffs into exactly one `Insert` and
+materialises; a 4097-byte line returns `CODE_LINE_TOO_LONG` and the mirror still
+materialises the previous, accepted body. Same threshold and same units (UTF-8
+bytes) keeplin-srv applies to `Insert`/`Update`.
+
+**Dependencies** — `NoteLines::diff_body`, `NoteLines::materialize`,
+`format::MAX_LINE_BYTES`, `format::CODE_LINE_TOO_LONG`, `LimitViolation::code`.
+
+**Used by** — CI only.
+
+**Repeated context** — none.
+
+### fn diff_body_accepts_the_line_count_limit_and_rejects_one_line_more
+
+**Identification** — unit test; marker
+`// md:mod tests > fn diff_body_accepts_the_line_count_limit_and_rejects_one_line_more`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > fn diff_body_accepts_the_line_count_limit_and_rejects_one_line_more
+    #[test]
+    fn diff_body_accepts_the_line_count_limit_and_rejects_one_line_more() {
+        let mut lines = NoteLines::default();
+        let at_limit = vec!["x"; format::MAX_LINES_PER_NOTE].join("\n");
+        assert_eq!(
+            lines.diff_body(&at_limit, "dev").unwrap().len(),
+            format::MAX_LINES_PER_NOTE
+        );
+
+        let over_limit = vec!["x"; format::MAX_LINES_PER_NOTE + 1].join("\n");
+        let violation = lines.diff_body(&over_limit, "dev").unwrap_err();
+        assert_eq!(violation.code(), format::CODE_TOO_MANY_LINES);
+        assert_eq!(
+            lines.order.len(),
+            format::MAX_LINES_PER_NOTE,
+            "a rejected edit emits no Insert"
+        );
+    }
+```
+
+**What it does** — A body of exactly 65 536 lines diffs into 65 536 `Insert`s;
+adding one more line returns `CODE_TOO_MANY_LINES` and the order vector is still
+65 536 entries long — the rejected edit added nothing. Asserting on `order.len()`
+rather than the materialised string keeps the check on the structural count the
+limit actually bounds.
+
+**Dependencies** — `NoteLines::diff_body`, `NoteLines::order`,
+`format::MAX_LINES_PER_NOTE`, `format::CODE_TOO_MANY_LINES`,
+`LimitViolation::code`.
+
+**Used by** — CI only.
+
+**Repeated context** — the limit counts **live** lines, which for a freshly built
+`NoteLines` equals `order.len()`; on a note with tombstones the two differ and the
+limit follows the live count.
+
+---
+
 ## Graph context
 
 Repo-tooling metadata, not a code block (no marker in the source). Kept in every
@@ -552,3 +675,6 @@ refresh with `graphify update .` after refactors.
 | 8 | `fn diff_body` | `// md:impl NoteLines > fn diff_body` |
 | 9 | `fn merge_into` | `// md:fn merge_into` |
 | 10 | `fn bump` | `// md:fn bump` |
+| 11 | `mod tests` | `// md:mod tests` |
+| 12 | `fn diff_body_accepts_a_line_at_the_byte_limit_and_rejects_one_byte_more` | `// md:mod tests > fn diff_body_accepts_a_line_at_the_byte_limit_and_rejects_one_byte_more` |
+| 13 | `fn diff_body_accepts_the_line_count_limit_and_rejects_one_line_more` | `// md:mod tests > fn diff_body_accepts_the_line_count_limit_and_rejects_one_line_more` |

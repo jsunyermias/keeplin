@@ -30,6 +30,9 @@ pub enum StorageError {
 
     #[error("Corrupted data: {0}")]
     CorruptedData(String),
+
+    #[error("Too large: {0}")]
+    TooLarge(String),
 }
 
 // md:impl From libsql for StorageError

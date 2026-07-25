@@ -5,6 +5,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use super::protocol::{LineOp, LineSnapshot, NoteLinesSnapshot};
+use crate::format::{self, LimitViolation};
 use crate::storage::note_log::VersionVector;
 
 // md:NoteLines
@@ -133,7 +134,8 @@ impl NoteLines {
     }
 
     // md:impl NoteLines > fn diff_body
-    pub fn diff_body(&mut self, body: &str, device: &str) -> Vec<LineOp> {
+    pub fn diff_body(&mut self, body: &str, device: &str) -> Result<Vec<LineOp>, LimitViolation> {
+        format::check_body(body)?;
         let now = Utc::now();
         let new_lines: Vec<&str> = if body.is_empty() {
             Vec::new()
@@ -221,7 +223,7 @@ impl NoteLines {
         for op in &ops {
             self.apply(op);
         }
-        ops
+        Ok(ops)
     }
 }
 
@@ -238,4 +240,48 @@ fn merge_into(target: &mut VersionVector, other: &VersionVector) {
 // md:fn bump
 fn bump(vv: &mut VersionVector, device: &str) {
     *vv.entry(device.to_string()).or_insert(0) += 1;
+}
+
+// md:mod tests
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // md:mod tests > fn diff_body_accepts_a_line_at_the_byte_limit_and_rejects_one_byte_more
+    #[test]
+    fn diff_body_accepts_a_line_at_the_byte_limit_and_rejects_one_byte_more() {
+        let mut lines = NoteLines::default();
+        let at_limit = "a".repeat(format::MAX_LINE_BYTES);
+        assert_eq!(lines.diff_body(&at_limit, "dev").unwrap().len(), 1);
+        assert_eq!(lines.materialize(), at_limit);
+
+        let over_limit = "a".repeat(format::MAX_LINE_BYTES + 1);
+        let violation = lines.diff_body(&over_limit, "dev").unwrap_err();
+        assert_eq!(violation.code(), format::CODE_LINE_TOO_LONG);
+        assert_eq!(
+            lines.materialize(),
+            at_limit,
+            "a rejected edit leaves the note untouched"
+        );
+    }
+
+    // md:mod tests > fn diff_body_accepts_the_line_count_limit_and_rejects_one_line_more
+    #[test]
+    fn diff_body_accepts_the_line_count_limit_and_rejects_one_line_more() {
+        let mut lines = NoteLines::default();
+        let at_limit = vec!["x"; format::MAX_LINES_PER_NOTE].join("\n");
+        assert_eq!(
+            lines.diff_body(&at_limit, "dev").unwrap().len(),
+            format::MAX_LINES_PER_NOTE
+        );
+
+        let over_limit = vec!["x"; format::MAX_LINES_PER_NOTE + 1].join("\n");
+        let violation = lines.diff_body(&over_limit, "dev").unwrap_err();
+        assert_eq!(violation.code(), format::CODE_TOO_MANY_LINES);
+        assert_eq!(
+            lines.order.len(),
+            format::MAX_LINES_PER_NOTE,
+            "a rejected edit emits no Insert"
+        );
+    }
 }

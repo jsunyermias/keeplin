@@ -4,7 +4,7 @@ use std::{pin::Pin, sync::Arc};
 
 use keeplin_core::{
     error::{StorageError, SyncError},
-    linking,
+    format, linking,
     links::{Bookmark as CoreBookmark, LinkSource, NoteLink as CoreNoteLink},
     models::{
         now, Note as CoreNote, NoteTag, Notebook as CoreNotebook, Resource as CoreResource,
@@ -139,6 +139,7 @@ fn storage_err(e: StorageError) -> Status {
         StorageError::CorruptedData(_) => Status::data_loss(e.to_string()),
         StorageError::Conflict(_) => Status::already_exists(e.to_string()),
         StorageError::InvalidInput(_) => Status::invalid_argument(e.to_string()),
+        StorageError::TooLarge(_) => Status::out_of_range(e.to_string()),
         _ => Status::internal(e.to_string()),
     }
 }
@@ -375,6 +376,9 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         if !r.notebook_id.is_empty() {
             note.notebook_id = parse_uuid(&r.notebook_id, "notebook_id")?;
         }
+        format::check_body(&note.body)
+            .map_err(StorageError::from)
+            .map_err(storage_err)?;
         ordering::place_new_note(self.backend.as_ref(), &mut note)
             .await
             .map_err(storage_err)?;
@@ -410,6 +414,9 @@ impl<B: StorageBackend> KeeplinService for KeeplinServer<B> {
         if stored.deleted_at.is_some() {
             return Err(Status::not_found(note.id.to_string()));
         }
+        format::check_body(&note.body)
+            .map_err(StorageError::from)
+            .map_err(storage_err)?;
         ordering::reconcile_notebook_move(self.backend.as_ref(), stored.notebook_id, &mut note)
             .await
             .map_err(storage_err)?;

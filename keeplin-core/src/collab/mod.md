@@ -37,6 +37,7 @@ use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
 use crate::error::StorageError;
+use crate::format;
 use crate::models::{Change, Note, NoteTag, Notebook, Resource, Tag};
 use crate::storage::{
     NoteRepository, NotebookRepository, ResourceRepository, StorageBackend, SyncBackend,
@@ -67,7 +68,9 @@ memory, rebuilt from each `Welcome` snapshot on (re)connect.
 **Dependencies** — `tokio`/`tokio_tungstenite`/`futures_util` (WebSocket),
 `reqwest` (REST), `serde_json`, `base64`, `anyhow` (connection task); the sibling
 `protocol`/`state` modules; the crate's error/model/storage-trait types;
-`crate::compat` for the handshake.
+`crate::compat` for the handshake; `crate::format` for the shared hard limits —
+`check_body` gates every local write and `is_limit_code` classifies a server
+rejection, and both expect the constants to be the ones keeplin-srv also enforces.
 
 **Used by** — `keeplin-daemon/src/main.rs` (constructs and starts it in server
 mode), `keeplin-daemon/src/rest.rs` (heavily — it is the note surface in server
@@ -79,7 +82,10 @@ writes go through `top` with the id suppressed — no echo; (3) a note pending i
 first `Welcome` is reconciled against the snapshot, never pushed eagerly — a late
 empty `Welcome` must not clobber local content; (4) resource binaries never ride
 the relay journal; (5) `start` runs the `compat` handshake first — an
-incompatible server spawns no connection task.
+incompatible server spawns no connection task; (6) a body that breaks a format
+limit is rejected **before** the local write, and an op the server rejects over a
+limit triggers a resync rather than a silent divergence — the client never keeps
+content it knows the server refused.
 
 ---
 
@@ -722,11 +728,21 @@ and spawns `run_connection`.
         let lines = notes.entry(note.id).or_default();
         let ops = lines.diff_body(&note.body, &self.shared.device_id);
         drop(notes);
-        if !ops.is_empty() {
-            let _ = self.shared.out.send(CollabClientMsg::Op {
-                note_id: note.id,
-                ops,
-            });
+        match ops {
+            Ok(ops) if ops.is_empty() => {}
+            Ok(ops) => {
+                let _ = self.shared.out.send(CollabClientMsg::Op {
+                    note_id: note.id,
+                    ops,
+                });
+            }
+            Err(violation) => {
+                tracing::warn!(
+                    error = %violation,
+                    note = %note.id,
+                    "collab: local body breaks a format limit; no op emitted"
+                );
+            }
         }
     }
 ```
@@ -734,8 +750,15 @@ and spawns `run_connection`.
 **What it does** — Diffs `note.body` against the mirror (creating an empty
 mirror for an unknown id) via `NoteLines::diff_body` with this device as
 actor, and queues the resulting ops (if any) as one `CollabClientMsg::Op`.
+`diff_body` now returns a `Result`: a `LimitViolation` is logged and **no op is
+emitted**, and because a failed diff mutates nothing the mirror stays consistent.
+Reaching that branch would mean an over-limit body got past `update_note`'s
+up-front `format::check_body` (the only caller validates first), so it is a
+defensive log rather than an expected path — but silently emitting nothing without
+a trace is exactly the failure mode issue keeplin#130 exists to remove.
 
-**Dependencies** — `state::NoteLines::diff_body`, the `out` queue.
+**Dependencies** — `state::NoteLines::diff_body` (expects a rejected diff to leave
+the mirror untouched), the `out` queue.
 
 **Used by** — `update_note`.
 
@@ -804,6 +827,9 @@ block; the methods are documented here).
 #[async_trait]
 impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
     async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
+        if !self.shared.suppressed(note.id).await {
+            format::check_body(&note.body)?;
+        }
         let created = self.inner.create_note(note).await?;
         if self.shared.suppressed(created.id).await {
             return Ok(created);
@@ -838,6 +864,9 @@ impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
     }
 
     async fn update_note(&self, note: Note) -> Result<Note, StorageError> {
+        if !self.shared.suppressed(note.id).await {
+            format::check_body(&note.body)?;
+        }
         let previous = self.inner.read_note(note.id).await.ok();
         let updated = self.inner.update_note(note).await?;
         if self.shared.suppressed(updated.id).await {
@@ -920,7 +949,11 @@ impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
 
 **What it does** — The note surface, where local writes become collab traffic:
 
-- `create_note` — inner create; if suppressed (a server-driven write), stop
+- `create_note` — **validate the body first**: unless the write is suppressed
+  (server-driven, therefore already accepted by the server), `format::check_body`
+  rejects an over-limit body with `StorageError::TooLarge` *before* the inner
+  create, so the note never reaches local storage in a state the server would
+  refuse. Then inner create; if suppressed (a server-driven write), stop
   there. Otherwise: **mark `pending_push` BEFORE the note becomes visible on
   the server** — once the POST lands, periodic rediscovery can Join the note
   on its own, and if that early Join's (empty) `Welcome` arrived while the
@@ -934,7 +967,9 @@ impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
   against the snapshot), never eagerly; the connection task drops the Join if
   rediscovery already joined (a duplicate Join would fetch a second, possibly
   stale snapshot).
-- `update_note` — read the previous row, inner update; if suppressed, done.
+- `update_note` — same up-front `format::check_body` gate as `create_note`, with
+  the same suppression exemption, then read the previous row, inner update; if
+  suppressed, done.
   `patch_meta` only when title/notebook/todo fields changed; body ops via
   `push_local_edit` — unless the note is still in `pending_push`, in which
   case the first `Welcome`'s reconcile (which reads the latest local body)
@@ -946,13 +981,17 @@ impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
   `notebook_sort_profile` — pure delegation.
 
 **Dependencies** — the inner backend, `Shared`, `patch_meta`,
-`push_local_edit`.
+`push_local_edit`, `format::check_body` (expects it to be total and cheap — it runs
+on every note write — and to be the same gate keeplin-srv applies to line ops, so
+a body accepted here is never rejected there for length).
 
 **Used by** — all note traffic in server mode.
 
 **Repeated context** — the suppression check on every write path is the
 no-echo invariant; decorators delegating `note_backlinks` is the
-indexed-override rule from `storage/backend.md`.
+indexed-override rule from `storage/backend.md`. Validating **before** the inner
+write is the format-limit invariant: local storage must never hold note content
+the server has refused.
 
 ---
 
@@ -1431,10 +1470,16 @@ async fn connect_once(
         tokio::select! {
             queued = out.recv() => {
                 let Some(msg) = queued else { return Ok(()) };
-                if let CollabClientMsg::Join { note_id } = &msg {
-                    if !joined.insert(*note_id) {
-                        continue;
+                match &msg {
+                    CollabClientMsg::Join { note_id } => {
+                        if !joined.insert(*note_id) {
+                            continue;
+                        }
                     }
+                    CollabClientMsg::Leave { note_id } => {
+                        joined.remove(note_id);
+                    }
+                    _ => {}
                 }
                 ws.send(Message::Text(serde_json::to_string(&msg)?)).await?;
             }
@@ -1462,8 +1507,11 @@ loop over three arms:
 - **outbound queue** — a queued `Join` for a note this connection already
   joined is dropped (the rediscovery got there first; a duplicate Join would
   fetch a second snapshot that may predate ops just sent, and its `Welcome`
-  would clobber the mirror with that stale state); everything else is
-  serialised and sent. A closed queue ends the task cleanly.
+  would clobber the mirror with that stale state); a `Leave` **clears** the note
+  from `joined` before being sent, so the `Leave`/`Join` pair `resync_note`
+  queues is not swallowed by that de-duplication and does produce a fresh
+  `Welcome`; everything else is serialised and sent. A closed queue ends the task
+  cleanly.
 - **incoming frames** — text frames parsed as `CollabServerMsg` →
   `handle_server_msg`; a closed socket bails (triggering reconnect).
 - **rediscovery tick** (every `REDISCOVER_EVERY`; the immediate first tick is
@@ -1667,10 +1715,23 @@ async fn handle_server_msg(shared: &Arc<Shared>, msg: CollabServerMsg) {
                         .unwrap_or_default(),
                     None => String::new(),
                 };
-                let ops = lines.diff_body(&local_body, &shared.device_id);
-                shared.notes.lock().await.insert(note_id, lines);
-                if !ops.is_empty() {
-                    let _ = shared.out.send(CollabClientMsg::Op { note_id, ops });
+                match lines.diff_body(&local_body, &shared.device_id) {
+                    Ok(ops) => {
+                        shared.notes.lock().await.insert(note_id, lines);
+                        if !ops.is_empty() {
+                            let _ = shared.out.send(CollabClientMsg::Op { note_id, ops });
+                        }
+                    }
+                    Err(violation) => {
+                        tracing::warn!(
+                            error = %violation,
+                            note = %note_id,
+                            "collab: local body breaks a format limit; adopting the server snapshot"
+                        );
+                        let body = lines.materialize();
+                        shared.notes.lock().await.insert(note_id, lines);
+                        write_body(shared, note_id, body).await;
+                    }
                 }
             } else {
                 let body = lines.materialize();
@@ -1690,9 +1751,24 @@ async fn handle_server_msg(shared: &Arc<Shared>, msg: CollabServerMsg) {
             drop(notes);
             write_body(shared, note_id, body).await;
         }
-        CollabServerMsg::Error { code, message } => {
-            tracing::warn!(code, message, "collab: server error");
-        }
+        CollabServerMsg::Error {
+            code,
+            message,
+            note_id,
+        } => match note_id.filter(|_| format::is_limit_code(&code)) {
+            Some(note_id) => {
+                tracing::warn!(
+                    code,
+                    message,
+                    note = %note_id,
+                    "collab: server rejected an op over a format limit; resynchronising the note"
+                );
+                resync_note(shared, note_id).await;
+            }
+            None => {
+                tracing::warn!(code, message, ?note_id, "collab: server error");
+            }
+        },
         CollabServerMsg::Presence { note_id, users } => {
             shared.presence.lock().await.insert(note_id, users);
         }
@@ -1711,16 +1787,77 @@ async fn handle_server_msg(shared: &Arc<Shared>, msg: CollabServerMsg) {
   mirror and write the server's materialised body locally via `write_body`.
 - `Op { note_id, ops, .. }` — apply each op to the mirror (unknown note:
   ignore), then `write_body` the new materialisation.
-- `Error { code, message }` — log a warning.
+- `Error { code, message, note_id }` — a **format-limit rejection** carrying a
+  note (`format::is_limit_code(&code)` and `note_id` present) is acted on, not
+  merely logged: `resync_note` drops the cached mirror and forces a rejoin, so the
+  server's snapshot replaces whatever the local device was showing. Any other code
+  (or a limit code with no note attached) stays a warning, as before. This is the
+  fix for the divergence audited on issue keeplin#130: an op the server refused
+  used to leave the edit sitting on one device, "saved", forever unsynced.
 - `Presence { note_id, users }` — replace that note's presence list.
 
-**Dependencies** — `NoteLines`, `write_body`, the
+If the pending-push diff itself breaks a format limit — a local body that predates
+these limits, or one written by a path that does not revalidate — the client logs
+the violation and **adopts the server snapshot** instead of pushing: the note
+converges downwards to something both sides accept rather than staying divergent.
+
+**Dependencies** — `NoteLines` (its `diff_body` now returns
+`Result<_, LimitViolation>`; expects a failed diff to leave the mirror untouched,
+which is what makes the adopt-the-snapshot fallback safe), `format::is_limit_code`
+(expects the same code strings keeplin-srv sends), `resync_note`, `write_body`, the
 `pending_push`/`notes`/`presence` state.
 
 **Used by** — `connect_once`.
 
 **Repeated context** — the pending-push reconcile is the "late empty Welcome
-must not clobber local content" invariant, restated in `create_note`.
+must not clobber local content" invariant, restated in `create_note`. The
+limit-rejection branch adds its mirror image: **a rejected op must not leave local
+content the server does not have** — the client resynchronises instead.
+
+---
+
+## fn resync_note
+
+**Identification** — `async fn resync_note(shared: &Arc<Shared>, note_id: Uuid)`;
+marker `// md:fn resync_note`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn resync_note
+async fn resync_note(shared: &Arc<Shared>, note_id: Uuid) {
+    shared.notes.lock().await.remove(&note_id);
+    shared.pending_push.lock().await.remove(&note_id);
+    let _ = shared.out.send(CollabClientMsg::Leave { note_id });
+    let _ = shared.out.send(CollabClientMsg::Join { note_id });
+}
+```
+
+**What it does** — Throws away everything the client believes about a note and
+asks the server to state it again. Three steps, in this order: drop the cached
+`NoteLines` mirror; clear any `pending_push` marker so the coming `Welcome` takes
+the **adopt-the-snapshot** branch rather than the push-local-content branch; queue
+`Leave` then `Join`. The queue is FIFO and `connect_once` removes the note from its
+`joined` set when it forwards the `Leave`, so the `Join` is genuinely re-sent and a
+fresh `Welcome` arrives; `handle_server_msg` then materialises the server's body
+and `write_body` writes it locally under `suppress`, which reverts the divergent
+local edit without echoing it back as a new op.
+
+Called only when the server rejects an op over a format limit. Termination is by
+construction: the resynchronised body is the server's own, so it cannot be
+rejected again, and the suppressed local write emits no further ops.
+
+**Dependencies** — `Shared::notes` / `Shared::pending_push` (expects both to be the
+only caches of note state — a third cache would survive the reset and keep the
+divergence), `Shared::out` (expects FIFO delivery, so `Leave` is processed before
+`Join`), `connect_once`'s `Leave` handling (expects it to clear `joined`; without
+that the `Join` would be de-duplicated away and no `Welcome` would come).
+
+**Used by** — `handle_server_msg`, on a limit-coded `Error` carrying a `note_id`.
+
+**Repeated context** — writes that originate from the server go through
+`apply_from_server`, which sets the `suppress` flag so the decorator does not
+re-publish them; that is what keeps a resync from looping.
 
 ---
 
@@ -1852,4 +1989,5 @@ refresh with `graphify update .` after refactors.
 | 38 | `WsStream` | `// md:WsStream` |
 | 39 | `fn ensure_local` | `// md:fn ensure_local` |
 | 40 | `fn handle_server_msg` | `// md:fn handle_server_msg` |
-| 41 | `fn write_body` | `// md:fn write_body` |
+| 41 | `fn resync_note` | `// md:fn resync_note` |
+| 42 | `fn write_body` | `// md:fn write_body` |
