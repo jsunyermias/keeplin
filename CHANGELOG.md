@@ -10,6 +10,21 @@ version and the wire protocol version move independently.
 
 ## [Unreleased]
 
+### Filesystem format v8 — attachments in their note's folder (#127)
+
+- **`FsBackend` attachment layout** (`keeplin-core/src/storage/fs.rs`): attachments
+  leave the global `resources/{uuid}/` pool and live under their owning note as
+  `notes/{note_id}/resources/{hash}.knrs` (original bytes, named by a BLAKE2s-256
+  content hash) plus a `notes/{note_id}/resources/{id}.meta.ndjson` sidecar
+  (`StoredResource` = the wire `Resource` + the fs-local `blob_hash`). Identical
+  content in one note deduplicates onto a single blob; `purge_deleted_resources`
+  reclaims a blob only when no live resource in that note still references its
+  hash. The on-disk format version bumps to **8** (clean break — the old pool is
+  no longer read). The shared wire `Resource` and the collab protocol are
+  unchanged: the hash is storage-local and never crosses the wire, so keeplin ↔
+  keeplin-srv stay intercompatible and `PROTOCOL_VERSION` is untouched. Adds a
+  direct `blake2` dependency (already in the tree via `argon2`).
+
 ### 2026-07 production-readiness audit follow-up
 
 - **Protocol handshake** (`keeplin-core/src/compat.rs`): the single place

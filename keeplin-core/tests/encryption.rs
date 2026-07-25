@@ -211,15 +211,21 @@ async fn resource_data_stored_encrypted() {
         "r.txt",
         data.len() as u64,
     );
-    let id = res.id;
     backend.create_resource(res, data).await.unwrap();
 
-    let data_path = dir
+    let res_dir = dir
         .path()
-        .join("resources")
-        .join(id.to_string())
-        .join("data");
-    let raw = std::fs::read(&data_path).unwrap();
+        .join("notes")
+        .join(SYSTEM_RESOURCE_NOTE_ID.to_string())
+        .join("resources");
+    let mut blob = None;
+    for entry in std::fs::read_dir(&res_dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) == Some("knrs") {
+            blob = Some(path);
+        }
+    }
+    let raw = std::fs::read(blob.expect("a .knrs blob must exist")).unwrap();
     assert_ne!(
         raw, b"supersecret",
         "resource data must not be stored in plaintext"

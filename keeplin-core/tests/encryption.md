@@ -411,16 +411,28 @@ async fn resource_data_stored_encrypted() {
     let backend = enc_backend(dir.path()).await;
 
     let data = b"supersecret".to_vec();
-    let res = Resource::new(SYSTEM_RESOURCE_NOTE_ID, "r", "text/plain", "r.txt", data.len() as u64);
-    let id = res.id;
+    let res = Resource::new(
+        SYSTEM_RESOURCE_NOTE_ID,
+        "r",
+        "text/plain",
+        "r.txt",
+        data.len() as u64,
+    );
     backend.create_resource(res, data).await.unwrap();
 
-    let data_path = dir
+    let res_dir = dir
         .path()
-        .join("resources")
-        .join(id.to_string())
-        .join("data");
-    let raw = std::fs::read(&data_path).unwrap();
+        .join("notes")
+        .join(SYSTEM_RESOURCE_NOTE_ID.to_string())
+        .join("resources");
+    let mut blob = None;
+    for entry in std::fs::read_dir(&res_dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) == Some("knrs") {
+            blob = Some(path);
+        }
+    }
+    let raw = std::fs::read(blob.expect("a .knrs blob must exist")).unwrap();
     assert_ne!(
         raw, b"supersecret",
         "resource data must not be stored in plaintext"
@@ -428,9 +440,12 @@ async fn resource_data_stored_encrypted() {
 }
 ```
 
-**What it does** — Reads the raw `resources/{id}/data` file directly: it
-contains `nonce || ciphertext` (raw bytes, no Base64 wrapper) and must not equal
-the plaintext payload.
+**What it does** — Locates the attachment's `{hash}.knrs` blob under
+`notes/{note}/resources/` and reads it directly: it contains `nonce || ciphertext`
+(raw bytes, no Base64 wrapper), named by the content hash of that ciphertext, and
+must not equal the plaintext payload. The blob's name is unknowable ahead of time
+(a random nonce makes the ciphertext, hence the hash, differ per write), so the
+test discovers it by its `.knrs` extension.
 
 ---
 
