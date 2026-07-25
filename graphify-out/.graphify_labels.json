@@ -143,5 +143,16 @@
   "141": "Documentation templates",
   "142": "templates/README.md",
   "143": ".get_notebook",
-  "144": ".get_tag"
+  "144": ".get_tag",
+  "145": "`scripts/companion_tool.py` — deterministic companion fidelity engine",
+  "146": "`scripts/tests/test_companion_tool.py` — fidelity-tool regression suite",
+  "147": "`scripts/context-pack` — reproducible companion context packs",
+  "148": "`scripts/sync-companion-code` — synchronize embedded Rust blocks",
+  "149": ".list_backlinks",
+  "150": "impl NoteMetaIndex",
+  "151": "impl NoteMetaEntry",
+  "153": "context-pack script",
+  "154": "sync-companion-code script",
+  "155": "String",
+  "156": "EntityVersion"
 }

@@ -2111,18 +2111,9 @@ and the repository traits.
 
 **Code** — container: members documented as sub-blocks below: fn server, fn meta_frame, fn chunk_frame, fn upload_resource_assembles_chunks_in_order, fn upload_resource_requires_metadata_first, fn upload_resource_enforces_the_cap, fn update_rpcs_reject_soft_deleted_entities, fn update_notebook_and_tag_refresh_updated_at_server_side.
 
-Module preamble — the imports of the items under test, complete and verbatim (a
-multi-line `use` whose continuation line must live inside a fence, not dangle as
-scaffolding):
-
-```rust
-    use super::*;
-    use crate::proto::keeplin::{ResourceMeta, UploadResourceRequest};
-    use keeplin_core::storage::fs::FsBackend;
-    use keeplin_core::storage::{
-        NoteRepository, NotebookRepository, ResourceRepository, TagRepository,
-    };
-```
+The test module's `use` preamble is container scaffolding, so it deliberately has
+no leaf fence (RULE 6). The mechanically verified sub-blocks below contain every
+marked test and helper in source order.
 
 ### fn server
 

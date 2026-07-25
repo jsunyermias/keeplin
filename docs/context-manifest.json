@@ -1,0 +1,4533 @@
+{
+  "entries": [
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/collab/mod.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "# `collab/mod.rs` — client of the keeplin-srv collaborative channel",
+          "**What it does** — The client side of keeplin-srv's collaborative channel.",
+          "`CollabBackend` — talks to keeplin-srv. The server stores every note (lines +",
+          "rejection, and both expect the constants to be the ones keeplin-srv also enforces.",
+          "token from keeplin-srv `POST /api/login` — one per device).",
+          "**What it does** — Uploads a resource's binary to keeplin-srv out-of-band",
+          "**What it does** — Fetches a resource's binary from keeplin-srv (the source of",
+          "transfer, list, revoke) to keeplin-srv — the authority for permissions in"
+        ]
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/protocol.rs",
+          "required": true
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/state.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/error.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/collab_client.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/collab_client.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "CollabConfig",
+          "fn device_id_from_token",
+          "Shared",
+          "impl Shared",
+          "impl Shared > fn auth",
+          "impl Shared > fn suppressed",
+          "impl Shared > fn apply_from_server",
+          "impl Shared > fn upload_blob",
+          "impl Shared > fn download_blob",
+          "CollabHandle",
+          "impl CollabHandle",
+          "impl CollabHandle > fn presence",
+          "impl CollabHandle > fn send_cursor",
+          "impl CollabHandle > fn proxy_request",
+          "CollabBackend",
+          "impl Clone for CollabBackend",
+          "impl CollabBackend",
+          "impl CollabBackend > fn new",
+          "impl CollabBackend > fn handle",
+          "impl CollabBackend > fn start",
+          "impl CollabBackend > fn push_local_edit",
+          "impl CollabBackend > fn patch_meta",
+          "impl NoteRepository for CollabBackend",
+          "impl NotebookRepository for CollabBackend",
+          "impl TagRepository for CollabBackend",
+          "impl ResourceRepository for CollabBackend",
+          "impl SyncBackend for CollabBackend",
+          "impl HistoryRepository for CollabBackend",
+          "fn is_note_change",
+          "fn strip_resource_blob",
+          "ServerNote",
+          "fn run_connection",
+          "REDISCOVER_EVERY",
+          "fn connect_once",
+          "DISCOVER_PAGE_SIZE",
+          "fn discover_and_join",
+          "WsStream",
+          "fn ensure_local",
+          "fn handle_server_msg",
+          "fn resync_note",
+          "fn write_body"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`collab/mod.rs` — client of the keeplin-srv collaborative channel"
+      },
+      "risk": {
+        "basis": [
+          "collab"
+        ],
+        "origin": "INFERRED",
+        "value": "protocol"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/collab/mod.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/collab/protocol.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "**What it does** — The JSON wire types of keeplin-srv's collaborative channel",
+          "**Repeated context** — This file and keeplin-srv's `src/protocol.rs` must stay in",
+          "keeplin-srv's `CollabClientMsg` which deserialises them.",
+          "keeplin-srv's `CollabServerMsg` which serialises them — keeplin-srv's copy carries",
+          "the same optional `note_id`, and `crates/keeplin-srv/tests/core_compat.rs`",
+          "`keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: references×8; e.g. `Shared`, `.presence()`, `.send_cursor()`)"
+        ]
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/mod.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/state.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/mod.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/state.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "LineId",
+          "Cursor",
+          "LineSnapshot",
+          "NoteLinesSnapshot",
+          "LineOp",
+          "PresenceInfo",
+          "CollabClientMsg",
+          "CollabServerMsg"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`collab/protocol.rs` — collaborative channel wire types"
+      },
+      "risk": {
+        "basis": [
+          "collab",
+          "proto",
+          "protocol",
+          "wire"
+        ],
+        "origin": "INFERRED",
+        "value": "protocol"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/collab/protocol.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/collab/state.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "be the *same* constants keeplin-srv enforces, so a body this module accepts is",
+          "the first as replays (a real historical bug — keeplin-srv PR #90).",
+          "bytes) keeplin-srv applies to `Insert`/`Update`.",
+          "`keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: imports_from×1, references×1; e.g. `mod.rs`, `Shared`)"
+        ]
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/protocol.rs",
+          "required": true
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/mod.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/collab_client.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/mod.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/collab_client.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "NoteLines",
+          "impl NoteLines",
+          "impl NoteLines > fn from_snapshot",
+          "impl NoteLines > fn materialize",
+          "impl NoteLines > fn live",
+          "impl NoteLines > fn apply",
+          "impl NoteLines > fn diff_body",
+          "fn merge_into",
+          "fn bump",
+          "mod tests",
+          "mod tests > fn diff_body_accepts_a_line_at_the_byte_limit_and_rejects_one_byte_more",
+          "mod tests > fn diff_body_accepts_the_line_count_limit_and_rejects_one_line_more"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`collab/state.rs` — client line state and body↔lines translation"
+      },
+      "risk": {
+        "basis": [
+          "collab"
+        ],
+        "origin": "INFERRED",
+        "value": "protocol"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/collab/state.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/compat.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "# `compat.rs` — keeplin-srv protocol/capability handshake (`GET /version`)",
+          "**What it does** — The client side of the keeplin-srv protocol/capability handshake",
+          "(`GET /version`; issues keeplin-srv#39 / keeplin#114), and the **single place in this",
+          "keeplin-srv evolve in separate repositories (keeplin-srv pins a keeplin-core git",
+          "mid-sync errors; keeplin-srv mirrors the same rule around its own `PROTOCOL_VERSION`",
+          "`/version` is **missing/unreachable/unparseable** (older keeplin-srv, or a bare",
+          "to adopt a newer keeplin-core, bump the pinned `rev` in keeplin-srv's `Cargo.toml`",
+          "Mirrors keeplin-srv's `PROTOCOL_VERSION` (its `src/http.rs`); bump **both sides"
+        ]
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/mod.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/version_handshake.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/mod.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/version_handshake.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "PROTOCOL_VERSION",
+          "fn compatible_with",
+          "ServerInfo",
+          "Handshake",
+          "fn negotiate",
+          "fn incompatible_message",
+          "mod tests",
+          "mod tests > fn exact_match_is_compatible",
+          "mod tests > fn incompatible_message_names_the_side_to_upgrade"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`compat.rs` — keeplin-srv protocol/capability handshake (`GET /version`)"
+      },
+      "risk": {
+        "basis": [
+          "handshake",
+          "proto",
+          "protocol"
+        ],
+        "origin": "INFERRED",
+        "value": "protocol"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/compat.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/encryption.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "`SECURITY.md`. keeplin-srv's server-side at-rest scheme (`enc:v1:`) is"
+        ]
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/error.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/encryption.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/encryption.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "NONCE_LEN",
+          "EncryptedBackend",
+          "impl EncryptedBackend",
+          "impl EncryptedBackend > fn new",
+          "impl EncryptedBackend > fn encrypt_str",
+          "impl EncryptedBackend > fn decrypt_str",
+          "impl EncryptedBackend > fn encrypt_bytes",
+          "impl EncryptedBackend > fn decrypt_bytes",
+          "impl EncryptedBackend > fn enc_note",
+          "impl EncryptedBackend > fn dec_note",
+          "impl EncryptedBackend > fn enc_notebook",
+          "impl EncryptedBackend > fn dec_notebook",
+          "impl EncryptedBackend > fn enc_tag",
+          "impl EncryptedBackend > fn dec_tag",
+          "impl EncryptedBackend > fn enc_resource",
+          "impl EncryptedBackend > fn dec_resource",
+          "fn derive_key",
+          "impl NoteRepository for EncryptedBackend",
+          "impl NotebookRepository for EncryptedBackend",
+          "impl TagRepository for EncryptedBackend",
+          "impl ResourceRepository for EncryptedBackend",
+          "impl SyncBackend for EncryptedBackend",
+          "impl HistoryRepository for EncryptedBackend"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`encryption.rs` — transparent at-rest encryption decorator"
+      },
+      "risk": {
+        "basis": [
+          "encrypt"
+        ],
+        "origin": "INFERRED",
+        "value": "security"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/encryption.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/error.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "`keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: imports_from×1, references×41)"
+        ]
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/mod.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/encryption.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/history.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/interop.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/linking.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/migrate.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/ordering.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/sync/engine.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/event_backend.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/metrics.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/server.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/mod.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/encryption.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/linking.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/migrate.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/sync/engine.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/event_backend.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/server.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "origin": "INFERRED",
+            "value": "All crate error types live here; no other module defines its own error enum."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "Error messages never carry sensitive data (passwords, keys, plaintext)."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "The `Conflict` / `InvalidInput` / `InvalidState` split is the daemon's status-code"
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "StorageError",
+          "impl From libsql for StorageError",
+          "impl From tungstenite for StorageError",
+          "SyncError"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`error.rs` — error types"
+      },
+      "risk": {
+        "basis": [
+          "password"
+        ],
+        "origin": "INFERRED",
+        "value": "security"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/error.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/format.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "The limits are a **shared wire/format contract**: `keeplin-srv` imports these very constants",
+          "(entry-point validation), and `keeplin-srv` (`crates/keeplin-srv/src/collab.rs`,",
+          "`crates/keeplin-srv/src/http.rs`, `crates/keeplin-srv/tests/core_compat.rs`).",
+          "**Used by** — `check_line`; `keeplin-srv`'s `collab.rs` (`content.len() > MAX_LINE_BYTES` on",
+          "**Used by** — `check_line_count`, `check_body`; `keeplin-srv`'s `collab.rs` (live-line count",
+          "`reconcile_notebook_move` routes every move through); `keeplin-srv`'s `http.rs` (the",
+          "exceeds `MAX_LINE_BYTES`. The literal `\"too_long\"` is the code keeplin-srv has always sent;",
+          "**Used by** — `LimitViolation::code`, `is_limit_code`; `keeplin-srv`'s `collab.rs` when"
+        ]
+      },
+      "direct_dependencies": [
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-core/src/error.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/state.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/mod.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/ordering.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/server.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/state.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/mod.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/server.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "origin": "INFERRED",
+            "value": "The three limits are exact powers of two and are defined exactly once, in this file."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "Line length is measured in UTF-8 bytes on both sides of the wire; line and note counts"
+          },
+          {
+            "origin": "INFERRED",
+            "value": "Exceeding a limit always produces an error the user can see; no caller may truncate."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "Any change here is a cross-repo change: keeplin-srv's pinned `rev` must be bumped and its"
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "MAX_LINE_BYTES",
+          "MAX_LINES_PER_NOTE",
+          "MAX_NOTES_PER_NOTEBOOK",
+          "CODE_LINE_TOO_LONG",
+          "CODE_TOO_MANY_LINES",
+          "CODE_NOTEBOOK_FULL",
+          "LimitViolation",
+          "impl LimitViolation",
+          "impl LimitViolation > fn code",
+          "impl From LimitViolation for StorageError",
+          "fn is_limit_code",
+          "fn check_line",
+          "fn check_line_count",
+          "fn line_count",
+          "fn check_body",
+          "fn check_notebook_capacity",
+          "mod tests",
+          "mod tests > fn the_three_limits_are_exact_powers_of_two",
+          "mod tests > fn line_length_is_counted_in_utf8_bytes",
+          "mod tests > fn line_count_boundary_accepts_the_limit_and_rejects_one_more",
+          "mod tests > fn line_count_matches_the_materialised_body",
+          "mod tests > fn check_body_enforces_both_line_limits",
+          "mod tests > fn notebook_capacity_rejects_the_note_that_would_exceed_the_cap",
+          "mod tests > fn every_violation_maps_to_its_wire_code_and_to_too_large"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`format.rs` — the hard format limits shared by client and server"
+      },
+      "risk": {
+        "basis": [
+          "wire"
+        ],
+        "origin": "INFERRED",
+        "value": "protocol"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/format.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/history.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "bounds: FS compacts a note log past 256 entries; keeplin-srv's"
+        ]
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/error.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "REVERT_SCAN_LIMIT",
+          "fn state_at",
+          "fn revert_note",
+          "fn revert_notebook",
+          "fn revert_notes_to",
+          "fn revert_notebook_notes_to",
+          "mod tests",
+          "mod tests > fn ver",
+          "mod tests > fn state_at_picks_newest_at_or_before",
+          "mod tests > fn fs",
+          "mod tests > fn note_history_lists_versions_newest_first",
+          "mod tests > fn revert_restores_an_earlier_version",
+          "mod tests > fn revert_to_a_deleted_instant_deletes_the_note",
+          "mod tests > fn batch_revert_of_a_notebook_rolls_back_every_note"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`history.rs` — change history reads + forward-revert"
+      },
+      "risk": {
+        "basis": [
+          "no elevated-risk term matched"
+        ],
+        "origin": "INFERRED",
+        "value": "normal"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/history.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/interop.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/error.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "MIME_VCARD",
+          "MIME_ICALENDAR",
+          "fn unfold",
+          "fn fold_line",
+          "fn escape_text",
+          "fn unescape_text",
+          "fn split_prop",
+          "fn format_dt",
+          "fn parse_dt",
+          "PRODID",
+          "Contact",
+          "impl Contact",
+          "impl Contact > fn to_vcard",
+          "impl Contact > fn from_vcard",
+          "fn user_vcard",
+          "CalendarEvent",
+          "CalendarTodo",
+          "impl CalendarEvent",
+          "impl CalendarEvent > fn to_ics",
+          "impl CalendarEvent > fn from_ics",
+          "impl CalendarEvent > fn from_ics_all",
+          "impl CalendarTodo",
+          "impl CalendarTodo > fn to_ics",
+          "impl CalendarTodo > fn from_ics",
+          "impl CalendarTodo > fn from_ics_all",
+          "impl CalendarTodo > fn from_note",
+          "impl CalendarTodo > fn apply_to_note",
+          "fn write_calendar_open",
+          "fn write_uid_dtstamp",
+          "fn split_components",
+          "fn parse_component_lines",
+          "fn resources_with_mime",
+          "fn resource_metas_with_mime",
+          "fn uid_file_name",
+          "fn resources_with_uid",
+          "fn save_contact",
+          "fn list_contacts",
+          "fn contact_resources",
+          "fn get_contact",
+          "fn delete_contact",
+          "fn save_event",
+          "fn list_events",
+          "fn event_resources",
+          "fn get_event",
+          "fn delete_event",
+          "fn import_todo",
+          "fn import_todos",
+          "mod tests",
+          "mod tests > fn contact_round_trips_through_vcard",
+          "mod tests > fn vcard_escaping_survives",
+          "mod tests > fn user_vcard_carries_name_and_email",
+          "mod tests > fn event_round_trips_through_ics",
+          "mod tests > fn todo_round_trips_and_marks_completion",
+          "mod tests > fn todo_maps_to_and_from_a_note",
+          "mod tests > fn unfolds_wrapped_lines",
+          "mod tests > fn missing_component_yields_none",
+          "mod tests > fn multi_component_calendar_parses_every_event_and_todo",
+          "mod tests > fn fs",
+          "mod tests > fn contact_save_list_get_delete_over_storage",
+          "mod tests > fn event_round_trips_through_storage",
+          "mod tests > fn import_todo_creates_a_todo_note"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`interop.rs` — vCard & iCalendar format compatibility"
+      },
+      "risk": {
+        "basis": [
+          "no elevated-risk term matched"
+        ],
+        "origin": "INFERRED",
+        "value": "normal"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/interop.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/lib.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "| `collab` | `CollabBackend` decorator — client of keeplin-srv's real-time note channel (line ops, presence, cursors), with the `protocol` (wire types) and `state` (line mirror + body↔lines diff) children |",
+          "| `compat` | the keeplin-srv `GET /version` handshake: `PROTOCOL_VERSION`, the `compatible_with` rule, `negotiate` — the one place this repo defines server-protocol compatibility |",
+          "| `format` | the hard format limits (bytes per line, lines per note, notes per notebook) and their wire codes — the single source of truth both this client and keeplin-srv enforce |",
+          "**Used by** — everything: `keeplin-daemon` (the binary), `keeplin-srv` (pins this"
+        ]
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`lib.rs` — keeplin-core crate root"
+      },
+      "risk": {
+        "basis": [
+          "no elevated-risk term matched"
+        ],
+        "origin": "INFERRED",
+        "value": "normal"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/lib.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/linking.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/error.rs",
+          "required": false
+        },
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-core/src/links.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/ordering.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "SCAN_PAGE",
+          "ResolvedReference",
+          "AliasConflict",
+          "AliasConflicts",
+          "AliasIndex",
+          "impl AliasIndex",
+          "impl AliasIndex > fn from_snapshots",
+          "impl AliasIndex > fn upsert_note",
+          "impl AliasIndex > fn remove_note",
+          "impl AliasIndex > fn upsert_notebook",
+          "impl AliasIndex > fn remove_notebook",
+          "impl AliasIndex > fn note_alias_taken",
+          "impl AliasIndex > fn notebook_alias_taken",
+          "impl AliasIndex > fn resolve_notebook_seg",
+          "impl AliasIndex > fn resolve_note_seg",
+          "impl AliasIndex > fn resolve_target",
+          "fn change_affects_aliases",
+          "LinkingBackend",
+          "impl LinkingBackend",
+          "impl LinkingBackend > fn new",
+          "impl LinkingBackend > fn with_index",
+          "impl LinkingBackend > fn index_upsert_note",
+          "impl LinkingBackend > fn index_remove_note",
+          "impl LinkingBackend > fn index_upsert_notebook",
+          "impl LinkingBackend > fn index_remove_notebook",
+          "impl LinkingBackend > fn index_invalidate",
+          "impl LinkingBackend > fn refresh",
+          "impl LinkingBackend > fn prepare",
+          "impl LinkingBackend > fn ensure_notebook_alias_free",
+          "fn collect_notes",
+          "fn collect_notebooks",
+          "fn resolve_bookmark_seg",
+          "fn resolve_ref",
+          "fn resolve",
+          "fn backlinks",
+          "fn group_conflicts",
+          "fn alias_conflicts",
+          "fn group_note_conflicts",
+          "fn read_live_note",
+          "fn read_live_notebook",
+          "fn set_note_alias",
+          "fn set_notebook_alias",
+          "fn add_manual_link",
+          "fn remove_link",
+          "impl NoteRepository for LinkingBackend",
+          "impl NotebookRepository for LinkingBackend",
+          "impl TagRepository for LinkingBackend",
+          "impl ResourceRepository for LinkingBackend",
+          "impl SyncBackend for LinkingBackend",
+          "impl HistoryRepository for LinkingBackend",
+          "mod tests",
+          "mod tests > fn backend",
+          "mod tests > fn nb",
+          "mod tests > fn aliased",
+          "mod tests > fn derives_bookmarks_and_content_links",
+          "mod tests > fn bookmark_alias_comes_from_the_body_title",
+          "mod tests > fn resolves_link_by_alias_and_uuid",
+          "mod tests > fn rejects_duplicate_note_alias",
+          "mod tests > fn same_alias_in_different_notebooks_is_allowed",
+          "mod tests > fn inbox_note_cannot_carry_an_alias",
+          "mod tests > fn set_note_alias_rejects_inbox_notes",
+          "mod tests > fn moving_a_note_to_inbox_clears_its_alias",
+          "mod tests > fn inbox_note_does_not_link_out",
+          "mod tests > fn nothing_links_to_an_inbox_note",
+          "mod tests > fn bare_alias_resolves_globally_when_unique_else_scoped",
+          "mod tests > fn alias_and_link_edits_reject_deleted_entities",
+          "mod tests > fn add_and_remove_manual_link",
+          "mod tests > fn resolves_two_segment_note_bookmark_shorthand",
+          "mod tests > fn two_segment_prefers_notebook_note",
+          "mod tests > fn alias_conflicts_lists_duplicates",
+          "mod tests > fn alias_index_tracks_deletes_and_renames",
+          "mod tests > fn sync_applied_change_invalidates_alias_index",
+          "mod tests > fn concurrent_duplicate_alias_yields_exactly_one_winner"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`linking.rs` — `LinkingBackend` decorator + reference resolution"
+      },
+      "risk": {
+        "basis": [
+          "backend"
+        ],
+        "origin": "INFERRED",
+        "value": "persistence"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/linking.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/links.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/server.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/server.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "Reference",
+          "impl Reference",
+          "impl Reference > fn parse",
+          "BookmarkRef",
+          "impl BookmarkRef",
+          "impl BookmarkRef > fn parse",
+          "LinkTarget",
+          "LinkSource",
+          "Bookmark",
+          "DerivedBookmark",
+          "NoteLink",
+          "impl NoteLink",
+          "impl NoteLink > fn from_raw",
+          "impl NoteLink > fn target",
+          "fn parse_link_ref",
+          "fn bookmark_re",
+          "fn content_link_re",
+          "fn parse_bookmarks",
+          "fn parse_content_links",
+          "mod tests",
+          "mod tests > fn parses_one_two_three_segments",
+          "mod tests > fn parses_uuid_segments_as_ids",
+          "mod tests > fn rejects_malformed_refs",
+          "mod tests > fn bookmark_ref_zero_is_alias",
+          "mod tests > fn extracts_bookmarks_with_and_without_alias_in_order",
+          "mod tests > fn extracts_content_links_excluding_bookmarks"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`links.rs` — bookmark & link types + the pure `#…` grammar"
+      },
+      "risk": {
+        "basis": [
+          "no elevated-risk term matched"
+        ],
+        "origin": "INFERRED",
+        "value": "normal"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/links.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/migrate.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/error.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/migrate.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/migrate.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "PAGE",
+          "MigrationReport",
+          "fn migrate",
+          "fn collect"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`migrate.rs` — one-shot state copy between backends"
+      },
+      "risk": {
+        "basis": [
+          "migrate"
+        ],
+        "origin": "INFERRED",
+        "value": "migration"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/migrate.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/models.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "engine, ordering, linking, interop, history, and the daemon's REST/gRPC layers; keeplin-srv",
+          "`keeplin-daemon/src/search.rs` (re-indexes on changes); keeplin-srv's relay stores these",
+          "`keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: references×31; e.g. `.apply_from_server()`, `.push_local_edit()`, `.patch_meta()`)"
+        ]
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/links.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/mod.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/encryption.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/history.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/interop.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/linking.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/ordering.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/note_log.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/sync/engine.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/event_backend.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/metrics.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/search.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/server.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/mod.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/encryption.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/linking.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/note_log.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/sync/engine.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/event_backend.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/server.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "origin": "INFERRED",
+            "value": "Every entity carries `vv` + `last_writer` + `updated_at` + soft-delete `deleted_at`; these"
+          },
+          {
+            "origin": "INFERRED",
+            "value": "`notebook_id` is never \"none\": `Uuid::nil()` (the Inbox) is the sentinel; `de_notebook_id`"
+          },
+          {
+            "origin": "INFERRED",
+            "value": "`Change` evolves additively only (serde `alias`/`default` keep old journals readable); a"
+          },
+          {
+            "origin": "INFERRED",
+            "value": "All human-readable content (`title`, `body`, `alias`, resource `mime_type`/`file_name`) is"
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "fn new_id",
+          "fn now",
+          "Note",
+          "fn de_notebook_id",
+          "impl Note",
+          "impl Note > DEFAULT_SORT_KEY",
+          "impl Note > fn new",
+          "impl Note > fn effective_sort_key",
+          "Notebook",
+          "impl Notebook",
+          "impl Notebook > fn new",
+          "Tag",
+          "impl Tag",
+          "impl Tag > fn new",
+          "NoteTag",
+          "SYSTEM_RESOURCE_NOTE_ID",
+          "fn system_resource_note_id",
+          "Resource",
+          "impl Resource",
+          "impl Resource > fn new",
+          "Change",
+          "mod tests",
+          "mod tests > fn pre_ordering_note_json_lands_in_the_inbox_with_defaults",
+          "mod tests > fn pre_ordering_note_msgpack_round_trips"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`models.rs` — domain data types"
+      },
+      "risk": {
+        "basis": [
+          "encrypt"
+        ],
+        "origin": "INFERRED",
+        "value": "security"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/models.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/ordering.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/error.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/linking.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/linking.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "INBOX_ID",
+          "INBOX_TITLE",
+          "PIN_MAX",
+          "MAX_PINNED",
+          "NORMAL_START",
+          "RESEQUENCE_STEP",
+          "fn ensure_inbox",
+          "fn is_inbox",
+          "fn place_new_note",
+          "fn pin_note",
+          "fn unpin_note",
+          "fn reconcile_notebook_move",
+          "fn star_note",
+          "fn unstar_note",
+          "fn set_starred",
+          "fn reorder_note",
+          "fn resequence_inbox",
+          "fn lowest_free_pinned_key",
+          "fn next_normal_key",
+          "fn read_live_note",
+          "mod tests",
+          "mod tests > fn backend",
+          "mod tests > fn create_placed",
+          "mod tests > fn move_note",
+          "mod tests > fn titles",
+          "mod tests > fn ensure_inbox_is_idempotent_and_fixed",
+          "mod tests > fn placement_inbox_top_notebook_bottom",
+          "mod tests > fn pin_unpin_round_trip_and_inbox_rejection",
+          "mod tests > fn reorder_respects_bands",
+          "mod tests > fn starring_is_global_and_never_moves_the_note",
+          "mod tests > fn inbox_top_insert_survives_underflow_by_resequencing",
+          "mod tests > fn moving_a_note_replaces_it_in_the_destination_band",
+          "mod tests > fn moving_a_pinned_note_into_the_inbox_unpins_it",
+          "mod tests > fn a_same_notebook_edit_keeps_the_position",
+          "mod tests > fn the_sort_profile_counts_the_live_notes_the_notebook_cap_reads",
+          "mod tests > fn lowest_free_pinned_key_fills_gaps_and_detects_full"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`ordering.rs` — the Inbox, pinning, manual ordering, and starring"
+      },
+      "risk": {
+        "basis": [
+          "no elevated-risk term matched"
+        ],
+        "origin": "INFERRED",
+        "value": "normal"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/ordering.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/backend.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "`keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: implements×6, references×5; e.g. `Shared`, `CollabBackend<B>`, `.start()`)"
+        ]
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/mod.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/encryption.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/history.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/interop.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/linking.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/migrate.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/ordering.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/sync/engine.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/migrate.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/event_backend.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/metrics.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/search.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/server.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/mod.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/encryption.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/linking.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/migrate.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/sync/engine.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/migrate.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/event_backend.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/server.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "trait NoteRepository",
+          "NotebookSortProfile",
+          "impl NotebookSortProfile",
+          "impl NotebookSortProfile > fn from_effective_keys",
+          "fn paginate_notes",
+          "trait NotebookRepository",
+          "trait TagRepository",
+          "trait ResourceRepository",
+          "fn paginate_resources",
+          "trait SyncBackend",
+          "DEFAULT_HISTORY_LIMIT",
+          "EntityVersion",
+          "trait HistoryRepository",
+          "trait StorageBackend",
+          "impl StorageBackend for T"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/backend.rs` — the `StorageBackend` supertrait and its sub-traits"
+      },
+      "risk": {
+        "basis": [
+          "backend",
+          "storage"
+        ],
+        "origin": "INFERRED",
+        "value": "persistence"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/backend.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "warns and continues (older keeplin-srv / bare test relay). Finally attempts the",
+          "missed batches on reconnect (keeplin-srv's durable journal); older relays",
+          "**What it does** — One version as served by keeplin-srv's history endpoints"
+        ]
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/error.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/links.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        },
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-core/src/storage/note_log.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/compat.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-core/tests/db_backend.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-core/tests/db_backend.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "WsStream",
+          "DbBackend",
+          "impl DbBackend",
+          "impl DbBackend > fn new",
+          "impl DbBackend > fn run_migrations",
+          "impl DbBackend > fn schema_version",
+          "impl DbBackend > fn apply_migration",
+          "impl DbBackend > fn migrate_v1_baseline",
+          "impl DbBackend > fn add_column_if_missing",
+          "impl DbBackend > fn get_or_create_device_id",
+          "impl DbBackend > fn record_change",
+          "impl DbBackend > fn refresh_note_links",
+          "impl DbBackend > fn connect_ws",
+          "impl DbBackend > fn row_to_note",
+          "impl DbBackend > fn parse_uuid",
+          "impl DbBackend > fn parse_required_dt",
+          "impl DbBackend > fn parse_optional_dt",
+          "impl DbBackend > fn row_to_notebook",
+          "impl DbBackend > fn row_to_tag",
+          "impl DbBackend > fn row_to_resource",
+          "impl DbBackend > fn row_to_change",
+          "impl DbBackend > fn begin",
+          "impl DbBackend > fn commit",
+          "impl DbBackend > fn rollback",
+          "impl DbBackend > fn ensure_ws",
+          "impl DbBackend > fn migrate_v2_ordering",
+          "impl DbBackend > fn migrate_v3_tag_system",
+          "impl DbBackend > fn migrate_v4_resource_media",
+          "impl DbBackend > fn migrate_v5_resource_note_id",
+          "impl DbBackend > fn current_meta",
+          "impl DbBackend > fn incoming_wins",
+          "impl DbBackend > fn next_local_vv",
+          "impl DbBackend > fn row_is_live",
+          "impl DbBackend > fn assoc_meta",
+          "impl DbBackend > fn next_assoc_vv",
+          "impl DbBackend > fn assoc_incoming_wins",
+          "impl DbBackend > fn upsert_assoc",
+          "impl DbBackend > fn resource_meta",
+          "impl DbBackend > fn next_resource_vv",
+          "impl DbBackend > fn resource_incoming_wins",
+          "fn parse_cursor",
+          "fn build_page",
+          "fn bookmarks_to_json",
+          "fn links_to_json",
+          "fn json_to_bookmarks",
+          "fn json_to_links",
+          "fn vv_to_json",
+          "fn json_to_vv",
+          "fn tombstone_data",
+          "fn assoc_data",
+          "fn assoc_from_data",
+          "fn tombstone_from_data",
+          "impl NoteRepository for DbBackend",
+          "impl NoteRepository for DbBackend > fn create_note",
+          "impl NoteRepository for DbBackend > fn read_note",
+          "impl NoteRepository for DbBackend > fn update_note",
+          "impl NoteRepository for DbBackend > fn delete_note",
+          "impl NoteRepository for DbBackend > fn list_notes",
+          "impl NoteRepository for DbBackend > fn note_backlinks",
+          "impl NoteRepository for DbBackend > fn list_notes_in_notebook",
+          "impl NoteRepository for DbBackend > fn list_starred_notes",
+          "impl NoteRepository for DbBackend > fn notebook_sort_profile",
+          "impl NotebookRepository for DbBackend",
+          "impl NotebookRepository for DbBackend > fn create_notebook",
+          "impl NotebookRepository for DbBackend > fn read_notebook",
+          "impl NotebookRepository for DbBackend > fn update_notebook",
+          "impl NotebookRepository for DbBackend > fn delete_notebook",
+          "impl NotebookRepository for DbBackend > fn list_notebooks",
+          "impl TagRepository for DbBackend",
+          "impl TagRepository for DbBackend > fn create_tag",
+          "impl TagRepository for DbBackend > fn read_tag",
+          "impl TagRepository for DbBackend > fn update_tag",
+          "impl TagRepository for DbBackend > fn delete_tag",
+          "impl TagRepository for DbBackend > fn list_tags",
+          "impl TagRepository for DbBackend > fn add_note_tag",
+          "impl TagRepository for DbBackend > fn remove_note_tag",
+          "impl TagRepository for DbBackend > fn list_note_tags",
+          "impl ResourceRepository for DbBackend",
+          "impl ResourceRepository for DbBackend > fn create_resource",
+          "impl ResourceRepository for DbBackend > fn read_resource",
+          "impl ResourceRepository for DbBackend > fn delete_resource",
+          "impl ResourceRepository for DbBackend > fn list_resources",
+          "impl ResourceRepository for DbBackend > fn list_resources_for_note",
+          "impl ResourceRepository for DbBackend > fn purge_deleted_resources",
+          "impl SyncBackend for DbBackend",
+          "impl SyncBackend for DbBackend > fn get_changes_since",
+          "impl SyncBackend for DbBackend > fn apply_change",
+          "impl SyncBackend for DbBackend > fn get_last_sync_time",
+          "impl SyncBackend for DbBackend > fn update_sync_time",
+          "impl SyncBackend for DbBackend > fn send_changes",
+          "impl SyncBackend for DbBackend > fn receive_changes",
+          "impl SyncBackend for DbBackend > fn prune_change_journal",
+          "impl SyncBackend for DbBackend > fn get_device_id",
+          "ServerVersion",
+          "CapabilityCache",
+          "fn http_base_of",
+          "impl DbBackend (server history)",
+          "impl DbBackend (server history) > fn server_http_base",
+          "impl DbBackend (server history) > fn server_has_capability",
+          "impl DbBackend (server history) > fn server_entity_history",
+          "impl DbBackend (server history) > fn entity_history",
+          "impl HistoryRepository for DbBackend",
+          "impl HistoryRepository for DbBackend > fn note_history",
+          "impl HistoryRepository for DbBackend > fn notebook_history",
+          "mod migration_tests",
+          "mod migration_tests > fn raw_conn",
+          "mod migration_tests > fn user_version",
+          "mod migration_tests > fn note_history_reads_this_devices_versions_newest_first",
+          "mod migration_tests > fn fresh_database_is_stamped_current_and_reopen_is_a_noop",
+          "mod migration_tests > fn tag_system_flag_round_trips",
+          "mod migration_tests > fn resource_media_metadata_round_trips",
+          "mod migration_tests > fn migrates_a_pre_framework_database_without_losing_data",
+          "mod migration_tests > fn refuses_to_open_a_newer_schema"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/db.rs` — DbBackend (LibSQL + WebSocket storage)"
+      },
+      "risk": {
+        "basis": [
+          "websocket"
+        ],
+        "origin": "INFERRED",
+        "value": "protocol"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/error.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/note_log.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-core/tests/fs_backend.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-core/tests/fs_backend.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "NoteMeta",
+          "NoteMetaEntry",
+          "impl NoteMetaEntry",
+          "impl NoteMetaEntry > fn from_note",
+          "NoteMetaIndex",
+          "impl NoteMetaIndex",
+          "impl NoteMetaIndex > fn apply",
+          "NoteTagState",
+          "LogEntry",
+          "fn default_entity_type",
+          "EpochHeader",
+          "fn parse_epoch_header",
+          "fn fs_tombstone_value",
+          "fn content_hash",
+          "StoredResource",
+          "fn fs_assoc_value",
+          "fn snapshot_entry_from_sidecar",
+          "fn snapshot_entry_from_value",
+          "fn fs_assoc_from_data",
+          "fn fs_tombstone_from_data",
+          "fn log_entry_to_change",
+          "fn parse_note_log",
+          "fn atomic_write",
+          "SyncState",
+          "FsBackend",
+          "impl FsBackend",
+          "impl FsBackend > fn new",
+          "impl FsBackend > fn sweep_orphan_tmp_files",
+          "impl FsBackend > fn scan_sync_conflicts",
+          "impl FsBackend > fn sweep_tmp_in_dir",
+          "impl FsBackend > fn format_version_path",
+          "impl FsBackend > fn ensure_format_version",
+          "impl FsBackend > fn apply_format_migration",
+          "impl FsBackend > fn note_dir",
+          "impl FsBackend > fn note_md_path",
+          "impl FsBackend > fn note_meta_path",
+          "impl FsBackend > fn note_log_path",
+          "impl FsBackend > fn device_log_path",
+          "impl FsBackend > fn notebook_path",
+          "impl FsBackend > fn tag_path",
+          "impl FsBackend > fn note_tag_dir",
+          "impl FsBackend > fn note_tag_path",
+          "impl FsBackend > fn note_resources_dir",
+          "impl FsBackend > fn resource_meta_path",
+          "impl FsBackend > fn resource_blob_path",
+          "impl FsBackend > fn all_note_ids",
+          "impl FsBackend > fn note_resource_ids",
+          "impl FsBackend > fn locate_resource_note",
+          "impl FsBackend > fn read_resource_sidecar",
+          "impl FsBackend > fn read_or_create_device_id",
+          "impl FsBackend > fn append_log",
+          "impl FsBackend > fn maybe_compact_global_log_locked",
+          "impl FsBackend > fn own_log_entry_count",
+          "impl FsBackend > fn read_own_epoch",
+          "impl FsBackend > fn compact_global_log_locked",
+          "impl FsBackend > fn build_global_snapshot",
+          "impl FsBackend > fn log_offset_path",
+          "impl FsBackend > fn read_log_offset",
+          "impl FsBackend > fn write_log_offset",
+          "impl FsBackend > fn read_log_header",
+          "impl FsBackend > fn read_other_logs_since",
+          "impl FsBackend > fn read_new_entries",
+          "impl FsBackend > fn write_sidecar",
+          "impl FsBackend > fn write_note_log",
+          "impl FsBackend > fn read_sidecar",
+          "impl FsBackend > fn sidecar_vv",
+          "impl FsBackend > fn next_sidecar_vv",
+          "impl FsBackend > fn sidecar_incoming_wins",
+          "impl FsBackend > fn read_assoc_state",
+          "impl FsBackend > fn next_assoc_vv",
+          "impl FsBackend > fn assoc_incoming_wins",
+          "impl FsBackend > fn write_assoc_state",
+          "impl FsBackend > fn read_resource_meta",
+          "impl FsBackend > fn next_resource_vv",
+          "impl FsBackend > fn resource_incoming_wins",
+          "impl FsBackend > fn cascade_stamp_resources",
+          "impl FsBackend > fn cascade_unstamp_resources",
+          "impl FsBackend > fn note_vv",
+          "impl FsBackend > fn read_note_logs",
+          "impl FsBackend > fn merge_note",
+          "impl FsBackend > fn materialize",
+          "impl FsBackend > fn persist_note_projection",
+          "impl FsBackend > fn read_note_projection",
+          "impl FsBackend > fn with_note_index",
+          "impl FsBackend > fn build_note_index",
+          "impl FsBackend > fn materialize_page",
+          "impl FsBackend > fn append_note_op",
+          "impl FsBackend > fn collect_advanced_notes",
+          "KeyedItem",
+          "impl PartialEq for KeyedItem",
+          "impl Eq for KeyedItem",
+          "impl PartialOrd for KeyedItem",
+          "impl Ord for KeyedItem",
+          "PageCollector",
+          "impl PageCollector",
+          "impl PageCollector > fn new",
+          "impl PageCollector > fn push",
+          "impl PageCollector > fn into_page",
+          "fn paginate",
+          "impl NoteRepository for FsBackend",
+          "impl NoteRepository for FsBackend > fn create_note",
+          "impl NoteRepository for FsBackend > fn read_note",
+          "impl NoteRepository for FsBackend > fn update_note",
+          "impl NoteRepository for FsBackend > fn delete_note",
+          "impl NoteRepository for FsBackend > fn list_notes",
+          "impl NoteRepository for FsBackend > fn list_notes_in_notebook",
+          "impl NoteRepository for FsBackend > fn list_starred_notes",
+          "impl NoteRepository for FsBackend > fn notebook_sort_profile",
+          "impl NotebookRepository for FsBackend",
+          "impl NotebookRepository for FsBackend > fn create_notebook",
+          "impl NotebookRepository for FsBackend > fn read_notebook",
+          "impl NotebookRepository for FsBackend > fn update_notebook",
+          "impl NotebookRepository for FsBackend > fn delete_notebook",
+          "impl NotebookRepository for FsBackend > fn list_notebooks",
+          "impl TagRepository for FsBackend",
+          "impl TagRepository for FsBackend > fn create_tag",
+          "impl TagRepository for FsBackend > fn read_tag",
+          "impl TagRepository for FsBackend > fn update_tag",
+          "impl TagRepository for FsBackend > fn delete_tag",
+          "impl TagRepository for FsBackend > fn list_tags",
+          "impl TagRepository for FsBackend > fn add_note_tag",
+          "impl TagRepository for FsBackend > fn remove_note_tag",
+          "impl TagRepository for FsBackend > fn list_note_tags",
+          "impl ResourceRepository for FsBackend",
+          "impl ResourceRepository for FsBackend > fn create_resource",
+          "impl ResourceRepository for FsBackend > fn read_resource",
+          "impl ResourceRepository for FsBackend > fn delete_resource",
+          "impl ResourceRepository for FsBackend > fn list_resources",
+          "impl ResourceRepository for FsBackend > fn list_resources_for_note",
+          "impl ResourceRepository for FsBackend > fn purge_deleted_resources",
+          "impl SyncBackend for FsBackend",
+          "impl SyncBackend for FsBackend > fn get_changes_since",
+          "impl SyncBackend for FsBackend > fn apply_change",
+          "impl SyncBackend for FsBackend > fn get_last_sync_time",
+          "impl SyncBackend for FsBackend > fn update_sync_time",
+          "impl SyncBackend for FsBackend > fn send_changes",
+          "impl SyncBackend for FsBackend > fn receive_changes",
+          "impl SyncBackend for FsBackend > fn get_device_id",
+          "impl SyncBackend for FsBackend > fn prune_change_journal",
+          "impl FsBackend (global history)",
+          "impl FsBackend (global history) > fn read_all_global_entries",
+          "impl HistoryRepository for FsBackend",
+          "impl HistoryRepository for FsBackend > fn note_history",
+          "impl HistoryRepository for FsBackend > fn notebook_history",
+          "fn sort_and_cap",
+          "mod tests",
+          "mod tests > fn concurrent_same_note_updates_keep_every_log_entry",
+          "mod tests > fn read_does_not_rewrite_projection",
+          "mod tests > fn list_notes_pages_match_full_walk",
+          "mod tests > fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones",
+          "mod tests > fn failed_atomic_write_cleans_up_its_temp_file",
+          "mod tests > fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it",
+          "mod tests > fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair",
+          "mod tests > fn detects_syncthing_conflict_copies_without_removing_them",
+          "mod tests > fn purge_reclaims_old_tombstoned_payloads_only",
+          "mod tests > fn attachments_live_as_content_hashed_knrs_in_their_note_folder",
+          "mod tests > fn identical_attachments_in_a_note_share_one_blob",
+          "mod tests > fn fresh_store_is_stamped_current_version",
+          "mod tests > fn migrates_a_legacy_stamp_and_preserves_data",
+          "mod tests > fn refuses_to_open_a_newer_format"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/fs.rs` — FsBackend (filesystem storage)"
+      },
+      "risk": {
+        "basis": [
+          "backend",
+          "storage"
+        ],
+        "origin": "INFERRED",
+        "value": "persistence"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/mod.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "DEFAULT_PAGE_SIZE",
+          "MAX_PAGE_SIZE",
+          "fn effective_page_size",
+          "trait SortableRfc3339",
+          "impl SortableRfc3339 for DateTime Utc",
+          "mod tests",
+          "mod tests > fn effective_page_size_defaults_and_clamps",
+          "mod tests > fn sortable_rfc3339_has_fixed_shape",
+          "mod tests > fn lexicographic_order_matches_chronological_even_mixed_with_old_format"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/mod.rs` — storage module root"
+      },
+      "risk": {
+        "basis": [
+          "storage"
+        ],
+        "origin": "INFERRED",
+        "value": "persistence"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/mod.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/note_log.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "`collab/protocol.rs`/`state.rs` (line versioning), keeplin-srv (pins this crate",
+          "inputs must pick the same winner. `merge`, `resolve`, and keeplin-srv's line",
+          "backends, keeplin-srv.",
+          "`storage/fs.rs` sidecar handling, and keeplin-srv.",
+          "backends keeping only current state (`DbBackend`, keeplin-srv). Rules (matching",
+          "`storage/fs.rs` sidecar entities; keeplin-srv's store (same function via the",
+          "keeplin-srv; changing them means changing distributed convergence semantics.",
+          "`keeplin-core/src/storage/db.rs`, `keeplin-core/src/collab/*`, keeplin-srv — via `resolve`/`VersionVector` (INFERRED: fully-qualified paths the AST pass does not link)"
+        ]
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/db_backend.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/fs_backend.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/db_backend.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/fs_backend.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "VersionVector",
+          "fn increment",
+          "fn dominates",
+          "fn join",
+          "NoteOp",
+          "NoteLogEntry",
+          "Merged",
+          "fn merge",
+          "fn compact_own_log",
+          "Winner",
+          "fn resolve",
+          "mod tests",
+          "mod tests > fn vv",
+          "mod tests > fn ts",
+          "mod tests > fn resolve_incoming_causally_newer_wins",
+          "mod tests > fn resolve_stale_incoming_loses",
+          "mod tests > fn resolve_equal_vectors_is_noop",
+          "mod tests > fn resolve_concurrent_equal_timestamp_converges_by_device",
+          "mod tests > fn resolve_concurrent_breaks_by_timestamp",
+          "mod tests > fn entry",
+          "mod tests > fn note",
+          "mod tests > fn single_device_history_picks_latest",
+          "mod tests > fn merge_exposes_winning_heads_own_vv_and_device",
+          "mod tests > fn merge_empty_has_empty_winner_fields",
+          "mod tests > fn causal_update_wins_without_conflict",
+          "mod tests > fn concurrent_edits_conflict_and_break_by_timestamp",
+          "mod tests > fn tombstone_wins_over_concurrent_older_edit",
+          "mod tests > fn compact_own_log_preserves_merge",
+          "mod tests > fn causal_edit_after_delete_resurrects"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/note_log.rs` — version-vector conflict resolution"
+      },
+      "risk": {
+        "basis": [
+          "storage"
+        ],
+        "origin": "INFERRED",
+        "value": "persistence"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/note_log.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/sync/engine.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/error.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/ws_sync.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/server.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/tests/ws_sync.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/server.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "SyncStage",
+          "fn run_sync",
+          "SyncEngine",
+          "impl SyncEngine",
+          "impl SyncEngine > fn new",
+          "impl SyncEngine > fn sync"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`sync/engine.rs` — SyncEngine"
+      },
+      "risk": {
+        "basis": [
+          "sync"
+        ],
+        "origin": "INFERRED",
+        "value": "protocol"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/sync/engine.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/sync/mod.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`sync/mod.rs` — sync module root"
+      },
+      "risk": {
+        "basis": [
+          "sync"
+        ],
+        "origin": "INFERRED",
+        "value": "protocol"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/sync/mod.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/tests/collab_client.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "**end-to-end round trip** through a mock keeplin-srv (in-process axum: REST note",
+          "exercised in keeplin-srv's own e2e suite. The mock has no `/version` route, so",
+          "**What it does** — Minimal in-process stand-in for keeplin-srv on an ephemeral",
+          "`keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: references×2; e.g. `CollabBackend`)",
+          "The state-machine layer is tested pure (no I/O); the e2e layer runs against an in-process mock keeplin-srv — the production server end is covered in keeplin-srv's own e2e suite."
+        ]
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/state.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "origin": "INFERRED",
+            "value": "The state-machine layer is tested pure (no I/O); the e2e layer runs against an in-process mock keeplin-srv — the production server end is covered in keeplin-srv's own e2e suite."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "Deterministic replay (same ops → identical bodies on every mirror) is the core assertion and must stay covered."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "The mock has no `/version` route: `start` exercising the warn-and-continue handshake path is intentional."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "fn token_for",
+          "fn token_device_id_decodes",
+          "fn diff_roundtrip_materializes_new_body",
+          "fn ops_replay_identically_on_another_mirror",
+          "fn mock_server",
+          "fn client",
+          "fn wait_body",
+          "fn created_note_body_survives_the_join_welcome",
+          "fn edits_travel_between_two_daemons",
+          "fn resource_blob_uploads_out_of_band_and_downloads_on_read",
+          "fn cursor_updates_flow_into_presence"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`tests/collab_client.rs` — collaborative client tests (state machine + mock server e2e)"
+      },
+      "risk": {
+        "basis": [
+          "collab",
+          "handshake"
+        ],
+        "origin": "INFERRED",
+        "value": "protocol"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/tests/collab_client.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/tests/db_backend.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/error.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "origin": "INFERRED",
+            "value": "The full `StorageBackend` surface of `DbBackend` is covered at the SQLite level; WebSocket paths belong to `ws_sync.rs`."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "The journal invariants (original op type recorded; `apply_change` never re-journals; prune respects the cutoff) are pinned here."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "Tombstone-first races (#71) must stay covered for all four versioned entity types."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "Concurrency tests must run on a multi-threaded runtime to exercise real interleavings."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "fn in_memory_backend",
+          "fn create_and_read_note",
+          "fn update_note",
+          "fn delete_note_soft_deletes",
+          "fn list_notes_excludes_deleted",
+          "fn read_nonexistent_returns_not_found",
+          "fn device_id_is_stable",
+          "fn sync_state_round_trips",
+          "fn get_changes_since_returns_updated_notes",
+          "fn prune_change_journal_removes_rows_older_than_cutoff",
+          "fn apply_change_is_not_re_journaled",
+          "fn update_nonexistent_note_returns_not_found",
+          "fn delete_nonexistent_note_returns_not_found",
+          "fn update_nonexistent_notebook_returns_not_found",
+          "fn delete_nonexistent_notebook_returns_not_found",
+          "fn update_nonexistent_tag_returns_not_found",
+          "fn delete_nonexistent_tag_returns_not_found",
+          "fn create_and_read_notebook",
+          "fn delete_notebook_soft_deletes",
+          "fn create_and_read_tag",
+          "fn add_and_list_note_tags",
+          "fn add_note_tag_rejects_missing_or_deleted_ends",
+          "fn pagination_walks_notes_sharing_a_created_at",
+          "fn remove_note_tag",
+          "fn purge_reclaims_old_tombstoned_payloads_only",
+          "fn create_and_read_resource",
+          "fn list_resources_excludes_data",
+          "fn delete_resource",
+          "fn list_notes_paginates_without_duplicates_or_gaps",
+          "fn concurrent_note_creates_all_succeed",
+          "fn concurrent_reads_and_writes_make_progress",
+          "fn note_alias_bookmarks_links_round_trip",
+          "fn notebook_alias_round_trip",
+          "fn indexed_backlinks_track_writes_and_deletes",
+          "fn backlinks_are_paginated",
+          "fn ordering_fields_round_trip_and_manual_order_query",
+          "fn sync_applied_change_carries_ordering_fields",
+          "fn delete_for_unknown_entity_leaves_a_tombstone_blocking_a_stale_create",
+          "fn note_delete_cascades_to_attachments_and_restore_recovers_dragged",
+          "fn moving_note_between_notebooks_leaves_attachments_untouched",
+          "fn list_resources_for_note_orders_and_excludes_others",
+          "fn resource_note_id_round_trips"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`tests/db_backend.rs` — DbBackend integration tests"
+      },
+      "risk": {
+        "basis": [
+          "sync",
+          "websocket"
+        ],
+        "origin": "INFERRED",
+        "value": "protocol"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/tests/db_backend.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/tests/encryption.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/encryption.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "origin": "INFERRED",
+            "value": "Plaintext must never be readable in the underlying store; wrong passwords must fail loudly, not return garbage."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "Round-trips return the original plaintext byte-for-byte."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "TEST_SALT",
+          "fn enc_backend",
+          "fn note_round_trips",
+          "fn storage_contains_ciphertext_not_plaintext",
+          "fn wrong_password_fails_to_decrypt",
+          "fn update_note_encrypts_new_content",
+          "fn list_notes_decrypts_all",
+          "fn notebook_round_trips",
+          "fn tag_round_trips",
+          "fn note_tag_relation_preserved",
+          "fn resource_round_trips",
+          "fn resource_data_stored_encrypted",
+          "fn list_notes_paginates_and_decrypts_each_page"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`tests/encryption.rs` — EncryptedBackend integration tests"
+      },
+      "risk": {
+        "basis": [
+          "encrypt",
+          "password"
+        ],
+        "origin": "INFERRED",
+        "value": "security"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/tests/encryption.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/tests/fs_backend.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/note_log.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "origin": "INFERRED",
+            "value": "Replication copies only single-writer logs; projections are regenerated — the tests must never copy `note.md`/`meta.ndjson` between roots."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "Convergence (causal, concurrent equal-timestamp, add/remove races) and both compaction bounds (per-note 256, global 512 with epoch snapshots) are pinned here."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "Tombstone-first races (#71) stay covered for the sidecar entity types; note deletes converge through the per-note logs."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "fn create_and_read_note",
+          "fn update_note",
+          "fn delete_note_soft_deletes",
+          "fn list_notes_excludes_deleted",
+          "fn read_nonexistent_note_returns_not_found",
+          "fn device_id_is_stable_across_instances",
+          "fn sync_state_persists",
+          "fn get_changes_since_scans_other_device_logs",
+          "fn update_nonexistent_note_returns_not_found",
+          "fn delete_nonexistent_note_returns_not_found",
+          "fn update_nonexistent_notebook_returns_not_found",
+          "fn delete_nonexistent_notebook_returns_not_found",
+          "fn update_nonexistent_tag_returns_not_found",
+          "fn delete_nonexistent_tag_returns_not_found",
+          "fn create_and_read_notebook",
+          "fn list_notebooks_includes_created",
+          "fn delete_notebook_soft_deletes",
+          "fn create_and_read_tag",
+          "fn list_tags_includes_created",
+          "fn add_and_list_note_tags",
+          "fn add_note_tag_rejects_missing_or_deleted_ends",
+          "fn remove_note_tag",
+          "fn create_and_read_resource",
+          "fn list_resources_excludes_data",
+          "fn delete_resource",
+          "fn list_notes_paginates_without_duplicates_or_gaps",
+          "fn replicate_note",
+          "fn fs_note_uses_three_file_layout",
+          "fn fs_on_disk_serialization_is_ndjson",
+          "fn fs_two_device_causal_sync",
+          "fn fs_two_device_concurrent_edits_converge",
+          "fn note_alias_bookmarks_links_persist_in_meta",
+          "fn backlinks_default_scan_is_paginated",
+          "fn fs_notebook_concurrent_equal_timestamp_edits_converge",
+          "fn fs_concurrent_note_tag_add_remove_converges",
+          "fn note_log_len",
+          "fn fs_note_log_compacts_and_still_converges",
+          "fn replicate_logs",
+          "fn drain_sync",
+          "fn own_log_stats",
+          "fn fs_global_log_compacts_and_peer_converges",
+          "fn fs_global_log_snapshot_covers_all_entity_types",
+          "fn ordering_fields_round_trip_and_manual_order_query",
+          "fn note_index_reflects_local_writes_after_it_is_built",
+          "fn note_index_reflects_changes_pulled_from_a_peer",
+          "fn delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_create",
+          "fn fs_note_delete_cascades_to_attachments_and_restore_recovers_dragged",
+          "fn fs_moving_note_between_notebooks_leaves_attachments_untouched",
+          "fn fs_list_resources_for_note_orders_and_excludes_others"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`tests/fs_backend.rs` — FsBackend integration tests"
+      },
+      "risk": {
+        "basis": [
+          "backend"
+        ],
+        "origin": "INFERRED",
+        "value": "persistence"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/tests/fs_backend.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/tests/migrate.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/migrate.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "origin": "INFERRED",
+            "value": "Seeds one of every entity type and asserts a faithful copy in the destination — new entity kinds must be added to the seed when introduced."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "Covers crossing the encryption boundary in both directions."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "Seeded",
+          "fn seed",
+          "fn assert_migrated",
+          "fn db",
+          "fn fs_to_db_round_trip",
+          "fn db_to_fs_round_trip",
+          "fn encrypted_fs_to_encrypted_db"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`tests/migrate.rs` — cross-backend migration tests"
+      },
+      "risk": {
+        "basis": [
+          "encrypt"
+        ],
+        "origin": "INFERRED",
+        "value": "security"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/tests/migrate.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/tests/sync.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "origin": "INFERRED",
+            "value": "Two independent backends converge by exchanging `Change`s via `get_changes_since`/`apply_change` — version-vector semantics (dominance, concurrency tiebreak) are pinned here."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "Convergence must be order-independent: applying the same change sets in different orders yields the same final state."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "fn device",
+          "fn create_propagates_between_devices",
+          "fn stale_remote_update_does_not_clobber_newer_local",
+          "fn db_stale_delete_does_not_override_newer_edit",
+          "fn db_stale_update_does_not_resurrect_tombstone",
+          "fn db_concurrent_equal_timestamp_edits_converge",
+          "fn db_concurrent_notebook_edits_converge",
+          "fn fs_tombstones_resolve_by_timestamp",
+          "fn db_concurrent_note_tag_add_remove_converges",
+          "fn db_resource_delete_propagates_and_converges"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`tests/sync.rs` — cross-device change-propagation tests"
+      },
+      "risk": {
+        "basis": [
+          "sync"
+        ],
+        "origin": "INFERRED",
+        "value": "protocol"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/tests/sync.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/tests/version_handshake.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "and `CollabBackend::start` (collaborative session). Fake keeplin-srv `/version`",
+          "compatibility is an **exact match**. These behaviours are cross-repo API (the",
+          "keeplin-srv `tests/integration.rs` pins the server end of the same wire",
+          "keeplin-srv): construction succeeds and local CRUD is fully usable",
+          "Pins the three-way handshake contract (compatible / incompatible / missing) for BOTH connect points; these behaviours are cross-repo API and must not regress."
+        ]
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "origin": "INFERRED",
+            "value": "Pins the three-way handshake contract (compatible / incompatible / missing) for BOTH connect points; these behaviours are cross-repo API and must not regress."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "The compatible case must fetch `/version` exactly once (startup priming; no refetch on capability checks)."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "fn spawn_version_server",
+          "fn fake_token",
+          "fn db_path",
+          "fn compatible_version_connects_and_primes_capabilities",
+          "fn incompatible_version_fails_construction_loudly",
+          "fn missing_version_warns_and_continues",
+          "fn collab_start_applies_the_same_rule"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`tests/version_handshake.rs` — startup protocol handshake tests"
+      },
+      "risk": {
+        "basis": [
+          "handshake",
+          "proto",
+          "protocol"
+        ],
+        "origin": "INFERRED",
+        "value": "protocol"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/tests/version_handshake.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/tests/ws_sync.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/sync/engine.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "origin": "INFERRED",
+            "value": "Drives the genuine wire protocol against an in-process relay: auth-first frame, `changes` envelopes, no echo to the sender."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "Undelivered batches must fail the send (watermark unchanged) and be re-sent after reconnect — offline resilience is the point of the suite."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "The capability-negotiation tests (`/version` without `history`, 404-latch) must keep asserting the probe happens at most once."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "fn spawn_relay",
+          "fn spawn_relay_on",
+          "fn device",
+          "fn epoch",
+          "fn push",
+          "fn sync_until",
+          "fn note_create_syncs_between_two_devices",
+          "fn update_propagates_and_converges",
+          "fn failed_send_keeps_watermark_and_changes_are_resent_after_recovery",
+          "fn send_without_configured_relay_is_a_noop",
+          "fn malformed_frame_does_not_abort_receive",
+          "fn spawn_history_server",
+          "fn note_history_prefers_the_server_journal",
+          "fn note_history_falls_back_to_the_local_journal",
+          "fn a_404_history_endpoint_is_probed_only_once",
+          "fn history_is_skipped_when_the_server_capability_is_absent"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`tests/ws_sync.rs` — end-to-end WebSocket sync tests"
+      },
+      "risk": {
+        "basis": [
+          "auth"
+        ],
+        "origin": "INFERRED",
+        "value": "security"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/tests/ws_sync.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/build.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "origin": "INFERRED",
+            "value": "Compiles `proto/keeplin.proto` with `tonic-build` at build time; requires `protoc` on PATH."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "Proto evolution is additive-only: new fields with new tags, never reuse/renumber (old peers"
+          },
+          {
+            "origin": "INFERRED",
+            "value": "`build_server(true)` must stay on: `src/server.rs` implements the generated server trait."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "main"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`build.rs` — keeplin-daemon build script"
+      },
+      "risk": {
+        "basis": [
+          "proto"
+        ],
+        "origin": "INFERRED",
+        "value": "protocol"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/build.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-daemon"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/auth.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "API; it is unrelated to keeplin-srv's account/JWT auth, which only the collab"
+        ]
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "fn verify_basic",
+          "mod tests",
+          "mod tests > fn basic",
+          "mod tests > fn accepts_valid_credentials",
+          "mod tests > fn rejects_wrong_password_user_and_missing_header",
+          "mod tests > fn password_with_colons_works",
+          "mod tests > fn rejects_empty_expected_credentials",
+          "mod tests > fn scheme_is_case_and_whitespace_tolerant"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`auth.rs` — shared HTTP Basic Authentication check"
+      },
+      "risk": {
+        "basis": [
+          "auth"
+        ],
+        "origin": "INFERRED",
+        "value": "security"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/auth.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-daemon"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/config.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "| `collab_api_url` | `None` | keeplin-srv HTTP base; when set in server mode, note bodies edit collaboratively over `/api/ws` and note changes stop flowing through the relay (notebooks/tags/resources still sync over `server_url`); same `auth_token` |"
+        ]
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "Mode",
+          "Config",
+          "fn default_grpc_addr",
+          "fn default_max_message_size",
+          "fn default_max_upload_bytes",
+          "fn default_journal_retention_days",
+          "impl Config (loading)",
+          "impl Config (loading) > fn from_file",
+          "impl Default for Config",
+          "impl Config (security)",
+          "impl Config (security) > fn security_issues",
+          "impl Config (security) > fn auth_enabled",
+          "impl Config (security) > fn validate_auth",
+          "fn plaintext_ws_remote_host",
+          "mod tests",
+          "mod tests > fn base",
+          "mod tests > fn with_auth",
+          "mod tests > fn loopback_defaults_are_safe",
+          "mod tests > fn network_grpc_without_auth_is_flagged",
+          "mod tests > fn network_http_without_auth_is_flagged",
+          "mod tests > fn validate_auth_rejects_partial_and_empty_credentials",
+          "mod tests > fn partial_auth_still_flags_network_exposure",
+          "mod tests > fn plaintext_ws_to_remote_is_flagged_in_server_mode",
+          "mod tests > fn plaintext_ws_remote_host_parsing",
+          "mod tests > fn multiple_issues_accumulate"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`config.rs` — daemon runtime configuration"
+      },
+      "risk": {
+        "basis": [
+          "no elevated-risk term matched"
+        ],
+        "origin": "INFERRED",
+        "value": "normal"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/config.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-daemon"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/event_backend.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/error.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "EventBackend",
+          "impl EventBackend",
+          "impl EventBackend > fn new",
+          "impl EventBackend > fn publish",
+          "impl NoteRepository for EventBackend",
+          "impl NotebookRepository for EventBackend",
+          "impl TagRepository for EventBackend",
+          "impl ResourceRepository for EventBackend",
+          "impl SyncBackend for EventBackend",
+          "impl HistoryRepository for EventBackend",
+          "mod tests",
+          "mod tests > fn backend",
+          "mod tests > fn create_update_delete_emit_changes",
+          "mod tests > fn reads_do_not_emit_changes",
+          "mod tests > fn failed_mutation_emits_nothing"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`event_backend.rs` — `EventBackend` change-publishing decorator"
+      },
+      "risk": {
+        "basis": [
+          "backend"
+        ],
+        "origin": "INFERRED",
+        "value": "persistence"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/event_backend.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-daemon"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/main.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "`keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: imports_from×1, references×3; e.g. `CollabConfig`, `CollabHandle`, `CollabBackend`)"
+        ]
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/config.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "origin": "INFERRED",
+            "value": "Decorator order is fixed: `MetricsBackend(EventBackend(LinkingBackend([EncryptedBackend](Fs|Db))))` — linking needs plaintext, eventing needs final metadata, metrics counts logical operations."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "One daemon per store: the exclusive `daemon.lock` is taken before any I/O; a second daemon must fail fast."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "Startup must fail loudly on an incompatible sync server (the `DbBackend::new` handshake) and on insecure config without the explicit override."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "The encryption salt resolution order (config `key_salt` > persisted `.keeplin/key_salt` > derived-from-device-id, then persisted) must not change — it is a data-recovery contract."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "Args",
+          "Command",
+          "fn main",
+          "fn load_config",
+          "fn acquire_store_lock",
+          "fn serve",
+          "fn resolve_key_salt",
+          "fn key_salt_path",
+          "fn build_storage",
+          "fn run_migrate",
+          "StackHook",
+          "fn collab_config",
+          "fn collab_starter",
+          "fn run_server",
+          "fn run_server_with",
+          "fn shutdown_signal",
+          "fn validate_basic_auth",
+          "mod tests",
+          "mod tests > fn store_lock_is_exclusive_per_store_and_released_on_drop",
+          "mod tests > fn cfg_at",
+          "mod tests > fn key_salt_config_value_wins_and_persists_nothing",
+          "mod tests > fn key_salt_fallback_is_persisted_and_stable",
+          "mod tests > fn key_salt_file_survives_a_regenerated_device_id",
+          "mod tests > fn make_req",
+          "mod tests > fn basic",
+          "mod tests > fn auth_not_configured_allows_all",
+          "mod tests > fn auth_valid_credentials_pass",
+          "mod tests > fn auth_wrong_password_rejected",
+          "mod tests > fn auth_wrong_user_rejected",
+          "mod tests > fn auth_missing_header_rejected",
+          "mod tests > fn auth_bearer_scheme_rejected",
+          "mod tests > fn auth_malformed_base64_rejected",
+          "mod tests > fn auth_no_colon_in_credentials_rejected",
+          "mod tests > fn auth_password_containing_colon_works"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`main.rs` — daemon entry point"
+      },
+      "risk": {
+        "basis": [
+          "encrypt"
+        ],
+        "origin": "INFERRED",
+        "value": "security"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/main.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-daemon"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/metrics.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/error.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "OPERATION_LABELS",
+          "HTTP_STATUS_CLASSES",
+          "Metrics",
+          "impl Default for Metrics",
+          "impl Metrics",
+          "impl Metrics > fn new",
+          "impl Metrics > fn incr_op",
+          "impl Metrics > fn incr_error",
+          "impl Metrics > fn add_sync_applied",
+          "impl Metrics > fn record_http_status",
+          "impl Metrics > fn render_prometheus",
+          "MetricsBackend",
+          "impl MetricsBackend",
+          "impl MetricsBackend > fn new",
+          "impl MetricsBackend > fn record",
+          "impl NoteRepository for MetricsBackend",
+          "impl NotebookRepository for MetricsBackend",
+          "impl TagRepository for MetricsBackend",
+          "impl ResourceRepository for MetricsBackend",
+          "impl SyncBackend for MetricsBackend",
+          "impl HistoryRepository for MetricsBackend",
+          "mod tests",
+          "mod tests > fn backend",
+          "mod tests > fn counts_operations_and_errors",
+          "mod tests > fn counts_applied_sync_changes",
+          "mod tests > fn http_status_buckets"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`metrics.rs` — operational metrics"
+      },
+      "risk": {
+        "basis": [
+          "no elevated-risk term matched"
+        ],
+        "origin": "INFERRED",
+        "value": "normal"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/metrics.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-daemon"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/proto.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-daemon/src/server.rs"
+        },
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-daemon/src/main.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-daemon/src/server.rs"
+        },
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-daemon/src/main.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`proto.rs` — generated Protocol Buffers / gRPC code"
+      },
+      "risk": {
+        "basis": [
+          "proto",
+          "protocol"
+        ],
+        "origin": "INFERRED",
+        "value": "protocol"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/proto.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-daemon"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/rest.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "**server-side** (keeplin-srv is the authority); the daemon does not store or"
+        ]
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/ordering.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/linking.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/history.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/interop.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/sync/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/collab/mod.rs",
+          "required": true
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/auth.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/server.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/search.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/metrics.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-daemon/src/main.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-daemon/src/main.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "origin": "INFERRED",
+            "value": "Tombstones read and update as `404` on this surface; revival is reserved for sync's `apply_change`."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "`updated_at` is stamped server-side on every update handler; client values are ignored (issue #75)."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "The Inbox system notebook (nil UUID) cannot be deleted; ordering rules are enforced by `keeplin_core::ordering`, never re-implemented here."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "Operational routes (`/health`, `/ready`, `/metrics`) bypass auth **and** the status counter; every data route passes through both, auth inside the counter."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "The `ApiError` mapping is the single source of truth for REST status codes and must stay aligned with the gRPC `storage_err` mapping in `server.rs`."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "The WebSocket handler subscribes before the upgrade response, and a lagged client gets a `{\"type\":\"resync\"}` hint instead of silent loss."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "AppState",
+          "Shared",
+          "fn router",
+          "SearchParams",
+          "fn search_notes",
+          "fn auth_mw",
+          "fn status_mw",
+          "ApiError",
+          "impl From StorageError for ApiError",
+          "impl From SyncError for ApiError",
+          "impl IntoResponse for ApiError",
+          "Pagination",
+          "Page",
+          "fn page",
+          "fn health",
+          "fn ready",
+          "fn metrics",
+          "CreateNote",
+          "fn list_notes",
+          "fn create_note",
+          "fn get_note",
+          "fn update_note",
+          "fn delete_note",
+          "fn list_note_tags",
+          "fn add_note_tag",
+          "fn remove_note_tag",
+          "AliasBody",
+          "fn read_live_note",
+          "fn set_note_alias",
+          "fn list_links",
+          "AddLinkBody",
+          "fn add_link",
+          "fn remove_link",
+          "fn list_backlinks",
+          "fn list_notes_in_notebook",
+          "fn list_starred_notes",
+          "fn pin_note",
+          "fn unpin_note",
+          "fn star_note",
+          "fn unstar_note",
+          "ReorderBody",
+          "fn reorder_note",
+          "ResolveQuery",
+          "fn resolve_reference",
+          "fn list_alias_conflicts",
+          "HistoryQuery",
+          "NoteVersion",
+          "NotebookVersion",
+          "RevertBody",
+          "BatchRevertBody",
+          "fn note_history",
+          "fn notebook_history",
+          "fn revert_note_ep",
+          "fn revert_notebook_ep",
+          "fn revert_notebook_notes_ep",
+          "fn batch_revert_notes_ep",
+          "fn note_version_dto",
+          "fn notebook_version_dto",
+          "fn proxy_perm",
+          "fn proxy_note_share",
+          "fn proxy_note_shares",
+          "fn proxy_note_unshare",
+          "fn proxy_note_transfer",
+          "fn proxy_notebook_share",
+          "fn proxy_notebook_shares",
+          "fn proxy_notebook_unshare",
+          "fn proxy_notebook_transfer",
+          "ContactDto",
+          "impl From Contact for ContactDto",
+          "EventDto",
+          "impl From CalendarEvent for EventDto",
+          "fn text_body",
+          "fn list_contacts_ep",
+          "fn import_contact_ep",
+          "fn export_contact_ep",
+          "fn delete_contact_ep",
+          "fn list_events_ep",
+          "fn import_event_ep",
+          "fn export_event_ep",
+          "fn delete_event_ep",
+          "fn import_todo_ep",
+          "ProfileVcardQuery",
+          "fn profile_vcard_ep",
+          "TitleOnly",
+          "fn list_notebooks",
+          "fn create_notebook",
+          "fn read_live_notebook",
+          "fn get_notebook",
+          "fn update_notebook",
+          "fn delete_notebook",
+          "fn set_notebook_alias",
+          "fn list_tags",
+          "fn create_tag",
+          "fn read_live_tag",
+          "fn get_tag",
+          "fn update_tag",
+          "fn delete_tag",
+          "ResourceMeta",
+          "ListResourcesQuery",
+          "fn list_resources",
+          "fn create_resource",
+          "fn upload_resource",
+          "fn get_resource",
+          "fn get_resource_data",
+          "fn delete_resource",
+          "SyncSummary",
+          "fn sync",
+          "fn ws_handler",
+          "fn stream_changes",
+          "mod tests",
+          "mod tests > fn state",
+          "mod tests > fn linking_state",
+          "mod tests > fn call",
+          "mod tests > fn note_crud_round_trip",
+          "mod tests > fn permission_endpoints_require_server_mode",
+          "mod tests > fn contact_import_list_export_delete_endpoints",
+          "mod tests > fn todo_import_and_profile_vcard_endpoints",
+          "mod tests > fn note_history_and_revert_endpoints",
+          "mod tests > fn updates_on_deleted_entities_are_404",
+          "mod tests > fn sync_endpoint_prunes_journal_within_retention",
+          "mod tests > fn operational_endpoints_bypass_auth",
+          "mod tests > fn metrics_state",
+          "mod tests > fn metrics_reflect_operations_and_http_status",
+          "mod tests > fn invalid_uuid_is_bad_request",
+          "mod tests > fn auth_is_enforced_when_configured",
+          "mod tests > fn resource_upload_and_download",
+          "mod tests > fn resource_upload_above_axum_default_limit",
+          "mod tests > fn streaming_upload_round_trips",
+          "mod tests > fn streaming_upload_over_cap_is_413",
+          "mod tests > fn alias_and_links_endpoints",
+          "mod tests > fn alias_backlinks_and_resolve_endpoints",
+          "mod tests > fn alias_conflicts_endpoint",
+          "mod tests > fn state_with_events",
+          "mod tests > fn websocket_streams_note_create",
+          "fn note_presence",
+          "CursorBody",
+          "fn set_cursor"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`rest.rs` — the REST/JSON + WebSocket surface"
+      },
+      "risk": {
+        "basis": [
+          "auth"
+        ],
+        "origin": "INFERRED",
+        "value": "security"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/rest.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-daemon"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/search.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "**What it does** — Full-text search **in the daemon**, not on keeplin-srv: the"
+        ]
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs",
+          "required": false
+        },
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-daemon/src/event_backend.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/rest.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "SearchQuery",
+          "MAX_LIMIT",
+          "fn rfc",
+          "fn fts_match",
+          "Index",
+          "impl Index",
+          "impl Index > fn open",
+          "impl Index > fn remove",
+          "impl Index > fn upsert",
+          "impl Index > fn clear",
+          "impl Index > fn query",
+          "fn bit",
+          "SearchHandle",
+          "impl SearchHandle",
+          "impl SearchHandle > fn search",
+          "fn denormalize",
+          "fn rebuild",
+          "fn index_note",
+          "fn reindex_id",
+          "fn start",
+          "fn apply_change",
+          "mod tests",
+          "mod tests > fn note",
+          "mod tests > fn idx",
+          "mod tests > fn matches_title_and_body_by_prefix",
+          "mod tests > fn matches_tag_and_notebook_names",
+          "mod tests > fn structured_filters_narrow_results",
+          "mod tests > fn empty_query_lists_by_recency_with_filters",
+          "mod tests > fn indexes_from_rebuild_and_the_event_stream",
+          "mod tests > fn remove_drops_the_note"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`search.rs` — daemon full-text search"
+      },
+      "risk": {
+        "basis": [
+          "no elevated-risk term matched"
+        ],
+        "origin": "INFERRED",
+        "value": "normal"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/search.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-daemon"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/server.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": [
+          "same constants keeplin-srv enforces, so the two surfaces cannot disagree."
+        ]
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-daemon/src/proto.rs",
+          "required": true
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/models.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/ordering.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/linking.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/sync/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/error.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-daemon/src/rest.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-daemon/src/main.rs"
+        },
+        {
+          "origin": "EXTRACTED",
+          "path": "keeplin-daemon/src/rest.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "origin": "INFERRED",
+            "value": "On the wire, the Inbox (nil UUID) `notebook_id` is absent; absent/empty parses back to nil (`note_to_proto` ↔ `proto_to_note`)."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "`Get*` RPCs serve tombstones (sync reads them); `Update*` RPCs answer `NOT_FOUND` on a tombstone — revival is reserved for sync's `apply_change`."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "`updated_at` is stamped server-side on every update RPC; client-supplied values are ignored (issue #75)."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "The Inbox system notebook cannot be deleted; pinning an Inbox note is rejected."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "The `StorageError` → `Status` mapping in `storage_err` is the single source of truth for gRPC error codes."
+          },
+          {
+            "origin": "INFERRED",
+            "value": "Post-sync maintenance (journal prune, resource purge) must stay identical between the gRPC and REST sync handlers — both call the same two helpers."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "fn bookmark_to_proto",
+          "fn link_source_str",
+          "fn notelink_to_proto",
+          "fn note_to_proto",
+          "fn notebook_to_proto",
+          "fn resource_to_proto",
+          "fn tag_to_proto",
+          "fn storage_err",
+          "fn parse_uuid",
+          "fn ensure_not_deleted",
+          "fn parse_optional_dt",
+          "fn proto_to_note",
+          "fn proto_to_bookmark",
+          "fn proto_to_notelink",
+          "KeeplinServer",
+          "impl KeeplinServer",
+          "impl KeeplinServer > fn from_shared",
+          "impl KeeplinServer > fn assemble_upload",
+          "SyncStreamItem",
+          "SyncStreamPin",
+          "impl KeeplinService for KeeplinServer",
+          "impl KeeplinService for KeeplinServer > fn list_notes",
+          "impl KeeplinService for KeeplinServer > fn create_note",
+          "impl KeeplinService for KeeplinServer > fn get_note",
+          "impl KeeplinService for KeeplinServer > fn update_note",
+          "impl KeeplinService for KeeplinServer > fn delete_note",
+          "impl KeeplinService for KeeplinServer > fn list_notes_in_notebook",
+          "impl KeeplinService for KeeplinServer > fn list_starred_notes",
+          "impl KeeplinService for KeeplinServer > fn pin_note",
+          "impl KeeplinService for KeeplinServer > fn unpin_note",
+          "impl KeeplinService for KeeplinServer > fn star_note",
+          "impl KeeplinService for KeeplinServer > fn unstar_note",
+          "impl KeeplinService for KeeplinServer > fn reorder_notes",
+          "impl KeeplinService for KeeplinServer > fn list_notebooks",
+          "impl KeeplinService for KeeplinServer > fn create_notebook",
+          "impl KeeplinService for KeeplinServer > fn get_notebook",
+          "impl KeeplinService for KeeplinServer > fn update_notebook",
+          "impl KeeplinService for KeeplinServer > fn delete_notebook",
+          "impl KeeplinService for KeeplinServer > fn list_tags",
+          "impl KeeplinService for KeeplinServer > fn create_tag",
+          "impl KeeplinService for KeeplinServer > fn add_note_tag",
+          "impl KeeplinService for KeeplinServer > fn remove_note_tag",
+          "impl KeeplinService for KeeplinServer > fn get_tag",
+          "impl KeeplinService for KeeplinServer > fn update_tag",
+          "impl KeeplinService for KeeplinServer > fn delete_tag",
+          "impl KeeplinService for KeeplinServer > fn list_note_tags",
+          "impl KeeplinService for KeeplinServer > fn list_resources",
+          "impl KeeplinService for KeeplinServer > fn create_resource",
+          "impl KeeplinService for KeeplinServer > fn upload_resource",
+          "impl KeeplinService for KeeplinServer > fn get_resource",
+          "impl KeeplinService for KeeplinServer > fn delete_resource",
+          "impl KeeplinService for KeeplinServer > fn set_note_alias",
+          "impl KeeplinService for KeeplinServer > fn set_notebook_alias",
+          "impl KeeplinService for KeeplinServer > fn add_note_link",
+          "impl KeeplinService for KeeplinServer > fn remove_note_link",
+          "impl KeeplinService for KeeplinServer > fn list_backlinks",
+          "impl KeeplinService for KeeplinServer > fn resolve_reference",
+          "impl KeeplinService for KeeplinServer > fn list_alias_conflicts",
+          "impl KeeplinService for KeeplinServer > type SyncStream",
+          "impl KeeplinService for KeeplinServer > fn sync",
+          "fn prune_journal_after_sync",
+          "fn purge_resources_after_sync",
+          "fn stage_to_proto",
+          "mod tests",
+          "mod tests > fn server",
+          "mod tests > fn meta_frame",
+          "mod tests > fn chunk_frame",
+          "mod tests > fn upload_resource_assembles_chunks_in_order",
+          "mod tests > fn upload_resource_requires_metadata_first",
+          "mod tests > fn upload_resource_enforces_the_cap",
+          "mod tests > fn update_rpcs_reject_soft_deleted_entities",
+          "mod tests > fn update_notebook_and_tag_refresh_updated_at_server_side"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`server.rs` — the gRPC service implementation"
+      },
+      "risk": {
+        "basis": [
+          "proto",
+          "sync",
+          "wire"
+        ],
+        "origin": "INFERRED",
+        "value": "protocol"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-daemon/src/server.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-daemon"
+        ]
+      }
+    }
+  ],
+  "generator": "scripts/companion_tool.py",
+  "schema_version": 1
+}

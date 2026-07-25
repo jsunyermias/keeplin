@@ -1,8 +1,13 @@
 <!--
-  TEMPLATE (v2.3.1, block-complete): companion doc for a source module (`foo.rs` -> `foo.md`,
+  TEMPLATE (v2.4.0, mechanically verified): companion doc for a source module (`foo.rs` -> `foo.md`,
   same directory). Use for every `.rs` file — library modules, binaries, build scripts and
   integration tests (`tests/*.rs`); for test files each `#[test] fn` is simply a block.
   This v2 supersedes the old table-based `source-module.md` / `test-file.md` format.
+
+  WHAT CHANGED vs v2.3.1: RULE 7 is now enforced by `sync-companion-code --check`.
+  Every Rust fence maps to exactly one source leaf and must match it after LF/CRLF
+  normalization only. Stale, truncated, orphan, reordered and duplicate fences fail CI.
+  The same tool can synchronize existing fence bodies without changing authored prose.
 
   WHAT CHANGED vs v2.3: RULE 6 gains the CONTAINER PREAMBLE IS SCAFFOLDING paragraph —
   it declares (does not change) the convention the repo already follows: a container's
@@ -28,11 +33,11 @@
   CI (`scripts/check-docs.sh`) mechanically verifies: the companion exists, it has a
   `## Graph context` section, every `// md:` marker in the .rs appears here, no marker
   is duplicated in the .rs, the Coverage checklist has exactly one row per marker, and
-  no elision pattern appears inside any ```rust fence, and the .rs carries no
-  comment lines other than `// md:` markers. What CI does NOT verify: that
-  each fence is character-for-character identical to the source block — that fidelity
-  is your self-check (RULE 7). A file that violates any rule is an INCOMPLETE
-  migration, no matter how good the prose is.
+  no elision pattern appears inside any ```rust fence, the .rs carries no comment lines
+  other than `// md:` markers, and every Rust fence is exactly faithful to its source leaf.
+  Line endings are normalized to LF; indentation, blank lines, attributes, signatures and
+  bodies are not normalized. A file that violates any rule is an INCOMPLETE migration, no
+  matter how good the prose is.
 
   RULE 1 — COMPLETE CODE, ALWAYS. Every leaf-block section embeds the block's code
   complete and verbatim in a ```rust fence: character-for-character as it appears in
@@ -79,12 +84,13 @@
   fence, character-for-character (RULE 1). The `mod tests` `use super::*;` preamble is
   the canonical scaffolding example.
 
-  RULE 7 — SELF-CHECK BEFORE FINISHING. Re-read the .rs top to bottom: every marker
-  appears in a fence here with identical content (whitespace included); the Coverage
-  checklist lists every block in source order, one row each. `scripts/check-docs.sh`
-  is repo-wide — during a migration it will keep reporting not-yet-migrated files,
-  which is expected; the bar for finishing a file is that THIS file produces zero
-  violations. Do not mark the migration done until the whole script passes clean.
+  RULE 7 — FIDELITY IS MECHANICAL. Run `scripts/sync-companion-code --check`: every
+  leaf marker must own exactly one fence with identical content, while containers own no
+  fence. The comparison normalizes CRLF/LF line endings and nothing else. The check detects
+  stale, truncated, reordered, missing, orphan and duplicate blocks. To repair ordinary
+  drift, run `scripts/sync-companion-code path/to/file.rs`; it updates only existing fence
+  bodies and leaves all authored prose intact. `scripts/check-docs.sh` runs this repo-wide;
+  do not mark the migration done until it passes clean.
 
   RULE 8 — DEPENDENCIES ARE CONTRACTS. The **Dependencies** subsection is a bullet
   list, one bullet per dependency, in this shape:

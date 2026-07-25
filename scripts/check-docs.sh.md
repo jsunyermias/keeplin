@@ -3,9 +3,10 @@
 ## Purpose
 
 The mechanical arbiter of the block-complete companion-doc contract (LAYER 2 of the
-navigation model, `docs/templates/source-module.md` v2.3). It is dependency-free bash
-(`find` + `grep` + `awk` only) so it runs as the very first CI step, before any Rust
-toolchain exists. Run it locally before pushing; CI fails the build on any violation.
+navigation model, `docs/templates/source-module.md` v2.4). Its structural checks use
+standard shell tools and its exact-fidelity/context checks use standard-library Python, so
+it still runs before any Rust toolchain exists. Run it locally before pushing; CI fails the
+build on any violation.
 
 ## What it checks
 
@@ -26,15 +27,12 @@ For every `.rs` file in the repo (pruning `target/`, `graphify-out/`, `.git/`), 
 7. **Uncommented-code convention** — the only comment lines allowed in the `.rs` are
    `// md:` markers; any other `//`, `///`, `//!` or `/* */` comment fails (HARD RULE 9:
    all explanation lives in the companion, so fences never contain doc comments).
-
-## What it deliberately does NOT verify
-
-**Verbatim fence fidelity.** The script confirms marker/row/section *correspondence*
-mechanically, but it does not — and cannot cheaply — confirm that each fence's body is
-character-for-character identical to the marked block in the `.rs`. That is the author's
-self-check (HARD RULE 7): re-read the `.rs` top to bottom and confirm every fence matches
-its block, whitespace included. A file can pass this script and still be an incomplete
-migration if a fence was paraphrased.
+8. **Exact fence fidelity** — `sync-companion-code --check` maps every Rust fence to one
+   source leaf and compares the full marker, attributes, signature, body and whitespace.
+   Only CRLF/LF line endings are normalized; all other text must match. Stale, truncated,
+   reordered, missing, orphan and duplicate fences fail (HARD RULE 7).
+9. **Generated context index** — `context-pack manifest --check` fails if
+   `docs/context-manifest.json` no longer matches the source/companion corpus.
 
 ## Known caveat
 
@@ -44,7 +42,7 @@ script is the arbiter and must not be weakened to accommodate it.
 
 ## Behaviour
 
-- Prints one line per violation and exits `1`; prints a single confirmation line and
+- Prints one line per violation and exits `1`; prints confirmation lines and
   exits `0` when clean.
 - Repo-wide: during a migration it keeps reporting not-yet-migrated files, which is
   expected. The bar for finishing one file is that *that* file produces zero violations;
@@ -58,8 +56,9 @@ output.
 
 ## Related files
 
-- `docs/templates/source-module.md` — v2.3 block-complete template; its 9 HARD RULES are
+- `docs/templates/source-module.md` — v2.4 block-complete template; its 9 HARD RULES are
   what this script enforces.
+- `sync-companion-code` / `context-pack` — exact-fidelity and context-index entry points.
 - `.github/workflows/ci.yml` — where this runs in CI (first step).
 - `graphify-out/graph.json` — LAYER 1, the queryable graph the Graph context sections
   are sourced from.
