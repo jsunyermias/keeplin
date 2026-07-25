@@ -10,6 +10,35 @@ version and the wire protocol version move independently.
 
 ## [Unreleased]
 
+### Hard format limits, shared with keeplin-srv (#130)
+
+- **New module `keeplin-core/src/format.rs`** — the single source of truth for three hard
+  format limits, all exact powers of two: `MAX_LINE_BYTES` = 2¹² (4 096 UTF‑8 **bytes** per
+  line), `MAX_LINES_PER_NOTE` = 2¹⁶ (65 536 live lines per note), `MAX_NOTES_PER_NOTEBOOK` =
+  2²⁴ (16 777 216 live notes per notebook). It also owns the wire codes (`too_long`,
+  `too_many_lines`, `notebook_full`). keeplin-srv imports these constants instead of declaring
+  its own, so the two sides cannot drift; its previous values (`MAX_LINE_LEN = 10_000`,
+  `MAX_LINES_PER_NOTE = 100_000`) are replaced. **Breaking, no migration**: content already
+  over the new limits is refused by any path that revalidates it.
+- **The client validates before writing** — `NoteLines::diff_body` now returns
+  `Result<Vec<LineOp>, LimitViolation>` and rejects an over-limit body *before* mutating the
+  mirror or emitting a single op; `CollabBackend::create_note`/`update_note` check the body
+  before the local write. Previously the client knew nothing about the limits: an oversized
+  edit looked saved locally, the server dropped it, and it never reached the user's other
+  devices.
+- **A server rejection is now repaired, not just logged** — `CollabServerMsg::Error` gained
+  an optional `note_id` (additive; `PROTOCOL_VERSION` unchanged), and on a format-limit code
+  the client drops that note's mirror and rejoins so the server's snapshot replaces the
+  divergent local body.
+- **New notes-per-notebook cap** — `NotebookSortProfile` gained `live_notes`, and
+  `ordering::place_new_note` refuses a note once the destination notebook is full. Because
+  `reconcile_notebook_move` routes through it, this covers both creating a note in a notebook
+  and moving one into it.
+- **New `StorageError::TooLarge`** — mapped to HTTP `413 Payload Too Large` in
+  `keeplin-daemon/src/rest.rs` and gRPC `OUT_OF_RANGE` in `keeplin-daemon/src/server.rs`;
+  both note surfaces validate the body up front, so the limits hold for a local-only daemon
+  as well as in server mode.
+
 ### Filesystem format v8 — attachments in their note's folder (#127)
 
 - **`FsBackend` attachment layout** (`keeplin-core/src/storage/fs.rs`): attachments

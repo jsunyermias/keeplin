@@ -20,7 +20,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use keeplin_core::{
     error::{StorageError, SyncError},
-    history,
+    format, history,
     interop::{self, CalendarEvent, Contact},
     linking,
     links::{parse_link_ref, NoteLink},
@@ -253,6 +253,7 @@ impl IntoResponse for ApiError {
             StorageError::CorruptedData(_) => StatusCode::UNPROCESSABLE_ENTITY,
             StorageError::Conflict(_) => StatusCode::CONFLICT,
             StorageError::InvalidInput(_) => StatusCode::BAD_REQUEST,
+            StorageError::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (code, Json(json!({ "error": self.0.to_string() }))).into_response()
@@ -341,6 +342,7 @@ async fn create_note(
     note.notebook_id = req.notebook_id.unwrap_or_else(Uuid::nil);
     note.is_todo = req.is_todo;
     note.todo_due = req.todo_due;
+    format::check_body(&note.body).map_err(StorageError::from)?;
     ordering::place_new_note(s.backend.as_ref(), &mut note).await?;
     Ok(Json(s.backend.create_note(note).await?))
 }
@@ -362,6 +364,7 @@ async fn update_note(
 ) -> Result<Json<Note>, ApiError> {
     let stored = read_live_note(&s, id).await?;
     note.id = id;
+    format::check_body(&note.body).map_err(StorageError::from)?;
     ordering::reconcile_notebook_move(s.backend.as_ref(), stored.notebook_id, &mut note).await?;
     note.updated_at = now();
     Ok(Json(s.backend.update_note(note).await?))

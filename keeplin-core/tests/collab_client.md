@@ -111,11 +111,11 @@ token; garbage input yields `None`.
 #[test]
 fn diff_roundtrip_materializes_new_body() {
     let mut lines = NoteLines::default();
-    let ops = lines.diff_body("uno\ndos\ntres", "dev");
+    let ops = lines.diff_body("uno\ndos\ntres", "dev").unwrap();
     assert_eq!(ops.len(), 3);
     assert_eq!(lines.materialize(), "uno\ndos\ntres");
 
-    let ops = lines.diff_body("uno\nDOS\ncuatro\ncinco", "dev");
+    let ops = lines.diff_body("uno\nDOS\ncuatro\ncinco", "dev").unwrap();
     assert!(!ops.is_empty());
     assert_eq!(lines.materialize(), "uno\nDOS\ncuatro\ncinco");
 }
@@ -123,7 +123,10 @@ fn diff_roundtrip_materializes_new_body() {
 
 **What it does** — `NoteLines::diff_body` from empty to a 3-line body produces
 3 ops and `materialize()` returns the body; a second diff (edit the middle
-line, delete the last, append two) also materialises exactly.
+line, delete the last, append two) also materialises exactly. Both calls
+`.unwrap()` the `Result<Vec<LineOp>, LimitViolation>` the format-limit gate
+introduced: these bodies are well within the limits, so a failure here would mean
+the gate started rejecting ordinary content.
 
 ---
 
@@ -141,9 +144,9 @@ fn ops_replay_identically_on_another_mirror() {
     let mut a = NoteLines::default();
     let mut b = NoteLines::default();
     let mut all = Vec::new();
-    all.extend(a.diff_body("x\ny", "dev-a"));
-    all.extend(a.diff_body("x\nY\nz", "dev-a"));
-    all.extend(a.diff_body("Y\nz", "dev-a"));
+    all.extend(a.diff_body("x\ny", "dev-a").unwrap());
+    all.extend(a.diff_body("x\nY\nz", "dev-a").unwrap());
+    all.extend(a.diff_body("Y\nz", "dev-a").unwrap());
     for op in &all {
         b.apply(op);
     }
@@ -152,9 +155,9 @@ fn ops_replay_identically_on_another_mirror() {
 }
 ```
 
-**What it does** — Ops collected from three successive diffs on mirror A,
-applied in order on a fresh mirror B, converge byte-identically — the
-deterministic-replay core assertion.
+**What it does** — Ops collected from three successive diffs on mirror A
+(each `.unwrap()`ed past the format-limit gate), applied in order on a fresh
+mirror B, converge byte-identically — the deterministic-replay core assertion.
 
 ---
 

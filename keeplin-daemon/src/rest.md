@@ -40,22 +40,6 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
-use chrono::{DateTime, Utc};
-use keeplin_core::{
-    error::{StorageError, SyncError},
-    history,
-    interop::{self, CalendarEvent, Contact},
-    linking,
-    links::{parse_link_ref, NoteLink},
-    models::{now, Change, Note, NoteTag, Notebook, Resource, Tag},
-    ordering,
-    storage::{EntityVersion, StorageBackend},
-    sync::run_sync,
-};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use tokio::sync::broadcast;
-use uuid::Uuid;
 ```
 
 **What it does** — The REST/JSON API served by axum on a separate HTTP port
@@ -504,6 +488,7 @@ impl IntoResponse for ApiError {
             StorageError::CorruptedData(_) => StatusCode::UNPROCESSABLE_ENTITY,
             StorageError::Conflict(_) => StatusCode::CONFLICT,
             StorageError::InvalidInput(_) => StatusCode::BAD_REQUEST,
+            StorageError::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (code, Json(json!({ "error": self.0.to_string() }))).into_response()
@@ -519,6 +504,7 @@ impl IntoResponse for ApiError {
 | `CorruptedData` | 422 | undecryptable/unparsable payload |
 | `Conflict` | 409 | duplicate alias — a client conflict, not a server bug |
 | `InvalidInput` | 400 | domain-rule rejection (pin an Inbox note, out-of-band sort key, delete the Inbox) |
+| `TooLarge` | 413 | a hard format limit was exceeded — a line over 4096 bytes, a note over 65 536 lines, or a notebook already holding 2²⁴ notes (`keeplin_core::format`) |
 | everything else | 500 | |
 
 Body is `{"error": "<message>"}`.
@@ -729,15 +715,22 @@ async fn create_note(
     note.notebook_id = req.notebook_id.unwrap_or_else(Uuid::nil);
     note.is_todo = req.is_todo;
     note.todo_due = req.todo_due;
+    format::check_body(&note.body).map_err(StorageError::from)?;
     ordering::place_new_note(s.backend.as_ref(), &mut note).await?;
     Ok(Json(s.backend.create_note(note).await?))
 }
 ```
 
 **What it does** — `POST /api/notes`: builds `Note::new(title, body)`; absent
-`notebook_id` → nil UUID (the Inbox); applies `is_todo`/`todo_due`; then
+`notebook_id` → nil UUID (the Inbox); applies `is_todo`/`todo_due`;
+`format::check_body` enforces the hard format limits (≤ 4096 bytes per line,
+≤ 65 536 lines) and answers **413** rather than storing an over-sized note; then
 `ordering::place_new_note` gives the initial manual position (top of the Inbox,
-or the end of a normal notebook's unpinned band) before `create_note`.
+or the end of a normal notebook's unpinned band) — and, since keeplin#130, also
+refuses the note with 413 if the destination notebook already holds
+`format::MAX_NOTES_PER_NOTEBOOK` live notes — before `create_note`. Validating
+here means the limits hold for a local-only daemon too, not only when the collab
+decorator is in the stack.
 
 ---
 
@@ -779,6 +772,7 @@ async fn update_note(
 ) -> Result<Json<Note>, ApiError> {
     let stored = read_live_note(&s, id).await?;
     note.id = id;
+    format::check_body(&note.body).map_err(StorageError::from)?;
     ordering::reconcile_notebook_move(s.backend.as_ref(), stored.notebook_id, &mut note).await?;
     note.updated_at = now();
     Ok(Json(s.backend.update_note(note).await?))
@@ -791,7 +785,10 @@ defaults `deleted_at` to null) would silently revive it; revival is reserved for
 sync's `apply_change`. The path id overrides the body id. Then
 `ordering::reconcile_notebook_move`: moving to a different notebook re-places
 the note (its old position and pinned state belonged to the source notebook); a
-plain edit keeps its position. `updated_at = now()` server-side.
+plain edit keeps its position — and re-places it only if the destination notebook
+has room, since `place_new_note` enforces the notes-per-notebook cap.
+`format::check_body` runs first, so an over-limit body is a **413** and never
+reaches storage. `updated_at = now()` server-side.
 
 ---
 

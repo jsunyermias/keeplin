@@ -364,7 +364,25 @@ updates** of a soft‑deleted note, notebook, or tag return `404` (the gRPC `Get
 return the tombstone for sync, but the `Update` RPCs answer `NOT_FOUND` too) — an edit can
 never silently revive a deleted entity; revival happens only through sync, when a causal
 edit made after the delete arrives. Errors map to `404` (not found), `409` (duplicate alias), `422`
-(corrupted data / invalid link reference), `400` (invalid UUID/body), and `500` otherwise.
+(corrupted data / invalid link reference), `413` (a hard format limit exceeded — see below),
+`400` (invalid UUID/body), and `500` otherwise.
+
+### Hard format limits
+
+Note content is bounded by three limits, all exact powers of two and all shared verbatim with
+keeplin-srv (`keeplin-core/src/format.rs` is the single definition; the server imports it):
+
+| Limit | Value |
+|-------|-------|
+| bytes per line | 2¹² = **4 096** (UTF‑8 bytes, not characters) |
+| lines per note | 2¹⁶ = **65 536** (live lines; tombstones excluded) |
+| notes per notebook | 2²⁴ = **16 777 216** (live notes; the Inbox counts like any notebook) |
+
+Exceeding one is a hard rejection, never a silent truncation: `413 Payload Too Large` on
+REST, `OUT_OF_RANGE` on gRPC, and an `Error` frame on the collaborative WebSocket. The client
+validates before writing locally, so an edit the server would refuse never lands on disk; if
+the server does refuse an op, it names the note and the client resynchronises it from the
+server snapshot rather than keeping a copy that will never sync.
 
 The HTTP listener is **plain HTTP** — terminate TLS at a reverse proxy in production, exactly
 as for the WebSocket sync token.

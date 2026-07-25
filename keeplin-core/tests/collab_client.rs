@@ -36,11 +36,11 @@ fn token_device_id_decodes() {
 #[test]
 fn diff_roundtrip_materializes_new_body() {
     let mut lines = NoteLines::default();
-    let ops = lines.diff_body("uno\ndos\ntres", "dev");
+    let ops = lines.diff_body("uno\ndos\ntres", "dev").unwrap();
     assert_eq!(ops.len(), 3);
     assert_eq!(lines.materialize(), "uno\ndos\ntres");
 
-    let ops = lines.diff_body("uno\nDOS\ncuatro\ncinco", "dev");
+    let ops = lines.diff_body("uno\nDOS\ncuatro\ncinco", "dev").unwrap();
     assert!(!ops.is_empty());
     assert_eq!(lines.materialize(), "uno\nDOS\ncuatro\ncinco");
 }
@@ -51,9 +51,9 @@ fn ops_replay_identically_on_another_mirror() {
     let mut a = NoteLines::default();
     let mut b = NoteLines::default();
     let mut all = Vec::new();
-    all.extend(a.diff_body("x\ny", "dev-a"));
-    all.extend(a.diff_body("x\nY\nz", "dev-a"));
-    all.extend(a.diff_body("Y\nz", "dev-a"));
+    all.extend(a.diff_body("x\ny", "dev-a").unwrap());
+    all.extend(a.diff_body("x\nY\nz", "dev-a").unwrap());
+    all.extend(a.diff_body("Y\nz", "dev-a").unwrap());
     for op in &all {
         b.apply(op);
     }

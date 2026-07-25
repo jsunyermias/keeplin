@@ -113,5 +113,7 @@ pub enum CollabServerMsg {
     Error {
         code: String,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note_id: Option<Uuid>,
     },
 }

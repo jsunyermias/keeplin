@@ -351,6 +351,8 @@ pub enum CollabServerMsg {
     Error {
         code: String,
         message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note_id: Option<Uuid>,
     },
 }
 ```
@@ -360,17 +362,31 @@ pub enum CollabServerMsg {
 ops }` (a resolved op batch fanned out to every participant *including the sender*,
 in strictly increasing `server_seq` order — the sender uses the echo to confirm its
 own ops), `Presence { note_id, users }` (full participant list after any
-join/leave/cursor change — not a delta), `Error { code, message }` (a rejected
-message, e.g. `forbidden`, `bad_writer`; the connection stays open).
+join/leave/cursor change — not a delta), `Error { code, message, note_id }` (a
+rejected message, e.g. `forbidden`, `bad_writer`; the connection stays open).
+
+`Error::note_id` is **optional and additive** (issue keeplin#130):
+`#[serde(default)]` means a message without it still deserialises, and
+`skip_serializing_if = "Option::is_none"` keeps it off the wire when there is no
+note to name — so the field is compatible in both directions and
+`PROTOCOL_VERSION` is unchanged. It exists because a rejection the client cannot
+attribute to a note is a rejection the client cannot repair: with the note named,
+`handle_server_msg` can drop that note's mirror and rejoin, replacing the local
+divergent body with the server's. Connection-level failures (`bad_message`,
+`internal`) leave it `None`.
 
 **Dependencies** — `NoteLinesSnapshot`, `LineOp`, `PresenceInfo`, `uuid`.
 
 **Used by** — `collab/mod.rs` (deserialises and dispatches); mirrored by
-keeplin-srv's `CollabServerMsg` which serialises them.
+keeplin-srv's `CollabServerMsg` which serialises them — keeplin-srv's copy carries
+the same optional `note_id`, and `crates/keeplin-srv/tests/core_compat.rs`
+round-trips the two representations against each other.
 
 **Repeated context** — `server_seq` is the total order authority: clients apply
 server `Op`s in `server_seq` order and treat the stream as the source of truth over
-their own optimistic state.
+their own optimistic state. Wire compatibility rule of the project: additive
+optional fields do not bump `PROTOCOL_VERSION`; a breaking shape change does, in
+lockstep across both repositories.
 
 ---
 

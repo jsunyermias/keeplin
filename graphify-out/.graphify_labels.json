@@ -100,6 +100,8 @@
   "98": "CLAUDE.md",
   "99": "check-docs.sh",
   "100": "Metrics",
+  "101": "SyncError",
+  "102": ".delete_note",
   "103": "`scripts/check-graph.sh` — knowledge-graph freshness check",
   "104": "`.githooks/pre-commit` — auto-refresh the knowledge graph on commit",
   "105": "mod tests",
@@ -130,8 +132,5 @@
   "130": "impl Contact",
   "131": "impl HistoryRepository for DbBackend",
   "132": "impl HistoryRepository for FsBackend",
-  "133": "impl KeeplinServer",
-  "134": "impl NoteMetaIndex",
-  "135": "impl NoteMetaEntry",
-  "136": "impl FsBackend (global history)"
+  "133": "impl KeeplinServer"
 }

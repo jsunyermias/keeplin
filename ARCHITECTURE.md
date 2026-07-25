@@ -148,6 +148,44 @@ metadata index (built from the note projections, maintained on every write and s
 
 ---
 
+## 6¾. Hard format limits (`keeplin-core/src/format.rs`)
+
+Three limits bound what a note may contain. They are **exact powers of two**, defined once,
+and enforced identically on both sides of the wire:
+
+| Limit | Constant | Value |
+|-------|----------|-------|
+| bytes per line | `MAX_LINE_BYTES` | 2¹² = 4 096 |
+| lines per note | `MAX_LINES_PER_NOTE` | 2¹⁶ = 65 536 |
+| notes per notebook | `MAX_NOTES_PER_NOTEBOOK` | 2²⁴ = 16 777 216 |
+
+`keeplin-core/src/format.rs` is the single source of truth: keeplin-srv imports these very
+constants (its `Cargo.toml` pins keeplin-core to an exact git `rev`) instead of declaring its
+own, so client and server can never disagree about what is storable. Line length is counted in
+**UTF-8 bytes** — `str::len()`, O(1) and impossible to compute differently on the two sides —
+and line and note counts exclude tombstones, so "live" means the same thing everywhere.
+
+Three rules follow from that:
+
+- **Reject, never truncate.** Exceeding a limit is an error the user sees:
+  `413 Payload Too Large` on the daemon's REST API, gRPC `OUT_OF_RANGE`, and a
+  `CollabServerMsg::Error` on the collaborative channel. Nothing silently shortens content.
+- **Validate before writing.** The client checks a body *before* the local write and *before*
+  emitting any line op (`NoteLines::diff_body` returns `Err` and mutates nothing), so an edit
+  the server would refuse never reaches local storage.
+- **Recover from a rejection.** The server still validates independently — it cannot trust a
+  client — and its `Error` message carries the `note_id` it refused. The client reacts by
+  dropping that note's mirror and rejoining, so the server's snapshot replaces the divergent
+  local body. Before this existed, a rejected op left an edit that looked saved on one device
+  and never reached the others.
+
+The notes-per-notebook cap is checked wherever a note **enters** a notebook — creation and
+every move — against the destination's live-note count, which `NotebookSortProfile::live_notes`
+already carries for the placement path. The Inbox is capped like any other notebook.
+See `keeplin-core/src/format.md`.
+
+---
+
 ## 7. Sync (`keeplin-core/src/sync/engine.rs`)
 
 `run_sync` drives one cycle: collect local `Change`s since the last sync watermark → send →
@@ -214,6 +252,7 @@ remote host unless `insecure = true`. See `keeplin-daemon/src/main.md` and `conf
 ## 9. Where to read next
 
 - Storage internals: `keeplin-core/src/storage/{backend,fs,db,note_log}.md`.
+- Format limits shared with keeplin-srv: `keeplin-core/src/format.md`.
 - Migration between backends: `keeplin-core/src/migrate.md`.
 - Encryption + threat model: `keeplin-core/src/encryption.md` and `SECURITY.md`.
 - Bookmarks/links: `keeplin-core/src/links.md`, `keeplin-core/src/linking.md`.

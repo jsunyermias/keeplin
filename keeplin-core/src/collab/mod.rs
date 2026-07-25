@@ -14,6 +14,7 @@ use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
 use crate::error::StorageError;
+use crate::format;
 use crate::models::{Change, Note, NoteTag, Notebook, Resource, Tag};
 use crate::storage::{
     NoteRepository, NotebookRepository, ResourceRepository, StorageBackend, SyncBackend,
@@ -268,11 +269,21 @@ impl<B: StorageBackend> CollabBackend<B> {
         let lines = notes.entry(note.id).or_default();
         let ops = lines.diff_body(&note.body, &self.shared.device_id);
         drop(notes);
-        if !ops.is_empty() {
-            let _ = self.shared.out.send(CollabClientMsg::Op {
-                note_id: note.id,
-                ops,
-            });
+        match ops {
+            Ok(ops) if ops.is_empty() => {}
+            Ok(ops) => {
+                let _ = self.shared.out.send(CollabClientMsg::Op {
+                    note_id: note.id,
+                    ops,
+                });
+            }
+            Err(violation) => {
+                tracing::warn!(
+                    error = %violation,
+                    note = %note.id,
+                    "collab: local body breaks a format limit; no op emitted"
+                );
+            }
         }
     }
 
@@ -306,6 +317,9 @@ impl<B: StorageBackend> CollabBackend<B> {
 #[async_trait]
 impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
     async fn create_note(&self, note: Note) -> Result<Note, StorageError> {
+        if !self.shared.suppressed(note.id).await {
+            format::check_body(&note.body)?;
+        }
         let created = self.inner.create_note(note).await?;
         if self.shared.suppressed(created.id).await {
             return Ok(created);
@@ -340,6 +354,9 @@ impl<B: StorageBackend> NoteRepository for CollabBackend<B> {
     }
 
     async fn update_note(&self, note: Note) -> Result<Note, StorageError> {
+        if !self.shared.suppressed(note.id).await {
+            format::check_body(&note.body)?;
+        }
         let previous = self.inner.read_note(note.id).await.ok();
         let updated = self.inner.update_note(note).await?;
         if self.shared.suppressed(updated.id).await {
@@ -661,10 +678,16 @@ async fn connect_once(
         tokio::select! {
             queued = out.recv() => {
                 let Some(msg) = queued else { return Ok(()) };
-                if let CollabClientMsg::Join { note_id } = &msg {
-                    if !joined.insert(*note_id) {
-                        continue;
+                match &msg {
+                    CollabClientMsg::Join { note_id } => {
+                        if !joined.insert(*note_id) {
+                            continue;
+                        }
                     }
+                    CollabClientMsg::Leave { note_id } => {
+                        joined.remove(note_id);
+                    }
+                    _ => {}
                 }
                 ws.send(Message::Text(serde_json::to_string(&msg)?)).await?;
             }
@@ -769,10 +792,23 @@ async fn handle_server_msg(shared: &Arc<Shared>, msg: CollabServerMsg) {
                         .unwrap_or_default(),
                     None => String::new(),
                 };
-                let ops = lines.diff_body(&local_body, &shared.device_id);
-                shared.notes.lock().await.insert(note_id, lines);
-                if !ops.is_empty() {
-                    let _ = shared.out.send(CollabClientMsg::Op { note_id, ops });
+                match lines.diff_body(&local_body, &shared.device_id) {
+                    Ok(ops) => {
+                        shared.notes.lock().await.insert(note_id, lines);
+                        if !ops.is_empty() {
+                            let _ = shared.out.send(CollabClientMsg::Op { note_id, ops });
+                        }
+                    }
+                    Err(violation) => {
+                        tracing::warn!(
+                            error = %violation,
+                            note = %note_id,
+                            "collab: local body breaks a format limit; adopting the server snapshot"
+                        );
+                        let body = lines.materialize();
+                        shared.notes.lock().await.insert(note_id, lines);
+                        write_body(shared, note_id, body).await;
+                    }
                 }
             } else {
                 let body = lines.materialize();
@@ -792,13 +828,36 @@ async fn handle_server_msg(shared: &Arc<Shared>, msg: CollabServerMsg) {
             drop(notes);
             write_body(shared, note_id, body).await;
         }
-        CollabServerMsg::Error { code, message } => {
-            tracing::warn!(code, message, "collab: server error");
-        }
+        CollabServerMsg::Error {
+            code,
+            message,
+            note_id,
+        } => match note_id.filter(|_| format::is_limit_code(&code)) {
+            Some(note_id) => {
+                tracing::warn!(
+                    code,
+                    message,
+                    note = %note_id,
+                    "collab: server rejected an op over a format limit; resynchronising the note"
+                );
+                resync_note(shared, note_id).await;
+            }
+            None => {
+                tracing::warn!(code, message, ?note_id, "collab: server error");
+            }
+        },
         CollabServerMsg::Presence { note_id, users } => {
             shared.presence.lock().await.insert(note_id, users);
         }
     }
+}
+
+// md:fn resync_note
+async fn resync_note(shared: &Arc<Shared>, note_id: Uuid) {
+    shared.notes.lock().await.remove(&note_id);
+    shared.pending_push.lock().await.remove(&note_id);
+    let _ = shared.out.send(CollabClientMsg::Leave { note_id });
+    let _ = shared.out.send(CollabClientMsg::Join { note_id });
 }
 
 // md:fn write_body
