@@ -181,10 +181,21 @@ not from the author's defense as its sole source.
 ## ADR requirements
 
 Security, persistence, migration, synchronization, protocol and other high-risk
-architectural changes require an accepted ADR before implementation. The ADR records the
-decision, alternatives, invariants, compatibility and migration impact, failure modes and
-rollback or recovery plan. If the issue depends on an undecided ADR, stop at the decision
-boundary rather than embedding an unreviewed architecture choice in code.
+architectural changes require an accepted ADR before implementation. This also applies to
+authentication, permissions, privacy, retention, new operational dependencies, and removal
+or weakening of an existing protection. The canonical lifecycle, numbering rules, registry,
+and template live in [`docs/adr/`](docs/adr/README.md).
+
+An ADR records the decision, alternatives, invariants, compatibility and migration impact,
+failure modes, verification, and rollback or recovery plan. `proposed` does not authorize
+implementation: only the maintainer moves a decision to `accepted` or `rejected`. Once
+accepted, its decision body is historical record; replace it with a new superseding ADR
+instead of rewriting it to match later code. If an issue depends on an undecided ADR, stop at
+the decision boundary rather than embedding an unreviewed architecture choice in code.
+
+Cross-repository decisions are canonical in `keeplin/docs/adr/`; server-only decisions live
+in `keeplin-srv/docs/adr/`. Both records and both PRs link each other instead of duplicating a
+decision.
 
 ## Definition of done
 

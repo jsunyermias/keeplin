@@ -6,7 +6,9 @@ both Keeplin repositories.
 ## Contribution flow
 
 1. Choose or create an issue with a bounded objective, dependencies and observable
-   acceptance criteria. Resolve any required ADR before implementation.
+   acceptance criteria. Resolve any required ADR through the
+   [`docs/adr/` registry](docs/adr/README.md) before implementation; `proposed` is still a
+   blocking state.
 2. Start from current `main` and create a dedicated branch. Never commit directly to
    `main`.
 3. Implement only the issue scope. Keep source, companion documents, Graphify and project
@@ -23,6 +25,9 @@ both Keeplin repositories.
    green required checks and independent review is recorded.
 8. The maintainer merges. Update or rebase a stale branch and rerun required checks before
    merge; do not bypass protection or force-push `main`.
+
+Accepted ADRs are historical records. A later architectural change creates a new ADR that
+supersedes the old one; it does not rewrite the accepted decision to match a new diff.
 
 ## Cross-repository changes
 
