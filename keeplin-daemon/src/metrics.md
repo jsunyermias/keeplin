@@ -774,6 +774,24 @@ helper + three tests.
 **What it does** — Pins counting, error separation, sync counting, and status
 bucketing.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+    use keeplin_core::storage::fs::FsBackend;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
 ### fn backend
 
 **Identification** — helper; marker `// md:mod tests > fn backend`.
@@ -927,7 +945,8 @@ refresh with `graphify update .` after refactors.
 | 21 | `impl SyncBackend for MetricsBackend` | `// md:impl SyncBackend for MetricsBackend` |
 | 22 | `impl HistoryRepository for MetricsBackend` | `// md:impl HistoryRepository for MetricsBackend` |
 | 23 | `mod tests` (container) | `// md:mod tests` |
-| 24 | `fn backend` | `// md:mod tests > fn backend` |
-| 25 | `fn counts_operations_and_errors` | `// md:mod tests > fn counts_operations_and_errors` |
-| 26 | `fn counts_applied_sync_changes` | `// md:mod tests > fn counts_applied_sync_changes` |
-| 27 | `fn http_status_buckets` | `// md:mod tests > fn http_status_buckets` |
+| 24 | `imports` | `// md:mod tests > imports` |
+| 25 | `fn backend` | `// md:mod tests > fn backend` |
+| 26 | `fn counts_operations_and_errors` | `// md:mod tests > fn counts_operations_and_errors` |
+| 27 | `fn counts_applied_sync_changes` | `// md:mod tests > fn counts_applied_sync_changes` |
+| 28 | `fn http_status_buckets` | `// md:mod tests > fn http_status_buckets` |

@@ -152,7 +152,5 @@
   "150": "impl NoteMetaIndex",
   "151": "impl NoteMetaEntry",
   "153": "context-pack script",
-  "154": "sync-companion-code script",
-  "155": "String",
-  "156": "EntityVersion"
+  "154": "sync-companion-code script"
 }

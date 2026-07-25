@@ -508,6 +508,23 @@ helpers + eight tests, all pure.
 
 **What it does** — Pins the security-check and auth-validation matrices.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
 ### fn base
 
 **Identification** — helper; marker `// md:mod tests > fn base`.
@@ -804,13 +821,14 @@ refresh with `graphify update .` after refactors.
 | 14 | `fn validate_auth` | `// md:impl Config (security) > fn validate_auth` |
 | 15 | `fn plaintext_ws_remote_host` | `// md:fn plaintext_ws_remote_host` |
 | 16 | `mod tests` (container) | `// md:mod tests` |
-| 17 | `fn base` | `// md:mod tests > fn base` |
-| 18 | `fn with_auth` | `// md:mod tests > fn with_auth` |
-| 19 | `fn loopback_defaults_are_safe` | `// md:mod tests > fn loopback_defaults_are_safe` |
-| 20 | `fn network_grpc_without_auth_is_flagged` | `// md:mod tests > fn network_grpc_without_auth_is_flagged` |
-| 21 | `fn network_http_without_auth_is_flagged` | `// md:mod tests > fn network_http_without_auth_is_flagged` |
-| 22 | `fn validate_auth_rejects_partial_and_empty_credentials` | `// md:mod tests > fn validate_auth_rejects_partial_and_empty_credentials` |
-| 23 | `fn partial_auth_still_flags_network_exposure` | `// md:mod tests > fn partial_auth_still_flags_network_exposure` |
-| 24 | `fn plaintext_ws_to_remote_is_flagged_in_server_mode` | `// md:mod tests > fn plaintext_ws_to_remote_is_flagged_in_server_mode` |
-| 25 | `fn plaintext_ws_remote_host_parsing` | `// md:mod tests > fn plaintext_ws_remote_host_parsing` |
-| 26 | `fn multiple_issues_accumulate` | `// md:mod tests > fn multiple_issues_accumulate` |
+| 17 | `imports` | `// md:mod tests > imports` |
+| 18 | `fn base` | `// md:mod tests > fn base` |
+| 19 | `fn with_auth` | `// md:mod tests > fn with_auth` |
+| 20 | `fn loopback_defaults_are_safe` | `// md:mod tests > fn loopback_defaults_are_safe` |
+| 21 | `fn network_grpc_without_auth_is_flagged` | `// md:mod tests > fn network_grpc_without_auth_is_flagged` |
+| 22 | `fn network_http_without_auth_is_flagged` | `// md:mod tests > fn network_http_without_auth_is_flagged` |
+| 23 | `fn validate_auth_rejects_partial_and_empty_credentials` | `// md:mod tests > fn validate_auth_rejects_partial_and_empty_credentials` |
+| 24 | `fn partial_auth_still_flags_network_exposure` | `// md:mod tests > fn partial_auth_still_flags_network_exposure` |
+| 25 | `fn plaintext_ws_to_remote_is_flagged_in_server_mode` | `// md:mod tests > fn plaintext_ws_to_remote_is_flagged_in_server_mode` |
+| 26 | `fn plaintext_ws_remote_host_parsing` | `// md:mod tests > fn plaintext_ws_remote_host_parsing` |
+| 27 | `fn multiple_issues_accumulate` | `// md:mod tests > fn multiple_issues_accumulate` |

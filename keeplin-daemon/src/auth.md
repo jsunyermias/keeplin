@@ -120,6 +120,23 @@ One helper + five tests.
 
 **What it does** — Pins the acceptance and every rejection path.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
 ### fn basic
 
 **Identification** — helper `fn basic(user, pass) -> String`; marker
@@ -302,9 +319,10 @@ refresh with `graphify update .` after refactors.
 | 1 | `Overview` | `// md:Overview` |
 | 2 | `fn verify_basic` | `// md:fn verify_basic` |
 | 3 | `mod tests` (container) | `// md:mod tests` |
-| 4 | `fn basic` | `// md:mod tests > fn basic` |
-| 5 | `fn accepts_valid_credentials` | `// md:mod tests > fn accepts_valid_credentials` |
-| 6 | `fn rejects_wrong_password_user_and_missing_header` | `// md:mod tests > fn rejects_wrong_password_user_and_missing_header` |
-| 7 | `fn password_with_colons_works` | `// md:mod tests > fn password_with_colons_works` |
-| 8 | `fn rejects_empty_expected_credentials` | `// md:mod tests > fn rejects_empty_expected_credentials` |
-| 9 | `fn scheme_is_case_and_whitespace_tolerant` | `// md:mod tests > fn scheme_is_case_and_whitespace_tolerant` |
+| 4 | `imports` | `// md:mod tests > imports` |
+| 5 | `fn basic` | `// md:mod tests > fn basic` |
+| 6 | `fn accepts_valid_credentials` | `// md:mod tests > fn accepts_valid_credentials` |
+| 7 | `fn rejects_wrong_password_user_and_missing_header` | `// md:mod tests > fn rejects_wrong_password_user_and_missing_header` |
+| 8 | `fn password_with_colons_works` | `// md:mod tests > fn password_with_colons_works` |
+| 9 | `fn rejects_empty_expected_credentials` | `// md:mod tests > fn rejects_empty_expected_credentials` |
+| 10 | `fn scheme_is_case_and_whitespace_tolerant` | `// md:mod tests > fn scheme_is_case_and_whitespace_tolerant` |

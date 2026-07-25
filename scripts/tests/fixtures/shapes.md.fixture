@@ -34,6 +34,11 @@ Container marker `// md:impl Container`; members are below.
 Container marker `// md:mod tests`; members are below.
 
 ```rust
+    // md:mod tests > imports
+    use super::*;
+```
+
+```rust
     // md:mod tests > fn labelled_formats_debug
     #[test]
     fn labelled_formats_debug() {

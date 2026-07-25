@@ -62,6 +62,14 @@ class CompanionToolTests(unittest.TestCase):
             handle.write("\n// md:fn labelled\nfn duplicate() {}\n")
         self.assertTrue(any("duplicate source marker" in error for error in self.errors()))
 
+    def test_code_before_first_container_child_is_uncovered(self) -> None:
+        text = self.source.read_text(encoding="utf-8").replace(
+            "impl Container {\n    // md:impl Container > fn value",
+            "impl Container {\n    fn hidden() {}\n\n    // md:impl Container > fn value",
+        )
+        self.source.write_text(text, encoding="utf-8")
+        self.assertTrue(any("UNCOVERED" in error for error in self.errors()))
+
     def test_reordered_fences_are_detected(self) -> None:
         text = self.companion.read_text(encoding="utf-8")
         overview = "```rust\n// md:Overview\nuse std::fmt::Debug;\n```"
@@ -99,6 +107,21 @@ class CompanionToolTests(unittest.TestCase):
         TOOL.build_pack(self.root, "shapes.rs", "understand", first, False, 100_000, 5)
         TOOL.build_pack(self.root, "shapes.rs", "understand", second, False, 100_000, 5)
         self.assertEqual(first.read_bytes(), second.read_bytes())
+
+    def test_manifest_recognizes_extracted_origin_with_details(self) -> None:
+        with self.companion.open("a", encoding="utf-8") as handle:
+            handle.write(
+                "\n**Direct dependencies**\n\n"
+                "- (EXTRACTED; local module) `shapes.rs`\n\n"
+                "**Direct dependents**\n\n"
+                "- (EXTRACTED: fixture link) `shapes.rs`\n\n"
+                "**Invariants**\n\n"
+                "- (EXTRACTED; source contract) markers remain ordered\n"
+            )
+        entry = TOOL.build_manifest(self.root)["entries"][0]
+        self.assertEqual(entry["direct_dependencies"][0]["origin"], "EXTRACTED")
+        self.assertEqual(entry["direct_dependents"][0]["origin"], "EXTRACTED")
+        self.assertEqual(entry["invariants"]["value"][0]["origin"], "EXTRACTED")
 
 
 if __name__ == "__main__":

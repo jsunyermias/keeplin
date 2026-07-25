@@ -898,6 +898,23 @@ both encodings (JSON and MessagePack).
 **Repeated context** — MessagePack (`rmp_serde`) is the on-disk note-log encoding; JSON is used
 for the global journal and network.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
 ### fn pre_ordering_note_json_lands_in_the_inbox_with_defaults
 
 **Identification** — unit test; marker
@@ -1087,5 +1104,6 @@ after refactors.
 | 21 | `fn new` (Resource) | `// md:impl Resource > fn new` |
 | 22 | `enum Change` | `// md:Change` |
 | 23 | `mod tests` (container) | `// md:mod tests` |
-| 24 | `fn pre_ordering_note_json_lands_in_the_inbox_with_defaults` | `// md:mod tests > fn pre_ordering_note_json_lands_in_the_inbox_with_defaults` |
-| 25 | `fn pre_ordering_note_msgpack_round_trips` | `// md:mod tests > fn pre_ordering_note_msgpack_round_trips` |
+| 24 | `imports` | `// md:mod tests > imports` |
+| 25 | `fn pre_ordering_note_json_lands_in_the_inbox_with_defaults` | `// md:mod tests > fn pre_ordering_note_json_lands_in_the_inbox_with_defaults` |
+| 26 | `fn pre_ordering_note_msgpack_round_trips` | `// md:mod tests > fn pre_ordering_note_msgpack_round_trips` |

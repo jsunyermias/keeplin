@@ -4863,6 +4863,23 @@ Twelve tests.
 **What it does** — Pins the concurrency, purity, pagination, hygiene,
 corruption-recovery, compaction, purge, and format-version behaviours.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
 ### fn concurrent_same_note_updates_keep_every_log_entry
 
 **Identification** — multi-thread tokio test; marker
@@ -5685,17 +5702,18 @@ refresh with `graphify update .` after refactors.
 | 145 | `fn notebook_history` | `// md:impl HistoryRepository for FsBackend > fn notebook_history` |
 | 146 | `fn sort_and_cap` | `// md:fn sort_and_cap` |
 | 147 | `mod tests` (container) | `// md:mod tests` |
-| 148 | `fn concurrent_same_note_updates_keep_every_log_entry` | `// md:mod tests > fn concurrent_same_note_updates_keep_every_log_entry` |
-| 149 | `fn read_does_not_rewrite_projection` | `// md:mod tests > fn read_does_not_rewrite_projection` |
-| 150 | `fn list_notes_pages_match_full_walk` | `// md:mod tests > fn list_notes_pages_match_full_walk` |
-| 151 | `fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones` | `// md:mod tests > fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones` |
-| 152 | `fn failed_atomic_write_cleans_up_its_temp_file` | `// md:mod tests > fn failed_atomic_write_cleans_up_its_temp_file` |
-| 153 | `fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it` | `// md:mod tests > fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it` |
-| 154 | `fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair` | `// md:mod tests > fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair` |
-| 155 | `fn detects_syncthing_conflict_copies_without_removing_them` | `// md:mod tests > fn detects_syncthing_conflict_copies_without_removing_them` |
-| 156 | `fn purge_reclaims_old_tombstoned_payloads_only` | `// md:mod tests > fn purge_reclaims_old_tombstoned_payloads_only` |
-| 157 | `fn attachments_live_as_content_hashed_knrs_in_their_note_folder` | `// md:mod tests > fn attachments_live_as_content_hashed_knrs_in_their_note_folder` |
-| 158 | `fn identical_attachments_in_a_note_share_one_blob` | `// md:mod tests > fn identical_attachments_in_a_note_share_one_blob` |
-| 159 | `fn fresh_store_is_stamped_current_version` | `// md:mod tests > fn fresh_store_is_stamped_current_version` |
-| 160 | `fn migrates_a_legacy_stamp_and_preserves_data` | `// md:mod tests > fn migrates_a_legacy_stamp_and_preserves_data` |
-| 161 | `fn refuses_to_open_a_newer_format` | `// md:mod tests > fn refuses_to_open_a_newer_format` |
+| 148 | `imports` | `// md:mod tests > imports` |
+| 149 | `fn concurrent_same_note_updates_keep_every_log_entry` | `// md:mod tests > fn concurrent_same_note_updates_keep_every_log_entry` |
+| 150 | `fn read_does_not_rewrite_projection` | `// md:mod tests > fn read_does_not_rewrite_projection` |
+| 151 | `fn list_notes_pages_match_full_walk` | `// md:mod tests > fn list_notes_pages_match_full_walk` |
+| 152 | `fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones` | `// md:mod tests > fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones` |
+| 153 | `fn failed_atomic_write_cleans_up_its_temp_file` | `// md:mod tests > fn failed_atomic_write_cleans_up_its_temp_file` |
+| 154 | `fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it` | `// md:mod tests > fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it` |
+| 155 | `fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair` | `// md:mod tests > fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair` |
+| 156 | `fn detects_syncthing_conflict_copies_without_removing_them` | `// md:mod tests > fn detects_syncthing_conflict_copies_without_removing_them` |
+| 157 | `fn purge_reclaims_old_tombstoned_payloads_only` | `// md:mod tests > fn purge_reclaims_old_tombstoned_payloads_only` |
+| 158 | `fn attachments_live_as_content_hashed_knrs_in_their_note_folder` | `// md:mod tests > fn attachments_live_as_content_hashed_knrs_in_their_note_folder` |
+| 159 | `fn identical_attachments_in_a_note_share_one_blob` | `// md:mod tests > fn identical_attachments_in_a_note_share_one_blob` |
+| 160 | `fn fresh_store_is_stamped_current_version` | `// md:mod tests > fn fresh_store_is_stamped_current_version` |
+| 161 | `fn migrates_a_legacy_stamp_and_preserves_data` | `// md:mod tests > fn migrates_a_legacy_stamp_and_preserves_data` |
+| 162 | `fn refuses_to_open_a_newer_format` | `// md:mod tests > fn refuses_to_open_a_newer_format` |

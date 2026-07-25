@@ -294,6 +294,23 @@ message direction); the network path is covered end-to-end by
 **Repeated context** — project test convention: pure logic in in-file
 `#[cfg(test)]` tests; anything needing sockets in `keeplin-core/tests/`.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
 ### fn exact_match_is_compatible
 
 **Identification** — unit test; marker
@@ -406,5 +423,6 @@ refresh with `graphify update .` after refactors.
 | 6 | `fn negotiate` | `// md:fn negotiate` |
 | 7 | `fn incompatible_message` | `// md:fn incompatible_message` |
 | 8 | `mod tests` | `// md:mod tests` |
-| 9 | `fn exact_match_is_compatible` | `// md:mod tests > fn exact_match_is_compatible` |
-| 10 | `fn incompatible_message_names_the_side_to_upgrade` | `// md:mod tests > fn incompatible_message_names_the_side_to_upgrade` |
+| 9 | `imports` | `// md:mod tests > imports` |
+| 10 | `fn exact_match_is_compatible` | `// md:mod tests > fn exact_match_is_compatible` |
+| 11 | `fn incompatible_message_names_the_side_to_upgrade` | `// md:mod tests > fn incompatible_message_names_the_side_to_upgrade` |

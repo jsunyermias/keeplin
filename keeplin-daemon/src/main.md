@@ -1045,6 +1045,25 @@ boxing would add a heap allocation to every RPC.
 
 **Code** — container: members documented as sub-blocks below: fn store_lock_is_exclusive_per_store_and_released_on_drop, fn cfg_at, fn key_salt_config_value_wins_and_persists_nothing, fn key_salt_fallback_is_persisted_and_stable, fn key_salt_file_survives_a_regenerated_device_id, fn make_req, fn basic, fn auth_not_configured_allows_all, fn auth_valid_credentials_pass, fn auth_wrong_password_rejected, fn auth_wrong_user_rejected, fn auth_missing_header_rejected, fn auth_bearer_scheme_rejected, fn auth_malformed_base64_rejected, fn auth_no_colon_in_credentials_rejected, fn auth_password_containing_colon_works.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use keeplin_core::storage::SyncBackend as _;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
 ### fn store_lock_is_exclusive_per_store_and_released_on_drop
 
 **Identification** — `#[test]`; marker
@@ -1461,19 +1480,20 @@ refresh with `graphify update .` after refactors.
 | 17 | `fn shutdown_signal` | `// md:fn shutdown_signal` |
 | 18 | `fn validate_basic_auth` | `// md:fn validate_basic_auth` |
 | 19 | `mod tests` (container) | `// md:mod tests` |
-| 20 | `fn store_lock_is_exclusive_per_store_and_released_on_drop` | `// md:mod tests > fn store_lock_is_exclusive_per_store_and_released_on_drop` |
-| 21 | `fn cfg_at` | `// md:mod tests > fn cfg_at` |
-| 22 | `fn key_salt_config_value_wins_and_persists_nothing` | `// md:mod tests > fn key_salt_config_value_wins_and_persists_nothing` |
-| 23 | `fn key_salt_fallback_is_persisted_and_stable` | `// md:mod tests > fn key_salt_fallback_is_persisted_and_stable` |
-| 24 | `fn key_salt_file_survives_a_regenerated_device_id` | `// md:mod tests > fn key_salt_file_survives_a_regenerated_device_id` |
-| 25 | `fn make_req` | `// md:mod tests > fn make_req` |
-| 26 | `fn basic` | `// md:mod tests > fn basic` |
-| 27 | `fn auth_not_configured_allows_all` | `// md:mod tests > fn auth_not_configured_allows_all` |
-| 28 | `fn auth_valid_credentials_pass` | `// md:mod tests > fn auth_valid_credentials_pass` |
-| 29 | `fn auth_wrong_password_rejected` | `// md:mod tests > fn auth_wrong_password_rejected` |
-| 30 | `fn auth_wrong_user_rejected` | `// md:mod tests > fn auth_wrong_user_rejected` |
-| 31 | `fn auth_missing_header_rejected` | `// md:mod tests > fn auth_missing_header_rejected` |
-| 32 | `fn auth_bearer_scheme_rejected` | `// md:mod tests > fn auth_bearer_scheme_rejected` |
-| 33 | `fn auth_malformed_base64_rejected` | `// md:mod tests > fn auth_malformed_base64_rejected` |
-| 34 | `fn auth_no_colon_in_credentials_rejected` | `// md:mod tests > fn auth_no_colon_in_credentials_rejected` |
-| 35 | `fn auth_password_containing_colon_works` | `// md:mod tests > fn auth_password_containing_colon_works` |
+| 20 | `imports` | `// md:mod tests > imports` |
+| 21 | `fn store_lock_is_exclusive_per_store_and_released_on_drop` | `// md:mod tests > fn store_lock_is_exclusive_per_store_and_released_on_drop` |
+| 22 | `fn cfg_at` | `// md:mod tests > fn cfg_at` |
+| 23 | `fn key_salt_config_value_wins_and_persists_nothing` | `// md:mod tests > fn key_salt_config_value_wins_and_persists_nothing` |
+| 24 | `fn key_salt_fallback_is_persisted_and_stable` | `// md:mod tests > fn key_salt_fallback_is_persisted_and_stable` |
+| 25 | `fn key_salt_file_survives_a_regenerated_device_id` | `// md:mod tests > fn key_salt_file_survives_a_regenerated_device_id` |
+| 26 | `fn make_req` | `// md:mod tests > fn make_req` |
+| 27 | `fn basic` | `// md:mod tests > fn basic` |
+| 28 | `fn auth_not_configured_allows_all` | `// md:mod tests > fn auth_not_configured_allows_all` |
+| 29 | `fn auth_valid_credentials_pass` | `// md:mod tests > fn auth_valid_credentials_pass` |
+| 30 | `fn auth_wrong_password_rejected` | `// md:mod tests > fn auth_wrong_password_rejected` |
+| 31 | `fn auth_wrong_user_rejected` | `// md:mod tests > fn auth_wrong_user_rejected` |
+| 32 | `fn auth_missing_header_rejected` | `// md:mod tests > fn auth_missing_header_rejected` |
+| 33 | `fn auth_bearer_scheme_rejected` | `// md:mod tests > fn auth_bearer_scheme_rejected` |
+| 34 | `fn auth_malformed_base64_rejected` | `// md:mod tests > fn auth_malformed_base64_rejected` |
+| 35 | `fn auth_no_colon_in_credentials_rejected` | `// md:mod tests > fn auth_no_colon_in_credentials_rejected` |
+| 36 | `fn auth_password_containing_colon_works` | `// md:mod tests > fn auth_password_containing_colon_works` |

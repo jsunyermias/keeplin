@@ -2109,11 +2109,33 @@ human-readable message: Collecting/Sending/Receiving/Applying/Done →
 `super::*`, the proto `ResourceMeta`/`UploadResourceRequest` types, `FsBackend`,
 and the repository traits.
 
-**Code** — container: members documented as sub-blocks below: fn server, fn meta_frame, fn chunk_frame, fn upload_resource_assembles_chunks_in_order, fn upload_resource_requires_metadata_first, fn upload_resource_enforces_the_cap, fn update_rpcs_reject_soft_deleted_entities, fn update_notebook_and_tag_refresh_updated_at_server_side.
+**Code** — container: members documented as sub-blocks below: imports, fn server,
+fn meta_frame, fn chunk_frame, fn upload_resource_assembles_chunks_in_order,
+fn upload_resource_requires_metadata_first, fn upload_resource_enforces_the_cap,
+fn update_rpcs_reject_soft_deleted_entities,
+fn update_notebook_and_tag_refresh_updated_at_server_side.
 
-The test module's `use` preamble is container scaffolding, so it deliberately has
-no leaf fence (RULE 6). The mechanically verified sub-blocks below contain every
-marked test and helper in source order.
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+    use crate::proto::keeplin::{ResourceMeta, UploadResourceRequest};
+    use keeplin_core::storage::fs::FsBackend;
+    use keeplin_core::storage::{
+        NoteRepository, NotebookRepository, ResourceRepository, TagRepository,
+    };
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
 
 ### fn server
 
@@ -2516,11 +2538,12 @@ refresh with `graphify update .` after refactors.
 | 63 | `fn purge_resources_after_sync` | `// md:fn purge_resources_after_sync` |
 | 64 | `fn stage_to_proto` | `// md:fn stage_to_proto` |
 | 65 | `mod tests` (container) | `// md:mod tests` |
-| 66 | `fn server` | `// md:mod tests > fn server` |
-| 67 | `fn meta_frame` | `// md:mod tests > fn meta_frame` |
-| 68 | `fn chunk_frame` | `// md:mod tests > fn chunk_frame` |
-| 69 | `fn upload_resource_assembles_chunks_in_order` | `// md:mod tests > fn upload_resource_assembles_chunks_in_order` |
-| 70 | `fn upload_resource_requires_metadata_first` | `// md:mod tests > fn upload_resource_requires_metadata_first` |
-| 71 | `fn upload_resource_enforces_the_cap` | `// md:mod tests > fn upload_resource_enforces_the_cap` |
-| 72 | `fn update_rpcs_reject_soft_deleted_entities` | `// md:mod tests > fn update_rpcs_reject_soft_deleted_entities` |
-| 73 | `fn update_notebook_and_tag_refresh_updated_at_server_side` | `// md:mod tests > fn update_notebook_and_tag_refresh_updated_at_server_side` |
+| 66 | `imports` | `// md:mod tests > imports` |
+| 67 | `fn server` | `// md:mod tests > fn server` |
+| 68 | `fn meta_frame` | `// md:mod tests > fn meta_frame` |
+| 69 | `fn chunk_frame` | `// md:mod tests > fn chunk_frame` |
+| 70 | `fn upload_resource_assembles_chunks_in_order` | `// md:mod tests > fn upload_resource_assembles_chunks_in_order` |
+| 71 | `fn upload_resource_requires_metadata_first` | `// md:mod tests > fn upload_resource_requires_metadata_first` |
+| 72 | `fn upload_resource_enforces_the_cap` | `// md:mod tests > fn upload_resource_enforces_the_cap` |
+| 73 | `fn update_rpcs_reject_soft_deleted_entities` | `// md:mod tests > fn update_rpcs_reject_soft_deleted_entities` |
+| 74 | `fn update_notebook_and_tag_refresh_updated_at_server_side` | `// md:mod tests > fn update_notebook_and_tag_refresh_updated_at_server_side` |

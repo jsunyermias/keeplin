@@ -235,6 +235,24 @@ keeplin-core` and never touch I/O.
 `#[cfg(test)]` unit tests; anything needing a running backend lives in
 `keeplin-core/tests/`.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::SortableRfc3339;
+    use chrono::{DateTime, TimeZone, Utc};
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
 ### fn effective_page_size_defaults_and_clamps
 
 **Identification** — unit test; marker
@@ -393,6 +411,7 @@ refresh with `graphify update .` after refactors.
 | 5 | `trait SortableRfc3339` | `// md:trait SortableRfc3339` |
 | 6 | `impl SortableRfc3339 for DateTime<Utc>` | `// md:impl SortableRfc3339 for DateTime Utc` |
 | 7 | `mod tests` | `// md:mod tests` |
-| 8 | `fn effective_page_size_defaults_and_clamps` | `// md:mod tests > fn effective_page_size_defaults_and_clamps` |
-| 9 | `fn sortable_rfc3339_has_fixed_shape` | `// md:mod tests > fn sortable_rfc3339_has_fixed_shape` |
-| 10 | `fn lexicographic_order_matches_chronological_even_mixed_with_old_format` | `// md:mod tests > fn lexicographic_order_matches_chronological_even_mixed_with_old_format` |
+| 8 | `imports` | `// md:mod tests > imports` |
+| 9 | `fn effective_page_size_defaults_and_clamps` | `// md:mod tests > fn effective_page_size_defaults_and_clamps` |
+| 10 | `fn sortable_rfc3339_has_fixed_shape` | `// md:mod tests > fn sortable_rfc3339_has_fixed_shape` |
+| 11 | `fn lexicographic_order_matches_chronological_even_mixed_with_old_format` | `// md:mod tests > fn lexicographic_order_matches_chronological_even_mixed_with_old_format` |

@@ -1640,6 +1640,24 @@ parsing, the note bridge, and the storage layer end-to-end.
 
 **Repeated context** — none.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+    use crate::models::Note;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
 ### fn contact_round_trips_through_vcard
 
 **Identification** — unit test; marker
@@ -2106,16 +2124,17 @@ refresh with `graphify update .` after refactors.
 | 47 | `fn import_todo` | `// md:fn import_todo` |
 | 48 | `fn import_todos` | `// md:fn import_todos` |
 | 49 | `mod tests` (container) | `// md:mod tests` |
-| 50 | `fn contact_round_trips_through_vcard` | `// md:mod tests > fn contact_round_trips_through_vcard` |
-| 51 | `fn vcard_escaping_survives` | `// md:mod tests > fn vcard_escaping_survives` |
-| 52 | `fn user_vcard_carries_name_and_email` | `// md:mod tests > fn user_vcard_carries_name_and_email` |
-| 53 | `fn event_round_trips_through_ics` | `// md:mod tests > fn event_round_trips_through_ics` |
-| 54 | `fn todo_round_trips_and_marks_completion` | `// md:mod tests > fn todo_round_trips_and_marks_completion` |
-| 55 | `fn todo_maps_to_and_from_a_note` | `// md:mod tests > fn todo_maps_to_and_from_a_note` |
-| 56 | `fn unfolds_wrapped_lines` | `// md:mod tests > fn unfolds_wrapped_lines` |
-| 57 | `fn missing_component_yields_none` | `// md:mod tests > fn missing_component_yields_none` |
-| 58 | `fn multi_component_calendar_parses_every_event_and_todo` | `// md:mod tests > fn multi_component_calendar_parses_every_event_and_todo` |
-| 59 | `fn fs` | `// md:mod tests > fn fs` |
-| 60 | `fn contact_save_list_get_delete_over_storage` | `// md:mod tests > fn contact_save_list_get_delete_over_storage` |
-| 61 | `fn event_round_trips_through_storage` | `// md:mod tests > fn event_round_trips_through_storage` |
-| 62 | `fn import_todo_creates_a_todo_note` | `// md:mod tests > fn import_todo_creates_a_todo_note` |
+| 50 | `imports` | `// md:mod tests > imports` |
+| 51 | `fn contact_round_trips_through_vcard` | `// md:mod tests > fn contact_round_trips_through_vcard` |
+| 52 | `fn vcard_escaping_survives` | `// md:mod tests > fn vcard_escaping_survives` |
+| 53 | `fn user_vcard_carries_name_and_email` | `// md:mod tests > fn user_vcard_carries_name_and_email` |
+| 54 | `fn event_round_trips_through_ics` | `// md:mod tests > fn event_round_trips_through_ics` |
+| 55 | `fn todo_round_trips_and_marks_completion` | `// md:mod tests > fn todo_round_trips_and_marks_completion` |
+| 56 | `fn todo_maps_to_and_from_a_note` | `// md:mod tests > fn todo_maps_to_and_from_a_note` |
+| 57 | `fn unfolds_wrapped_lines` | `// md:mod tests > fn unfolds_wrapped_lines` |
+| 58 | `fn missing_component_yields_none` | `// md:mod tests > fn missing_component_yields_none` |
+| 59 | `fn multi_component_calendar_parses_every_event_and_todo` | `// md:mod tests > fn multi_component_calendar_parses_every_event_and_todo` |
+| 60 | `fn fs` | `// md:mod tests > fn fs` |
+| 61 | `fn contact_save_list_get_delete_over_storage` | `// md:mod tests > fn contact_save_list_get_delete_over_storage` |
+| 62 | `fn event_round_trips_through_storage` | `// md:mod tests > fn event_round_trips_through_storage` |
+| 63 | `fn import_todo_creates_a_todo_note` | `// md:mod tests > fn import_todo_creates_a_todo_note` |

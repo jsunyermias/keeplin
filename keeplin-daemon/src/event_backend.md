@@ -539,6 +539,25 @@ helper + three tests over `EventBackend<FsBackend>`.
 **What it does** — Pins publish-on-success, silence on reads, and silence on
 failure.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+    use keeplin_core::storage::fs::FsBackend;
+    use tokio::sync::broadcast::error::TryRecvError;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
 ### fn backend
 
 **Identification** — helper; marker `// md:mod tests > fn backend`.
@@ -681,7 +700,8 @@ refresh with `graphify update .` after refactors.
 | 10 | `impl SyncBackend for EventBackend` | `// md:impl SyncBackend for EventBackend` |
 | 11 | `impl HistoryRepository for EventBackend` | `// md:impl HistoryRepository for EventBackend` |
 | 12 | `mod tests` (container) | `// md:mod tests` |
-| 13 | `fn backend` | `// md:mod tests > fn backend` |
-| 14 | `fn create_update_delete_emit_changes` | `// md:mod tests > fn create_update_delete_emit_changes` |
-| 15 | `fn reads_do_not_emit_changes` | `// md:mod tests > fn reads_do_not_emit_changes` |
-| 16 | `fn failed_mutation_emits_nothing` | `// md:mod tests > fn failed_mutation_emits_nothing` |
+| 13 | `imports` | `// md:mod tests > imports` |
+| 14 | `fn backend` | `// md:mod tests > fn backend` |
+| 15 | `fn create_update_delete_emit_changes` | `// md:mod tests > fn create_update_delete_emit_changes` |
+| 16 | `fn reads_do_not_emit_changes` | `// md:mod tests > fn reads_do_not_emit_changes` |
+| 17 | `fn failed_mutation_emits_nothing` | `// md:mod tests > fn failed_mutation_emits_nothing` |

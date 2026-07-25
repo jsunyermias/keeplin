@@ -625,6 +625,23 @@ rejections, the 1-based-number rule, and both extraction functions.
 **Repeated context** — the grammar is a compatibility surface, so these tests are
 the contract — change them only with a deliberate format break.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
 ### fn parses_one_two_three_segments
 
 **Identification** — unit test; marker
@@ -838,9 +855,10 @@ refresh with `graphify update .` after refactors.
 | 19 | `fn parse_bookmarks` | `// md:fn parse_bookmarks` |
 | 20 | `fn parse_content_links` | `// md:fn parse_content_links` |
 | 21 | `mod tests` | `// md:mod tests` |
-| 22 | `fn parses_one_two_three_segments` | `// md:mod tests > fn parses_one_two_three_segments` |
-| 23 | `fn parses_uuid_segments_as_ids` | `// md:mod tests > fn parses_uuid_segments_as_ids` |
-| 24 | `fn rejects_malformed_refs` | `// md:mod tests > fn rejects_malformed_refs` |
-| 25 | `fn bookmark_ref_zero_is_alias` | `// md:mod tests > fn bookmark_ref_zero_is_alias` |
-| 26 | `fn extracts_bookmarks_with_and_without_alias_in_order` | `// md:mod tests > fn extracts_bookmarks_with_and_without_alias_in_order` |
-| 27 | `fn extracts_content_links_excluding_bookmarks` | `// md:mod tests > fn extracts_content_links_excluding_bookmarks` |
+| 22 | `imports` | `// md:mod tests > imports` |
+| 23 | `fn parses_one_two_three_segments` | `// md:mod tests > fn parses_one_two_three_segments` |
+| 24 | `fn parses_uuid_segments_as_ids` | `// md:mod tests > fn parses_uuid_segments_as_ids` |
+| 25 | `fn rejects_malformed_refs` | `// md:mod tests > fn rejects_malformed_refs` |
+| 26 | `fn bookmark_ref_zero_is_alias` | `// md:mod tests > fn bookmark_ref_zero_is_alias` |
+| 27 | `fn extracts_bookmarks_with_and_without_alias_in_order` | `// md:mod tests > fn extracts_bookmarks_with_and_without_alias_in_order` |
+| 28 | `fn extracts_content_links_excluding_bookmarks` | `// md:mod tests > fn extracts_content_links_excluding_bookmarks` |

@@ -202,6 +202,75 @@ def _extract_item(lines: list[str], marker_index: int, source: Path) -> str:
     )
 
 
+def _container_preamble_error(
+    lines: list[str], marker_index: int, next_index: int, name: str, source: Path
+) -> str | None:
+    """Reject real code hidden between a container marker and its first child."""
+    preamble = "\n".join(lines[marker_index + 1 : next_index])
+    masked = _mask_rust(preamble)
+    length = len(masked)
+
+    def skip_space(position: int) -> int:
+        while position < length and masked[position].isspace():
+            position += 1
+        return position
+
+    def skip_attribute(position: int) -> int | None:
+        match = re.match(r"#!?\[", masked[position:])
+        if not match:
+            return None
+        depth = 0
+        for cursor in range(position + match.end() - 1, length):
+            if masked[cursor] == "[":
+                depth += 1
+            elif masked[cursor] == "]":
+                depth -= 1
+                if depth == 0:
+                    return cursor + 1
+        return None
+
+    position = skip_space(0)
+    declaration_start = position
+    while position < length:
+        attribute_end = skip_attribute(position)
+        if attribute_end is None:
+            break
+        position = skip_space(attribute_end)
+
+    declaration = re.match(
+        r"(?:(?:pub(?:\s*\([^)]*\))?)\s+)?(?:unsafe\s+|async\s+|default\s+)*(?:impl|mod|trait)\b",
+        masked[position:],
+    )
+    if declaration:
+        body_open = masked.find("{", position + declaration.end())
+        terminator = masked.find(";", position + declaration.end())
+        if body_open < 0 or (terminator >= 0 and terminator < body_open):
+            position = declaration_start
+        else:
+            position = body_open + 1
+    else:
+        # Documentation-only grouping containers can have an empty preamble.
+        position = declaration_start
+
+    while True:
+        position = skip_space(position)
+        if position >= length:
+            return None
+        attribute_end = skip_attribute(position)
+        if attribute_end is not None:
+            position = attribute_end
+            continue
+        if masked[position] in "{}":
+            position += 1
+            continue
+        line_number = marker_index + 2 + masked[:position].count("\n")
+        snippet = lines[line_number - 1].strip()
+        return (
+            f"UNCOVERED code between container '// md:{name}' and its first child marker "
+            f"at {source}:{line_number}: {snippet}"
+        )
+
+
 def parse_source(path: Path) -> list[SourceBlock]:
     text, _ = _read(path)
     lines = text.splitlines()
@@ -219,6 +288,9 @@ def parse_source(path: Path) -> list[SourceBlock]:
         next_index = found[ordinal + 1][0] if ordinal + 1 < len(found) else len(lines)
         next_name = found[ordinal + 1][1] if ordinal + 1 < len(found) else None
         if next_name is not None and next_name.startswith(name + " >"):
+            uncovered = _container_preamble_error(lines, index, next_index, name, path)
+            if uncovered:
+                raise CompanionError(uncovered)
             code = None
         elif name == "Overview":
             end = next_index
@@ -346,7 +418,11 @@ def sync(root: Path, requested: Sequence[str], check: bool) -> tuple[int, int, l
             errors.append(f"MISSING companion doc: {companion}")
             continue
         checked += 1
-        blocks = {block.name: block for block in parse_source(source)}
+        try:
+            blocks = {block.name: block for block in parse_source(source)}
+        except CompanionError as exc:
+            errors.append(str(exc))
+            continue
         text, newline = _read(companion)
         fences = parse_fences(text)
         replacements: list[tuple[int, int, str]] = []
@@ -450,7 +526,7 @@ def build_manifest(root: Path) -> dict[str, object]:
                 dependencies.append(
                     {
                         "path": dep,
-                        "origin": "EXTRACTED" if "(EXTRACTED)" in bullet else "INFERRED",
+                        "origin": "EXTRACTED" if "(EXTRACTED" in bullet else "INFERRED",
                         "required": any(term in bullet.lower() for term in CONTRACT_TERMS),
                     }
                 )
@@ -461,12 +537,12 @@ def build_manifest(root: Path) -> dict[str, object]:
                 dependents.append(
                     {
                         "path": dependent,
-                        "origin": "EXTRACTED" if "(EXTRACTED)" in bullet else "INFERRED",
+                        "origin": "EXTRACTED" if "(EXTRACTED" in bullet else "INFERRED",
                     }
                 )
         invariants = [
             {
-                "origin": "EXTRACTED" if "(EXTRACTED)" in bullet else "INFERRED",
+                "origin": "EXTRACTED" if "(EXTRACTED" in bullet else "INFERRED",
                 "value": bullet,
             }
             for bullet in _bullets(_section(text, "Invariants"))

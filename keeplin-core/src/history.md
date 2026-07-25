@@ -347,6 +347,28 @@ behaviours on a real backend.
 **Repeated context** — project test convention: logic that needs a backend uses
 `FsBackend` in a tempdir as the cheapest real implementation.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+    use crate::storage::fs::FsBackend;
+    use crate::storage::{HistoryRepository, NoteRepository};
+    use chrono::TimeZone;
+    use std::time::Duration;
+    use tempfile::tempdir;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
 ### fn ver
 
 **Identification** — test helper `fn ver(secs: i64, entity: Option<u32>) -> EntityVersion<u32>`;
@@ -644,10 +666,11 @@ refresh with `graphify update .` after refactors.
 | 6 | `fn revert_notes_to` | `// md:fn revert_notes_to` |
 | 7 | `fn revert_notebook_notes_to` | `// md:fn revert_notebook_notes_to` |
 | 8 | `mod tests` | `// md:mod tests` |
-| 9 | `fn ver` | `// md:mod tests > fn ver` |
-| 10 | `fn state_at_picks_newest_at_or_before` | `// md:mod tests > fn state_at_picks_newest_at_or_before` |
-| 11 | `fn fs` | `// md:mod tests > fn fs` |
-| 12 | `fn note_history_lists_versions_newest_first` | `// md:mod tests > fn note_history_lists_versions_newest_first` |
-| 13 | `fn revert_restores_an_earlier_version` | `// md:mod tests > fn revert_restores_an_earlier_version` |
-| 14 | `fn revert_to_a_deleted_instant_deletes_the_note` | `// md:mod tests > fn revert_to_a_deleted_instant_deletes_the_note` |
-| 15 | `fn batch_revert_of_a_notebook_rolls_back_every_note` | `// md:mod tests > fn batch_revert_of_a_notebook_rolls_back_every_note` |
+| 9 | `imports` | `// md:mod tests > imports` |
+| 10 | `fn ver` | `// md:mod tests > fn ver` |
+| 11 | `fn state_at_picks_newest_at_or_before` | `// md:mod tests > fn state_at_picks_newest_at_or_before` |
+| 12 | `fn fs` | `// md:mod tests > fn fs` |
+| 13 | `fn note_history_lists_versions_newest_first` | `// md:mod tests > fn note_history_lists_versions_newest_first` |
+| 14 | `fn revert_restores_an_earlier_version` | `// md:mod tests > fn revert_restores_an_earlier_version` |
+| 15 | `fn revert_to_a_deleted_instant_deletes_the_note` | `// md:mod tests > fn revert_to_a_deleted_instant_deletes_the_note` |
+| 16 | `fn batch_revert_of_a_notebook_rolls_back_every_note` | `// md:mod tests > fn batch_revert_of_a_notebook_rolls_back_every_note` |

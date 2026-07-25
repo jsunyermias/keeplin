@@ -721,6 +721,23 @@ helpers + six tests.
 structured filters, recency listing, the end-to-end rebuild + live-event
 path, and removal.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
 ### fn note
 
 **Identification** — helper; marker `// md:mod tests > fn note`.
@@ -1050,11 +1067,12 @@ refresh with `graphify update .` after refactors.
 | 21 | `fn start` | `// md:fn start` |
 | 22 | `fn apply_change` | `// md:fn apply_change` |
 | 23 | `mod tests` (container) | `// md:mod tests` |
-| 24 | `fn note` | `// md:mod tests > fn note` |
-| 25 | `fn idx` | `// md:mod tests > fn idx` |
-| 26 | `fn matches_title_and_body_by_prefix` | `// md:mod tests > fn matches_title_and_body_by_prefix` |
-| 27 | `fn matches_tag_and_notebook_names` | `// md:mod tests > fn matches_tag_and_notebook_names` |
-| 28 | `fn structured_filters_narrow_results` | `// md:mod tests > fn structured_filters_narrow_results` |
-| 29 | `fn empty_query_lists_by_recency_with_filters` | `// md:mod tests > fn empty_query_lists_by_recency_with_filters` |
-| 30 | `fn indexes_from_rebuild_and_the_event_stream` | `// md:mod tests > fn indexes_from_rebuild_and_the_event_stream` |
-| 31 | `fn remove_drops_the_note` | `// md:mod tests > fn remove_drops_the_note` |
+| 24 | `imports` | `// md:mod tests > imports` |
+| 25 | `fn note` | `// md:mod tests > fn note` |
+| 26 | `fn idx` | `// md:mod tests > fn idx` |
+| 27 | `fn matches_title_and_body_by_prefix` | `// md:mod tests > fn matches_title_and_body_by_prefix` |
+| 28 | `fn matches_tag_and_notebook_names` | `// md:mod tests > fn matches_tag_and_notebook_names` |
+| 29 | `fn structured_filters_narrow_results` | `// md:mod tests > fn structured_filters_narrow_results` |
+| 30 | `fn empty_query_lists_by_recency_with_filters` | `// md:mod tests > fn empty_query_lists_by_recency_with_filters` |
+| 31 | `fn indexes_from_rebuild_and_the_event_stream` | `// md:mod tests > fn indexes_from_rebuild_and_the_event_stream` |
+| 32 | `fn remove_drops_the_note` | `// md:mod tests > fn remove_drops_the_note` |
