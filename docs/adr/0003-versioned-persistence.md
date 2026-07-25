@@ -5,7 +5,7 @@
 - Decision owners: maintainer
 - Scope: cross-repo
 - Issue: [keeplin#149](https://github.com/jsunyermias/keeplin/issues/149)
-- Acceptance PR: pending
+- Acceptance PR: [keeplin#164](https://github.com/jsunyermias/keeplin/pull/164)
 - Supersedes: none
 - Superseded by: none
 
