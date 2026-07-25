@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use blake2::{Blake2s256, Digest};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
@@ -125,6 +126,21 @@ fn fs_tombstone_value(
         "vv": vv,
         "last_writer": last_writer,
     })
+}
+
+// md:fn content_hash
+fn content_hash(data: &[u8]) -> String {
+    let digest = Blake2s256::digest(data);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+// md:StoredResource
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredResource {
+    #[serde(flatten)]
+    resource: Resource,
+    #[serde(default)]
+    blob_hash: String,
 }
 
 // md:fn fs_assoc_value
@@ -386,7 +402,6 @@ impl FsBackend {
 
         for dir in &[
             "notes",
-            "resources",
             ".keeplin",
             ".keeplin/offsets",
             "logs",
@@ -440,10 +455,15 @@ impl FsBackend {
         for flat in ["notebooks", "tags", "logs", ".keeplin", ".keeplin/offsets"] {
             removed += Self::sweep_tmp_in_dir(&root.join(flat)).await;
         }
-        for nested in ["notes", "note_tags", "resources"] {
-            let Ok(mut rd) = tokio::fs::read_dir(root.join(nested)).await else {
-                continue;
-            };
+        if let Ok(mut rd) = tokio::fs::read_dir(root.join("notes")).await {
+            while let Ok(Some(entry)) = rd.next_entry().await {
+                if entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+                    removed += Self::sweep_tmp_in_dir(&entry.path()).await;
+                    removed += Self::sweep_tmp_in_dir(&entry.path().join("resources")).await;
+                }
+            }
+        }
+        if let Ok(mut rd) = tokio::fs::read_dir(root.join("note_tags")).await {
             while let Ok(Some(entry)) = rd.next_entry().await {
                 if entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
                     removed += Self::sweep_tmp_in_dir(&entry.path()).await;
@@ -467,10 +487,15 @@ impl FsBackend {
         .iter()
         .map(|d| root.join(d))
         .collect();
-        for nested in ["notes", "note_tags", "resources"] {
-            let Ok(mut rd) = tokio::fs::read_dir(root.join(nested)).await else {
-                continue;
-            };
+        if let Ok(mut rd) = tokio::fs::read_dir(root.join("notes")).await {
+            while let Ok(Some(entry)) = rd.next_entry().await {
+                if entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+                    dirs.push(entry.path());
+                    dirs.push(entry.path().join("resources"));
+                }
+            }
+        }
+        if let Ok(mut rd) = tokio::fs::read_dir(root.join("note_tags")).await {
             while let Ok(Some(entry)) = rd.next_entry().await {
                 if entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
                     dirs.push(entry.path());
@@ -524,7 +549,7 @@ impl FsBackend {
         removed
     }
 
-    const FORMAT_VERSION: u32 = 7;
+    const FORMAT_VERSION: u32 = 8;
 
     const NOTE_LOG_COMPACT_THRESHOLD: usize = 256;
 
@@ -577,7 +602,7 @@ impl FsBackend {
     // md:impl FsBackend > fn apply_format_migration
     async fn apply_format_migration(&self, version: u32) -> Result<(), StorageError> {
         match version {
-            2..=7 => Ok(()),
+            2..=8 => Ok(()),
             other => Err(StorageError::InvalidState(format!(
                 "no filesystem migration defined for format version {other}"
             ))),
@@ -631,19 +656,81 @@ impl FsBackend {
         self.note_tag_dir(note_id).join(tag_id.to_string())
     }
 
-    // md:impl FsBackend > fn resource_dir
-    fn resource_dir(&self, id: Uuid) -> PathBuf {
-        self.root.join("resources").join(id.to_string())
+    // md:impl FsBackend > fn note_resources_dir
+    fn note_resources_dir(&self, note_id: Uuid) -> PathBuf {
+        self.note_dir(note_id).join("resources")
     }
 
     // md:impl FsBackend > fn resource_meta_path
-    fn resource_meta_path(&self, id: Uuid) -> PathBuf {
-        self.resource_dir(id).join("meta.ndjson")
+    fn resource_meta_path(&self, note_id: Uuid, id: Uuid) -> PathBuf {
+        self.note_resources_dir(note_id)
+            .join(format!("{id}.meta.ndjson"))
     }
 
-    // md:impl FsBackend > fn resource_data_path
-    fn resource_data_path(&self, id: Uuid) -> PathBuf {
-        self.resource_dir(id).join("data")
+    // md:impl FsBackend > fn resource_blob_path
+    fn resource_blob_path(&self, note_id: Uuid, hash: &str) -> PathBuf {
+        self.note_resources_dir(note_id)
+            .join(format!("{hash}.knrs"))
+    }
+
+    // md:impl FsBackend > fn all_note_ids
+    async fn all_note_ids(&self) -> Result<Vec<Uuid>, StorageError> {
+        let mut ids = Vec::new();
+        let mut rd = match tokio::fs::read_dir(self.root.join("notes")).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(ids),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(entry) = rd.next_entry().await? {
+            if let Ok(id) = Uuid::parse_str(&entry.file_name().to_string_lossy()) {
+                ids.push(id);
+            }
+        }
+        Ok(ids)
+    }
+
+    // md:impl FsBackend > fn note_resource_ids
+    async fn note_resource_ids(&self, note_id: Uuid) -> Result<Vec<Uuid>, StorageError> {
+        let mut ids = Vec::new();
+        let mut rd = match tokio::fs::read_dir(self.note_resources_dir(note_id)).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(ids),
+            Err(e) => return Err(e.into()),
+        };
+        while let Some(entry) = rd.next_entry().await? {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(stem) = name.strip_suffix(".meta.ndjson") else {
+                continue;
+            };
+            if let Ok(id) = Uuid::parse_str(stem) {
+                ids.push(id);
+            }
+        }
+        Ok(ids)
+    }
+
+    // md:impl FsBackend > fn locate_resource_note
+    async fn locate_resource_note(&self, id: Uuid) -> Result<Option<Uuid>, StorageError> {
+        for note_id in self.all_note_ids().await? {
+            if self.resource_meta_path(note_id, id).exists() {
+                return Ok(Some(note_id));
+            }
+        }
+        Ok(None)
+    }
+
+    // md:impl FsBackend > fn read_resource_sidecar
+    async fn read_resource_sidecar(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<(Uuid, StoredResource)>, StorageError> {
+        let Some(note_id) = self.locate_resource_note(id).await? else {
+            return Ok(None);
+        };
+        let stored: StoredResource = self
+            .read_sidecar(&self.resource_meta_path(note_id, id), id)
+            .await?;
+        Ok(Some((note_id, stored)))
     }
 
     // md:impl FsBackend > fn read_or_create_device_id
@@ -804,12 +891,9 @@ impl FsBackend {
             }
         }
 
-        if let Ok(mut rd) = tokio::fs::read_dir(self.root.join("resources")).await {
-            while let Some(e) = rd.next_entry().await? {
-                let Ok(id) = Uuid::parse_str(&e.file_name().to_string_lossy()) else {
-                    continue;
-                };
-                let meta_path = self.resource_meta_path(id);
+        for note_id in self.all_note_ids().await? {
+            for id in self.note_resource_ids(note_id).await? {
+                let meta_path = self.resource_meta_path(note_id, id);
                 let bytes = match tokio::fs::read(&meta_path).await {
                     Ok(bytes) => bytes,
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -1199,14 +1283,10 @@ impl FsBackend {
 
     // md:impl FsBackend > fn read_resource_meta
     async fn read_resource_meta(&self, id: Uuid) -> Result<Option<Resource>, StorageError> {
-        match self
-            .read_sidecar::<Resource>(&self.resource_meta_path(id), id)
-            .await
-        {
-            Ok(r) => Ok(Some(r)),
-            Err(StorageError::NotFound(_)) => Ok(None),
-            Err(e) => Err(e),
-        }
+        Ok(self
+            .read_resource_sidecar(id)
+            .await?
+            .map(|(_, stored)| stored.resource))
     }
 
     // md:impl FsBackend > fn next_resource_vv
@@ -1253,24 +1333,16 @@ impl FsBackend {
         note_id: Uuid,
         deleted_at: DateTime<Utc>,
     ) -> Result<(), StorageError> {
-        let mut dir = match tokio::fs::read_dir(self.root.join("resources")).await {
-            Ok(d) => d,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e.into()),
-        };
-        while let Some(entry) = dir.next_entry().await? {
-            let Ok(id) = Uuid::parse_str(&entry.file_name().to_string_lossy()) else {
-                continue;
-            };
-            let meta_path = self.resource_meta_path(id);
-            let mut resource: Resource = match self.read_sidecar(&meta_path, id).await {
-                Ok(r) => r,
+        for id in self.note_resource_ids(note_id).await? {
+            let meta_path = self.resource_meta_path(note_id, id);
+            let mut stored: StoredResource = match self.read_sidecar(&meta_path, id).await {
+                Ok(s) => s,
                 Err(StorageError::NotFound(_)) => continue,
                 Err(e) => return Err(e),
             };
-            if resource.note_id == note_id && resource.deleted_at.is_none() {
-                resource.deleted_at = Some(deleted_at);
-                self.write_sidecar(&meta_path, &resource).await?;
+            if stored.resource.deleted_at.is_none() {
+                stored.resource.deleted_at = Some(deleted_at);
+                self.write_sidecar(&meta_path, &stored).await?;
             }
         }
         Ok(())
@@ -1282,24 +1354,16 @@ impl FsBackend {
         note_id: Uuid,
         deleted_at: DateTime<Utc>,
     ) -> Result<(), StorageError> {
-        let mut dir = match tokio::fs::read_dir(self.root.join("resources")).await {
-            Ok(d) => d,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e.into()),
-        };
-        while let Some(entry) = dir.next_entry().await? {
-            let Ok(id) = Uuid::parse_str(&entry.file_name().to_string_lossy()) else {
-                continue;
-            };
-            let meta_path = self.resource_meta_path(id);
-            let mut resource: Resource = match self.read_sidecar(&meta_path, id).await {
-                Ok(r) => r,
+        for id in self.note_resource_ids(note_id).await? {
+            let meta_path = self.resource_meta_path(note_id, id);
+            let mut stored: StoredResource = match self.read_sidecar(&meta_path, id).await {
+                Ok(s) => s,
                 Err(StorageError::NotFound(_)) => continue,
                 Err(e) => return Err(e),
             };
-            if resource.note_id == note_id && resource.deleted_at == Some(deleted_at) {
-                resource.deleted_at = None;
-                self.write_sidecar(&meta_path, &resource).await?;
+            if stored.resource.deleted_at == Some(deleted_at) {
+                stored.resource.deleted_at = None;
+                self.write_sidecar(&meta_path, &stored).await?;
             }
         }
         Ok(())
@@ -2059,13 +2123,20 @@ impl ResourceRepository for FsBackend {
         mut resource: Resource,
         data: Vec<u8>,
     ) -> Result<Resource, StorageError> {
-        let dir = self.resource_dir(resource.id);
-        tokio::fs::create_dir_all(&dir).await?;
+        let hash = content_hash(&data);
+        tokio::fs::create_dir_all(self.note_resources_dir(resource.note_id)).await?;
         resource.vv = self.next_resource_vv(resource.id).await?;
         resource.last_writer = self.device_id.clone();
-        tokio::fs::write(self.resource_data_path(resource.id), &data).await?;
-        self.write_sidecar(&self.resource_meta_path(resource.id), &resource)
-            .await?;
+        tokio::fs::write(self.resource_blob_path(resource.note_id, &hash), &data).await?;
+        let stored = StoredResource {
+            resource: resource.clone(),
+            blob_hash: hash,
+        };
+        self.write_sidecar(
+            &self.resource_meta_path(resource.note_id, resource.id),
+            &stored,
+        )
+        .await?;
         self.append_log(
             "resource",
             resource.id,
@@ -2079,32 +2150,32 @@ impl ResourceRepository for FsBackend {
 
     // md:impl ResourceRepository for FsBackend > fn read_resource
     async fn read_resource(&self, id: Uuid) -> Result<(Resource, Vec<u8>), StorageError> {
-        let meta_path = self.resource_meta_path(id);
-        if !meta_path.exists() {
+        let Some((note_id, stored)) = self.read_resource_sidecar(id).await? else {
+            return Err(StorageError::NotFound(id.to_string()));
+        };
+        if stored.resource.deleted_at.is_some() {
             return Err(StorageError::NotFound(id.to_string()));
         }
-        let resource: Resource = self.read_sidecar(&meta_path, id).await?;
-        if resource.deleted_at.is_some() {
-            return Err(StorageError::NotFound(id.to_string()));
-        }
-        let data = tokio::fs::read(self.resource_data_path(id)).await?;
-        Ok((resource, data))
+        let data = tokio::fs::read(self.resource_blob_path(note_id, &stored.blob_hash)).await?;
+        Ok((stored.resource, data))
     }
 
     // md:impl ResourceRepository for FsBackend > fn delete_resource
     async fn delete_resource(&self, id: Uuid) -> Result<(), StorageError> {
-        let meta_path = self.resource_meta_path(id);
-        let mut resource: Resource = self.read_sidecar(&meta_path, id).await?;
+        let Some((note_id, mut stored)) = self.read_resource_sidecar(id).await? else {
+            return Err(StorageError::NotFound(id.to_string()));
+        };
         let ts = now();
-        resource.deleted_at = Some(ts);
-        note_log::increment(&mut resource.vv, &self.device_id);
-        resource.last_writer = self.device_id.clone();
-        self.write_sidecar(&meta_path, &resource).await?;
+        stored.resource.deleted_at = Some(ts);
+        note_log::increment(&mut stored.resource.vv, &self.device_id);
+        stored.resource.last_writer = self.device_id.clone();
+        self.write_sidecar(&self.resource_meta_path(note_id, id), &stored)
+            .await?;
         self.append_log(
             "resource",
             id,
             "delete",
-            fs_tombstone_value(ts, &resource.vv, &resource.last_writer),
+            fs_tombstone_value(ts, &stored.resource.vv, &stored.resource.last_writer),
         )
         .await?;
         tracing::info!(%id, "Resource deleted");
@@ -2119,13 +2190,11 @@ impl ResourceRepository for FsBackend {
     ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
         let limit = super::effective_page_size(page_size) as usize;
         let mut resources = Vec::new();
-        let mut dir = tokio::fs::read_dir(self.root.join("resources")).await?;
-        while let Some(entry) = dir.next_entry().await? {
-            let id_str = entry.file_name().to_string_lossy().to_string();
-            if let Ok(id) = Uuid::parse_str(&id_str) {
-                let meta_path = self.resource_meta_path(id);
-                match self.read_sidecar::<Resource>(&meta_path, id).await {
-                    Ok(r) if r.deleted_at.is_none() => resources.push(r),
+        for note_id in self.all_note_ids().await? {
+            for id in self.note_resource_ids(note_id).await? {
+                let meta_path = self.resource_meta_path(note_id, id);
+                match self.read_sidecar::<StoredResource>(&meta_path, id).await {
+                    Ok(s) if s.resource.deleted_at.is_none() => resources.push(s.resource),
                     Ok(_) => {}
                     Err(e) => tracing::warn!("Could not load resource {id}: {e}"),
                 }
@@ -2146,16 +2215,12 @@ impl ResourceRepository for FsBackend {
     ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
         let limit = super::effective_page_size(page_size) as usize;
         let mut resources = Vec::new();
-        let mut dir = tokio::fs::read_dir(self.root.join("resources")).await?;
-        while let Some(entry) = dir.next_entry().await? {
-            let id_str = entry.file_name().to_string_lossy().to_string();
-            if let Ok(id) = Uuid::parse_str(&id_str) {
-                let meta_path = self.resource_meta_path(id);
-                match self.read_sidecar::<Resource>(&meta_path, id).await {
-                    Ok(r) if r.deleted_at.is_none() && r.note_id == note_id => resources.push(r),
-                    Ok(_) => {}
-                    Err(e) => tracing::warn!("Could not load resource {id}: {e}"),
-                }
+        for id in self.note_resource_ids(note_id).await? {
+            let meta_path = self.resource_meta_path(note_id, id);
+            match self.read_sidecar::<StoredResource>(&meta_path, id).await {
+                Ok(s) if s.resource.deleted_at.is_none() => resources.push(s.resource),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("Could not load resource {id}: {e}"),
             }
         }
         resources.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
@@ -2170,33 +2235,44 @@ impl ResourceRepository for FsBackend {
         older_than: DateTime<Utc>,
     ) -> Result<u64, StorageError> {
         let mut purged = 0u64;
-        let mut dir = match tokio::fs::read_dir(self.root.join("resources")).await {
-            Ok(d) => d,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-            Err(e) => return Err(e.into()),
-        };
-        while let Some(entry) = dir.next_entry().await? {
-            let Ok(id) = Uuid::parse_str(&entry.file_name().to_string_lossy()) else {
-                continue;
-            };
-            let meta = match self.read_resource_meta(id).await {
-                Ok(Some(meta)) => meta,
-                Ok(None) => continue,
-                Err(e) => {
-                    tracing::warn!("Skipping resource {id} during purge (unreadable meta): {e}");
+        for note_id in self.all_note_ids().await? {
+            let mut stored_list = Vec::new();
+            for id in self.note_resource_ids(note_id).await? {
+                match self
+                    .read_sidecar::<StoredResource>(&self.resource_meta_path(note_id, id), id)
+                    .await
+                {
+                    Ok(s) => stored_list.push(s),
+                    Err(StorageError::NotFound(_)) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            "Skipping resource {id} during purge (unreadable meta): {e}"
+                        );
+                    }
+                }
+            }
+            let live_hashes: std::collections::HashSet<&str> = stored_list
+                .iter()
+                .filter(|s| s.resource.deleted_at.is_none())
+                .map(|s| s.blob_hash.as_str())
+                .collect();
+            for stored in &stored_list {
+                let Some(deleted_at) = stored.resource.deleted_at else {
+                    continue;
+                };
+                if deleted_at >= older_than {
                     continue;
                 }
-            };
-            let Some(deleted_at) = meta.deleted_at else {
-                continue;
-            };
-            if deleted_at >= older_than {
-                continue;
-            }
-            match tokio::fs::remove_file(self.resource_data_path(id)).await {
-                Ok(()) => purged += 1,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
+                if stored.blob_hash.is_empty() || live_hashes.contains(stored.blob_hash.as_str()) {
+                    continue;
+                }
+                match tokio::fs::remove_file(self.resource_blob_path(note_id, &stored.blob_hash))
+                    .await
+                {
+                    Ok(()) => purged += 1,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
             }
         }
         if purged > 0 {
@@ -2388,12 +2464,32 @@ impl SyncBackend for FsBackend {
                     .resource_incoming_wins(resource.id, &resource.vv, ts, &resource.last_writer)
                     .await?
                 {
-                    tokio::fs::create_dir_all(self.resource_dir(resource.id)).await?;
-                    self.write_sidecar(&self.resource_meta_path(resource.id), &resource)
-                        .await?;
-                    if let Some(bytes) = data {
-                        tokio::fs::write(self.resource_data_path(resource.id), &bytes).await?;
-                    }
+                    tokio::fs::create_dir_all(self.note_resources_dir(resource.note_id)).await?;
+                    let blob_hash = match &data {
+                        Some(bytes) => {
+                            let hash = content_hash(bytes);
+                            tokio::fs::write(
+                                self.resource_blob_path(resource.note_id, &hash),
+                                bytes,
+                            )
+                            .await?;
+                            hash
+                        }
+                        None => self
+                            .read_resource_sidecar(resource.id)
+                            .await?
+                            .map(|(_, s)| s.blob_hash)
+                            .unwrap_or_default(),
+                    };
+                    let stored = StoredResource {
+                        resource: resource.clone(),
+                        blob_hash,
+                    };
+                    self.write_sidecar(
+                        &self.resource_meta_path(resource.note_id, resource.id),
+                        &stored,
+                    )
+                    .await?;
                     tracing::debug!(id = %resource.id, "Applied remote resource create");
                 }
             }
@@ -2407,28 +2503,34 @@ impl SyncBackend for FsBackend {
                     .resource_incoming_wins(id, &vv, deleted_at, &last_writer)
                     .await?
                 {
-                    let mut resource = match self.read_resource_meta(id).await? {
-                        Some(r) => r,
-                        None => Resource {
-                            id,
-                            note_id: SYSTEM_RESOURCE_NOTE_ID,
-                            title: String::new(),
-                            mime_type: String::new(),
-                            file_name: String::new(),
-                            size: 0,
-                            duration_ms: None,
-                            dimensions: None,
-                            created_at: deleted_at,
-                            deleted_at: None,
-                            vv: VersionVector::new(),
-                            last_writer: String::new(),
-                        },
+                    let (note_id, mut stored) = match self.read_resource_sidecar(id).await? {
+                        Some(found) => found,
+                        None => (
+                            SYSTEM_RESOURCE_NOTE_ID,
+                            StoredResource {
+                                resource: Resource {
+                                    id,
+                                    note_id: SYSTEM_RESOURCE_NOTE_ID,
+                                    title: String::new(),
+                                    mime_type: String::new(),
+                                    file_name: String::new(),
+                                    size: 0,
+                                    duration_ms: None,
+                                    dimensions: None,
+                                    created_at: deleted_at,
+                                    deleted_at: None,
+                                    vv: VersionVector::new(),
+                                    last_writer: String::new(),
+                                },
+                                blob_hash: String::new(),
+                            },
+                        ),
                     };
-                    resource.deleted_at = Some(deleted_at);
-                    resource.vv = vv;
-                    resource.last_writer = last_writer;
-                    tokio::fs::create_dir_all(self.resource_dir(id)).await?;
-                    self.write_sidecar(&self.resource_meta_path(id), &resource)
+                    stored.resource.deleted_at = Some(deleted_at);
+                    stored.resource.vv = vv;
+                    stored.resource.last_writer = last_writer;
+                    tokio::fs::create_dir_all(self.note_resources_dir(note_id)).await?;
+                    self.write_sidecar(&self.resource_meta_path(note_id, id), &stored)
                         .await?;
                     tracing::debug!(%id, "Applied remote resource delete");
                 }
@@ -2871,12 +2973,14 @@ mod tests {
 
         let epoch = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
         assert_eq!(be.purge_deleted_resources(epoch).await.unwrap(), 0);
-        assert!(be.resource_data_path(dead_id).exists());
+        let dead_blob = be.resource_blob_path(SYSTEM_RESOURCE_NOTE_ID, &content_hash(b"dead"));
+        assert!(dead_blob.exists());
 
         assert_eq!(be.purge_deleted_resources(now()).await.unwrap(), 1);
-        assert!(!be.resource_data_path(dead_id).exists(), "dead bytes freed");
+        assert!(!dead_blob.exists(), "dead bytes freed");
         assert!(
-            be.resource_meta_path(dead_id).exists(),
+            be.resource_meta_path(SYSTEM_RESOURCE_NOTE_ID, dead_id)
+                .exists(),
             "tombstone metadata must survive the purge"
         );
         assert!(matches!(
@@ -2893,6 +2997,105 @@ mod tests {
         be.create_resource(revived, b"new".to_vec()).await.unwrap();
         let (_, bytes) = be.read_resource(dead_id).await.unwrap();
         assert_eq!(bytes, b"new");
+    }
+
+    // md:mod tests > fn attachments_live_as_content_hashed_knrs_in_their_note_folder
+    #[tokio::test]
+    async fn attachments_live_as_content_hashed_knrs_in_their_note_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let be = FsBackend::new(dir.path()).await.unwrap();
+        let note = be.create_note(Note::new("host", "body")).await.unwrap();
+
+        let payload = b"\x89PNG\r\n original picture bytes".to_vec();
+        let resource = Resource::new(note.id, "pic", "image/png", "pic.png", payload.len() as u64);
+        let id = resource.id;
+        be.create_resource(resource, payload.clone()).await.unwrap();
+
+        let hash = content_hash(&payload);
+        let note_res = dir
+            .path()
+            .join("notes")
+            .join(note.id.to_string())
+            .join("resources");
+        let blob = note_res.join(format!("{hash}.knrs"));
+        assert_eq!(
+            tokio::fs::read(&blob).await.unwrap(),
+            payload,
+            "the .knrs blob is the original bytes verbatim"
+        );
+        assert!(
+            note_res.join(format!("{id}.meta.ndjson")).exists(),
+            "metadata sidecar sits beside the blob"
+        );
+        assert!(
+            !dir.path().join("resources").exists(),
+            "no global resource pool is created"
+        );
+
+        let (loaded, bytes) = be.read_resource(id).await.unwrap();
+        assert_eq!(loaded.note_id, note.id);
+        assert_eq!(bytes, payload);
+    }
+
+    // md:mod tests > fn identical_attachments_in_a_note_share_one_blob
+    #[tokio::test]
+    async fn identical_attachments_in_a_note_share_one_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let be = FsBackend::new(dir.path()).await.unwrap();
+        let note = be.create_note(Note::new("host", "body")).await.unwrap();
+
+        let payload = b"shared attachment payload".to_vec();
+        let first = Resource::new(
+            note.id,
+            "one",
+            "text/plain",
+            "one.txt",
+            payload.len() as u64,
+        );
+        let first_id = first.id;
+        be.create_resource(first, payload.clone()).await.unwrap();
+        let second = Resource::new(
+            note.id,
+            "two",
+            "text/plain",
+            "two.txt",
+            payload.len() as u64,
+        );
+        let second_id = second.id;
+        be.create_resource(second, payload.clone()).await.unwrap();
+
+        let note_res = dir
+            .path()
+            .join("notes")
+            .join(note.id.to_string())
+            .join("resources");
+        let mut blobs = 0usize;
+        let mut rd = tokio::fs::read_dir(&note_res).await.unwrap();
+        while let Some(entry) = rd.next_entry().await.unwrap() {
+            if entry.file_name().to_string_lossy().ends_with(".knrs") {
+                blobs += 1;
+            }
+        }
+        assert_eq!(blobs, 1, "identical content deduplicates to a single blob");
+
+        be.delete_resource(first_id).await.unwrap();
+        assert_eq!(
+            be.purge_deleted_resources(now()).await.unwrap(),
+            0,
+            "the shared blob is retained while a live sibling references it"
+        );
+        let (_, bytes) = be.read_resource(second_id).await.unwrap();
+        assert_eq!(
+            bytes, payload,
+            "the surviving attachment still reads its bytes"
+        );
+
+        be.delete_resource(second_id).await.unwrap();
+        assert_eq!(
+            be.purge_deleted_resources(now()).await.unwrap(),
+            1,
+            "with no live reference the shared blob is finally reclaimed"
+        );
     }
 
     // md:mod tests > fn fresh_store_is_stamped_current_version

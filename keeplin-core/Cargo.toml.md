@@ -26,6 +26,7 @@ local path dependency.
 | `aes-gcm` | 0.10 | AES-256-GCM authenticated encryption used by `EncryptedBackend` |
 | `argon2` | 0.5 | Argon2id key derivation for turning the user's passphrase into an AES key |
 | `base64` | 0.22 | Base64 encoding of `(nonce ‖ ciphertext)` for string fields, and of binary resource payloads in the change journal |
+| `blake2` | 0.10 | BLAKE2s-256 content hashing of attachment bytes for `FsBackend`'s content-addressed `{hash}.knrs` storage (already in the tree transitively via `argon2`, declared directly so the dependency is explicit) |
 
 ## Dev / build dependencies
 
