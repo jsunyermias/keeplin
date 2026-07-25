@@ -1,47 +1,61 @@
-<!--
-  Fill in the sections below. Delete any that genuinely do not apply, but do not
-  delete the checklist — CI enforces most of it, and a reviewer will look for it.
--->
-
 ## Summary
 
-<!-- What does this PR change, and why? One short paragraph. -->
+<!-- What changes, why, and who is affected? -->
 
-## Linked issues
+## Linked work
 
-<!-- e.g. "Resolves #128" / "Part of #125". If none, say so and why. -->
+<!-- Resolves #…; companion PR; accepted ADR if required. -->
 
-## Type of change
+## Author assertions
 
-- [ ] Feature
-- [ ] Bug fix
-- [ ] Refactor (no behaviour change)
-- [ ] Docs / companion-only
-- [ ] Chore / tooling
+These are claims made by the implementer and must remain distinct from CI evidence.
 
-## What changed
+- [ ] The diff is limited to the linked issue and contains no unrelated changes.
+- [ ] I checked every acceptance criterion against the resulting behavior.
+- [ ] Source, companion documents, Graphify and project documentation are consistent.
+- [ ] Cross-repo wire/format changes have a linked companion PR, immutable core pin,
+      lockstep versioning when breaking, and contract coverage.
+- [ ] I assessed negative paths, failure behavior, security, persistence and recovery
+      appropriate to this change.
+- [ ] I have not described the change as production-ready based only on happy-path tests.
 
-<!--
-  Bullet the concrete changes, grouped by crate:
-  - keeplin-core — …
-  - keeplin-daemon — …
--->
+## Verification reported by the author
 
-## Contract & compatibility
+<!-- Record exact commands and outcomes. Use "not run — reason" where appropriate. -->
 
-- [ ] Every touched `.rs` has its companion `.md` updated **verbatim** (block-complete v2.3.1): one `// md:` marker per block, one Coverage-checklist row per marker, no elided fences, no non-`// md:` comments in the `.rs`.
-- [ ] `scripts/check-docs.sh` passes clean.
-- [ ] Proto changes (if any) are **additive** — new field numbers only, existing numbers never renumbered or reused.
-- [ ] On-disk / on-wire format changes bump the relevant version (`FsBackend::FORMAT_VERSION`, `DbBackend::SCHEMA_VERSION`) with a migration step, and the change is documented in the companion.
-- [ ] No stray references to "pizarra" in touched code.
+| Check | Result |
+|---|---|
+| `cargo fmt --all --check` | |
+| `cargo clippy --workspace --all-targets -- -D warnings` | |
+| `cargo test --workspace` | |
+| `./scripts/check-docs.sh` | |
+| `graphify update .` / `./scripts/check-graph.sh` when applicable | |
 
-## Verification
+## Verified by CI
 
-- [ ] `cargo fmt --check --all` clean.
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` clean.
-- [ ] `cargo test -p keeplin-core` and `cargo test -p keeplin-daemon` green.
-- [ ] Tests added or updated for the new behaviour.
-- [ ] `graphify update .` run and the refreshed `graphify-out/` committed (code changes only). CI (`scripts/check-graph.sh`) fails if the graph is stale; enable the auto-refresh hook once with `git config core.hooksPath .githooks`. Requires `pip install graphifyy==0.9.25`.
+<!-- Complete from GitHub checks, not from the author's local claims. -->
 
-<!-- Paste anything a reviewer should know that the diff doesn't show:
-     manual testing done, follow-ups deferred, known limitations. -->
+- [ ] Required checks are green on the exact head commit.
+- [ ] No required check is skipped or neutral without an accepted explanation.
+- CI run or check-suite link:
+
+## Independent review
+
+The independent reviewer receives the objective and diff; the author's explanation is not
+the sole source.
+
+- Reviewer (human or model family):
+- Implementer (human or model family):
+- Prompt/checklist used: `docs/prompts/0.C-prompt-revision-seguridad.md`
+- [ ] Reviewer is independent from the implementer.
+- [ ] Blocking findings are resolved and conversations are closed.
+- Review evidence/link:
+
+## Merge readiness
+
+- [ ] PR is out of draft only after implementation and self-review are complete.
+- [ ] Required CI is green on the merge candidate.
+- [ ] Independent review is recorded.
+- [ ] Companion PR status is consistent with this PR.
+
+The maintainer performs the merge.

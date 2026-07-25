@@ -510,6 +510,11 @@ CI (`.github/workflows/ci.yml`) runs the companion-docs check, fmt, test, clippy
 
 ### Navigating this repo (for humans and AI agents)
 
+Start with [`AGENTS.md`](AGENTS.md), the provider-neutral engineering contract shared with
+`keeplin-srv`. [`CONTRIBUTING.md`](CONTRIBUTING.md) defines the issue-to-merge flow, and
+[`docs/prompts/`](docs/prompts/) contains the reusable preparation, implementation and
+independent-review prompts.
+
 Two navigation layers, checked in:
 
 1. **LAYER 1 — discovery: the Graphify knowledge graph.** `graphify-out/graph.json` (and the
