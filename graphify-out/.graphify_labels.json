@@ -101,6 +101,7 @@
   "99": "check-docs.sh",
   "100": "Metrics",
   "101": "Keeplin agent guide",
+  "102": ".set_notebook_alias",
   "103": "`scripts/check-graph.sh` — knowledge-graph freshness check",
   "104": "`.githooks/pre-commit` — auto-refresh the knowledge graph on commit",
   "105": "mod tests",
