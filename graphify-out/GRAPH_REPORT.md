@@ -1,16 +1,16 @@
 # Graph Report - keeplin  (2026-07-25)
 
 ## Corpus Check
-- 107 files · ~263,346 words
+- 107 files · ~263,578 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 3329 nodes · 8008 edges · 134 communities (126 shown, 8 thin omitted)
+- 3329 nodes · 8008 edges · 132 communities (126 shown, 6 thin omitted)
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 24 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `7d1e7245`
+- Built from commit: `cd454920`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -113,8 +113,6 @@
 - CLAUDE.md
 - check-docs.sh
 - Metrics
-- SyncError
-- .delete_note
 - `scripts/check-graph.sh` — knowledge-graph freshness check
 - `.githooks/pre-commit` — auto-refresh the knowledge graph on commit
 - mod tests
@@ -174,7 +172,7 @@
 ## Import Cycles
 - None detected.
 
-## Communities (134 total, 8 thin omitted)
+## Communities (132 total, 6 thin omitted)
 
 ### Community 0 - "FsBackend"
 Cohesion: 0.06
@@ -226,7 +224,7 @@ Nodes (35): Database, Arc, AppState, Sender, apply_change(), denormalize(), empt
 
 ### Community 12 - "KeeplinServer<B>"
 Cohesion: 0.07
-Nodes (25): DeleteNotebookRequest, DeleteNotebookResponse, DeleteResourceRequest, DeleteResourceResponse, KeeplinServer<B>, Request, KeeplinService, ListAliasConflictsRequest (+17 more)
+Nodes (27): DeleteNotebookRequest, DeleteNotebookResponse, DeleteNoteRequest, DeleteNoteResponse, DeleteResourceRequest, DeleteResourceResponse, KeeplinServer<B>, Request (+19 more)
 
 ### Community 13 - "in_memory_backend"
 Cohesion: 0.10
@@ -285,8 +283,8 @@ Cohesion: 0.08
 Nodes (24): Coverage checklist, fn bookmark_to_proto, fn ensure_not_deleted, fn link_source_str, fn note_to_proto, fn notebook_to_proto, fn notelink_to_proto, fn parse_optional_dt (+16 more)
 
 ### Community 27 - "Response"
-Cohesion: 0.20
-Nodes (10): CoreResource, CreateResourceRequest, CreateResourceResponse, GetResourceRequest, GetResourceResponse, resource_to_proto(), Response, S (+2 more)
+Cohesion: 0.15
+Nodes (12): CoreResource, CreateResourceRequest, CreateResourceResponse, GetResourceRequest, GetResourceResponse, resource_to_proto(), Response, ListNotebooksRequest (+4 more)
 
 ### Community 28 - "`models.rs` — domain data types"
 Cohesion: 0.07
@@ -298,7 +296,7 @@ Nodes (12): CreateNoteRequest, CreateNoteResponse, ensure_not_deleted(), parse_o
 
 ### Community 30 - "Status"
 Cohesion: 0.13
-Nodes (12): GetNotebookRequest, GetNotebookResponse, Status, stage_to_proto(), storage_err(), ListStarredNotesRequest, ListStarredNotesResponse, ResolveReferenceRequest (+4 more)
+Nodes (12): DeleteTagRequest, DeleteTagResponse, GetNotebookRequest, GetNotebookResponse, Status, stage_to_proto(), storage_err(), SetNotebookAliasRequest (+4 more)
 
 ### Community 31 - "Note"
 Cohesion: 0.05
@@ -671,7 +669,7 @@ Nodes (3): fn assemble_upload, fn from_shared, impl KeeplinServer
 ## Knowledge Gaps
 - **1422 isolated node(s):** `EpochHeader`, `build.sh script`, `check-graph.sh script`, `Purpose`, `Build profiles do **not** belong here` (+1417 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **8 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **6 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
