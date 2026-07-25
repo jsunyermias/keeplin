@@ -541,6 +541,33 @@ exposure, and `compact_own_log`'s equivalence.
 **Repeated context** — these tests are the executable contract shared with
 keeplin-srv; changing them means changing distributed convergence semantics.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+    use crate::models::Note;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+- `crate::models::Note` — the domain type the assertions construct; expects: its public fields and constructor stay usable standalone, without a live store.
+
+**Used by** — every block of `mod tests` in this file: `fn vv`, `fn ts`, `fn resolve_incoming_causally_newer_wins`, `fn resolve_stale_incoming_loses`, `fn resolve_equal_vectors_is_noop`, `fn resolve_concurrent_equal_timestamp_converges_by_device`, `fn resolve_concurrent_breaks_by_timestamp`, `fn entry`, `fn note`, `fn single_device_history_picks_latest`, `fn merge_exposes_winning_heads_own_vv_and_device`, `fn merge_empty_has_empty_winner_fields`, `fn causal_update_wins_without_conflict`, `fn concurrent_edits_conflict_and_break_by_timestamp`, `fn tombstone_wins_over_concurrent_older_edit`, `fn compact_own_log_preserves_merge`, `fn causal_edit_after_delete_resurrects`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn vv
 
 **Identification** — helper `fn vv(pairs: &[(&str, u64)]) -> VersionVector`;
@@ -1083,20 +1110,21 @@ refresh with `graphify update .` after refactors.
 | 11 | `Winner` | `// md:Winner` |
 | 12 | `fn resolve` | `// md:fn resolve` |
 | 13 | `mod tests` (container) | `// md:mod tests` |
-| 14 | `fn vv` | `// md:mod tests > fn vv` |
-| 15 | `fn ts` | `// md:mod tests > fn ts` |
-| 16 | `fn resolve_incoming_causally_newer_wins` | `// md:mod tests > fn resolve_incoming_causally_newer_wins` |
-| 17 | `fn resolve_stale_incoming_loses` | `// md:mod tests > fn resolve_stale_incoming_loses` |
-| 18 | `fn resolve_equal_vectors_is_noop` | `// md:mod tests > fn resolve_equal_vectors_is_noop` |
-| 19 | `fn resolve_concurrent_equal_timestamp_converges_by_device` | `// md:mod tests > fn resolve_concurrent_equal_timestamp_converges_by_device` |
-| 20 | `fn resolve_concurrent_breaks_by_timestamp` | `// md:mod tests > fn resolve_concurrent_breaks_by_timestamp` |
-| 21 | `fn entry` | `// md:mod tests > fn entry` |
-| 22 | `fn note` | `// md:mod tests > fn note` |
-| 23 | `fn single_device_history_picks_latest` | `// md:mod tests > fn single_device_history_picks_latest` |
-| 24 | `fn merge_exposes_winning_heads_own_vv_and_device` | `// md:mod tests > fn merge_exposes_winning_heads_own_vv_and_device` |
-| 25 | `fn merge_empty_has_empty_winner_fields` | `// md:mod tests > fn merge_empty_has_empty_winner_fields` |
-| 26 | `fn causal_update_wins_without_conflict` | `// md:mod tests > fn causal_update_wins_without_conflict` |
-| 27 | `fn concurrent_edits_conflict_and_break_by_timestamp` | `// md:mod tests > fn concurrent_edits_conflict_and_break_by_timestamp` |
-| 28 | `fn tombstone_wins_over_concurrent_older_edit` | `// md:mod tests > fn tombstone_wins_over_concurrent_older_edit` |
-| 29 | `fn compact_own_log_preserves_merge` | `// md:mod tests > fn compact_own_log_preserves_merge` |
-| 30 | `fn causal_edit_after_delete_resurrects` | `// md:mod tests > fn causal_edit_after_delete_resurrects` |
+| 14 | `imports` | `// md:mod tests > imports` |
+| 15 | `fn vv` | `// md:mod tests > fn vv` |
+| 16 | `fn ts` | `// md:mod tests > fn ts` |
+| 17 | `fn resolve_incoming_causally_newer_wins` | `// md:mod tests > fn resolve_incoming_causally_newer_wins` |
+| 18 | `fn resolve_stale_incoming_loses` | `// md:mod tests > fn resolve_stale_incoming_loses` |
+| 19 | `fn resolve_equal_vectors_is_noop` | `// md:mod tests > fn resolve_equal_vectors_is_noop` |
+| 20 | `fn resolve_concurrent_equal_timestamp_converges_by_device` | `// md:mod tests > fn resolve_concurrent_equal_timestamp_converges_by_device` |
+| 21 | `fn resolve_concurrent_breaks_by_timestamp` | `// md:mod tests > fn resolve_concurrent_breaks_by_timestamp` |
+| 22 | `fn entry` | `// md:mod tests > fn entry` |
+| 23 | `fn note` | `// md:mod tests > fn note` |
+| 24 | `fn single_device_history_picks_latest` | `// md:mod tests > fn single_device_history_picks_latest` |
+| 25 | `fn merge_exposes_winning_heads_own_vv_and_device` | `// md:mod tests > fn merge_exposes_winning_heads_own_vv_and_device` |
+| 26 | `fn merge_empty_has_empty_winner_fields` | `// md:mod tests > fn merge_empty_has_empty_winner_fields` |
+| 27 | `fn causal_update_wins_without_conflict` | `// md:mod tests > fn causal_update_wins_without_conflict` |
+| 28 | `fn concurrent_edits_conflict_and_break_by_timestamp` | `// md:mod tests > fn concurrent_edits_conflict_and_break_by_timestamp` |
+| 29 | `fn tombstone_wins_over_concurrent_older_edit` | `// md:mod tests > fn tombstone_wins_over_concurrent_older_edit` |
+| 30 | `fn compact_own_log_preserves_merge` | `// md:mod tests > fn compact_own_log_preserves_merge` |
+| 31 | `fn causal_edit_after_delete_resurrects` | `// md:mod tests > fn causal_edit_after_delete_resurrects` |

@@ -545,6 +545,31 @@ server never accepted.
 **Repeated context** — project test convention: pure logic in in-file
 `#[cfg(test)]` tests; anything needing sockets in `keeplin-core/tests/`.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+
+**Used by** — every block of `mod tests` in this file: `fn diff_body_accepts_a_line_at_the_byte_limit_and_rejects_one_byte_more`, `fn diff_body_accepts_the_line_count_limit_and_rejects_one_line_more`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn diff_body_accepts_a_line_at_the_byte_limit_and_rejects_one_byte_more
 
 **Identification** — unit test; marker
@@ -676,5 +701,6 @@ refresh with `graphify update .` after refactors.
 | 9 | `fn merge_into` | `// md:fn merge_into` |
 | 10 | `fn bump` | `// md:fn bump` |
 | 11 | `mod tests` | `// md:mod tests` |
-| 12 | `fn diff_body_accepts_a_line_at_the_byte_limit_and_rejects_one_byte_more` | `// md:mod tests > fn diff_body_accepts_a_line_at_the_byte_limit_and_rejects_one_byte_more` |
-| 13 | `fn diff_body_accepts_the_line_count_limit_and_rejects_one_line_more` | `// md:mod tests > fn diff_body_accepts_the_line_count_limit_and_rejects_one_line_more` |
+| 12 | `imports` | `// md:mod tests > imports` |
+| 13 | `fn diff_body_accepts_a_line_at_the_byte_limit_and_rejects_one_byte_more` | `// md:mod tests > fn diff_body_accepts_a_line_at_the_byte_limit_and_rejects_one_byte_more` |
+| 14 | `fn diff_body_accepts_the_line_count_limit_and_rejects_one_line_more` | `// md:mod tests > fn diff_body_accepts_the_line_count_limit_and_rejects_one_line_more` |

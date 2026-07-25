@@ -114,6 +114,7 @@ pub fn check_notebook_capacity(live_notes: usize) -> Result<(), LimitViolation> 
 // md:mod tests
 #[cfg(test)]
 mod tests {
+    // md:mod tests > imports
     use super::*;
 
     // md:mod tests > fn the_three_limits_are_exact_powers_of_two

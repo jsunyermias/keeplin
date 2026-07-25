@@ -586,6 +586,31 @@ or switched line length to `chars`.
 **Repeated context** — project test convention: pure logic in in-file `#[cfg(test)]` tests;
 anything needing sockets or a filesystem in `keeplin-core/tests/`.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+
+**Used by** — every block of `mod tests` in this file: `fn the_three_limits_are_exact_powers_of_two`, `fn line_length_is_counted_in_utf8_bytes`, `fn line_count_boundary_accepts_the_limit_and_rejects_one_more`, `fn line_count_matches_the_materialised_body`, `fn check_body_enforces_both_line_limits`, `fn notebook_capacity_rejects_the_note_that_would_exceed_the_cap`, `fn every_violation_maps_to_its_wire_code_and_to_too_large`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn the_three_limits_are_exact_powers_of_two
 
 **Identification** — unit test; marker
@@ -930,10 +955,11 @@ model, the Graphify graph (`graphify-out/graph.json`) is LAYER 1; refresh with
 | 16 | `fn check_body` | `// md:fn check_body` |
 | 17 | `fn check_notebook_capacity` | `// md:fn check_notebook_capacity` |
 | 18 | `mod tests` | `// md:mod tests` |
-| 19 | `fn the_three_limits_are_exact_powers_of_two` | `// md:mod tests > fn the_three_limits_are_exact_powers_of_two` |
-| 20 | `fn line_length_is_counted_in_utf8_bytes` | `// md:mod tests > fn line_length_is_counted_in_utf8_bytes` |
-| 21 | `fn line_count_boundary_accepts_the_limit_and_rejects_one_more` | `// md:mod tests > fn line_count_boundary_accepts_the_limit_and_rejects_one_more` |
-| 22 | `fn line_count_matches_the_materialised_body` | `// md:mod tests > fn line_count_matches_the_materialised_body` |
-| 23 | `fn check_body_enforces_both_line_limits` | `// md:mod tests > fn check_body_enforces_both_line_limits` |
-| 24 | `fn notebook_capacity_rejects_the_note_that_would_exceed_the_cap` | `// md:mod tests > fn notebook_capacity_rejects_the_note_that_would_exceed_the_cap` |
-| 25 | `fn every_violation_maps_to_its_wire_code_and_to_too_large` | `// md:mod tests > fn every_violation_maps_to_its_wire_code_and_to_too_large` |
+| 19 | `imports` | `// md:mod tests > imports` |
+| 20 | `fn the_three_limits_are_exact_powers_of_two` | `// md:mod tests > fn the_three_limits_are_exact_powers_of_two` |
+| 21 | `fn line_length_is_counted_in_utf8_bytes` | `// md:mod tests > fn line_length_is_counted_in_utf8_bytes` |
+| 22 | `fn line_count_boundary_accepts_the_limit_and_rejects_one_more` | `// md:mod tests > fn line_count_boundary_accepts_the_limit_and_rejects_one_more` |
+| 23 | `fn line_count_matches_the_materialised_body` | `// md:mod tests > fn line_count_matches_the_materialised_body` |
+| 24 | `fn check_body_enforces_both_line_limits` | `// md:mod tests > fn check_body_enforces_both_line_limits` |
+| 25 | `fn notebook_capacity_rejects_the_note_that_would_exceed_the_cap` | `// md:mod tests > fn notebook_capacity_rejects_the_note_that_would_exceed_the_cap` |
+| 26 | `fn every_violation_maps_to_its_wire_code_and_to_too_large` | `// md:mod tests > fn every_violation_maps_to_its_wire_code_and_to_too_large` |

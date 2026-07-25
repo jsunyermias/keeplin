@@ -1865,6 +1865,33 @@ invalidation, and the concurrent-alias race.
 
 **Repeated context** — none.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+    use crate::storage::fs::FsBackend;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+- `crate::storage::fs::FsBackend` — a real filesystem-backed store built over a temporary directory; expects: it honours the same repository traits as production, so what passes here says something about the real backend.
+
+**Used by** — every block of `mod tests` in this file: `fn backend`, `fn nb`, `fn aliased`, `fn derives_bookmarks_and_content_links`, `fn bookmark_alias_comes_from_the_body_title`, `fn resolves_link_by_alias_and_uuid`, `fn rejects_duplicate_note_alias`, `fn same_alias_in_different_notebooks_is_allowed`, `fn inbox_note_cannot_carry_an_alias`, `fn set_note_alias_rejects_inbox_notes`, `fn moving_a_note_to_inbox_clears_its_alias`, `fn inbox_note_does_not_link_out`, `fn nothing_links_to_an_inbox_note`, `fn bare_alias_resolves_globally_when_unique_else_scoped`, `fn alias_and_link_edits_reject_deleted_entities`, `fn add_and_remove_manual_link`, `fn resolves_two_segment_note_bookmark_shorthand`, `fn two_segment_prefers_notebook_note`, `fn alias_conflicts_lists_duplicates`, `fn alias_index_tracks_deletes_and_renames`, `fn sync_applied_change_invalidates_alias_index`, `fn concurrent_duplicate_alias_yields_exactly_one_winner`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn backend
 
 **Identification** — helper `async fn backend() -> LinkingBackend<FsBackend>`;
@@ -2593,25 +2620,26 @@ refresh with `graphify update .` after refactors.
 | 50 | `impl SyncBackend for LinkingBackend` | `// md:impl SyncBackend for LinkingBackend` |
 | 51 | `impl HistoryRepository for LinkingBackend` | `// md:impl HistoryRepository for LinkingBackend` |
 | 52 | `mod tests` (container) | `// md:mod tests` |
-| 53 | `fn backend` | `// md:mod tests > fn backend` |
-| 54 | `fn nb` | `// md:mod tests > fn nb` |
-| 55 | `fn aliased` | `// md:mod tests > fn aliased` |
-| 56 | `fn derives_bookmarks_and_content_links` | `// md:mod tests > fn derives_bookmarks_and_content_links` |
-| 57 | `fn bookmark_alias_comes_from_the_body_title` | `// md:mod tests > fn bookmark_alias_comes_from_the_body_title` |
-| 58 | `fn resolves_link_by_alias_and_uuid` | `// md:mod tests > fn resolves_link_by_alias_and_uuid` |
-| 59 | `fn rejects_duplicate_note_alias` | `// md:mod tests > fn rejects_duplicate_note_alias` |
-| 60 | `fn same_alias_in_different_notebooks_is_allowed` | `// md:mod tests > fn same_alias_in_different_notebooks_is_allowed` |
-| 61 | `fn inbox_note_cannot_carry_an_alias` | `// md:mod tests > fn inbox_note_cannot_carry_an_alias` |
-| 62 | `fn set_note_alias_rejects_inbox_notes` | `// md:mod tests > fn set_note_alias_rejects_inbox_notes` |
-| 63 | `fn moving_a_note_to_inbox_clears_its_alias` | `// md:mod tests > fn moving_a_note_to_inbox_clears_its_alias` |
-| 64 | `fn inbox_note_does_not_link_out` | `// md:mod tests > fn inbox_note_does_not_link_out` |
-| 65 | `fn nothing_links_to_an_inbox_note` | `// md:mod tests > fn nothing_links_to_an_inbox_note` |
-| 66 | `fn bare_alias_resolves_globally_when_unique_else_scoped` | `// md:mod tests > fn bare_alias_resolves_globally_when_unique_else_scoped` |
-| 67 | `fn alias_and_link_edits_reject_deleted_entities` | `// md:mod tests > fn alias_and_link_edits_reject_deleted_entities` |
-| 68 | `fn add_and_remove_manual_link` | `// md:mod tests > fn add_and_remove_manual_link` |
-| 69 | `fn resolves_two_segment_note_bookmark_shorthand` | `// md:mod tests > fn resolves_two_segment_note_bookmark_shorthand` |
-| 70 | `fn two_segment_prefers_notebook_note` | `// md:mod tests > fn two_segment_prefers_notebook_note` |
-| 71 | `fn alias_conflicts_lists_duplicates` | `// md:mod tests > fn alias_conflicts_lists_duplicates` |
-| 72 | `fn alias_index_tracks_deletes_and_renames` | `// md:mod tests > fn alias_index_tracks_deletes_and_renames` |
-| 73 | `fn sync_applied_change_invalidates_alias_index` | `// md:mod tests > fn sync_applied_change_invalidates_alias_index` |
-| 74 | `fn concurrent_duplicate_alias_yields_exactly_one_winner` | `// md:mod tests > fn concurrent_duplicate_alias_yields_exactly_one_winner` |
+| 53 | `imports` | `// md:mod tests > imports` |
+| 54 | `fn backend` | `// md:mod tests > fn backend` |
+| 55 | `fn nb` | `// md:mod tests > fn nb` |
+| 56 | `fn aliased` | `// md:mod tests > fn aliased` |
+| 57 | `fn derives_bookmarks_and_content_links` | `// md:mod tests > fn derives_bookmarks_and_content_links` |
+| 58 | `fn bookmark_alias_comes_from_the_body_title` | `// md:mod tests > fn bookmark_alias_comes_from_the_body_title` |
+| 59 | `fn resolves_link_by_alias_and_uuid` | `// md:mod tests > fn resolves_link_by_alias_and_uuid` |
+| 60 | `fn rejects_duplicate_note_alias` | `// md:mod tests > fn rejects_duplicate_note_alias` |
+| 61 | `fn same_alias_in_different_notebooks_is_allowed` | `// md:mod tests > fn same_alias_in_different_notebooks_is_allowed` |
+| 62 | `fn inbox_note_cannot_carry_an_alias` | `// md:mod tests > fn inbox_note_cannot_carry_an_alias` |
+| 63 | `fn set_note_alias_rejects_inbox_notes` | `// md:mod tests > fn set_note_alias_rejects_inbox_notes` |
+| 64 | `fn moving_a_note_to_inbox_clears_its_alias` | `// md:mod tests > fn moving_a_note_to_inbox_clears_its_alias` |
+| 65 | `fn inbox_note_does_not_link_out` | `// md:mod tests > fn inbox_note_does_not_link_out` |
+| 66 | `fn nothing_links_to_an_inbox_note` | `// md:mod tests > fn nothing_links_to_an_inbox_note` |
+| 67 | `fn bare_alias_resolves_globally_when_unique_else_scoped` | `// md:mod tests > fn bare_alias_resolves_globally_when_unique_else_scoped` |
+| 68 | `fn alias_and_link_edits_reject_deleted_entities` | `// md:mod tests > fn alias_and_link_edits_reject_deleted_entities` |
+| 69 | `fn add_and_remove_manual_link` | `// md:mod tests > fn add_and_remove_manual_link` |
+| 70 | `fn resolves_two_segment_note_bookmark_shorthand` | `// md:mod tests > fn resolves_two_segment_note_bookmark_shorthand` |
+| 71 | `fn two_segment_prefers_notebook_note` | `// md:mod tests > fn two_segment_prefers_notebook_note` |
+| 72 | `fn alias_conflicts_lists_duplicates` | `// md:mod tests > fn alias_conflicts_lists_duplicates` |
+| 73 | `fn alias_index_tracks_deletes_and_renames` | `// md:mod tests > fn alias_index_tracks_deletes_and_renames` |
+| 74 | `fn sync_applied_change_invalidates_alias_index` | `// md:mod tests > fn sync_applied_change_invalidates_alias_index` |
+| 75 | `fn concurrent_duplicate_alias_yields_exactly_one_winner` | `// md:mod tests > fn concurrent_duplicate_alias_yields_exactly_one_winner` |

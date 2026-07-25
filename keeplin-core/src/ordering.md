@@ -776,6 +776,35 @@ reads, and the pure gap-scan.
 
 **Repeated context** — none.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+    use crate::storage::fs::FsBackend;
+    use crate::storage::{NoteRepository, NotebookRepository};
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+- `crate::storage::fs::FsBackend` — a real filesystem-backed store built over a temporary directory; expects: it honours the same repository traits as production, so what passes here says something about the real backend.
+- `crate::storage::{NoteRepository, NotebookRepository}` — the repository traits whose methods the assertions drive; expects: their async signatures and error types stay as documented; a widened error type silently changes what these tests prove.
+
+**Used by** — every block of `mod tests` in this file: `fn backend`, `fn create_placed`, `fn move_note`, `fn titles`, `fn ensure_inbox_is_idempotent_and_fixed`, `fn placement_inbox_top_notebook_bottom`, `fn pin_unpin_round_trip_and_inbox_rejection`, `fn reorder_respects_bands`, `fn starring_is_global_and_never_moves_the_note`, `fn inbox_top_insert_survives_underflow_by_resequencing`, `fn moving_a_note_replaces_it_in_the_destination_band`, `fn moving_a_pinned_note_into_the_inbox_unpins_it`, `fn a_same_notebook_edit_keeps_the_position`, `fn the_sort_profile_counts_the_live_notes_the_notebook_cap_reads`, `fn lowest_free_pinned_key_fills_gaps_and_detects_full`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn backend
 
 **Identification** — helper `async fn backend() -> FsBackend`; marker
@@ -1312,18 +1341,19 @@ refresh with `graphify update .` after refactors.
 | 20 | `fn next_normal_key` | `// md:fn next_normal_key` |
 | 21 | `fn read_live_note` | `// md:fn read_live_note` |
 | 22 | `mod tests` (container) | `// md:mod tests` |
-| 23 | `fn backend` | `// md:mod tests > fn backend` |
-| 24 | `fn create_placed` | `// md:mod tests > fn create_placed` |
-| 25 | `fn move_note` | `// md:mod tests > fn move_note` |
-| 26 | `fn titles` | `// md:mod tests > fn titles` |
-| 27 | `fn ensure_inbox_is_idempotent_and_fixed` | `// md:mod tests > fn ensure_inbox_is_idempotent_and_fixed` |
-| 28 | `fn placement_inbox_top_notebook_bottom` | `// md:mod tests > fn placement_inbox_top_notebook_bottom` |
-| 29 | `fn pin_unpin_round_trip_and_inbox_rejection` | `// md:mod tests > fn pin_unpin_round_trip_and_inbox_rejection` |
-| 30 | `fn reorder_respects_bands` | `// md:mod tests > fn reorder_respects_bands` |
-| 31 | `fn starring_is_global_and_never_moves_the_note` | `// md:mod tests > fn starring_is_global_and_never_moves_the_note` |
-| 32 | `fn inbox_top_insert_survives_underflow_by_resequencing` | `// md:mod tests > fn inbox_top_insert_survives_underflow_by_resequencing` |
-| 33 | `fn moving_a_note_replaces_it_in_the_destination_band` | `// md:mod tests > fn moving_a_note_replaces_it_in_the_destination_band` |
-| 34 | `fn moving_a_pinned_note_into_the_inbox_unpins_it` | `// md:mod tests > fn moving_a_pinned_note_into_the_inbox_unpins_it` |
-| 35 | `fn a_same_notebook_edit_keeps_the_position` | `// md:mod tests > fn a_same_notebook_edit_keeps_the_position` |
-| 36 | `fn the_sort_profile_counts_the_live_notes_the_notebook_cap_reads` | `// md:mod tests > fn the_sort_profile_counts_the_live_notes_the_notebook_cap_reads` |
-| 37 | `fn lowest_free_pinned_key_fills_gaps_and_detects_full` | `// md:mod tests > fn lowest_free_pinned_key_fills_gaps_and_detects_full` |
+| 23 | `imports` | `// md:mod tests > imports` |
+| 24 | `fn backend` | `// md:mod tests > fn backend` |
+| 25 | `fn create_placed` | `// md:mod tests > fn create_placed` |
+| 26 | `fn move_note` | `// md:mod tests > fn move_note` |
+| 27 | `fn titles` | `// md:mod tests > fn titles` |
+| 28 | `fn ensure_inbox_is_idempotent_and_fixed` | `// md:mod tests > fn ensure_inbox_is_idempotent_and_fixed` |
+| 29 | `fn placement_inbox_top_notebook_bottom` | `// md:mod tests > fn placement_inbox_top_notebook_bottom` |
+| 30 | `fn pin_unpin_round_trip_and_inbox_rejection` | `// md:mod tests > fn pin_unpin_round_trip_and_inbox_rejection` |
+| 31 | `fn reorder_respects_bands` | `// md:mod tests > fn reorder_respects_bands` |
+| 32 | `fn starring_is_global_and_never_moves_the_note` | `// md:mod tests > fn starring_is_global_and_never_moves_the_note` |
+| 33 | `fn inbox_top_insert_survives_underflow_by_resequencing` | `// md:mod tests > fn inbox_top_insert_survives_underflow_by_resequencing` |
+| 34 | `fn moving_a_note_replaces_it_in_the_destination_band` | `// md:mod tests > fn moving_a_note_replaces_it_in_the_destination_band` |
+| 35 | `fn moving_a_pinned_note_into_the_inbox_unpins_it` | `// md:mod tests > fn moving_a_pinned_note_into_the_inbox_unpins_it` |
+| 36 | `fn a_same_notebook_edit_keeps_the_position` | `// md:mod tests > fn a_same_notebook_edit_keeps_the_position` |
+| 37 | `fn the_sort_profile_counts_the_live_notes_the_notebook_cap_reads` | `// md:mod tests > fn the_sort_profile_counts_the_live_notes_the_notebook_cap_reads` |
+| 38 | `fn lowest_free_pinned_key_fills_gaps_and_detects_full` | `// md:mod tests > fn lowest_free_pinned_key_fills_gaps_and_detects_full` |

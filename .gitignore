@@ -14,3 +14,7 @@ graphify-out/20*/
 # the Graphify hooks locally).
 .claude/settings.local.json
 .claude/settings.json
+
+# Standard-library companion tooling caches.
+__pycache__/
+*.py[cod]

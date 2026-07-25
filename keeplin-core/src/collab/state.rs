@@ -245,6 +245,7 @@ fn bump(vv: &mut VersionVector, device: &str) {
 // md:mod tests
 #[cfg(test)]
 mod tests {
+    // md:mod tests > imports
     use super::*;
 
     // md:mod tests > fn diff_body_accepts_a_line_at_the_byte_limit_and_rejects_one_byte_more

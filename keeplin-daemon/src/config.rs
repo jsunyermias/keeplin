@@ -227,6 +227,7 @@ fn plaintext_ws_remote_host(url: &str) -> Option<&str> {
 // md:mod tests
 #[cfg(test)]
 mod tests {
+    // md:mod tests > imports
     use super::*;
 
     // md:mod tests > fn base

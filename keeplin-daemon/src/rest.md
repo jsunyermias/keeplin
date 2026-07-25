@@ -2949,6 +2949,41 @@ WebSocket-test imports (`EventBackend`, `futures_util::StreamExt`,
 
 **Code** — container: members documented as sub-blocks below: fn state, fn linking_state, fn call, fn note_crud_round_trip, fn permission_endpoints_require_server_mode, fn contact_import_list_export_delete_endpoints, fn todo_import_and_profile_vcard_endpoints, fn note_history_and_revert_endpoints, fn updates_on_deleted_entities_are_404, fn sync_endpoint_prunes_journal_within_retention, fn operational_endpoints_bypass_auth, fn metrics_state, fn metrics_reflect_operations_and_http_status, fn invalid_uuid_is_bad_request, fn auth_is_enforced_when_configured, fn resource_upload_and_download, fn resource_upload_above_axum_default_limit, fn streaming_upload_round_trips, fn streaming_upload_over_cap_is_413, fn alias_and_links_endpoints, fn alias_backlinks_and_resolve_endpoints, fn alias_conflicts_endpoint, fn state_with_events, fn websocket_streams_note_create.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use keeplin_core::storage::fs::FsBackend;
+    use tower::ServiceExt;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+- `axum::body::Body` — builds the request bodies driven through the router; expects: it stays the body type the router is generic over.
+- `axum::http::Request` — builds the requests driven through the router; expects: header and URI construction stay infallible for the fixed inputs used here.
+- `base64::{engine::general_purpose::STANDARD, Engine}` — encodes and decodes the payloads exchanged with the daemon; expects: `STANDARD` stays the padded alphabet the rest of the code uses; an unpadded engine would round-trip here and fail in production.
+- `keeplin_core::storage::fs::FsBackend` — a real filesystem-backed store built over a temporary directory; expects: it honours the same repository traits as production, so what passes here says something about the real backend.
+- `tower::ServiceExt` — provides `oneshot`, which drives the router without binding a socket; expects: `oneshot` keeps consuming the service and returning the full response, so the tests exercise the real routing stack rather than a handler call.
+
+**Used by** — every block of `mod tests` in this file: `fn state`, `fn linking_state`, `fn call`, `fn note_crud_round_trip`, `fn permission_endpoints_require_server_mode`, `fn contact_import_list_export_delete_endpoints`, `fn todo_import_and_profile_vcard_endpoints`, `fn note_history_and_revert_endpoints`, `fn updates_on_deleted_entities_are_404`, `fn sync_endpoint_prunes_journal_within_retention`, `fn operational_endpoints_bypass_auth`, `fn metrics_state`, `fn metrics_reflect_operations_and_http_status`, `fn invalid_uuid_is_bad_request`, `fn auth_is_enforced_when_configured`, `fn resource_upload_and_download`, `fn resource_upload_above_axum_default_limit`, `fn streaming_upload_round_trips`, `fn streaming_upload_over_cap_is_413`, `fn alias_and_links_endpoints`, `fn alias_backlinks_and_resolve_endpoints`, `fn alias_conflicts_endpoint`, `fn state_with_events`, `fn websocket_streams_note_create`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn state
 
 **Identification** — helper; marker `// md:mod tests > fn state`.
@@ -4351,30 +4386,31 @@ refresh with `graphify update .` after refactors.
 | 109 | `fn ws_handler` | `// md:fn ws_handler` |
 | 110 | `fn stream_changes` | `// md:fn stream_changes` |
 | 111 | `mod tests` (container) | `// md:mod tests` |
-| 112 | `fn state` | `// md:mod tests > fn state` |
-| 113 | `fn linking_state` | `// md:mod tests > fn linking_state` |
-| 114 | `fn call` | `// md:mod tests > fn call` |
-| 115 | `fn note_crud_round_trip` | `// md:mod tests > fn note_crud_round_trip` |
-| 116 | `fn permission_endpoints_require_server_mode` | `// md:mod tests > fn permission_endpoints_require_server_mode` |
-| 117 | `fn contact_import_list_export_delete_endpoints` | `// md:mod tests > fn contact_import_list_export_delete_endpoints` |
-| 118 | `fn todo_import_and_profile_vcard_endpoints` | `// md:mod tests > fn todo_import_and_profile_vcard_endpoints` |
-| 119 | `fn note_history_and_revert_endpoints` | `// md:mod tests > fn note_history_and_revert_endpoints` |
-| 120 | `fn updates_on_deleted_entities_are_404` | `// md:mod tests > fn updates_on_deleted_entities_are_404` |
-| 121 | `fn sync_endpoint_prunes_journal_within_retention` | `// md:mod tests > fn sync_endpoint_prunes_journal_within_retention` |
-| 122 | `fn operational_endpoints_bypass_auth` | `// md:mod tests > fn operational_endpoints_bypass_auth` |
-| 123 | `fn metrics_state` | `// md:mod tests > fn metrics_state` |
-| 124 | `fn metrics_reflect_operations_and_http_status` | `// md:mod tests > fn metrics_reflect_operations_and_http_status` |
-| 125 | `fn invalid_uuid_is_bad_request` | `// md:mod tests > fn invalid_uuid_is_bad_request` |
-| 126 | `fn auth_is_enforced_when_configured` | `// md:mod tests > fn auth_is_enforced_when_configured` |
-| 127 | `fn resource_upload_and_download` | `// md:mod tests > fn resource_upload_and_download` |
-| 128 | `fn resource_upload_above_axum_default_limit` | `// md:mod tests > fn resource_upload_above_axum_default_limit` |
-| 129 | `fn streaming_upload_round_trips` | `// md:mod tests > fn streaming_upload_round_trips` |
-| 130 | `fn streaming_upload_over_cap_is_413` | `// md:mod tests > fn streaming_upload_over_cap_is_413` |
-| 131 | `fn alias_and_links_endpoints` | `// md:mod tests > fn alias_and_links_endpoints` |
-| 132 | `fn alias_backlinks_and_resolve_endpoints` | `// md:mod tests > fn alias_backlinks_and_resolve_endpoints` |
-| 133 | `fn alias_conflicts_endpoint` | `// md:mod tests > fn alias_conflicts_endpoint` |
-| 134 | `fn state_with_events` | `// md:mod tests > fn state_with_events` |
-| 135 | `fn websocket_streams_note_create` | `// md:mod tests > fn websocket_streams_note_create` |
-| 136 | `fn note_presence` | `// md:fn note_presence` |
-| 137 | `CursorBody` | `// md:CursorBody` |
-| 138 | `fn set_cursor` | `// md:fn set_cursor` |
+| 112 | `imports` | `// md:mod tests > imports` |
+| 113 | `fn state` | `// md:mod tests > fn state` |
+| 114 | `fn linking_state` | `// md:mod tests > fn linking_state` |
+| 115 | `fn call` | `// md:mod tests > fn call` |
+| 116 | `fn note_crud_round_trip` | `// md:mod tests > fn note_crud_round_trip` |
+| 117 | `fn permission_endpoints_require_server_mode` | `// md:mod tests > fn permission_endpoints_require_server_mode` |
+| 118 | `fn contact_import_list_export_delete_endpoints` | `// md:mod tests > fn contact_import_list_export_delete_endpoints` |
+| 119 | `fn todo_import_and_profile_vcard_endpoints` | `// md:mod tests > fn todo_import_and_profile_vcard_endpoints` |
+| 120 | `fn note_history_and_revert_endpoints` | `// md:mod tests > fn note_history_and_revert_endpoints` |
+| 121 | `fn updates_on_deleted_entities_are_404` | `// md:mod tests > fn updates_on_deleted_entities_are_404` |
+| 122 | `fn sync_endpoint_prunes_journal_within_retention` | `// md:mod tests > fn sync_endpoint_prunes_journal_within_retention` |
+| 123 | `fn operational_endpoints_bypass_auth` | `// md:mod tests > fn operational_endpoints_bypass_auth` |
+| 124 | `fn metrics_state` | `// md:mod tests > fn metrics_state` |
+| 125 | `fn metrics_reflect_operations_and_http_status` | `// md:mod tests > fn metrics_reflect_operations_and_http_status` |
+| 126 | `fn invalid_uuid_is_bad_request` | `// md:mod tests > fn invalid_uuid_is_bad_request` |
+| 127 | `fn auth_is_enforced_when_configured` | `// md:mod tests > fn auth_is_enforced_when_configured` |
+| 128 | `fn resource_upload_and_download` | `// md:mod tests > fn resource_upload_and_download` |
+| 129 | `fn resource_upload_above_axum_default_limit` | `// md:mod tests > fn resource_upload_above_axum_default_limit` |
+| 130 | `fn streaming_upload_round_trips` | `// md:mod tests > fn streaming_upload_round_trips` |
+| 131 | `fn streaming_upload_over_cap_is_413` | `// md:mod tests > fn streaming_upload_over_cap_is_413` |
+| 132 | `fn alias_and_links_endpoints` | `// md:mod tests > fn alias_and_links_endpoints` |
+| 133 | `fn alias_backlinks_and_resolve_endpoints` | `// md:mod tests > fn alias_backlinks_and_resolve_endpoints` |
+| 134 | `fn alias_conflicts_endpoint` | `// md:mod tests > fn alias_conflicts_endpoint` |
+| 135 | `fn state_with_events` | `// md:mod tests > fn state_with_events` |
+| 136 | `fn websocket_streams_note_create` | `// md:mod tests > fn websocket_streams_note_create` |
+| 137 | `fn note_presence` | `// md:fn note_presence` |
+| 138 | `CursorBody` | `// md:CursorBody` |
+| 139 | `fn set_cursor` | `// md:fn set_cursor` |

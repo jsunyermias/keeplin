@@ -75,6 +75,7 @@ pub fn incompatible_message(info: &ServerInfo) -> String {
 // md:mod tests
 #[cfg(test)]
 mod tests {
+    // md:mod tests > imports
     use super::*;
 
     // md:mod tests > fn exact_match_is_compatible

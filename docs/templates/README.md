@@ -17,7 +17,7 @@ how), update its companion in the same change — a stale companion is worse tha
 
 | You are documenting… | Template | Lives at |
 |----------------------|----------|----------|
-| Any `.rs` file with logic — library/daemon module, binary, build script, **or an integration/unit test file** (`tests/*.rs`; each `#[test] fn` is a block) | [`source-module.md`](source-module.md) (v2.3.1, block-complete) | next to the `.rs`, same basename |
+| Any `.rs` file with logic — library/daemon module, binary, build script, **or an integration/unit test file** (`tests/*.rs`; each `#[test] fn` is a block) | [`source-module.md`](source-module.md) (v2.5.0, mechanically verified) | next to the `.rs`, same basename |
 | A crate root (`lib.rs` / `main.rs` that mostly wires modules) | [`crate-root.md`](crate-root.md) | next to the root `.rs` |
 | A build script, config, or schema (`build.rs`, `*.toml`, `*.proto`, `*.yml`, `*.sh`) | [`config-file.md`](config-file.md) | `<file>.md` next to it |
 | A cross-cutting design or policy doc (architecture, security, threat model) | [`design-doc.md`](design-doc.md) | repository root |
@@ -45,6 +45,12 @@ how), update its companion in the same change — a stale companion is worse tha
 - **Keep it current.** Prefer describing behaviour and invariants (which age slowly) over
   line numbers or exact code (which age fast). After large refactors run `graphify update .`
   and refresh the affected `## Graph context` sections.
+- **Verify embedded code mechanically.** Run `scripts/sync-companion-code --check`; CRLF/LF
+  is the only normalization, so every other character in each Rust fence must match source.
+  A container's preamble may hold only its declaration, attributes and braces — imports,
+  consts and nested items there need their own marker, or the check fails with UNCOVERED.
+- **Build bounded context explicitly.** `scripts/context-pack <source> --list --profile
+  understand` estimates the minimal pack; profiles add only manifest-declared context.
 - **Be hyper self-contained; redundancy is intentional.** A small model given ONLY this
   `.md` must be able to work on the paired `.rs` safely, without reading any other file.
   Restate the invariants and summarise every referenced file inline — never "deduplicate"

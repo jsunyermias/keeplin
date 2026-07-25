@@ -39,6 +39,7 @@ impl SortableRfc3339 for chrono::DateTime<chrono::Utc> {
 // md:mod tests
 #[cfg(test)]
 mod tests {
+    // md:mod tests > imports
     use super::SortableRfc3339;
     use chrono::{DateTime, TimeZone, Utc};
 

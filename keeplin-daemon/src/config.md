@@ -508,6 +508,31 @@ helpers + eight tests, all pure.
 
 **What it does** — Pins the security-check and auth-validation matrices.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+
+**Used by** — every block of `mod tests` in this file: `fn base`, `fn with_auth`, `fn loopback_defaults_are_safe`, `fn network_grpc_without_auth_is_flagged`, `fn network_http_without_auth_is_flagged`, `fn validate_auth_rejects_partial_and_empty_credentials`, `fn partial_auth_still_flags_network_exposure`, `fn plaintext_ws_to_remote_is_flagged_in_server_mode`, `fn plaintext_ws_remote_host_parsing`, `fn multiple_issues_accumulate`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn base
 
 **Identification** — helper; marker `// md:mod tests > fn base`.
@@ -804,13 +829,14 @@ refresh with `graphify update .` after refactors.
 | 14 | `fn validate_auth` | `// md:impl Config (security) > fn validate_auth` |
 | 15 | `fn plaintext_ws_remote_host` | `// md:fn plaintext_ws_remote_host` |
 | 16 | `mod tests` (container) | `// md:mod tests` |
-| 17 | `fn base` | `// md:mod tests > fn base` |
-| 18 | `fn with_auth` | `// md:mod tests > fn with_auth` |
-| 19 | `fn loopback_defaults_are_safe` | `// md:mod tests > fn loopback_defaults_are_safe` |
-| 20 | `fn network_grpc_without_auth_is_flagged` | `// md:mod tests > fn network_grpc_without_auth_is_flagged` |
-| 21 | `fn network_http_without_auth_is_flagged` | `// md:mod tests > fn network_http_without_auth_is_flagged` |
-| 22 | `fn validate_auth_rejects_partial_and_empty_credentials` | `// md:mod tests > fn validate_auth_rejects_partial_and_empty_credentials` |
-| 23 | `fn partial_auth_still_flags_network_exposure` | `// md:mod tests > fn partial_auth_still_flags_network_exposure` |
-| 24 | `fn plaintext_ws_to_remote_is_flagged_in_server_mode` | `// md:mod tests > fn plaintext_ws_to_remote_is_flagged_in_server_mode` |
-| 25 | `fn plaintext_ws_remote_host_parsing` | `// md:mod tests > fn plaintext_ws_remote_host_parsing` |
-| 26 | `fn multiple_issues_accumulate` | `// md:mod tests > fn multiple_issues_accumulate` |
+| 17 | `imports` | `// md:mod tests > imports` |
+| 18 | `fn base` | `// md:mod tests > fn base` |
+| 19 | `fn with_auth` | `// md:mod tests > fn with_auth` |
+| 20 | `fn loopback_defaults_are_safe` | `// md:mod tests > fn loopback_defaults_are_safe` |
+| 21 | `fn network_grpc_without_auth_is_flagged` | `// md:mod tests > fn network_grpc_without_auth_is_flagged` |
+| 22 | `fn network_http_without_auth_is_flagged` | `// md:mod tests > fn network_http_without_auth_is_flagged` |
+| 23 | `fn validate_auth_rejects_partial_and_empty_credentials` | `// md:mod tests > fn validate_auth_rejects_partial_and_empty_credentials` |
+| 24 | `fn partial_auth_still_flags_network_exposure` | `// md:mod tests > fn partial_auth_still_flags_network_exposure` |
+| 25 | `fn plaintext_ws_to_remote_is_flagged_in_server_mode` | `// md:mod tests > fn plaintext_ws_to_remote_is_flagged_in_server_mode` |
+| 26 | `fn plaintext_ws_remote_host_parsing` | `// md:mod tests > fn plaintext_ws_remote_host_parsing` |
+| 27 | `fn multiple_issues_accumulate` | `// md:mod tests > fn multiple_issues_accumulate` |

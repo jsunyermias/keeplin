@@ -13,11 +13,10 @@
 #      (uncommented-code convention: explanation lives in the companion).
 #      Caveat: the trailing-comment pattern can false-positive on a string
 #      literal containing ' // ' — reword the string if that ever fires.
-#
-# What this script does NOT verify (agent/human duty, HARD RULE 7): that each
-# fence's content is character-for-character identical to the marked block in
-# the .rs. Marker/row correspondence is mechanical; verbatim fidelity is the
-# author's self-check.
+#   8. every Rust fence maps 1:1 to a source leaf and is identical after LF-only
+#      line-ending normalization; stale, truncated, orphan and duplicate fences fail,
+#      and so does unmarked code between a container marker and its first child
+#   9. the generated context manifest is current.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -84,10 +83,22 @@ done < <(find . \
   -path ./.git -prune -o \
   -name '*.rs' -print0)
 
+# 8. RULE 7 is mechanical. The synchronizer's check mode performs no writes and
+#    uses only Python's standard library; all existing structural checks above
+#    remain independent and intentionally redundant.
+if ! ./scripts/sync-companion-code --check; then
+  fail=1
+fi
+
+# 9. Context provenance and pack routing must describe the current companions.
+if ! ./scripts/context-pack manifest --check; then
+  fail=1
+fi
+
 if [[ $fail -ne 0 ]]; then
   echo
   echo "Every .rs needs a companion .md in the block-complete format:"
-  echo "docs/templates/source-module.md (v2.3). See its 9 HARD RULES."
+  echo "docs/templates/source-module.md (v2.5). See its 9 HARD RULES."
   exit 1
 fi
-echo "docs check OK: companions, markers, checklists and fences all consistent"
+echo "docs check OK: structure, exact fences and context manifest are consistent"

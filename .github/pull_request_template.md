@@ -15,6 +15,8 @@ These are claims made by the implementer and must remain distinct from CI eviden
 - [ ] The diff is limited to the linked issue and contains no unrelated changes.
 - [ ] I checked every acceptance criterion against the resulting behavior.
 - [ ] Source, companion documents, Graphify and project documentation are consistent.
+- [ ] Every embedded Rust fence passes the mechanical fidelity check; no companion code
+      was manually truncated or paraphrased.
 - [ ] Cross-repo wire/format changes have a linked companion PR, immutable core pin,
       lockstep versioning when breaking, and contract coverage.
 - [ ] I assessed negative paths, failure behavior, security, persistence and recovery
@@ -33,6 +35,8 @@ These are claims made by the implementer and must remain distinct from CI eviden
 | `cargo clippy --workspace --all-targets -- -D warnings` | |
 | `cargo test --workspace` | |
 | `./scripts/check-docs.sh` | |
+| `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` | |
+| `./scripts/context-pack manifest --check` | |
 | `graphify update .` / `./scripts/check-graph.sh` when applicable | |
 
 ## Verified by CI

@@ -774,6 +774,33 @@ helper + three tests.
 **What it does** — Pins counting, error separation, sync counting, and status
 bucketing.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod tests > imports
+    use super::*;
+    use keeplin_core::storage::fs::FsBackend;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+- `keeplin_core::storage::fs::FsBackend` — a real filesystem-backed store built over a temporary directory; expects: it honours the same repository traits as production, so what passes here says something about the real backend.
+
+**Used by** — every block of `mod tests` in this file: `fn backend`, `fn counts_operations_and_errors`, `fn counts_applied_sync_changes`, `fn http_status_buckets`. Nothing outside the module can use it: the preamble is private to `mod tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn backend
 
 **Identification** — helper; marker `// md:mod tests > fn backend`.
@@ -927,7 +954,8 @@ refresh with `graphify update .` after refactors.
 | 21 | `impl SyncBackend for MetricsBackend` | `// md:impl SyncBackend for MetricsBackend` |
 | 22 | `impl HistoryRepository for MetricsBackend` | `// md:impl HistoryRepository for MetricsBackend` |
 | 23 | `mod tests` (container) | `// md:mod tests` |
-| 24 | `fn backend` | `// md:mod tests > fn backend` |
-| 25 | `fn counts_operations_and_errors` | `// md:mod tests > fn counts_operations_and_errors` |
-| 26 | `fn counts_applied_sync_changes` | `// md:mod tests > fn counts_applied_sync_changes` |
-| 27 | `fn http_status_buckets` | `// md:mod tests > fn http_status_buckets` |
+| 24 | `imports` | `// md:mod tests > imports` |
+| 25 | `fn backend` | `// md:mod tests > fn backend` |
+| 26 | `fn counts_operations_and_errors` | `// md:mod tests > fn counts_operations_and_errors` |
+| 27 | `fn counts_applied_sync_changes` | `// md:mod tests > fn counts_applied_sync_changes` |
+| 28 | `fn http_status_buckets` | `// md:mod tests > fn http_status_buckets` |

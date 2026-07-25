@@ -21,10 +21,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       # Contractual docs: every .rs has a companion .md and every companion
       # carries a `## Graph context` section (the two-layer navigation model).
       - name: Check companion docs
         run: ./scripts/check-docs.sh
+
+      - name: Test companion tooling
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable

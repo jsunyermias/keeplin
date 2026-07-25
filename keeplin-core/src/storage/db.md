@@ -4401,6 +4401,31 @@ per-method markers `> fn <name>`.
 **What it does** — Pins the migration framework and the journal-derived
 history.
 
+The explicit `imports` leaf below preserves the test-module dependency preamble
+verbatim.
+
+### imports
+
+**Identification** — test-module dependencies; marker `// md:mod migration_tests > imports`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:mod migration_tests > imports
+    use super::*;
+```
+
+**What it does** — Brings the parent module API and test-only dependencies into
+scope.
+
+**Dependencies** —
+
+- `super::*` — the items under test from the parent module; expects: the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal.
+
+**Used by** — every block of `mod migration_tests` in this file: `fn raw_conn`, `fn user_version`, `fn note_history_reads_this_devices_versions_newest_first`, `fn fresh_database_is_stamped_current_and_reopen_is_a_noop`, `fn tag_system_flag_round_trips`, `fn resource_media_metadata_round_trips`, `fn migrates_a_pre_framework_database_without_losing_data`, `fn refuses_to_open_a_newer_schema`. Nothing outside the module can use it: the preamble is private to `mod migration_tests`.
+
+**Repeated context** — This preamble is a leaf block, not scaffolding: only the `mod` declaration, its attributes and its braces are exempt from coverage, so these `use` lines carry their own marker and are verified verbatim against the source (template v2.5.0, RULE 6). Changing an import here without updating this fence fails `scripts/check-docs.sh`.
+
 ### fn raw_conn
 
 **Identification** — helper; marker `// md:mod migration_tests > fn raw_conn`.
@@ -4886,11 +4911,12 @@ refresh with `graphify update .` after refactors.
 | 104 | `fn note_history` | `// md:impl HistoryRepository for DbBackend > fn note_history` |
 | 105 | `fn notebook_history` | `// md:impl HistoryRepository for DbBackend > fn notebook_history` |
 | 106 | `mod migration_tests` (container) | `// md:mod migration_tests` |
-| 107 | `fn raw_conn` | `// md:mod migration_tests > fn raw_conn` |
-| 108 | `fn user_version` | `// md:mod migration_tests > fn user_version` |
-| 109 | `fn note_history_reads_this_devices_versions_newest_first` | `// md:mod migration_tests > fn note_history_reads_this_devices_versions_newest_first` |
-| 110 | `fn fresh_database_is_stamped_current_and_reopen_is_a_noop` | `// md:mod migration_tests > fn fresh_database_is_stamped_current_and_reopen_is_a_noop` |
-| 111 | `fn tag_system_flag_round_trips` | `// md:mod migration_tests > fn tag_system_flag_round_trips` |
-| 112 | `fn resource_media_metadata_round_trips` | `// md:mod migration_tests > fn resource_media_metadata_round_trips` |
-| 113 | `fn migrates_a_pre_framework_database_without_losing_data` | `// md:mod migration_tests > fn migrates_a_pre_framework_database_without_losing_data` |
-| 114 | `fn refuses_to_open_a_newer_schema` | `// md:mod migration_tests > fn refuses_to_open_a_newer_schema` |
+| 107 | `imports` | `// md:mod migration_tests > imports` |
+| 108 | `fn raw_conn` | `// md:mod migration_tests > fn raw_conn` |
+| 109 | `fn user_version` | `// md:mod migration_tests > fn user_version` |
+| 110 | `fn note_history_reads_this_devices_versions_newest_first` | `// md:mod migration_tests > fn note_history_reads_this_devices_versions_newest_first` |
+| 111 | `fn fresh_database_is_stamped_current_and_reopen_is_a_noop` | `// md:mod migration_tests > fn fresh_database_is_stamped_current_and_reopen_is_a_noop` |
+| 112 | `fn tag_system_flag_round_trips` | `// md:mod migration_tests > fn tag_system_flag_round_trips` |
+| 113 | `fn resource_media_metadata_round_trips` | `// md:mod migration_tests > fn resource_media_metadata_round_trips` |
+| 114 | `fn migrates_a_pre_framework_database_without_losing_data` | `// md:mod migration_tests > fn migrates_a_pre_framework_database_without_losing_data` |
+| 115 | `fn refuses_to_open_a_newer_schema` | `// md:mod migration_tests > fn refuses_to_open_a_newer_schema` |

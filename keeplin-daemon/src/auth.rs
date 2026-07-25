@@ -35,6 +35,7 @@ pub fn verify_basic(header: Option<&str>, expected_user: &str, expected_pass: &s
 // md:mod tests
 #[cfg(test)]
 mod tests {
+    // md:mod tests > imports
     use super::*;
 
     // md:mod tests > fn basic

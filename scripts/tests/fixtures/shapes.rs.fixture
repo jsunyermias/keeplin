@@ -1,0 +1,36 @@
+// md:Overview
+use std::fmt::Debug;
+
+// md:fn labelled
+#[inline]
+fn labelled<T: Debug>(value: T) -> String {
+    format!("{value:?}")
+}
+
+// md:impl Tiny
+impl Tiny {
+    fn one(&self) -> u8 {
+        1
+    }
+}
+
+// md:impl Container
+impl Container {
+    // md:impl Container > fn value
+    fn value(&self) -> u8 {
+        2
+    }
+}
+
+// md:mod tests
+#[cfg(test)]
+mod tests {
+    // md:mod tests > imports
+    use super::*;
+
+    // md:mod tests > fn labelled_formats_debug
+    #[test]
+    fn labelled_formats_debug() {
+        assert_eq!(labelled(7), "7");
+    }
+}
