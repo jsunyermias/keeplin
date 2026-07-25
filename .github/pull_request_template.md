@@ -4,7 +4,9 @@
 
 ## Linked work
 
-<!-- Resolves #…; companion PR; accepted ADR if required. -->
+- Issue:
+- Companion PR:
+- Accepted ADR or `not required` with reason:
 
 ## Author assertions
 
@@ -17,6 +19,8 @@ These are claims made by the implementer and must remain distinct from CI eviden
       lockstep versioning when breaking, and contract coverage.
 - [ ] I assessed negative paths, failure behavior, security, persistence and recovery
       appropriate to this change.
+- [ ] Every required ADR is accepted and linked; this PR does not cross an unresolved
+      decision boundary.
 - [ ] I have not described the change as production-ready based only on happy-path tests.
 
 ## Verification reported by the author
