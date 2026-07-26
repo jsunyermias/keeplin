@@ -37,35 +37,46 @@ cargo test --workspace
 For `keeplin`, the focused suites are `cargo test -p keeplin-core` and
 `cargo test -p keeplin-daemon`. For `keeplin-srv`, `cargo test --workspace` must run
 against PostgreSQL and includes the `sqlx::test` integration tests described in its README.
-When source changes affect the knowledge graph, install the CI-pinned version and also run:
+CI builds the knowledge graph with the pinned version and publishes `graphify-out/` as a
+workflow artifact. To reproduce that build and its validation locally, run:
 
 ```bash
 pip install graphifyy==0.9.25
-graphify update .
-./scripts/check-graph.sh
+GRAPHIFY_REQUIRED=1 ./scripts/check-graph.sh
 ```
 
-Enable the repository's auto-refresh hook once with:
+The generated `graphify-out/` directory is ignored and must never be staged or committed. The
+old auto-refresh pre-commit hook was removed because CI, rather than a commit, now owns the
+artifact. If this clone previously enabled that repository hook, remove its local setting with:
 
 ```bash
-git config core.hooksPath .githooks
+git config --unset core.hooksPath
 ```
-
-After `graphify update .`, commit the refreshed `graphify-out/` for code changes; CI
-(`scripts/check-graph.sh`) fails when the committed graph is stale.
 
 Never report a check as passing unless it ran successfully. Record unavailable checks and
 their reason in the PR.
 
 ## graphify
 
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+CI generates a knowledge graph with god nodes, community structure and cross-file
+relationships and publishes it as the `knowledge-graph-<commit SHA>` artifact. A local
+`graphify update .` creates the same ignored `graphify-out/` layout for optional navigation.
 
 Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- For codebase questions, first run `graphify query "<question>"` when a generated or downloaded `graphify-out/graph.json` exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- Never require a local Graphify install or graph to understand the repository: deliver the
+  target companion directly when the artifact is unavailable.
+- `.graphifyignore` is the corpus contract. It excludes generated/build/vendor trees,
+  `docs/templates/` and all repeated companion `*.md` files while explicitly retaining
+  `ARCHITECTURE.md`, `SECURITY.md` and ADRs.
+- Companions are graph outputs only in the documentation sense: code relationships may refresh
+  their `## Graph context`, but companion prose and embedded fences never feed back into the
+  graph. The direction is code -> graph -> companion, never companion -> graph.
+- `scripts/check-graph.sh` generates twice, validates corpus exclusions and report quality, and
+  fails when the same tree produces different deterministic graph structure. CI then publishes
+  the ignored output; contributors do not commit it.
 
 ## Companion .md format
 
@@ -110,14 +121,14 @@ Before marking any task as complete, perform the following verification steps:
 
 1. Update every companion document corresponding to any modified source file so it
    accurately reflects the current implementation.
-2. Regenerate Graphify whenever the changes affect architecture, dependencies, modules,
-   classes, functions, relationships or any information represented in the knowledge
-   graph.
+2. When changes affect architecture or relationships, refresh affected companion Graph context
+   from a local or downloaded graph when needed. Never commit `graphify-out/`; CI generates and
+   validates the graph for the exact commit.
 3. Update every affected project document (for example: `ARCHITECTURE.md`, `README.md`,
    `SECURITY.md`, `CLAUDE.md`, ADRs or any other relevant documentation).
 4. Verify that:
    - code and companions are consistent;
-   - Graphify represents the current codebase;
+   - Graphify corpus configuration and the CI artifact represent the current codebase;
    - documentation matches the implementation;
    - internal references and cross-references remain valid.
 5. If any inconsistency is detected, resolve it before completing the task.
@@ -128,7 +139,7 @@ Never consider a task finished while any known discrepancy exists between:
 
 - source code;
 - companion documentation;
-- Graphify knowledge graph;
+- Graphify corpus configuration and CI artifact;
 - project documentation.
 
 The repository must always remain in a self-consistent state after every completed task.

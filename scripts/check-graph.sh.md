@@ -1,64 +1,53 @@
-# `scripts/check-graph.sh` — knowledge-graph freshness check
+# `scripts/check-graph.sh` — build and validate the knowledge-graph artifact
 
 ## Purpose
 
-Enforces LAYER 1 of the navigation model the way `check-docs.sh` enforces LAYER 2:
-it guarantees the committed `graphify-out/graph.json` still matches the code. Every
-change to any indexed file must be accompanied by a `graphify update .` pass, and this
-script is the CI gate that makes "the graph is always up to date" mechanical rather than
-a matter of discipline.
+Builds LAYER 1 of the navigation model for CI without requiring any generated file in git.
+The script validates that `.graphifyignore` keeps the corpus focused, that the report has no
+companion/template residue, and that two builds of the same tree have identical deterministic
+structure. The workflow publishes the resulting ignored `graphify-out/` directory.
 
 ## How it works
 
-1. Snapshots the committed `graphify-out/graph.json`.
-2. Runs `graphify update .` (AST-only, deterministic, **no LLM / no API cost**), which
-   rebuilds the graph from the current tree.
-3. Diffs the **code structure** of the snapshot against the rebuild and fails on any
-   difference.
+1. Requires Graphify when `GRAPHIFY_REQUIRED=1`; otherwise a missing local install is a
+   documented skip.
+2. Runs `graphify update . --force` with the repository's `.graphifyignore` rules.
+3. Validates the generated graph and report, then records a canonical snapshot that excludes
+   only the derived `community` and `community_name` node fields.
+4. Runs the same generation again and compares the deterministic nodes and edges with the
+   snapshot. A difference fails the job.
 
-## What it compares — and what it ignores
+## Corpus and signal checks
 
-Compared (the deterministic representation of the code):
+The generated graph must:
 
-- every node's `id`, `label`, `file_type`, `source_file`, `source_location`, `norm_label`
-  and `_origin`;
-- the full edge (`links`) set.
+- contain non-empty nodes and edges, including at least one cross-file relationship;
+- exclude `graphify-out/`, build/coverage/vendor trees, `docs/templates/` and companion
+  Markdown;
+- include Markdown only from the explicitly selected architecture, security and ADR corpus;
+- expose at least three source-defined domain hubs and keep `Result`, `Vec` and `String`
+  from naming any of the ten leading communities;
+- produce a report with no `{{...}}` placeholders or companion `Coverage checklist` text.
 
-Ignored, on purpose:
-
-- **`built_at_commit`** — records the commit the graph was built on, which is necessarily
-  the *parent* of the commit that adds the refreshed graph, so it always differs in CI and
-  is not a staleness signal.
-- **`community` / `community_name`** — the Leiden clustering and its naming are a derived,
-  navigation-only overlay. They re-shuffle on tiny input changes and may vary across
-  environments or library versions; gating on them would produce spurious failures, so the
-  check stays on the deterministic code structure instead. The committed graph still
-  carries community data for navigation — the gate simply does not depend on it.
-
-## graphify not installed
-
-- **Default**: prints a hint and exits `0` (skips), so a contributor without graphify is
-  never blocked from committing locally — CI remains the backstop.
-- **`GRAPHIFY_REQUIRED=1`** (set by the CI job): a missing install is a hard failure
-  instead of a silent skip, so a broken install can never quietly pass the gate.
+These checks replace the old comparison with a committed `graph.json`. Freshness no longer
+has meaning against repository state: CI generates the artifact from the exact checked-out
+commit instead.
 
 ## Version pinning
 
-Community detection and extraction are deterministic **for a fixed graphify version and a
-fixed input tree**. CI installs `graphifyy==0.9.25`; contributors must use the same pin so
-their locally refreshed graph matches what CI rebuilds. Bumping the version is a
-deliberate, coordinated change (update the CI pin, the hook hint and this doc together).
+CI installs `graphifyy==0.9.25`. Contributors who reproduce the artifact locally must use the
+same pin. A version bump is a coordinated change to CI, `AGENTS.md`, this document and the PR
+evidence.
 
-## Side effect
+## Local side effect
 
-The script runs `graphify update .`, so it leaves the refreshed `graphify-out/` in the
-working tree. On a stale tree that is the desired outcome: stage `graphify-out/` and commit
-again.
+The script leaves a generated `graphify-out/` directory for local queries. The whole directory
+is ignored; never stage or commit it. The former pre-commit auto-refresh hook was removed
+because there is no versioned graph to refresh.
 
 ## Related files
 
-- `.github/workflows/ci.yml` — the `graph` job that runs this with `GRAPHIFY_REQUIRED=1`.
-- `.githooks/pre-commit` — optional local hook that refreshes and stages the graph on every
-  commit (the same freshness, applied automatically).
-- `scripts/check-docs.sh` — the sibling gate for LAYER 2 (companion docs).
-- `graphify-out/graph.json` — the artifact this check keeps honest.
+- `.graphifyignore` — authoritative corpus exclusions and selected Markdown allow-list.
+- `.github/workflows/ci.yml` — runs this script and publishes
+  `knowledge-graph-<commit SHA>` with a 14-day retention.
+- `scripts/check-docs.sh` — the sibling LAYER 2 companion gate.

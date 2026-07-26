@@ -11,8 +11,9 @@ both Keeplin repositories.
    blocking state.
 2. Start from current `main` and create a dedicated branch. Never commit directly to
    `main`.
-3. Implement only the issue scope. Keep source, companion documents, Graphify and project
-   documentation consistent.
+3. Implement only the issue scope. Keep source, companion documents, Graphify corpus
+   configuration and project documentation consistent. CI owns the ignored
+   `graphify-out/` artifact; never commit it.
 4. Run the applicable checks from `AGENTS.md` and open a draft PR. Link the issue and any
    companion PR in the other repository.
 5. Complete the PR template's Author assertions with evidence. CI results belong only in

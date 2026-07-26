@@ -70,7 +70,7 @@ jobs:
         run: cargo audit
 
   graph:
-    name: Knowledge graph up to date
+    name: Build knowledge graph artifact
     runs-on: ubuntu-latest
 
     steps:
@@ -81,15 +81,20 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Pinned so the AST extraction and the committed graph are built by the
-      # same version; contributors must use the same pin locally.
+      # Pinned so every CI artifact is generated with the same extractor version.
       - name: Install graphify
         run: python -m pip install --quiet "graphifyy==0.9.25"
 
-      # Fails if graphify-out/ is stale: re-extracts the AST graph and diffs the
-      # code structure against the committed graph.json (GRAPHIFY_REQUIRED makes a
-      # missing install a hard error rather than a silent skip).
-      - name: Check knowledge graph is up to date
+      - name: Generate and validate knowledge graph
         env:
           GRAPHIFY_REQUIRED: "1"
         run: ./scripts/check-graph.sh
+
+      - name: Publish knowledge graph
+        uses: actions/upload-artifact@v4
+        with:
+          name: knowledge-graph-${{ github.sha }}
+          path: graphify-out/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 14

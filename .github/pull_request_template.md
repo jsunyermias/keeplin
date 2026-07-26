@@ -14,7 +14,8 @@ These are claims made by the implementer and must remain distinct from CI eviden
 
 - [ ] The diff is limited to the linked issue and contains no unrelated changes.
 - [ ] I checked every acceptance criterion against the resulting behavior.
-- [ ] Source, companion documents, Graphify and project documentation are consistent.
+- [ ] Source, companion documents, Graphify corpus configuration and project documentation
+      are consistent; no generated `graphify-out/` file is staged.
 - [ ] Every embedded Rust fence passes the mechanical fidelity check; no companion code
       was manually truncated or paraphrased.
 - [ ] Cross-repo wire/format changes have a linked companion PR, immutable core pin,
@@ -37,7 +38,7 @@ These are claims made by the implementer and must remain distinct from CI eviden
 | `./scripts/check-docs.sh` | |
 | `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` | |
 | `./scripts/context-pack manifest --check` | |
-| `graphify update .` / `./scripts/check-graph.sh` when applicable | |
+| `GRAPHIFY_REQUIRED=1 ./scripts/check-graph.sh` when applicable | |
 
 ## Verified by CI
 

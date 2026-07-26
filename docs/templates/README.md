@@ -35,16 +35,17 @@ how), update its companion in the same change — a stale companion is worse tha
   better than prose lists.
 - **Fence real snippets** (`rust`, `sql`, `toml`, …) when a signature or SQL statement makes
   the point faster than a sentence. Keep them short and copied faithfully from the source.
-- **Include `## Graph context`** (mandatory, CI-enforced): the file's nodes/edges in the
-  committed Graphify graph (`graphify query` output is the data source), its direct
+- **Include `## Graph context`** (mandatory, CI-enforced): the file's nodes/edges in a
+  Graphify graph generated from the same commit (a CI artifact or ignored local output), its direct
   dependencies and dependents each with a **one-line inline summary**, and the file's
   invariants restated. Label every relationship `EXTRACTED` (mechanically from the
   graph/AST) or `INFERRED` (your conclusion) — never present inference as fact.
 - **Close with `## Related files`**: the handful of files a reader will jump to next, each
   with a one-line reason.
 - **Keep it current.** Prefer describing behaviour and invariants (which age slowly) over
-  line numbers or exact code (which age fast). After large refactors run `graphify update .`
-  and refresh the affected `## Graph context` sections.
+  line numbers or exact code (which age fast). After large refactors generate or download
+  the same-commit graph and refresh affected `## Graph context` sections without committing
+  `graphify-out/`.
 - **Verify embedded code mechanically.** Run `scripts/sync-companion-code --check`; CRLF/LF
   is the only normalization, so every other character in each Rust fence must match source.
   A container's preamble may hold only its declaration, attributes and braces — imports,
@@ -62,8 +63,9 @@ how), update its companion in the same change — a stale companion is worse tha
 Agents working on this repo have two layers:
 
 1. **LAYER 1 — discovery (the graph)**: `graphify query "<question>"` /
-   `graphify path "A" "B"` / `graphify explain "X"` against the committed
-   `graphify-out/graph.json` route you to the right files without reading the whole repo.
+   `graphify path "A" "B"` / `graphify explain "X"` against a downloaded CI artifact or
+   ignored local `graphify-out/graph.json` route you to the right files without reading the
+   whole repo. If no graph is present, proceed directly to LAYER 2.
 2. **LAYER 2 — work (these companions)**: once routed, read the companion `.md`, not the
    raw `.rs`, whenever possible; each companion is contractually self-contained for safe
    editing of its paired file.
