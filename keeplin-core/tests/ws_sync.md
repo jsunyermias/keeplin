@@ -701,7 +701,7 @@ this companion.
 
 **Direct dependencies** (files this one's symbols reference)
 
-- `keeplin-core/src/storage/db.rs` — DbBackend (LibSQL + WebSocket storage) (EXTRACTED: references×3; e.g. `DbBackend`)
+- `keeplin-core/src/storage/db/mod.rs` — defines `DbBackend` (INFERRED: the test reaches it through the fully-qualified `keeplin_core::storage::db::DbBackend`, which the AST pass does not link)
 - `keeplin-core/src/sync/engine.rs` — SyncEngine (EXTRACTED: calls×1; e.g. `run_sync()`)
 
 **Direct dependents** (files whose symbols reference this one)

@@ -322,7 +322,7 @@
       "direct_dependents": [
         {
           "origin": "INFERRED",
-          "path": "keeplin-core/src/storage/db.rs"
+          "path": "keeplin-core/src/storage/db/mod.rs"
         },
         {
           "origin": "INFERRED",
@@ -336,7 +336,7 @@
       "high_risk_dependents": [
         {
           "origin": "INFERRED",
-          "path": "keeplin-core/src/storage/db.rs"
+          "path": "keeplin-core/src/storage/db/mod.rs"
         },
         {
           "origin": "INFERRED",
@@ -539,10 +539,6 @@
         },
         {
           "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/db.rs"
-        },
-        {
-          "origin": "EXTRACTED",
           "path": "keeplin-core/src/storage/fs.rs"
         },
         {
@@ -582,10 +578,6 @@
         {
           "origin": "EXTRACTED",
           "path": "keeplin-core/src/migrate.rs"
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/db.rs"
         },
         {
           "origin": "EXTRACTED",
@@ -1294,7 +1286,7 @@
         },
         {
           "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/db.rs"
+          "path": "keeplin-core/src/storage/db/convert.rs"
         },
         {
           "origin": "EXTRACTED",
@@ -1312,7 +1304,7 @@
         },
         {
           "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/db.rs"
+          "path": "keeplin-core/src/storage/db/convert.rs"
         },
         {
           "origin": "EXTRACTED",
@@ -1506,10 +1498,6 @@
         },
         {
           "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/db.rs"
-        },
-        {
-          "origin": "EXTRACTED",
           "path": "keeplin-core/src/storage/fs.rs"
         },
         {
@@ -1557,10 +1545,6 @@
         {
           "origin": "EXTRACTED",
           "path": "keeplin-core/src/storage/backend.rs"
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/db.rs"
         },
         {
           "origin": "EXTRACTED",
@@ -1853,10 +1837,6 @@
         },
         {
           "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/db.rs"
-        },
-        {
-          "origin": "EXTRACTED",
           "path": "keeplin-core/src/storage/fs.rs"
         },
         {
@@ -1908,10 +1888,6 @@
         {
           "origin": "EXTRACTED",
           "path": "keeplin-core/src/migrate.rs"
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/db.rs"
         },
         {
           "origin": "EXTRACTED",
@@ -1993,7 +1969,7 @@
     {
       "companion": {
         "origin": "EXTRACTED",
-        "value": "keeplin-core/src/storage/db.md"
+        "value": "keeplin-core/src/storage/db/conflict.md"
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
@@ -2001,63 +1977,40 @@
       },
       "direct_dependencies": [
         {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/error.rs",
-          "required": false
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/models.rs",
-          "required": false
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/links.rs",
-          "required": false
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/backend.rs",
-          "required": false
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/note_log.rs",
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs",
           "required": false
         },
         {
           "origin": "INFERRED",
-          "path": "keeplin-core/src/compat.rs",
+          "path": "keeplin-core/src/storage/db/convert.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
           "required": false
         }
       ],
       "direct_dependents": [
         {
           "origin": "INFERRED",
-          "path": "keeplin-daemon/src/main.rs"
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/tests/db_backend.rs"
+          "path": "keeplin-core/src/storage/db/mod.rs"
         }
       ],
       "high_risk_dependents": [
         {
           "origin": "INFERRED",
-          "path": "keeplin-daemon/src/main.rs"
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/tests/db_backend.rs"
+          "path": "keeplin-core/src/storage/db/mod.rs"
         }
       ],
       "invariants": {
         "origin": "INFERRED",
         "value": [
           {
-            "basis": "dependency-expectation",
+            "basis": "authored-invariant",
             "origin": "INFERRED",
-            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+            "value": "The split is a relocation: `storage::db::DbBackend` stays the public path, so no caller outside this directory module changes."
           }
         ]
       },
@@ -2065,46 +2018,95 @@
         "origin": "EXTRACTED",
         "value": [
           "Overview",
-          "WsStream",
-          "DbBackend",
-          "impl DbBackend",
-          "impl DbBackend > fn new",
-          "impl DbBackend > fn run_migrations",
-          "impl DbBackend > fn schema_version",
-          "impl DbBackend > fn apply_migration",
-          "impl DbBackend > fn migrate_v1_baseline",
-          "impl DbBackend > fn add_column_if_missing",
-          "impl DbBackend > fn get_or_create_device_id",
-          "impl DbBackend > fn record_change",
-          "impl DbBackend > fn refresh_note_links",
-          "impl DbBackend > fn connect_ws",
-          "impl DbBackend > fn row_to_note",
-          "impl DbBackend > fn parse_uuid",
-          "impl DbBackend > fn parse_required_dt",
-          "impl DbBackend > fn parse_optional_dt",
-          "impl DbBackend > fn row_to_notebook",
-          "impl DbBackend > fn row_to_tag",
-          "impl DbBackend > fn row_to_resource",
-          "impl DbBackend > fn row_to_change",
-          "impl DbBackend > fn begin",
-          "impl DbBackend > fn commit",
-          "impl DbBackend > fn rollback",
-          "impl DbBackend > fn ensure_ws",
-          "impl DbBackend > fn migrate_v2_ordering",
-          "impl DbBackend > fn migrate_v3_tag_system",
-          "impl DbBackend > fn migrate_v4_resource_media",
-          "impl DbBackend > fn migrate_v5_resource_note_id",
-          "impl DbBackend > fn current_meta",
-          "impl DbBackend > fn incoming_wins",
-          "impl DbBackend > fn next_local_vv",
-          "impl DbBackend > fn row_is_live",
-          "impl DbBackend > fn assoc_meta",
-          "impl DbBackend > fn next_assoc_vv",
-          "impl DbBackend > fn assoc_incoming_wins",
-          "impl DbBackend > fn upsert_assoc",
-          "impl DbBackend > fn resource_meta",
-          "impl DbBackend > fn next_resource_vv",
-          "impl DbBackend > fn resource_incoming_wins",
+          "impl DbBackend (conflict resolution)",
+          "impl DbBackend (conflict resolution) > fn current_meta",
+          "impl DbBackend (conflict resolution) > fn incoming_wins",
+          "impl DbBackend (conflict resolution) > fn next_local_vv",
+          "impl DbBackend (conflict resolution) > fn row_is_live",
+          "impl DbBackend (conflict resolution) > fn assoc_meta",
+          "impl DbBackend (conflict resolution) > fn next_assoc_vv",
+          "impl DbBackend (conflict resolution) > fn assoc_incoming_wins",
+          "impl DbBackend (conflict resolution) > fn upsert_assoc",
+          "impl DbBackend (conflict resolution) > fn resource_meta",
+          "impl DbBackend (conflict resolution) > fn next_resource_vv",
+          "impl DbBackend (conflict resolution) > fn resource_incoming_wins"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/db/conflict.rs` — version-vector conflict resolution"
+      },
+      "risk": {
+        "basis": [
+          "backend",
+          "storage"
+        ],
+        "origin": "INFERRED",
+        "value": "persistence"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/conflict.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/convert.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The split is a relocation: `storage::db::DbBackend` stays the public path, so no caller outside this directory module changes."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "These helpers stay I/O-free and total, so every caller can treat them as pure encoding."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
           "fn parse_cursor",
           "fn build_page",
           "fn bookmarks_to_json",
@@ -2116,59 +2118,104 @@
           "fn tombstone_data",
           "fn assoc_data",
           "fn assoc_from_data",
-          "fn tombstone_from_data",
-          "impl NoteRepository for DbBackend",
-          "impl NoteRepository for DbBackend > fn create_note",
-          "impl NoteRepository for DbBackend > fn read_note",
-          "impl NoteRepository for DbBackend > fn update_note",
-          "impl NoteRepository for DbBackend > fn delete_note",
-          "impl NoteRepository for DbBackend > fn list_notes",
-          "impl NoteRepository for DbBackend > fn note_backlinks",
-          "impl NoteRepository for DbBackend > fn list_notes_in_notebook",
-          "impl NoteRepository for DbBackend > fn list_starred_notes",
-          "impl NoteRepository for DbBackend > fn notebook_sort_profile",
-          "impl NotebookRepository for DbBackend",
-          "impl NotebookRepository for DbBackend > fn create_notebook",
-          "impl NotebookRepository for DbBackend > fn read_notebook",
-          "impl NotebookRepository for DbBackend > fn update_notebook",
-          "impl NotebookRepository for DbBackend > fn delete_notebook",
-          "impl NotebookRepository for DbBackend > fn list_notebooks",
-          "impl TagRepository for DbBackend",
-          "impl TagRepository for DbBackend > fn create_tag",
-          "impl TagRepository for DbBackend > fn read_tag",
-          "impl TagRepository for DbBackend > fn update_tag",
-          "impl TagRepository for DbBackend > fn delete_tag",
-          "impl TagRepository for DbBackend > fn list_tags",
-          "impl TagRepository for DbBackend > fn add_note_tag",
-          "impl TagRepository for DbBackend > fn remove_note_tag",
-          "impl TagRepository for DbBackend > fn list_note_tags",
-          "impl ResourceRepository for DbBackend",
-          "impl ResourceRepository for DbBackend > fn create_resource",
-          "impl ResourceRepository for DbBackend > fn read_resource",
-          "impl ResourceRepository for DbBackend > fn delete_resource",
-          "impl ResourceRepository for DbBackend > fn list_resources",
-          "impl ResourceRepository for DbBackend > fn list_resources_for_note",
-          "impl ResourceRepository for DbBackend > fn purge_deleted_resources",
-          "impl SyncBackend for DbBackend",
-          "impl SyncBackend for DbBackend > fn get_changes_since",
-          "impl SyncBackend for DbBackend > fn apply_change",
-          "impl SyncBackend for DbBackend > fn get_last_sync_time",
-          "impl SyncBackend for DbBackend > fn update_sync_time",
-          "impl SyncBackend for DbBackend > fn send_changes",
-          "impl SyncBackend for DbBackend > fn receive_changes",
-          "impl SyncBackend for DbBackend > fn prune_change_journal",
-          "impl SyncBackend for DbBackend > fn get_device_id",
-          "ServerVersion",
-          "CapabilityCache",
-          "fn http_base_of",
-          "impl DbBackend (server history)",
-          "impl DbBackend (server history) > fn server_http_base",
-          "impl DbBackend (server history) > fn server_has_capability",
-          "impl DbBackend (server history) > fn server_entity_history",
-          "impl DbBackend (server history) > fn entity_history",
-          "impl HistoryRepository for DbBackend",
-          "impl HistoryRepository for DbBackend > fn note_history",
-          "impl HistoryRepository for DbBackend > fn notebook_history",
+          "fn tombstone_from_data"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/db/convert.rs` — JSON/version-vector/tombstone encoding helpers"
+      },
+      "risk": {
+        "basis": [
+          "backend",
+          "storage"
+        ],
+        "origin": "INFERRED",
+        "value": "persistence"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/convert.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/migrations.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/convert.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The split is a relocation: `storage::db::DbBackend` stays the public path, so no caller outside this directory module changes."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "Migrations are forward-only and applied in order; a database stamped newer than this build is refused, never downgraded."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "impl DbBackend (migrations)",
+          "impl DbBackend (migrations) > fn run_migrations",
+          "impl DbBackend (migrations) > fn schema_version",
+          "impl DbBackend (migrations) > fn apply_migration",
+          "impl DbBackend (migrations) > fn migrate_v1_baseline",
+          "impl DbBackend (migrations) > fn add_column_if_missing",
+          "impl DbBackend (migrations) > fn migrate_v2_ordering",
+          "impl DbBackend (migrations) > fn migrate_v3_tag_system",
+          "impl DbBackend (migrations) > fn migrate_v4_resource_media",
+          "impl DbBackend (migrations) > fn migrate_v5_resource_note_id",
           "mod migration_tests",
           "mod migration_tests > imports",
           "mod migration_tests > fn raw_conn",
@@ -2183,10 +2230,621 @@
       },
       "purpose": {
         "origin": "EXTRACTED",
-        "value": "`storage/db.rs` — DbBackend (LibSQL + WebSocket storage)"
+        "value": "`storage/db/migrations.rs` — schema versioning and forward migrations"
       },
       "risk": {
         "basis": [
+          "migration"
+        ],
+        "origin": "INFERRED",
+        "value": "migration"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/migrations.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/mod.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/mod.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/mod.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The split is a relocation: `storage::db::DbBackend` stays the public path, so no caller outside this directory module changes."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the same clamping the pre-split bodies relied on, since a changed bound would silently alter every paginated listing in this directory module."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "`from_effective_keys` to keep accepting the key list `notes.rs` builds."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "re-exports",
+          "WsStream",
+          "DbBackend",
+          "impl DbBackend",
+          "impl DbBackend > fn new",
+          "impl DbBackend > fn get_or_create_device_id",
+          "impl DbBackend > fn record_change",
+          "impl DbBackend > fn refresh_note_links",
+          "impl DbBackend > fn connect_ws",
+          "impl DbBackend > fn begin",
+          "impl DbBackend > fn commit",
+          "impl DbBackend > fn rollback",
+          "impl DbBackend > fn ensure_ws"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/db/mod.rs` — DbBackend — type, lifecycle and transaction handles"
+      },
+      "risk": {
+        "basis": [
+          "backend",
+          "storage"
+        ],
+        "origin": "INFERRED",
+        "value": "persistence"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/mod.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/notebooks.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/convert.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The split is a relocation: `storage::db::DbBackend` stays the public path, so no caller outside this directory module changes."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "impl NotebookRepository for DbBackend",
+          "impl NotebookRepository for DbBackend > fn create_notebook",
+          "impl NotebookRepository for DbBackend > fn read_notebook",
+          "impl NotebookRepository for DbBackend > fn update_notebook",
+          "impl NotebookRepository for DbBackend > fn delete_notebook",
+          "impl NotebookRepository for DbBackend > fn list_notebooks"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/db/notebooks.rs` — NotebookRepository over LibSQL"
+      },
+      "risk": {
+        "basis": [
+          "backend",
+          "repository",
+          "sql",
+          "storage"
+        ],
+        "origin": "INFERRED",
+        "value": "persistence"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/notebooks.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/notes.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/convert.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The split is a relocation: `storage::db::DbBackend` stays the public path, so no caller outside this directory module changes."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "impl NoteRepository for DbBackend",
+          "impl NoteRepository for DbBackend > fn create_note",
+          "impl NoteRepository for DbBackend > fn read_note",
+          "impl NoteRepository for DbBackend > fn update_note",
+          "impl NoteRepository for DbBackend > fn delete_note",
+          "impl NoteRepository for DbBackend > fn list_notes",
+          "impl NoteRepository for DbBackend > fn note_backlinks",
+          "impl NoteRepository for DbBackend > fn list_notes_in_notebook",
+          "impl NoteRepository for DbBackend > fn list_starred_notes",
+          "impl NoteRepository for DbBackend > fn notebook_sort_profile"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/db/notes.rs` — NoteRepository over LibSQL"
+      },
+      "risk": {
+        "basis": [
+          "backend",
+          "repository",
+          "sql",
+          "storage"
+        ],
+        "origin": "INFERRED",
+        "value": "persistence"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/notes.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/resources.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/convert.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The split is a relocation: `storage::db::DbBackend` stays the public path, so no caller outside this directory module changes."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "impl ResourceRepository for DbBackend",
+          "impl ResourceRepository for DbBackend > fn create_resource",
+          "impl ResourceRepository for DbBackend > fn read_resource",
+          "impl ResourceRepository for DbBackend > fn delete_resource",
+          "impl ResourceRepository for DbBackend > fn list_resources",
+          "impl ResourceRepository for DbBackend > fn list_resources_for_note",
+          "impl ResourceRepository for DbBackend > fn purge_deleted_resources"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/db/resources.rs` — ResourceRepository over LibSQL"
+      },
+      "risk": {
+        "basis": [
+          "backend",
+          "repository",
+          "sql",
+          "storage"
+        ],
+        "origin": "INFERRED",
+        "value": "persistence"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/resources.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/rows.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/convert.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The split is a relocation: `storage::db::DbBackend` stays the public path, so no caller outside this directory module changes."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "impl DbBackend (row mapping)",
+          "impl DbBackend (row mapping) > fn row_to_note",
+          "impl DbBackend (row mapping) > fn parse_uuid",
+          "impl DbBackend (row mapping) > fn parse_required_dt",
+          "impl DbBackend (row mapping) > fn parse_optional_dt",
+          "impl DbBackend (row mapping) > fn row_to_notebook",
+          "impl DbBackend (row mapping) > fn row_to_tag",
+          "impl DbBackend (row mapping) > fn row_to_resource",
+          "impl DbBackend (row mapping) > fn row_to_change"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/db/rows.rs` — libsql row -> domain model decoding"
+      },
+      "risk": {
+        "basis": [
+          "backend",
+          "sql",
+          "storage"
+        ],
+        "origin": "INFERRED",
+        "value": "persistence"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/rows.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/server.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/convert.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The split is a relocation: `storage::db::DbBackend` stays the public path, so no caller outside this directory module changes."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "ServerVersion",
+          "CapabilityCache",
+          "fn http_base_of",
+          "impl DbBackend (server history)",
+          "impl DbBackend (server history) > fn server_http_base",
+          "impl DbBackend (server history) > fn server_has_capability",
+          "impl DbBackend (server history) > fn server_entity_history",
+          "impl DbBackend (server history) > fn entity_history",
+          "impl HistoryRepository for DbBackend",
+          "impl HistoryRepository for DbBackend > fn note_history",
+          "impl HistoryRepository for DbBackend > fn notebook_history"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/db/server.rs` — server capability probing and entity history"
+      },
+      "risk": {
+        "basis": [
+          "backend",
+          "storage"
+        ],
+        "origin": "INFERRED",
+        "value": "persistence"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/server.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/sync.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/convert.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The split is a relocation: `storage::db::DbBackend` stays the public path, so no caller outside this directory module changes."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "impl SyncBackend for DbBackend",
+          "impl SyncBackend for DbBackend > fn get_changes_since",
+          "impl SyncBackend for DbBackend > fn apply_change",
+          "impl SyncBackend for DbBackend > fn get_last_sync_time",
+          "impl SyncBackend for DbBackend > fn update_sync_time",
+          "impl SyncBackend for DbBackend > fn send_changes",
+          "impl SyncBackend for DbBackend > fn receive_changes",
+          "impl SyncBackend for DbBackend > fn prune_change_journal",
+          "impl SyncBackend for DbBackend > fn get_device_id"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/db/sync.rs` — SyncBackend — change journal and WebSocket relay"
+      },
+      "risk": {
+        "basis": [
+          "sync",
           "websocket"
         ],
         "origin": "INFERRED",
@@ -2194,7 +2852,95 @@
       },
       "source": {
         "origin": "EXTRACTED",
-        "value": "keeplin-core/src/storage/db.rs"
+        "value": "keeplin-core/src/storage/db/sync.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/tags.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/convert.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": false
+        }
+      ],
+      "direct_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "high_risk_dependents": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs"
+        }
+      ],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The split is a relocation: `storage::db::DbBackend` stays the public path, so no caller outside this directory module changes."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "impl TagRepository for DbBackend",
+          "impl TagRepository for DbBackend > fn create_tag",
+          "impl TagRepository for DbBackend > fn read_tag",
+          "impl TagRepository for DbBackend > fn update_tag",
+          "impl TagRepository for DbBackend > fn delete_tag",
+          "impl TagRepository for DbBackend > fn list_tags",
+          "impl TagRepository for DbBackend > fn add_note_tag",
+          "impl TagRepository for DbBackend > fn remove_note_tag",
+          "impl TagRepository for DbBackend > fn list_note_tags"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/db/tags.rs` — TagRepository over LibSQL"
+      },
+      "risk": {
+        "basis": [
+          "backend",
+          "repository",
+          "sql",
+          "storage"
+        ],
+        "origin": "INFERRED",
+        "value": "persistence"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/db/tags.rs"
       },
       "tests": {
         "origin": "INFERRED",
@@ -2549,10 +3295,6 @@
         {
           "origin": "EXTRACTED",
           "path": "keeplin-core/tests/fs_backend.rs"
-        },
-        {
-          "origin": "INFERRED",
-          "path": "keeplin-core/src/storage/db.rs"
         }
       ],
       "high_risk_dependents": [
@@ -2567,10 +3309,6 @@
         {
           "origin": "EXTRACTED",
           "path": "keeplin-core/tests/fs_backend.rs"
-        },
-        {
-          "origin": "INFERRED",
-          "path": "keeplin-core/src/storage/db.rs"
         }
       ],
       "invariants": {
@@ -2803,8 +3541,8 @@
           "required": false
         },
         {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/db.rs",
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs",
           "required": false
         }
       ],
@@ -2881,8 +3619,8 @@
       },
       "direct_dependencies": [
         {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/db.rs",
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs",
           "required": false
         },
         {
@@ -3220,8 +3958,8 @@
           "required": false
         },
         {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/db.rs",
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs",
           "required": false
         }
       ],
@@ -3288,8 +4026,8 @@
       },
       "direct_dependencies": [
         {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/db.rs",
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs",
           "required": false
         }
       ],
@@ -3423,8 +4161,8 @@
       },
       "direct_dependencies": [
         {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/db.rs",
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/db/mod.rs",
           "required": false
         },
         {

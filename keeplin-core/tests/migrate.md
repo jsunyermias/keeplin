@@ -352,7 +352,7 @@ this companion.
 
 - `keeplin-core/src/migrate.rs` — one-shot state copy between backends (EXTRACTED: calls×3; e.g. `migrate()`)
 - `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: references×2; e.g. `StorageBackend`)
-- `keeplin-core/src/storage/db.rs` — DbBackend (LibSQL + WebSocket storage) (EXTRACTED: references×1; e.g. `DbBackend`)
+- `keeplin-core/src/storage/db/mod.rs` — defines `DbBackend` (INFERRED: the test reaches it through the fully-qualified `keeplin_core::storage::db::DbBackend`, which the AST pass does not link)
 
 **Direct dependents** (files whose symbols reference this one)
 
