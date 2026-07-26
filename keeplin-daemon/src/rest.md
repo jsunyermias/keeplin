@@ -4231,14 +4231,15 @@ out to every participant → `204`; `503` when collaboration is disabled.
 
 ## Graph context
 
-Repo-tooling metadata, not a code block (no marker in the source). Kept in every
-companion because CI (`scripts/check-docs.sh`) enforces it: this file is LAYER 2 of
-the navigation model, the Graphify graph (`graphify-out/graph.json`) is LAYER 1;
-refresh with `graphify update .` after refactors.
+Repo-tooling metadata, not a code block (no marker in the source). This file is LAYER 2;
+CI publishes LAYER 1 as `knowledge-graph-<commit SHA>`, and `graphify update .` creates the
+same ignored `graphify-out/` layout locally. Download or generate the graph for this exact
+commit before refreshing EXTRACTED relationships; local Graphify is never required to use
+this companion.
 
-<!-- Data source: graphify-out/graph.json (AST pass; `graphify update .` refreshes it).
-     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. -->
-
+<!-- Data source: CI artifact or local graphify-out/graph.json from this exact commit.
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. Never
+     present inference as fact. -->
 **Nodes/edges this file contributes** (top symbols by cross-file degree)
 
 - `AppState`, `Shared`, `router()` — defined here; the HTTP surface (EXTRACTED; referenced by `main.rs`)

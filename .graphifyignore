@@ -1,0 +1,15 @@
+# Graphify output and generated/build trees never belong to the input corpus.
+/graphify-out/
+/target/
+/build/
+/dist/
+/vendor/
+/coverage/
+/docs/context-manifest.json
+
+# Companion documents deliberately repeat source and prose. Keep only the selected
+# architectural documents in the mixed code/documentation graph.
+*.md
+!/ARCHITECTURE.md
+!/SECURITY.md
+!/docs/adr/*.md

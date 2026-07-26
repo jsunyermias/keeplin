@@ -515,28 +515,35 @@ Start with [`AGENTS.md`](AGENTS.md), the provider-neutral engineering contract s
 [`docs/prompts/`](docs/prompts/) contains the reusable preparation, implementation and
 independent-review prompts.
 
-Two navigation layers, checked in:
+Two navigation layers, one published by CI and one checked in:
 
-1. **LAYER 1 — discovery: the Graphify knowledge graph.** `graphify-out/graph.json` (and the
-   readable `graphify-out/GRAPH_REPORT.md`) is a queryable graph of every symbol, file and
-   relationship. Ask it before reading code: `graphify query "which files depend on
+1. **LAYER 1 — discovery: the Graphify knowledge graph.** The
+   `Knowledge graph up to date` CI job publishes `graphify-out/graph.json` and the
+   readable `GRAPH_REPORT.md` as `knowledge-graph-<commit SHA>`; the directory is ignored
+   and never committed. Generate it locally with the pinned `graphifyy==0.9.25` or download
+   the artifact, then ask it before reading code: `graphify query "which files depend on
    storage/note_log.rs?"`, `graphify path "DbBackend" "resolve"`, `graphify explain
-   "CollabBackend"`. After large refactors, refresh it with `graphify update .` (AST-only,
-   no API key needed).
+   "CollabBackend"`. `.graphifyignore` keeps generated/build trees out of the corpus and
+   excludes all Markdown before explicitly retaining only architecture, security and ADR
+   documents. Companions, templates, repository guidance and prompts remain direct-reading
+   LAYER 2 material rather than Graphify input.
 2. **LAYER 2 — work: the companion `.md` files.** Every `foo.rs` has a contractual `foo.md`
    next to it, written to be **hyper self-contained**: purpose, API, invariants, and a
    `## Graph context` section (dependencies/dependents with one-line inline summaries,
-   sourced from the graph; redundancy across companions is intentional). Agents should query
-   the graph first, then read the companion `.md` — not the raw `.rs` — whenever possible.
+   sourced from the graph; redundancy across companions is intentional). The flow is
+   one-way: code -> graph -> companion. Query the graph first when it is available; otherwise
+   read the target companion directly, because local Graphify is never a prerequisite.
 
 CI enforces the contract (`scripts/check-docs.sh`, hardened): every `.rs` has a companion
 `.md` in the block-complete format — a `## Graph context` section, every `// md:` marker
 mirrored in the companion (none duplicated in the `.rs`), a `## Coverage checklist` with one
 row per marker, no elision inside its `rust` fences, and no comment lines in the `.rs` other
 than `// md:` markers. The templates live in `docs/templates/` (`source-module.md` v2.3). To
-enable the optional Graphify Claude Code hooks locally, copy
+enable the optional Graphify query-guidance hooks after generating or downloading a graph, copy
 `.claude/settings.example.json` to `.claude/settings.local.json` — the example is guarded so
-it no-ops for contributors without Graphify installed (`pip install graphifyy`).
+it no-ops for contributors without Graphify installed. The former `.githooks/pre-commit`
+auto-refresh hook was removed; clones that enabled it should run
+`git config --unset core.hooksPath`.
 
 ---
 

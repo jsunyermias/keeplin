@@ -52,15 +52,15 @@ script is the arbiter and must not be weakened to accommodate it.
 
 ## Refresh procedure after large refactors
 
-`graphify update .` rebuilds LAYER 1 (the graph, AST-only, no API key) — run it after any
-large refactor and refresh the affected `## Graph context` sections from `graphify query`
-output.
+After a large refactor, generate the ignored LAYER 1 output locally or download the CI
+artifact for that exact commit, then refresh affected `## Graph context` sections from
+`graphify query` output. Never stage `graphify-out/`.
 
 ## Related files
 
 - `docs/templates/source-module.md` — v2.5 block-complete template; its 9 HARD RULES are
   what this script enforces.
 - `sync-companion-code` / `context-pack` — exact-fidelity and context-index entry points.
-- `.github/workflows/ci.yml` — where this runs in CI (first step).
-- `graphify-out/graph.json` — LAYER 1, the queryable graph the Graph context sections
-  are sourced from.
+- `.github/workflows/ci.yml` — runs this check and publishes LAYER 1 as a same-commit
+  Graphify artifact; Graph context sections may also use an equivalent ignored local
+  generation.

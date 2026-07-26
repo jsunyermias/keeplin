@@ -42,14 +42,15 @@ public modules, or building the process and starting the servers.}}
 
 ## Graph context
 
-<!-- MANDATORY section (CI-enforced). Data source: the committed Graphify graph —
-     `graphify query "<file or symbol>"` / `graphify explain "<concept>"` against
-     graphify-out/graph.json. Label every relationship: EXTRACTED when it comes
-     mechanically from the graph/AST, INFERRED when you concluded it yourself —
-     never present inference as fact. The one-line inline summaries are the
-     hyper-redundancy requirement: a small model given ONLY this .md must be able
-     to work on the paired file safely, without following any pointer. -->
+Repo-tooling metadata, not a code block (no marker in the source). This file is LAYER 2;
+CI publishes LAYER 1 as `knowledge-graph-<commit SHA>`, and `graphify update .` creates the
+same ignored `graphify-out/` layout locally. Download or generate the graph for this exact
+commit before refreshing EXTRACTED relationships; local Graphify is never required to use
+this companion.
 
+<!-- Data source: CI artifact or local graphify-out/graph.json from this exact commit.
+     EXTRACTED = mechanically from the graph; INFERRED = authored judgement. Never
+     present inference as fact. -->
 **Nodes/edges this file contributes**
 
 - `{{Entity}}` — {{what it is; the relationships the graph holds for it, labelled EXTRACTED/INFERRED}}
