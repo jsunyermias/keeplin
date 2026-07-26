@@ -49,7 +49,7 @@ object-safe.
 the `crate::models` entity types, `super::SortableRfc3339` (fixed-precision
 RFC 3339 for the cursor format).
 
-**Used by** — implemented by `storage/fs.rs`, `storage/db.rs`, and the decorators
+**Used by** — implemented by `storage/fs.rs`, the trait modules of `storage/db/`, and the decorators
 (`encryption.rs`, `linking.rs`, `collab/mod.rs`, daemon-side `event_backend.rs`,
 `metrics.rs`); consumed by everything that touches storage. The rest of the
 codebase is written against `Arc<dyn StorageBackend>` and never names a concrete
@@ -879,7 +879,7 @@ this companion.
 - `keeplin-core/src/linking.rs` — `LinkingBackend` decorator + reference resolution (EXTRACTED: implements×6, references×16; e.g. `AliasConflict`, `LinkingBackend<B>`, `collect_notes()`)
 - `keeplin-core/src/migrate.rs` — one-shot state copy between backends (EXTRACTED: references×2; e.g. `migrate()`, `collect()`)
 - `keeplin-core/src/ordering.rs` — the Inbox, pinning, manual ordering, and starring (EXTRACTED: references×12; e.g. `ensure_inbox()`, `place_new_note()`, `pin_note()`)
-- `keeplin-core/src/storage/db.rs` — DbBackend (LibSQL + WebSocket storage) (EXTRACTED: implements×6, references×8; e.g. `DbBackend`, `.notebook_sort_profile()`, `.entity_history()`)
+- `keeplin-core/src/storage/db/` — DbBackend's six trait implementations, one per module (EXTRACTED: edges to `notes.rs`, `notebooks.rs`, `tags.rs`, `resources.rs`, `sync.rs`, `server.rs` and `convert.rs`; e.g. `DbBackend`, `.notebook_sort_profile()`, `.entity_history()`)
 - `keeplin-core/src/storage/fs.rs` — FsBackend (filesystem storage) (EXTRACTED: implements×6, references×12; e.g. `FsBackend`, `.notebook_sort_profile()`, `.note_history()`)
 - `keeplin-core/src/sync/engine.rs` — SyncEngine (EXTRACTED: references×2; e.g. `SyncEngine`, `.new()`)
 - `keeplin-core/tests/migrate.rs` — cross-backend migration tests (EXTRACTED: references×2; e.g. `assert_migrated()`, `seed()`)

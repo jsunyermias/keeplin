@@ -53,7 +53,7 @@ A blanket impl means any type implementing all five *is* a `StorageBackend`, so
 | Backend | Storage | Conflict resolution | Sync transport |
 |---------|---------|---------------------|----------------|
 | **`FsBackend`** (`storage/fs.rs`) | files under a root dir | **version vectors** (per-note logs merged; sidecar entities resolved by `note_log::resolve`) | passive — an external tool (Syncthing) replicates the files |
-| **`DbBackend`** (`storage/db.rs`) | one local LibSQL/SQLite database | **version vectors** (current-state rows resolved by `note_log::resolve`) | active — WebSocket to a sync server |
+| **`DbBackend`** (`storage/db/`) | one local LibSQL/SQLite database | **version vectors** (current-state rows resolved by `note_log::resolve`) | active — WebSocket to a sync server |
 
 Both backends resolve **every** entity — notes, notebooks, tags, note↔tag associations, and
 resources — through version vectors with the same deterministic `(timestamp, device_id)` tiebreak,

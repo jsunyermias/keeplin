@@ -139,7 +139,8 @@ down to it; everything in between passes through. Pure, total, no errors.
 
 **Dependencies** — the two constants above.
 
-**Used by** — every list implementation in `storage/fs.rs` and `storage/db.rs`
+**Used by** — every list implementation in `storage/fs.rs` and in the repository
+modules of `storage/db/`
 (notes, notebooks, tags, resources, history listings).
 
 **Repeated context** — crate-private (`pub(crate)`) on purpose: callers outside the
@@ -178,7 +179,7 @@ match remains best-effort, the same situation mixed-precision writers were alrea
 
 **Dependencies** — none (trait definition only).
 
-**Used by** — `storage/db.rs`, `storage/fs.rs`, and `storage/backend.rs` for every
+**Used by** — `storage/db/`, `storage/fs.rs`, and `storage/backend.rs` for every
 stored/compared timestamp; the `impl` below provides the only implementation.
 
 **Repeated context** — Timestamps-as-TEXT is a deliberate project convention (keeps

@@ -171,7 +171,7 @@ impl From<libsql::Error> for StorageError {
 - `format!` / `String::push_str` — build the flattened multi-line message; expects nothing
   beyond normal allocation.
 
-**Used by** — `?` in `storage/db.rs` (every LibSQL call).
+**Used by** — `?` in every module of `storage/db/` (every LibSQL call).
 
 **Repeated context** — `Database` stores a `String` (not `Box<dyn Error>`) so `StorageError`
 stays `Send + Sync + 'static` cheaply; the trade-off is one allocation per multi-hop chain.
@@ -202,7 +202,7 @@ protocol/connection error) into `StorageError::WebSocket(e.to_string())`.
   `Display` so `e.to_string()` renders a message. Pure delegation, no chain flattening
   (unlike the libsql impl) — the tungstenite message is self-contained.
 
-**Used by** — `?` in `storage/db.rs` (relay connection) and `collab/mod.rs`.
+**Used by** — `?` in `storage/db/mod.rs` (relay connection) and `collab/mod.rs`.
 
 **Repeated context** — none.
 
@@ -284,7 +284,7 @@ this companion.
 - `keeplin-core/src/linking.rs` — `LinkingBackend` decorator + reference resolution (EXTRACTED: references×51)
 - `keeplin-core/src/migrate.rs` — one-shot state copy between backends (EXTRACTED: references×2)
 - `keeplin-core/src/ordering.rs` — the inbox, pinning, manual ordering, and starring (EXTRACTED: references×11)
-- `keeplin-core/src/storage/db.rs` — DbBackend (LibSQL + WebSocket storage) (EXTRACTED: references×69)
+- `keeplin-core/src/storage/db/` — DbBackend across its modules (INFERRED: `?` on every LibSQL call; the AST pass reports no file-level edge for this tree)
 - `keeplin-core/src/storage/fs.rs` — FsBackend (filesystem storage) (EXTRACTED: references×75)
 - `keeplin-core/src/sync/engine.rs` — SyncEngine (EXTRACTED: references×2)
 - `keeplin-daemon/src/event_backend.rs` — `EventBackend` change-publishing decorator (EXTRACTED: references×37)
