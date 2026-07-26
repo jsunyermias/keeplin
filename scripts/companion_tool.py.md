@@ -46,6 +46,14 @@ sorted, unique identifiers, not repository-specific prose. Incidental mentions o
 client or cross-repo relationship therefore add no entry, and companion files on both
 sides can emit the same contract value.
 
+`docs/cross-repo-contracts.txt` pins the identifiers both repositories must agree on and is
+byte-identical in each. Generating or checking the manifest fails when the declared set
+drifts from it in either direction: `UNPINNED` for an identifier a companion declares
+without listing, `MISSING` for one listed with no companion declaring it, and a hard error
+when the registry file itself is absent. Nothing else can catch this, because each
+repository builds its manifest alone and never sees the other side; without the registry a
+renamed heading or a one-sided edit would empty the field silently.
+
 Authored dependency and dependent bullets prefixed with `(EXTRACTED...)` retain their
 explicit origin, including `:` or `;` detail suffixes.
 Risk is classified as normal, persistence, protocol, security or migration with the matched

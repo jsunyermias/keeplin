@@ -171,6 +171,34 @@ class CompanionToolTests(unittest.TestCase):
         self.assertEqual(left, ["collab-wire", "format-limits"])
         self.assertEqual(left, right)
 
+    def test_contract_registry_detects_drift_in_both_directions(self) -> None:
+        manifest = {
+            "entries": [
+                {"cross_repo_contracts": {"origin": "INFERRED", "value": ["collab-wire"]}},
+                {"cross_repo_contracts": {"origin": "INFERRED", "value": ["protocol-version"]}},
+            ]
+        }
+        registry = self.root / TOOL.CONTRACT_REGISTRY
+        registry.parent.mkdir(parents=True, exist_ok=True)
+
+        registry.write_text("# comment\n\ncollab-wire\nprotocol-version\n", encoding="utf-8")
+        self.assertEqual(TOOL.verify_contract_registry(self.root, manifest), [])
+
+        registry.write_text("collab-wire\n", encoding="utf-8")
+        unpinned = TOOL.verify_contract_registry(self.root, manifest)
+        self.assertEqual(len(unpinned), 1)
+        self.assertIn("UNPINNED cross-repo contract 'protocol-version'", unpinned[0])
+
+        registry.write_text("collab-wire\nprotocol-version\nresource-blobs\n", encoding="utf-8")
+        missing = TOOL.verify_contract_registry(self.root, manifest)
+        self.assertEqual(len(missing), 1)
+        self.assertIn("MISSING cross-repo contract 'resource-blobs'", missing[0])
+
+    def test_contract_registry_is_required(self) -> None:
+        errors = TOOL.verify_contract_registry(self.root, {"entries": []})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("MISSING cross-repo contract registry", errors[0])
+
     def test_cross_repo_contracts_ignore_incidental_prose(self) -> None:
         text = fixture_text("cross_repo_contracts.incidental.md.fixture")
         self.assertEqual(TOOL._cross_repo_contracts(text), [])

@@ -29,6 +29,7 @@ RISK_RULES = (
 )
 CONTRACT_TERMS = ("contract", "must", "expects", "wire", "protocol", "format", "compatib", "security")
 IGNORED_DIRS = {".git", "target", "graphify-out"}
+CONTRACT_REGISTRY = "docs/cross-repo-contracts.txt"
 SCHEMA_VERSION = 2
 
 
@@ -687,11 +688,60 @@ def build_manifest(root: Path) -> dict[str, object]:
 
 
 def manifest_text(root: Path) -> str:
-    return json.dumps(build_manifest(root), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    return _manifest_text(build_manifest(root))
+
+
+def _manifest_text(manifest: dict[str, object]) -> str:
+    return json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def _pinned_contracts(root: Path) -> tuple[list[str] | None, str | None]:
+    """Read the checked-in cross-repo contract registry shared by both repositories."""
+    registry = root / CONTRACT_REGISTRY
+    if not registry.is_file():
+        return None, f"MISSING cross-repo contract registry: {CONTRACT_REGISTRY}"
+    text, _ = _read(registry)
+    pinned = []
+    for line in text.splitlines():
+        entry = line.split("#", 1)[0].strip()
+        if entry:
+            pinned.append(entry)
+    return sorted(set(pinned)), None
+
+
+def verify_contract_registry(root: Path, manifest: dict[str, object]) -> list[str]:
+    """Fail when the emitted contract identifiers drift from the pinned registry.
+
+    Each repository builds its manifest alone, so nothing else can notice one side
+    adding, renaming or silently losing a shared identifier.
+    """
+    pinned, error = _pinned_contracts(root)
+    if pinned is None:
+        return [error or ""]
+    emitted = set()
+    for entry in manifest["entries"]:  # type: ignore[index]
+        field = entry.get("cross_repo_contracts") or {}  # type: ignore[union-attr]
+        emitted.update(field.get("value") or [])
+    errors = []
+    for missing in sorted(set(pinned) - emitted):
+        errors.append(
+            f"MISSING cross-repo contract '{missing}': pinned in {CONTRACT_REGISTRY} but no "
+            f"companion declares it. Restore the declaration or retire it in both repositories."
+        )
+    for extra in sorted(emitted - set(pinned)):
+        errors.append(
+            f"UNPINNED cross-repo contract '{extra}': declared in a companion but absent from "
+            f"{CONTRACT_REGISTRY}. Add it there and in the companion repository."
+        )
+    return errors
 
 
 def write_or_check_manifest(root: Path, output: Path, check: bool) -> list[str]:
-    expected = manifest_text(root)
+    manifest = build_manifest(root)
+    errors = verify_contract_registry(root, manifest)
+    if errors:
+        return errors
+    expected = _manifest_text(manifest)
     if check:
         if not output.is_file():
             return [f"MISSING generated context manifest: {output}"]

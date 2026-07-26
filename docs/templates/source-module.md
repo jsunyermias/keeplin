@@ -301,7 +301,9 @@ elsewhere)
 
 <!-- OPTIONAL: include only for a real cross-repository surface. The identifier, not the
      repository-specific explanation, is emitted to the manifest and context pack. Use the
-     same identifier in the companion on the other side. -->
+     same identifier in the companion on the other side, and list it in
+     docs/cross-repo-contracts.txt in BOTH repositories — the manifest check fails on any
+     identifier declared here but unpinned there, or pinned there and declared nowhere. -->
 **Cross-repo contracts**
 
 - `{{stable-contract-id}}` — {{what this file owns or consumes on this side}}
