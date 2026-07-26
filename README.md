@@ -523,8 +523,10 @@ Two navigation layers, one published by CI and one checked in:
    and never committed. Generate it locally with the pinned `graphifyy==0.9.25` or download
    the artifact, then ask it before reading code: `graphify query "which files depend on
    storage/note_log.rs?"`, `graphify path "DbBackend" "resolve"`, `graphify explain
-   "CollabBackend"`. `.graphifyignore` keeps companions, templates and generated/build
-   trees out of the corpus while retaining architecture, security and ADR documents.
+   "CollabBackend"`. `.graphifyignore` keeps generated/build trees out of the corpus and
+   excludes all Markdown before explicitly retaining only architecture, security and ADR
+   documents. Companions, templates, repository guidance and prompts remain direct-reading
+   LAYER 2 material rather than Graphify input.
 2. **LAYER 2 — work: the companion `.md` files.** Every `foo.rs` has a contractual `foo.md`
    next to it, written to be **hyper self-contained**: purpose, API, invariants, and a
    `## Graph context` section (dependencies/dependents with one-line inline summaries,

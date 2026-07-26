@@ -68,9 +68,10 @@ Rules:
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - Never require a local Graphify install or graph to understand the repository: deliver the
   target companion directly when the artifact is unavailable.
-- `.graphifyignore` is the corpus contract. It excludes generated/build/vendor trees,
-  `docs/templates/` and all repeated companion `*.md` files while explicitly retaining
-  `ARCHITECTURE.md`, `SECURITY.md` and ADRs.
+- `.graphifyignore` is the corpus contract. It excludes generated/build/vendor trees and all
+  Markdown through `*.md`, then explicitly retains only `ARCHITECTURE.md`, `SECURITY.md` and
+  `docs/adr/*.md`. Companions, templates, repository guidance, prompts and operational documents
+  therefore remain outside LAYER 1 and must be read directly when relevant.
 - Companions are graph outputs only in the documentation sense: code relationships may refresh
   their `## Graph context`, but companion prose and embedded fences never feed back into the
   graph. The direction is code -> graph -> companion, never companion -> graph.
