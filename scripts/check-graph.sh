@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# md:check-graph
 # Build and validate the CI-owned Graphify artifact. The output is deliberately
 # ignored by git: this check proves the configured corpus is useful and that two
 # builds of the same tree have identical deterministic structure.

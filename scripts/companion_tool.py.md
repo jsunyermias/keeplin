@@ -31,6 +31,18 @@ replaces only the byte range occupied by a valid fence body, using that fence's 
 all prose, delimiters, mixed EOL and bytes outside the body remain exactly unchanged.
 Structural errors prevent every write.
 
+Shell sources (`*.sh` and extensionless files with a shell shebang) use unique `# md:`
+markers. Their blocks are linear: each marker owns source through the next marker or EOF.
+Only a `bash` fence whose first content line is that marker participates in fidelity;
+ordinary illustrative `bash` snippets are ignored. Before the first marker, shell permits
+only an optional BOM, a first-line shebang and blank lines.
+
+SQL migrations deliberately have no markers because editing an applied migration changes
+the checksum validated by `sqlx::migrate!`. Every `.sql` must have a companion containing
+exactly one `sql` fence with the entire file verbatim. Synchronization only updates that
+fence in the companion and never writes the migration. Unsupported source types are not
+discovered, preventing new false positives.
+
 ## Context metadata
 
 Manifest schema 2 records paired paths and markers as `EXTRACTED`. Purpose, tests, risk
@@ -77,7 +89,10 @@ pack reproducibility. It also covers uncovered container and file preambles, all
 initial scaffolding, mixed-EOL byte preservation and refusal paths, explicit symmetric
 cross-repo identifiers, incidental-prose rejection, extracted/authored/expectation
 invariants, ambiguous-prose rejection, type definitions used as containers, and detailed
-`EXTRACTED` origin annotations.
+`EXTRACTED` origin annotations. It also covers exact shell blocks, extensionless launcher
+discovery, uncovered shell prefixes, fence-only shell synchronization, ignored unsupported
+types, mandatory whole-file SQL companions, stale SQL synchronization without source
+writes, and forbidden SQL markers.
 
 ## Related files
 

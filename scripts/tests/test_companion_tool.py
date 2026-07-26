@@ -141,6 +141,94 @@ class CompanionToolTests(unittest.TestCase):
         self.assertTrue(any("ORPHAN" in error for error in errors))
         self.assertEqual(self.companion.read_bytes(), before)
 
+    def test_shell_markers_and_bash_fences_are_exact(self) -> None:
+        source = self.root / "script.sh"
+        companion = self.root / "script.sh.md"
+        shutil.copyfile(FIXTURES / "shell_valid.sh.fixture", source)
+        shutil.copyfile(FIXTURES / "shell_valid.md.fixture", companion)
+        self.assertEqual(TOOL.source_kind(source), "shell")
+        self.assertEqual(TOOL.verify_pair(source, companion), [])
+        self.assertEqual([block.name for block in TOOL.parse_source(source)], ["setup", "run"])
+
+    def test_extensionless_shell_is_supported_but_yaml_is_not(self) -> None:
+        launcher = self.root / "launcher"
+        shutil.copyfile(FIXTURES / "shell_valid.sh.fixture", launcher)
+        shutil.copyfile(FIXTURES / "shell_valid.md.fixture", Path(str(launcher) + ".md"))
+        yaml = self.root / "config.yml"
+        shutil.copyfile(FIXTURES / "unsupported.yml.fixture", yaml)
+        (self.root / "config.yml.md").write_text("# prose\n", encoding="utf-8")
+        self.assertEqual(TOOL.source_kind(launcher), "shell")
+        self.assertIsNone(TOOL.source_kind(yaml))
+        discovered = TOOL.iter_sources(self.root)
+        self.assertIn(launcher, discovered)
+        self.assertNotIn(yaml, discovered)
+
+    def test_shell_code_before_first_marker_is_uncovered(self) -> None:
+        source = self.root / "script.sh"
+        source.write_text(fixture_text("shell_uncovered.sh.fixture"), encoding="utf-8")
+        with self.assertRaisesRegex(TOOL.CompanionError, "UNCOVERED code before first '# md:'"):
+            TOOL.parse_source(source)
+
+    def test_shell_sync_changes_only_bash_fence_body(self) -> None:
+        source = self.root / "script.sh"
+        companion = self.root / "script.sh.md"
+        shutil.copyfile(FIXTURES / "shell_valid.sh.fixture", source)
+        text = fixture_text("shell_valid.md.fixture").replace('echo "ready"', 'echo "old"')
+        companion.write_text("Prose stays.\n\n" + text, encoding="utf-8")
+        checked, changed, errors = TOOL.sync(self.root, ["script.sh"], check=False)
+        self.assertEqual((checked, changed, errors), (1, 1, []))
+        self.assertTrue(companion.read_text(encoding="utf-8").startswith("Prose stays.\n"))
+        self.assertEqual(TOOL.verify_pair(source, companion), [])
+
+    def test_shell_illustrative_bash_fence_is_not_a_fidelity_block(self) -> None:
+        source = self.root / "script.sh"
+        companion = self.root / "script.sh.md"
+        shutil.copyfile(FIXTURES / "shell_valid.sh.fixture", source)
+        text = fixture_text("shell_valid.md.fixture")
+        companion.write_text(text + '\n```bash\necho "example only"\n```\n', encoding="utf-8")
+        self.assertEqual(TOOL.verify_pair(source, companion), [])
+
+    def test_sql_requires_one_complete_verbatim_fence(self) -> None:
+        source = self.root / "migration.sql"
+        companion = self.root / "migration.md"
+        shutil.copyfile(FIXTURES / "sql_complete.sql.fixture", source)
+        shutil.copyfile(FIXTURES / "sql_complete.md.fixture", companion)
+        self.assertEqual(TOOL.source_kind(source), "sql")
+        self.assertEqual(TOOL.verify_pair(source, companion), [])
+
+    def test_sql_stale_fence_is_detected_and_synced_without_source_write(self) -> None:
+        source = self.root / "migration.sql"
+        companion = self.root / "migration.md"
+        shutil.copyfile(FIXTURES / "sql_complete.sql.fixture", source)
+        shutil.copyfile(FIXTURES / "sql_stale.md.fixture", companion)
+        source_before = source.read_bytes()
+        self.assertTrue(any("STALE/TRUNCATED" in error for error in TOOL.verify_pair(source, companion)))
+        checked, changed, errors = TOOL.sync(self.root, ["migration.sql"], check=False)
+        self.assertEqual((checked, changed, errors), (1, 1, []))
+        self.assertEqual(source.read_bytes(), source_before)
+        self.assertEqual(TOOL.verify_pair(source, companion), [])
+
+    def test_sql_markers_are_forbidden_and_companion_is_required(self) -> None:
+        source = self.root / "migration.sql"
+        companion = self.root / "migration.md"
+        source.write_text("-- md:never\nSELECT 1;\n", encoding="utf-8")
+        shutil.copyfile(FIXTURES / "sql_complete.md.fixture", companion)
+        self.assertTrue(any("FORBIDDEN '-- md:'" in error for error in TOOL.verify_pair(source, companion)))
+        companion.unlink()
+        checked, changed, errors = TOOL.sync(self.root, ["migration.sql"], check=True)
+        self.assertEqual((checked, changed), (0, 0))
+        self.assertTrue(any("MISSING companion doc" in error for error in errors))
+
+    def test_sql_rejects_multiple_fences(self) -> None:
+        source = self.root / "migration.sql"
+        companion = self.root / "migration.md"
+        shutil.copyfile(FIXTURES / "sql_complete.sql.fixture", source)
+        text = fixture_text("sql_complete.md.fixture")
+        companion.write_text(text + "\n```sql\nSELECT 2;\n```\n", encoding="utf-8")
+        self.assertTrue(
+            any("DUPLICATE sql fences" in error for error in TOOL.verify_pair(source, companion))
+        )
+
     def test_pack_is_byte_for_byte_reproducible(self) -> None:
         manifest = TOOL.build_manifest(self.root)
         self.assertEqual(len(manifest["entries"]), 1)

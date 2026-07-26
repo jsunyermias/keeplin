@@ -18,6 +18,12 @@ covered while ambiguous prose is ignored; only BOM/shebang/blank/inner-attribute
 scaffolding may precede the first marker; and valid mixed-EOL fence sync preserves every
 byte outside the body while invalid structure performs no write.
 
+The `orden-04c` fixtures add positive and negative coverage for `# md:` shell sources,
+extensionless shell launchers, uncovered shell preambles, unsupported-format exclusion,
+and byte-preserving fence synchronization. SQL fixtures prove that a migration requires
+one companion with one complete verbatim `sql` fence, that stale content is repaired only
+in the companion, and that adding `-- md:` markers is rejected.
+
 ## Fixtures
 
 Fixtures intentionally use `.fixture` suffixes so repo-wide companion discovery does not

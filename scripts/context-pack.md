@@ -1,10 +1,28 @@
 # `scripts/context-pack` — reproducible companion context packs
 
+## Complete source
+
+```bash
+# md:context-pack
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ $# -eq 0 ]]; then
+  echo "usage: context-pack manifest [options] | context-pack TARGET [pack options]" >&2
+  exit 2
+fi
+if [[ "$1" == "manifest" ]]; then
+  shift
+  exec python3 "$repo_root/scripts/companion_tool.py" manifest "$@"
+fi
+exec python3 "$repo_root/scripts/companion_tool.py" pack "$@"
+```
+
 ## Purpose
 
 Builds the generated context index and bounded ZIP inputs for models or reviewers. The
-command is local and deterministic: it uses source markers and authored companion metadata,
-never a network service or an LLM.
+command is local and deterministic: it uses supported source markers (or the complete-file
+SQL pairing) and authored companion metadata, never a network service or an LLM.
 
 ## Usage
 
@@ -13,7 +31,7 @@ never a network service or an LLM.
 - `./scripts/context-pack path/to/file.rs --list --profile understand` prints the exact
   planned file list, byte count and token estimate without creating a ZIP.
 - `./scripts/context-pack path/to/file.rs --profile edit --output pack.zip` creates a ZIP.
-- A unique `// md:` marker path may replace the source path.
+- A unique Rust `// md:` or shell `# md:` marker path may replace the source path.
 
 Profiles are deliberately narrow: `understand` includes only the target; `edit` adds only
 dependencies explicitly inferred as indispensable contracts; `review` also adds direct

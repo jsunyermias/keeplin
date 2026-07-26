@@ -15,8 +15,10 @@ from pathlib import Path
 from typing import Sequence
 
 
-MARKER_RE = re.compile(r"^(?P<indent>[ \t]*)// md:(?P<name>.+?)[ \t]*$")
-RUST_FENCE_RE = re.compile(r"^```rust[ \t]*(?P<newline>\r\n|\n)", re.MULTILINE)
+RUST_MARKER_RE = re.compile(r"^(?P<indent>[ \t]*)// md:(?P<name>.+?)[ \t]*$")
+SHELL_MARKER_RE = re.compile(r"^(?P<indent>[ \t]*)# md:(?P<name>.+?)[ \t]*$")
+SQL_MARKER_RE = re.compile(r"^[ \t]*-- md:(?P<name>.+?)[ \t]*$", re.MULTILINE)
+SHELL_SHEBANG_RE = re.compile(r"^#![^\r\n]*(?:[/\s])(?:ba|da|k|z)?sh(?:\s|$)")
 CLOSE_FENCE_RE = re.compile(r"^```[ \t]*(?=\r?$)", re.MULTILINE)
 CONTRACT_ID_RE = re.compile(
     r"^`(?P<id>[a-z0-9]+(?:[._:/-][a-z0-9]+)*)`(?:\s+(?:—|-)\s+.+)?$"
@@ -70,9 +72,42 @@ def _write(path: Path, text: str, newline: str = "\n") -> None:
     path.write_bytes(text.replace("\n", newline).encode("utf-8"))
 
 
+def source_kind(path: Path) -> str | None:
+    """Return the fidelity grammar for a supported source, or None."""
+    if path.suffix == ".rs":
+        return "rust"
+    if path.suffix == ".sh":
+        return "shell"
+    if path.suffix == ".sql":
+        return "sql"
+    if not path.suffix and path.is_file():
+        try:
+            first = path.read_bytes().splitlines()[0].decode("utf-8")
+        except (IndexError, OSError, UnicodeError):
+            return None
+        if SHELL_SHEBANG_RE.match(first):
+            return "shell"
+    return None
+
+
+def companion_for_source(path: Path) -> Path:
+    kind = source_kind(path)
+    if kind in {"rust", "sql"}:
+        return path.with_suffix(".md")
+    if kind == "shell":
+        return Path(str(path) + ".md")
+    raise CompanionError(f"unsupported companion source: {path}")
+
+
 def iter_sources(root: Path) -> list[Path]:
     return sorted(
-        (p for p in root.rglob("*.rs") if not any(part in IGNORED_DIRS for part in p.relative_to(root).parts)),
+        (
+            p
+            for p in root.rglob("*")
+            if p.is_file()
+            and not any(part in IGNORED_DIRS for part in p.relative_to(root).parts)
+            and source_kind(p) is not None
+        ),
         key=lambda p: p.relative_to(root).as_posix(),
     )
 
@@ -332,12 +367,12 @@ def _leading_scaffolding_error(lines: list[str], first_marker: int, source: Path
     )
 
 
-def parse_source(path: Path) -> list[SourceBlock]:
+def _parse_rust_source(path: Path) -> list[SourceBlock]:
     text, _ = _read(path)
     lines = text.splitlines()
     found: list[tuple[int, str, str]] = []
     for index, line in enumerate(lines):
-        match = MARKER_RE.match(line)
+        match = RUST_MARKER_RE.match(line)
         if match:
             found.append((index, match.group("name").strip(), line))
     first_marker = found[0][0] if found else len(lines)
@@ -387,13 +422,78 @@ def parse_source(path: Path) -> list[SourceBlock]:
     return blocks
 
 
-def parse_fences(text: str) -> list[Fence]:
+def _leading_shell_scaffolding_error(
+    lines: list[str], first_marker: int, source: Path
+) -> str | None:
+    """Allow only BOM, a first-line shebang and blanks before the first shell marker."""
+    prefix = lines[:first_marker]
+    for index, line in enumerate(prefix):
+        candidate = line
+        if index == 0:
+            candidate = candidate.lstrip("\ufeff")
+            if candidate.startswith("#!"):
+                continue
+        if candidate.strip():
+            return (
+                f"UNCOVERED code before first '# md:' marker at "
+                f"{source}:{index + 1}: {line.strip()}"
+            )
+    return None
+
+
+def _parse_shell_source(path: Path) -> list[SourceBlock]:
+    text, _ = _read(path)
+    lines = text.splitlines()
+    found: list[tuple[int, str, str]] = []
+    for index, line in enumerate(lines):
+        match = SHELL_MARKER_RE.match(line)
+        if match:
+            found.append((index, match.group("name").strip(), line))
+    first_marker = found[0][0] if found else len(lines)
+    uncovered = _leading_shell_scaffolding_error(lines, first_marker, path)
+    if uncovered:
+        raise CompanionError(uncovered)
+    names = [name for _, name, _ in found]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise CompanionError(f"duplicate source marker(s) in {path}: {', '.join(duplicates)}")
+    blocks = []
+    for ordinal, (index, name, marker_line) in enumerate(found):
+        end = found[ordinal + 1][0] if ordinal + 1 < len(found) else len(lines)
+        while end > index + 1 and not lines[end - 1].strip():
+            end -= 1
+        blocks.append(
+            SourceBlock(
+                name=name,
+                marker_line=marker_line,
+                start_line=index + 1,
+                code="\n".join(lines[index:end]),
+            )
+        )
+    return blocks
+
+
+def parse_source(path: Path) -> list[SourceBlock]:
+    kind = source_kind(path)
+    if kind == "rust":
+        return _parse_rust_source(path)
+    if kind == "shell":
+        return _parse_shell_source(path)
+    raise CompanionError(f"marked-block parsing is unsupported for {path}")
+
+
+def parse_fences(
+    text: str, language: str = "rust", marker_re: re.Pattern[str] | None = RUST_MARKER_RE
+) -> list[Fence]:
     fences: list[Fence] = []
-    for opening in RUST_FENCE_RE.finditer(text):
+    opening_re = re.compile(
+        rf"^```{re.escape(language)}[ \t]*(?P<newline>\r\n|\n)", re.MULTILINE
+    )
+    for opening in opening_re.finditer(text):
         content_start = opening.end()
         closing = CLOSE_FENCE_RE.search(text, content_start)
         if closing is None:
-            raise CompanionError(f"unclosed rust fence at character {opening.start()}")
+            raise CompanionError(f"unclosed {language} fence at character {opening.start()}")
         content_end = closing.start()
         if text[content_start:content_end].endswith("\r\n"):
             content_end -= 2
@@ -401,7 +501,7 @@ def parse_fences(text: str) -> list[Fence]:
             content_end -= 1
         content = text[content_start:content_end].replace("\r\n", "\n")
         first = content.split("\n", 1)[0] if content else ""
-        marker = MARKER_RE.match(first)
+        marker = marker_re.match(first) if marker_re else None
         fences.append(
             Fence(
                 start=opening.start(),
@@ -416,47 +516,90 @@ def parse_fences(text: str) -> list[Fence]:
     return fences
 
 
-def verify_pair(source: Path, companion: Path) -> list[str]:
+def _verify_marked_pair(source: Path, companion: Path, kind: str) -> list[str]:
     errors: list[str] = []
+    language = "rust" if kind == "rust" else "bash"
+    marker_re = RUST_MARKER_RE if kind == "rust" else SHELL_MARKER_RE
+    marker_prefix = "// md:" if kind == "rust" else "# md:"
     try:
         blocks = parse_source(source)
     except CompanionError as exc:
         return [str(exc)]
     text = companion.read_bytes().decode("utf-8")
     try:
-        fences = parse_fences(text)
+        fences = parse_fences(text, language, marker_re)
     except CompanionError as exc:
         return [f"{companion}: {exc}"]
+    if kind == "shell":
+        # Shell companions may contain illustrative bash snippets. Only a
+        # fence whose first line is a marker participates in fidelity checks.
+        fences = [fence for fence in fences if fence.marker_name is not None]
     by_name = {block.name: block for block in blocks}
     fence_names = [f.marker_name for f in fences if f.marker_name]
     duplicate_fences = sorted({name for name in fence_names if fence_names.count(name) > 1})
     for name in duplicate_fences:
-        errors.append(f"DUPLICATE fence for '// md:{name}' in {companion}")
+        errors.append(f"DUPLICATE fence for '{marker_prefix}{name}' in {companion}")
     for fence in fences:
         if fence.marker_name is None:
-            errors.append(f"ORPHAN rust fence without a leading '// md:' marker in {companion}")
+            errors.append(
+                f"ORPHAN {language} fence without a leading '{marker_prefix}' marker in {companion}"
+            )
             continue
         block = by_name.get(fence.marker_name)
         if block is None:
-            errors.append(f"ORPHAN fence '// md:{fence.marker_name}' has no source block in {source}")
+            errors.append(
+                f"ORPHAN fence '{marker_prefix}{fence.marker_name}' has no source block in {source}"
+            )
         elif block.is_container:
-            errors.append(f"CONTAINER '// md:{fence.marker_name}' must not have a rust fence in {companion}")
+            errors.append(
+                f"CONTAINER '{marker_prefix}{fence.marker_name}' must not have a {language} fence in {companion}"
+            )
         elif fence.content != block.code:
             errors.append(
-                f"STALE/TRUNCATED fence '// md:{fence.marker_name}' in {companion}; "
+                f"STALE/TRUNCATED fence '{marker_prefix}{fence.marker_name}' in {companion}; "
                 f"source block starts at {source}:{block.start_line}"
             )
     for block in blocks:
         count = fence_names.count(block.name)
         if not block.is_container and count == 0:
-            errors.append(f"MISSING fence for '// md:{block.name}' in {companion}")
-        if block.is_container and count == 0 and f"// md:{block.name}" not in text:
-            errors.append(f"MISSING container section for '// md:{block.name}' in {companion}")
+            errors.append(f"MISSING fence for '{marker_prefix}{block.name}' in {companion}")
+        if block.is_container and count == 0 and f"{marker_prefix}{block.name}" not in text:
+            errors.append(f"MISSING container section for '{marker_prefix}{block.name}' in {companion}")
     expected_order = [block.name for block in blocks if not block.is_container]
     actual_order = [name for name in fence_names if name in by_name and not by_name[name].is_container]
     if actual_order != expected_order and not duplicate_fences:
-        errors.append(f"REORDERED rust fences in {companion}; fences must follow source leaf order")
+        errors.append(
+            f"REORDERED {language} fences in {companion}; fences must follow source leaf order"
+        )
     return errors
+
+
+def _verify_sql_pair(source: Path, companion: Path) -> list[str]:
+    text, _ = _read(source)
+    marker = SQL_MARKER_RE.search(text)
+    if marker:
+        line = text[: marker.start()].count("\n") + 1
+        return [f"FORBIDDEN '-- md:' marker in immutable SQL migration {source}:{line}"]
+    try:
+        fences = parse_fences(companion.read_bytes().decode("utf-8"), "sql", None)
+    except CompanionError as exc:
+        return [f"{companion}: {exc}"]
+    if not fences:
+        return [f"MISSING single complete sql fence in {companion} for {source}"]
+    if len(fences) != 1:
+        return [f"DUPLICATE sql fences in {companion}; exactly one complete-file fence is required"]
+    if fences[0].content != text:
+        return [f"STALE/TRUNCATED complete sql fence in {companion}; expected verbatim {source}"]
+    return []
+
+
+def verify_pair(source: Path, companion: Path) -> list[str]:
+    kind = source_kind(source)
+    if kind in {"rust", "shell"}:
+        return _verify_marked_pair(source, companion, kind)
+    if kind == "sql":
+        return _verify_sql_pair(source, companion)
+    return [f"unsupported companion source: {source}"]
 
 
 def _resolve_sources(root: Path, requested: Sequence[str]) -> list[Path]:
@@ -465,14 +608,30 @@ def _resolve_sources(root: Path, requested: Sequence[str]) -> list[Path]:
     sources: set[Path] = set()
     for raw in requested:
         path = (root / raw).resolve() if not Path(raw).is_absolute() else Path(raw).resolve()
-        if path.suffix == ".md" and path.with_suffix(".rs").is_file():
-            path = path.with_suffix(".rs")
+        if path.suffix == ".md" and path.is_file():
+            candidates = [Path(str(path)[:-3]), path.with_suffix(".rs"), path.with_suffix(".sql")]
+            path = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.is_file()
+                    and source_kind(candidate) is not None
+                    and companion_for_source(candidate) == path
+                ),
+                path,
+            )
         if path.is_dir():
-            sources.update(p for p in path.rglob("*.rs") if not any(part in IGNORED_DIRS for part in p.parts))
-        elif path.suffix == ".rs" and path.is_file():
+            sources.update(
+                p
+                for p in path.rglob("*")
+                if p.is_file()
+                and not any(part in IGNORED_DIRS for part in p.parts)
+                and source_kind(p) is not None
+            )
+        elif path.is_file() and source_kind(path) is not None:
             sources.add(path)
         else:
-            raise CompanionError(f"not a Rust source, companion, or directory: {raw}")
+            raise CompanionError(f"not a supported source, companion, or directory: {raw}")
     return sorted(sources, key=lambda p: p.relative_to(root).as_posix())
 
 
@@ -481,25 +640,45 @@ def sync(root: Path, requested: Sequence[str], check: bool) -> tuple[int, int, l
     checked = 0
     errors: list[str] = []
     for source in _resolve_sources(root, requested):
-        companion = source.with_suffix(".md")
+        companion = companion_for_source(source)
         if not companion.is_file():
             errors.append(f"MISSING companion doc: {companion}")
             continue
         checked += 1
+        kind = source_kind(source)
+        language = "rust" if kind == "rust" else "bash" if kind == "shell" else "sql"
+        marker_re = RUST_MARKER_RE if kind == "rust" else SHELL_MARKER_RE if kind == "shell" else None
         try:
-            blocks = {block.name: block for block in parse_source(source)}
+            blocks = (
+                {block.name: block for block in parse_source(source)}
+                if kind in {"rust", "shell"}
+                else {}
+            )
+            text = companion.read_bytes().decode("utf-8")
+            fences = parse_fences(text, language, marker_re)
         except CompanionError as exc:
             errors.append(str(exc))
             continue
-        text = companion.read_bytes().decode("utf-8")
-        fences = parse_fences(text)
+        if kind == "shell":
+            fences = [fence for fence in fences if fence.marker_name is not None]
         replacements: list[tuple[int, int, str]] = []
-        for fence in fences:
-            if fence.marker_name and fence.marker_name in blocks and blocks[fence.marker_name].code is not None:
-                expected = blocks[fence.marker_name].code
-                if fence.content != expected:
-                    replacement = (expected or "").replace("\n", fence.newline)
-                    replacements.append((fence.content_start, fence.content_end, replacement))
+        if kind == "sql":
+            expected, _ = _read(source)
+            if len(fences) == 1 and fences[0].content != expected:
+                replacements.append(
+                    (
+                        fences[0].content_start,
+                        fences[0].content_end,
+                        expected.replace("\n", fences[0].newline),
+                    )
+                )
+        else:
+            for fence in fences:
+                if fence.marker_name and fence.marker_name in blocks and blocks[fence.marker_name].code is not None:
+                    expected = blocks[fence.marker_name].code
+                    if fence.content != expected:
+                        replacement = (expected or "").replace("\n", fence.newline)
+                        replacements.append((fence.content_start, fence.content_end, replacement))
         pair_errors = verify_pair(source, companion)
         non_stale = [e for e in pair_errors if not e.startswith("STALE/TRUNCATED")]
         if non_stale:
@@ -626,13 +805,13 @@ def _package_test_command(source: Path, root: Path) -> str:
 def build_manifest(root: Path) -> dict[str, object]:
     draft: list[dict[str, object]] = []
     for source in iter_sources(root):
-        companion = source.with_suffix(".md")
+        companion = companion_for_source(source)
         if not companion.is_file():
             continue
         source_rel = source.relative_to(root).as_posix()
         companion_rel = companion.relative_to(root).as_posix()
         text, _ = _read(companion)
-        blocks = parse_source(source)
+        blocks = parse_source(source) if source_kind(source) in {"rust", "shell"} else []
         deps_section = _section(text, "Direct dependencies")
         dependents_section = _section(text, "Direct dependents")
         dependencies = []
@@ -837,7 +1016,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--repo-root", help="repository root (defaults to the script's repository)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sync_parser = sub.add_parser("sync", help="verify or synchronize Rust fences")
+    sync_parser = sub.add_parser("sync", help="verify or synchronize supported source fences")
     sync_parser.add_argument("--check", action="store_true", help="report drift without writing")
     sync_parser.add_argument("paths", nargs="*")
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# md:check-docs
 # Contractual-docs check (CI-enforced). For every .rs file:
 #   1. a companion .md exists (same path, .rs -> .md)
 #   2. the companion contains a '## Graph context' section
@@ -17,7 +18,10 @@
 #      line-ending normalization; stale, truncated, orphan and duplicate fences fail,
 #      and so does unmarked code between a container marker and its first child
 #      or before the first marker; write-mode sync preserves bytes outside valid fences
-#   9. the generated context manifest is current.
+#   9. supported shell sources use exact '# md:'/bash pairs, every SQL migration has
+#      one complete verbatim sql fence, unsupported formats are ignored, and sync never
+#      writes source SQL or bytes outside valid companion fences.
+#  10. the generated context manifest is current.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -84,21 +88,21 @@ done < <(find . \
   -path ./.git -prune -o \
   -name '*.rs' -print0)
 
-# 8. RULE 7 is mechanical. The synchronizer's check mode performs no writes and
-#    uses only Python's standard library; all existing structural checks above
-#    remain independent and intentionally redundant.
+# 8+9. Fidelity is mechanical for Rust, supported shell sources and SQL migrations.
+#      The synchronizer's check mode performs no writes and uses only Python's standard
+#      library; all existing Rust structural checks above remain intentionally redundant.
 if ! ./scripts/sync-companion-code --check; then
   fail=1
 fi
 
-# 9. Context provenance and pack routing must describe the current companions.
+# 10. Context provenance and pack routing must describe the current companions.
 if ! ./scripts/context-pack manifest --check; then
   fail=1
 fi
 
 if [[ $fail -ne 0 ]]; then
   echo
-  echo "Every .rs needs a companion .md in the block-complete format:"
+  echo "Every supported source needs a mechanically faithful companion:"
   echo "docs/templates/source-module.md (v2.5). See its 9 HARD RULES."
   exit 1
 fi
