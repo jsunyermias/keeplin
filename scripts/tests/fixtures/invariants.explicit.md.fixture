@@ -1,0 +1,10 @@
+**Invariants**
+
+- (EXTRACTED; source contract) markers remain ordered
+- Authored ordering is stable across runs.
+
+**Dependencies**
+
+- `parse` — validates the input; expects: unknown input returns an error instead of a partial result.
+
+The prose below is descriptive and must not become an invariant.

@@ -20,18 +20,42 @@ explicit leaf. Only `impl`, `mod` and `trait` are containers (RULE 6); a marker 
 sub-blocks hang off a type definition is reported as such instead of as `UNCOVERED`,
 because the fix is to make the type a leaf block (RULE 5), not to mark its declaration.
 
-Line endings are normalized to LF. No other whitespace is normalized. This catches stale,
-truncated, altered or reordered blocks, duplicate source markers/fences, orphan fences and
-missing leaf fences. Synchronization replaces only a valid existing fence body and refuses
-to paper over structural errors.
+Before the first marker, the only permitted scaffolding is an optional UTF-8 BOM, an
+optional first-line shebang, blank lines and crate-level inner attributes (`#![...]`).
+An outer attribute, import, item or other Rust code there is reported as `UNCOVERED`.
+
+Line endings are normalized to LF only for comparison. No other whitespace is normalized.
+This catches stale, truncated, altered or reordered blocks, duplicate source
+markers/fences, orphan fences and missing leaf fences. Synchronization parses raw text and
+replaces only the byte range occupied by a valid fence body, using that fence's own EOL;
+all prose, delimiters, mixed EOL and bytes outside the body remain exactly unchanged.
+Structural errors prevent every write.
 
 ## Context metadata
 
-The generated manifest records the paired paths and markers as `EXTRACTED`. Purpose,
-invariants, tests, risk, indispensable dependency decisions and cross-repo contracts are
-labelled `INFERRED`, because they come from authored prose or deterministic heuristics.
-Authored dependency, dependent and invariant bullets prefixed with `(EXTRACTED...)`
-retain their explicit origin, including `:` or `;` detail suffixes.
+Manifest schema 2 records paired paths and markers as `EXTRACTED`. Purpose, tests, risk
+and indispensable dependency decisions are `INFERRED`. Invariants come only from explicit
+`**Invariants**` bullets and `expects:` clauses in `**Dependencies**`: bullets prefixed
+with `(EXTRACTED...)` retain `EXTRACTED`, while authored bullets and dependency
+expectations are `INFERRED` and carry a `basis` that distinguishes the two sources.
+Ambiguous prose is never promoted to an invariant.
+
+Cross-repo contracts come only from `**Cross-repo contracts**` bullets whose first token
+is a stable lowercase backticked identifier such as `collab-wire`. The manifest stores
+sorted, unique identifiers, not repository-specific prose. Incidental mentions of a repo,
+client or cross-repo relationship therefore add no entry, and companion files on both
+sides can emit the same contract value.
+
+`docs/cross-repo-contracts.txt` pins the identifiers both repositories must agree on and is
+byte-identical in each. Generating or checking the manifest fails when the declared set
+drifts from it in either direction: `UNPINNED` for an identifier a companion declares
+without listing, `MISSING` for one listed with no companion declaring it, and a hard error
+when the registry file itself is absent. Nothing else can catch this, because each
+repository builds its manifest alone and never sees the other side; without the registry a
+renamed heading or a one-sided edit would empty the field silently.
+
+Authored dependency and dependent bullets prefixed with `(EXTRACTED...)` retain their
+explicit origin, including `:` or `;` detail suffixes.
 Risk is classified as normal, persistence, protocol, security or migration with the matched
 terms retained as its basis.
 
@@ -49,8 +73,11 @@ derived entirely from repository files.
 `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` covers functions, attributes,
 leaf impls, containers, test modules, one-line drift, stale/truncated/orphan/duplicate or
 reordered fences, repeatable read-only checks, sync prose preservation and byte-for-byte
-pack reproducibility. It also covers uncovered container preambles, type definitions used
-as containers, and detailed `EXTRACTED` origin annotations.
+pack reproducibility. It also covers uncovered container and file preambles, allowed
+initial scaffolding, mixed-EOL byte preservation and refusal paths, explicit symmetric
+cross-repo identifiers, incidental-prose rejection, extracted/authored/expectation
+invariants, ambiguous-prose rejection, type definitions used as containers, and detailed
+`EXTRACTED` origin annotations.
 
 ## Related files
 

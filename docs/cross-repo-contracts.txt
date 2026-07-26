@@ -1,0 +1,18 @@
+# Cross-repository contract registry.
+#
+# One stable identifier per line. This file is byte-identical in jsunyermias/keeplin and
+# jsunyermias/keeplin-srv: it is the only place where the two sides can be compared, because
+# each repository builds its context manifest alone and cannot see the other.
+#
+# `scripts/context-pack manifest --check` fails when the identifiers declared by companion
+# `**Cross-repo contracts**` sections drift from this list, in either direction. Adding,
+# renaming or retiring a contract therefore means editing this file in both repositories,
+# which is exactly the coordination the identifier exists to guarantee.
+#
+# Blank lines and `#` comments are ignored.
+
+collab-wire
+format-limits
+note-log-resolution
+protocol-version
+sync-change-envelope

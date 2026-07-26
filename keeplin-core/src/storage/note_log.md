@@ -1094,6 +1094,10 @@ this companion.
 - `keeplin-core/tests/fs_backend.rs` — FsBackend integration tests (EXTRACTED: calls×1; e.g. `delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_create()`)
 - `keeplin-core/src/storage/db.rs`, `keeplin-core/src/collab/*`, keeplin-srv — via `resolve`/`VersionVector` (INFERRED: fully-qualified paths the AST pass does not link)
 
+**Cross-repo contracts**
+
+- `note-log-resolution` — canonical version-vector merge and winner rules exercised by the server compatibility suite.
+
 ## Coverage checklist
 
 | # | Block (source order) | Marker in code |

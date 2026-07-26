@@ -420,6 +420,10 @@ this companion.
 - `keeplin-core/src/collab/mod.rs` — `CollabBackend::start` calls the same pair for the collab session handshake (INFERRED)
 - `keeplin-core/tests/version_handshake.rs` — imports `PROTOCOL_VERSION` to drive the three fake-server behaviours (INFERRED)
 
+**Cross-repo contracts**
+
+- `protocol-version` — canonical compatibility version and exact-match negotiation rule mirrored by keeplin-srv.
+
 ## Coverage checklist
 
 | # | Block (source order) | Marker in code |

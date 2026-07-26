@@ -16,8 +16,11 @@ from typing import Sequence
 
 
 MARKER_RE = re.compile(r"^(?P<indent>[ \t]*)// md:(?P<name>.+?)[ \t]*$")
-RUST_FENCE_RE = re.compile(r"^```rust[ \t]*$", re.MULTILINE)
-CLOSE_FENCE_RE = re.compile(r"^```[ \t]*$", re.MULTILINE)
+RUST_FENCE_RE = re.compile(r"^```rust[ \t]*(?P<newline>\r\n|\n)", re.MULTILINE)
+CLOSE_FENCE_RE = re.compile(r"^```[ \t]*(?=\r?$)", re.MULTILINE)
+CONTRACT_ID_RE = re.compile(
+    r"^`(?P<id>[a-z0-9]+(?:[._:/-][a-z0-9]+)*)`(?:\s+(?:—|-)\s+.+)?$"
+)
 RISK_RULES = (
     ("security", ("auth", "password", "secret", "jwt", "encrypt", "cipher", "crypto", "permission")),
     ("migration", ("migration", "schema_version", "format_version", "migrate")),
@@ -26,7 +29,8 @@ RISK_RULES = (
 )
 CONTRACT_TERMS = ("contract", "must", "expects", "wire", "protocol", "format", "compatib", "security")
 IGNORED_DIRS = {".git", "target", "graphify-out"}
-SCHEMA_VERSION = 1
+CONTRACT_REGISTRY = "docs/cross-repo-contracts.txt"
+SCHEMA_VERSION = 2
 
 
 class CompanionError(Exception):
@@ -53,6 +57,7 @@ class Fence:
     end: int
     content: str
     marker_name: str | None
+    newline: str
 
 
 def _read(path: Path) -> tuple[str, str]:
@@ -282,6 +287,51 @@ def _container_preamble_error(
         )
 
 
+def _leading_scaffolding_error(lines: list[str], first_marker: int, source: Path) -> str | None:
+    """Allow only non-item crate scaffolding before the first marker."""
+    prefix = "\n".join(lines[:first_marker])
+    masked = _mask_rust(prefix)
+    length = len(masked)
+    position = 0
+
+    if masked.startswith("\ufeff"):
+        position = 1
+
+    if masked.startswith("#!", position) and not masked.startswith("#![", position):
+        newline = masked.find("\n", position)
+        position = length if newline < 0 else newline + 1
+
+    def skip_space(cursor: int) -> int:
+        while cursor < length and masked[cursor].isspace():
+            cursor += 1
+        return cursor
+
+    position = skip_space(position)
+    while masked.startswith("#![", position):
+        depth = 0
+        end = None
+        for cursor in range(position + 2, length):
+            if masked[cursor] == "[":
+                depth += 1
+            elif masked[cursor] == "]":
+                depth -= 1
+                if depth == 0:
+                    end = cursor + 1
+                    break
+        if end is None:
+            break
+        position = skip_space(end)
+
+    if position >= length:
+        return None
+    line_number = masked[:position].count("\n") + 1
+    snippet = lines[line_number - 1].strip()
+    return (
+        f"UNCOVERED code before first '// md:' marker at "
+        f"{source}:{line_number}: {snippet}"
+    )
+
+
 def parse_source(path: Path) -> list[SourceBlock]:
     text, _ = _read(path)
     lines = text.splitlines()
@@ -290,6 +340,10 @@ def parse_source(path: Path) -> list[SourceBlock]:
         match = MARKER_RE.match(line)
         if match:
             found.append((index, match.group("name").strip(), line))
+    first_marker = found[0][0] if found else len(lines)
+    uncovered = _leading_scaffolding_error(lines, first_marker, path)
+    if uncovered:
+        raise CompanionError(uncovered)
     names = [name for _, name, _ in found]
     duplicates = sorted({name for name in names if names.count(name) > 1})
     if duplicates:
@@ -336,14 +390,16 @@ def parse_source(path: Path) -> list[SourceBlock]:
 def parse_fences(text: str) -> list[Fence]:
     fences: list[Fence] = []
     for opening in RUST_FENCE_RE.finditer(text):
-        content_start = opening.end() + (1 if text[opening.end() :].startswith("\n") else 0)
+        content_start = opening.end()
         closing = CLOSE_FENCE_RE.search(text, content_start)
         if closing is None:
             raise CompanionError(f"unclosed rust fence at character {opening.start()}")
         content_end = closing.start()
-        if content_end > content_start and text[content_end - 1] == "\n":
+        if text[content_start:content_end].endswith("\r\n"):
+            content_end -= 2
+        elif content_end > content_start and text[content_end - 1] == "\n":
             content_end -= 1
-        content = text[content_start:content_end]
+        content = text[content_start:content_end].replace("\r\n", "\n")
         first = content.split("\n", 1)[0] if content else ""
         marker = MARKER_RE.match(first)
         fences.append(
@@ -354,6 +410,7 @@ def parse_fences(text: str) -> list[Fence]:
                 end=closing.end(),
                 content=content,
                 marker_name=marker.group("name").strip() if marker else None,
+                newline=opening.group("newline"),
             )
         )
     return fences
@@ -365,7 +422,7 @@ def verify_pair(source: Path, companion: Path) -> list[str]:
         blocks = parse_source(source)
     except CompanionError as exc:
         return [str(exc)]
-    text, _ = _read(companion)
+    text = companion.read_bytes().decode("utf-8")
     try:
         fences = parse_fences(text)
     except CompanionError as exc:
@@ -434,14 +491,15 @@ def sync(root: Path, requested: Sequence[str], check: bool) -> tuple[int, int, l
         except CompanionError as exc:
             errors.append(str(exc))
             continue
-        text, newline = _read(companion)
+        text = companion.read_bytes().decode("utf-8")
         fences = parse_fences(text)
         replacements: list[tuple[int, int, str]] = []
         for fence in fences:
             if fence.marker_name and fence.marker_name in blocks and blocks[fence.marker_name].code is not None:
                 expected = blocks[fence.marker_name].code
                 if fence.content != expected:
-                    replacements.append((fence.content_start, fence.content_end, expected or ""))
+                    replacement = (expected or "").replace("\n", fence.newline)
+                    replacements.append((fence.content_start, fence.content_end, replacement))
         pair_errors = verify_pair(source, companion)
         non_stale = [e for e in pair_errors if not e.startswith("STALE/TRUNCATED")]
         if non_stale:
@@ -454,26 +512,73 @@ def sync(root: Path, requested: Sequence[str], check: bool) -> tuple[int, int, l
             else:
                 for start, end, replacement in reversed(replacements):
                     text = text[:start] + replacement + text[end:]
-                _write(companion, text, newline)
+                companion.write_bytes(text.encode("utf-8"))
     return checked, changed, errors
 
 
-def _section(text: str, heading: str) -> str:
+def _sections(text: str, heading: str) -> list[str]:
     pattern = re.compile(rf"^\*\*{re.escape(heading)}\*\*.*?$", re.MULTILINE)
-    match = pattern.search(text)
-    if not match:
-        return ""
-    rest = text[match.end() :]
-    boundary = re.search(r"^(?:\*\*|#{1,6}\s|---\s*$)", rest, re.MULTILINE)
-    return rest[: boundary.start()] if boundary else rest
+    sections = []
+    for match in pattern.finditer(text):
+        rest = text[match.end() :]
+        boundary = re.search(r"^(?:\*\*|#{1,6}\s|---\s*$)", rest, re.MULTILINE)
+        sections.append(rest[: boundary.start()] if boundary else rest)
+    return sections
+
+
+def _section(text: str, heading: str) -> str:
+    sections = _sections(text, heading)
+    return sections[0] if sections else ""
 
 
 def _bullets(section: str) -> list[str]:
-    values = []
+    values: list[str] = []
+    current: list[str] = []
     for line in section.splitlines():
         if line.startswith("- "):
-            values.append(line[2:].strip())
+            if current:
+                values.append(re.sub(r"\s+", " ", " ".join(current)).strip())
+            current = [line[2:].strip()]
+        elif current and line.strip():
+            current.append(line.strip())
+        elif current:
+            values.append(re.sub(r"\s+", " ", " ".join(current)).strip())
+            current = []
+    if current:
+        values.append(re.sub(r"\s+", " ", " ".join(current)).strip())
     return values
+
+
+def _cross_repo_contracts(text: str) -> list[str]:
+    contracts = set()
+    for section in _sections(text, "Cross-repo contracts"):
+        for bullet in _bullets(section):
+            match = CONTRACT_ID_RE.fullmatch(bullet)
+            if match:
+                contracts.add(match.group("id"))
+    return sorted(contracts)
+
+
+def _manifest_invariants(text: str) -> list[dict[str, str]]:
+    invariants: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def append(origin: str, value: str, basis: str) -> None:
+        key = (origin, value)
+        if value and key not in seen:
+            seen.add(key)
+            invariants.append({"origin": origin, "value": value, "basis": basis})
+
+    for section in _sections(text, "Invariants"):
+        for bullet in _bullets(section):
+            origin = "EXTRACTED" if "(EXTRACTED" in bullet else "INFERRED"
+            append(origin, bullet, "authored-invariant")
+    for section in _sections(text, "Dependencies"):
+        for bullet in _bullets(section):
+            expectation = re.search(r"(?:^|;\s*)expects:\s*(.+)$", bullet, re.IGNORECASE)
+            if expectation:
+                append("INFERRED", expectation.group(1).strip(), "dependency-expectation")
+    return invariants
 
 
 def _path_from_bullet(value: str, source: Path, root: Path) -> str | None:
@@ -551,27 +656,8 @@ def build_manifest(root: Path) -> dict[str, object]:
                         "origin": "EXTRACTED" if "(EXTRACTED" in bullet else "INFERRED",
                     }
                 )
-        invariants = [
-            {
-                "origin": "EXTRACTED" if "(EXTRACTED" in bullet else "INFERRED",
-                "value": bullet,
-            }
-            for bullet in _bullets(_section(text, "Invariants"))
-        ]
-        contract_lines = []
-        prose = re.sub(r"^```rust\s*$.*?^```\s*$", "", text, flags=re.MULTILINE | re.DOTALL)
-        for line in prose.splitlines():
-            lower = line.lower()
-            explicit_cross_repo = (
-                "keeplin-srv" in lower
-                or "cross-repo" in lower
-                or "keeplin client" in lower
-                or "desktop client" in lower
-            )
-            if explicit_cross_repo:
-                cleaned = re.sub(r"\s+", " ", line.strip(" -"))
-                if cleaned and cleaned not in contract_lines:
-                    contract_lines.append(cleaned)
+        invariants = _manifest_invariants(text)
+        contracts = _cross_repo_contracts(text)
         title = next((line[2:].strip() for line in text.splitlines() if line.startswith("# ")), companion_rel)
         draft.append(
             {
@@ -580,7 +666,7 @@ def build_manifest(root: Path) -> dict[str, object]:
                 "purpose": {"origin": "EXTRACTED", "value": title},
                 "markers": {"origin": "EXTRACTED", "value": [block.name for block in blocks]},
                 "invariants": {"origin": "INFERRED", "value": invariants},
-                "cross_repo_contracts": {"origin": "INFERRED", "value": contract_lines[:8]},
+                "cross_repo_contracts": {"origin": "INFERRED", "value": contracts},
                 "direct_dependencies": dependencies,
                 "direct_dependents": dependents,
                 "tests": {"origin": "INFERRED", "value": [_package_test_command(source, root)]},
@@ -602,11 +688,60 @@ def build_manifest(root: Path) -> dict[str, object]:
 
 
 def manifest_text(root: Path) -> str:
-    return json.dumps(build_manifest(root), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    return _manifest_text(build_manifest(root))
+
+
+def _manifest_text(manifest: dict[str, object]) -> str:
+    return json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def _pinned_contracts(root: Path) -> tuple[list[str] | None, str | None]:
+    """Read the checked-in cross-repo contract registry shared by both repositories."""
+    registry = root / CONTRACT_REGISTRY
+    if not registry.is_file():
+        return None, f"MISSING cross-repo contract registry: {CONTRACT_REGISTRY}"
+    text, _ = _read(registry)
+    pinned = []
+    for line in text.splitlines():
+        entry = line.split("#", 1)[0].strip()
+        if entry:
+            pinned.append(entry)
+    return sorted(set(pinned)), None
+
+
+def verify_contract_registry(root: Path, manifest: dict[str, object]) -> list[str]:
+    """Fail when the emitted contract identifiers drift from the pinned registry.
+
+    Each repository builds its manifest alone, so nothing else can notice one side
+    adding, renaming or silently losing a shared identifier.
+    """
+    pinned, error = _pinned_contracts(root)
+    if pinned is None:
+        return [error or ""]
+    emitted = set()
+    for entry in manifest["entries"]:  # type: ignore[index]
+        field = entry.get("cross_repo_contracts") or {}  # type: ignore[union-attr]
+        emitted.update(field.get("value") or [])
+    errors = []
+    for missing in sorted(set(pinned) - emitted):
+        errors.append(
+            f"MISSING cross-repo contract '{missing}': pinned in {CONTRACT_REGISTRY} but no "
+            f"companion declares it. Restore the declaration or retire it in both repositories."
+        )
+    for extra in sorted(emitted - set(pinned)):
+        errors.append(
+            f"UNPINNED cross-repo contract '{extra}': declared in a companion but absent from "
+            f"{CONTRACT_REGISTRY}. Add it there and in the companion repository."
+        )
+    return errors
 
 
 def write_or_check_manifest(root: Path, output: Path, check: bool) -> list[str]:
-    expected = manifest_text(root)
+    manifest = build_manifest(root)
+    errors = verify_contract_registry(root, manifest)
+    if errors:
+        return errors
+    expected = _manifest_text(manifest)
     if check:
         if not output.is_file():
             return [f"MISSING generated context manifest: {output}"]

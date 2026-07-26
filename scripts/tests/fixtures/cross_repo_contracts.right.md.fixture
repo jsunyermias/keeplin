@@ -1,0 +1,6 @@
+Repository-local wording and order may differ.
+
+**Cross-repo contracts**
+
+- `collab-wire` — The server consumes the client message types.
+- `format-limits` — The server imports the canonical limits.

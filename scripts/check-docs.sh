@@ -16,6 +16,7 @@
 #   8. every Rust fence maps 1:1 to a source leaf and is identical after LF-only
 #      line-ending normalization; stale, truncated, orphan and duplicate fences fail,
 #      and so does unmarked code between a container marker and its first child
+#      or before the first marker; write-mode sync preserves bytes outside valid fences
 #   9. the generated context manifest is current.
 set -uo pipefail
 cd "$(dirname "$0")/.."
