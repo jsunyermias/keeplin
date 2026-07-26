@@ -60,11 +60,20 @@ the sole source.
 - [ ] Blocking findings are resolved and conversations are closed.
 - Review evidence/link:
 
+Independent review is not the implementer's to skip. If it did not happen, this PR merges
+only on an explicit maintainer waiver for this PR, and merges as review debt.
+
+- Maintainer waiver (leave empty unless the maintainer set the review aside here):
+  - Where the maintainer said so:
+  - What goes unreviewed:
+  - Entry in `docs/review-debt.md`:
+  - Follow-up issue or sweep that will carry the deferred review:
+
 ## Merge readiness
 
 - [ ] PR is out of draft only after implementation and self-review are complete.
 - [ ] Required CI is green on the merge candidate.
-- [ ] Independent review is recorded.
+- [ ] Independent review is recorded, or a maintainer waiver and its review-debt entry are.
 - [ ] Companion PR status is consistent with this PR.
 
 The maintainer performs the merge.

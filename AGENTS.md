@@ -197,6 +197,30 @@ advisory: Claude documents and prepares issues, Kimi implements with
 not the only reviewer. Independent review starts from the issue objective and the diff,
 not from the author's defense as its sole source.
 
+### Independent review is not an agent's to waive
+
+The hard rule binds every agent without exception. An agent does not waive independent
+review, does not treat its own re-reading of the diff as satisfying it, and does not tick the
+review boxes of `.github/pull_request_template.md` on that basis. Merging is the maintainer's
+act; an agent that performs one on the maintainer's instruction has executed a decision, not
+supplied the missing review.
+
+Only the maintainer sets the requirement aside, explicitly and for one named pull request.
+Silence, ambiguity, a green CI run, a deadline and a bare "merge it" are not waivers to
+infer — and an instruction that would merge an unreviewed change is acted on only after
+saying so plainly.
+
+Before acting on a waiver, say once, in a sentence or two, what goes unchecked: which diff,
+which family implemented it, and the class of defect an independent reviewer would have gone
+looking for. Name that risk concretely rather than restating the rule. Then comply without
+repeating the objection — the decision belongs to the maintainer and has been made.
+
+A waived change merges as **review debt**, not as a reviewed change. In the same session it
+merges, record it in [`docs/review-debt.md`](docs/review-debt.md), naming the follow-up issue
+or the sweep that will carry the deferred review, so it is scheduled like any other work
+instead of remembered informally. The entry clears only when an independent reviewer has
+actually examined the merged change. Until then the change is merged, not done.
+
 ## ADR requirements
 
 Security, persistence, migration, synchronization, protocol and other high-risk
@@ -221,7 +245,8 @@ decision.
 A change is done only when its issue criteria are met; applicable code, companions, graph
 and project docs agree; focused and repository checks pass or explicit blockers are
 recorded; cross-repo surfaces and tests are coordinated; and an independent reviewer has
-examined the objective and diff.
+examined the objective and diff. A maintainer waiver defers that examination and never
+removes it: an open entry in `docs/review-debt.md` is an open condition here.
 
 Do not call a change or deployment production-ready based only on happy-path tests. Claims
 must cover failure behavior, security boundaries, persistence and recovery, compatibility,
