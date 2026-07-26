@@ -1,0 +1,11 @@
+# Shell fixture
+
+```bash
+# md:setup
+set -euo pipefail
+```
+
+```bash
+# md:run
+echo "ready"
+```

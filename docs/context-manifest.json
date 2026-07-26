@@ -4756,6 +4756,226 @@
           "cargo test -p keeplin-daemon"
         ]
       }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "scripts/build.sh.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "build"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`scripts/build.sh` — cross-compilation script"
+      },
+      "risk": {
+        "basis": [
+          "no elevated-risk term matched"
+        ],
+        "origin": "INFERRED",
+        "value": "normal"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "scripts/build.sh"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test --workspace"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "scripts/check-docs.sh.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "check-docs"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`scripts/check-docs.sh` — contractual-docs CI check"
+      },
+      "risk": {
+        "basis": [
+          "no elevated-risk term matched"
+        ],
+        "origin": "INFERRED",
+        "value": "normal"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "scripts/check-docs.sh"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test --workspace"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "scripts/check-graph.sh.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "check-graph"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`scripts/check-graph.sh` — build and validate the knowledge-graph artifact"
+      },
+      "risk": {
+        "basis": [
+          "no elevated-risk term matched"
+        ],
+        "origin": "INFERRED",
+        "value": "normal"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "scripts/check-graph.sh"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test --workspace"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "scripts/context-pack.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "context-pack"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`scripts/context-pack` — reproducible companion context packs"
+      },
+      "risk": {
+        "basis": [
+          "no elevated-risk term matched"
+        ],
+        "origin": "INFERRED",
+        "value": "normal"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "scripts/context-pack"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test --workspace"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "scripts/sync-companion-code.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "sync-companion-code"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`scripts/sync-companion-code` — synchronize mechanically covered source blocks"
+      },
+      "risk": {
+        "basis": [
+          "sync"
+        ],
+        "origin": "INFERRED",
+        "value": "protocol"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "scripts/sync-companion-code"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test --workspace"
+        ]
+      }
     }
   ],
   "generator": "scripts/companion_tool.py",

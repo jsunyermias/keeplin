@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# md:setup
+set -euo pipefail
+
+# md:run
+echo "ready"

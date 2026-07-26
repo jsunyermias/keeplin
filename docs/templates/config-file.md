@@ -5,6 +5,26 @@
 -->
 # `{{path/to/file}}` — {{what it configures / generates}}
 
+## Mechanical fidelity for supported non-Rust files
+
+Use this section only for formats currently enforced by `scripts/companion_tool.py`:
+
+- Shell (`*.sh`, plus extensionless files with a shell shebang) uses unique
+  `# md:<name>` source markers. A block runs from its marker to the next marker or EOF.
+  Its companion has exactly one `bash` fence whose first content line is the same marker.
+  Only marker-led `bash` fences are fidelity blocks; ordinary illustrative `bash` fences
+  remain prose. Before the first marker, only an optional UTF-8 BOM, a first-line shebang
+  and blank lines are allowed.
+- SQL migrations never receive markers and must never be edited to satisfy documentation:
+  `sqlx::migrate!` validates applied-migration checksums. Each `*.sql` must have a sibling
+  companion named by replacing `.sql` with `.md`, containing exactly one `sql` fence with
+  the complete file verbatim. Comparison normalizes line endings to LF and nothing else;
+  synchronization may rewrite only that companion fence and never the migration.
+
+Unsupported formats are ignored rather than guessed. Python and Proto are tracked for a
+later bounded migration; TOML, YAML, dotenv files and Dockerfiles remain descriptive
+companions until explicitly added to the mechanical contract.
+
 ## Purpose
 
 <!-- What this artifact is and what depends on it. When does it run / who reads it? -->

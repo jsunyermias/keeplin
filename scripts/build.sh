@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# md:build
 # Build keeplin-daemon for all configured targets.
 # Requires the appropriate cross-compilation toolchains to be installed.
 set -euo pipefail

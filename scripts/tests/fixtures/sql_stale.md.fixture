@@ -1,0 +1,5 @@
+# SQL fixture
+
+```sql
+CREATE TABLE example (id BIGINT);
+```
