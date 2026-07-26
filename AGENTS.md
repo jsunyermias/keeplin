@@ -181,7 +181,8 @@ pull request templates.
 
 ## Workflow and review independence
 
-1. Start from an issue with observable acceptance criteria.
+1. Start from an issue with observable acceptance criteria, prepared with
+   `docs/prompts/0.A-prompt-comun.md` on `.github/ISSUE_TEMPLATE/implementation.md`.
 2. Create a dedicated branch; never work directly on `main`.
 3. Open a draft PR and keep its scope limited to the issue.
 4. Run the applicable checks and record evidence without conflating author claims with CI.
