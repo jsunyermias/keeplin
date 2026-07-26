@@ -7,16 +7,7 @@
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
-        "value": [
-          "# `collab/mod.rs` — client of the keeplin-srv collaborative channel",
-          "**What it does** — The client side of keeplin-srv's collaborative channel.",
-          "`CollabBackend` — talks to keeplin-srv. The server stores every note (lines +",
-          "rejection, and both expect the constants to be the ones keeplin-srv also enforces.",
-          "token from keeplin-srv `POST /api/login` — one per device).",
-          "**What it does** — Uploads a resource's binary to keeplin-srv out-of-band",
-          "**What it does** — Fetches a resource's binary from keeplin-srv (the source of",
-          "transfer, list, revoke) to keeplin-srv — the authority for permissions in"
-        ]
+        "value": []
       },
       "direct_dependencies": [
         {
@@ -154,12 +145,7 @@
       "cross_repo_contracts": {
         "origin": "INFERRED",
         "value": [
-          "**What it does** — The JSON wire types of keeplin-srv's collaborative channel",
-          "**Repeated context** — This file and keeplin-srv's `src/protocol.rs` must stay in",
-          "keeplin-srv's `CollabClientMsg` which deserialises them.",
-          "keeplin-srv's `CollabServerMsg` which serialises them — keeplin-srv's copy carries",
-          "the same optional `note_id`, and `crates/keeplin-srv/tests/core_compat.rs`",
-          "`keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: references×8; e.g. `Shared`, `.presence()`, `.send_cursor()`)"
+          "collab-wire"
         ]
       },
       "direct_dependencies": [],
@@ -241,12 +227,7 @@
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
-        "value": [
-          "be the *same* constants keeplin-srv enforces, so a body this module accepts is",
-          "the first as replays (a real historical bug — keeplin-srv PR #90).",
-          "bytes) keeplin-srv applies to `Insert`/`Update`.",
-          "`keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: imports_from×1, references×1; e.g. `mod.rs`, `Shared`)"
-        ]
+        "value": []
       },
       "direct_dependencies": [
         {
@@ -277,7 +258,13 @@
       ],
       "invariants": {
         "origin": "INFERRED",
-        "value": []
+        "value": [
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          }
+        ]
       },
       "markers": {
         "origin": "EXTRACTED",
@@ -328,14 +315,7 @@
       "cross_repo_contracts": {
         "origin": "INFERRED",
         "value": [
-          "# `compat.rs` — keeplin-srv protocol/capability handshake (`GET /version`)",
-          "**What it does** — The client side of the keeplin-srv protocol/capability handshake",
-          "(`GET /version`; issues keeplin-srv#39 / keeplin#114), and the **single place in this",
-          "keeplin-srv evolve in separate repositories (keeplin-srv pins a keeplin-core git",
-          "mid-sync errors; keeplin-srv mirrors the same rule around its own `PROTOCOL_VERSION`",
-          "`/version` is **missing/unreachable/unparseable** (older keeplin-srv, or a bare",
-          "to adopt a newer keeplin-core, bump the pinned `rev` in keeplin-srv's `Cargo.toml`",
-          "Mirrors keeplin-srv's `PROTOCOL_VERSION` (its `src/http.rs`); bump **both sides"
+          "protocol-version"
         ]
       },
       "direct_dependencies": [],
@@ -369,7 +349,13 @@
       ],
       "invariants": {
         "origin": "INFERRED",
-        "value": []
+        "value": [
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          }
+        ]
       },
       "markers": {
         "origin": "EXTRACTED",
@@ -418,9 +404,7 @@
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
-        "value": [
-          "`SECURITY.md`. keeplin-srv's server-side at-rest scheme (`enc:v1:`) is"
-        ]
+        "value": []
       },
       "direct_dependencies": [
         {
@@ -521,9 +505,7 @@
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
-        "value": [
-          "`keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: imports_from×1, references×41)"
-        ]
+        "value": []
       },
       "direct_dependencies": [],
       "direct_dependents": [
@@ -630,16 +612,19 @@
         "origin": "INFERRED",
         "value": [
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "All crate error types live here; no other module defines its own error enum."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Error messages never carry sensitive data (passwords, keys, plaintext)."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
-            "value": "The `Conflict` / `InvalidInput` / `InvalidState` split is the daemon's status-code"
+            "value": "The `Conflict` / `InvalidInput` / `InvalidState` split is the daemon's status-code contract (409 / 400 / 500) — renaming or merging a variant changes the wire behaviour."
           }
         ]
       },
@@ -683,14 +668,7 @@
       "cross_repo_contracts": {
         "origin": "INFERRED",
         "value": [
-          "The limits are a **shared wire/format contract**: `keeplin-srv` imports these very constants",
-          "(entry-point validation), and `keeplin-srv` (`crates/keeplin-srv/src/collab.rs`,",
-          "`crates/keeplin-srv/src/http.rs`, `crates/keeplin-srv/tests/core_compat.rs`).",
-          "**Used by** — `check_line`; `keeplin-srv`'s `collab.rs` (`content.len() > MAX_LINE_BYTES` on",
-          "**Used by** — `check_line_count`, `check_body`; `keeplin-srv`'s `collab.rs` (live-line count",
-          "`reconcile_notebook_move` routes every move through); `keeplin-srv`'s `http.rs` (the",
-          "exceeds `MAX_LINE_BYTES`. The literal `\"too_long\"` is the code keeplin-srv has always sent;",
-          "**Used by** — `LimitViolation::code`, `is_limit_code`; `keeplin-srv`'s `collab.rs` when"
+          "format-limits"
         ]
       },
       "direct_dependencies": [
@@ -744,20 +722,29 @@
         "origin": "INFERRED",
         "value": [
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "The three limits are exact powers of two and are defined exactly once, in this file."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
-            "value": "Line length is measured in UTF-8 bytes on both sides of the wire; line and note counts"
+            "value": "Line length is measured in UTF-8 bytes on both sides of the wire; line and note counts exclude tombstones."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Exceeding a limit always produces an error the user can see; no caller may truncate."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
-            "value": "Any change here is a cross-repo change: keeplin-srv's pinned `rev` must be bumped and its"
+            "value": "Any change here is a cross-repo change: keeplin-srv's pinned `rev` must be bumped and its cross-repo compatibility test re-run."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
           }
         ]
       },
@@ -821,9 +808,7 @@
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
-        "value": [
-          "bounds: FS compacts a note log past 256 entries; keeplin-srv's"
-        ]
+        "value": []
       },
       "direct_dependencies": [
         {
@@ -851,7 +836,38 @@
       "high_risk_dependents": [],
       "invariants": {
         "origin": "INFERRED",
-        "value": []
+        "value": [
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "it honours the same repository traits as production, so what passes here says something about the real backend."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "their async signatures and error types stay as documented; a widened error type silently changes what these tests prove."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "`with_ymd_and_hms` keeps resolving for the fixed dates used here, so the tests stay deterministic."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "it stays the unit the module under test accepts, so no conversion is hidden here."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the returned handle keeps the directory alive while bound; dropping it early deletes the store under the test."
+          }
+        ]
       },
       "markers": {
         "origin": "EXTRACTED",
@@ -941,7 +957,18 @@
       ],
       "invariants": {
         "origin": "INFERRED",
-        "value": []
+        "value": [
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "its public fields and constructor stay usable standalone, without a live store."
+          }
+        ]
       },
       "markers": {
         "origin": "EXTRACTED",
@@ -1040,12 +1067,7 @@
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
-        "value": [
-          "| `collab` | `CollabBackend` decorator — client of keeplin-srv's real-time note channel (line ops, presence, cursors), with the `protocol` (wire types) and `state` (line mirror + body↔lines diff) children |",
-          "| `compat` | the keeplin-srv `GET /version` handshake: `PROTOCOL_VERSION`, the `compatible_with` rule, `negotiate` — the one place this repo defines server-protocol compatibility |",
-          "| `format` | the hard format limits (bytes per line, lines per note, notes per notebook) and their wire codes — the single source of truth both this client and keeplin-srv enforce |",
-          "**Used by** — everything: `keeplin-daemon` (the binary), `keeplin-srv` (pins this"
-        ]
+        "value": []
       },
       "direct_dependencies": [],
       "direct_dependents": [],
@@ -1140,7 +1162,18 @@
       ],
       "invariants": {
         "origin": "INFERRED",
-        "value": []
+        "value": [
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "it honours the same repository traits as production, so what passes here says something about the real backend."
+          }
+        ]
       },
       "markers": {
         "origin": "EXTRACTED",
@@ -1292,7 +1325,13 @@
       ],
       "invariants": {
         "origin": "INFERRED",
-        "value": []
+        "value": [
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          }
+        ]
       },
       "markers": {
         "origin": "EXTRACTED",
@@ -1426,9 +1465,7 @@
       "cross_repo_contracts": {
         "origin": "INFERRED",
         "value": [
-          "engine, ordering, linking, interop, history, and the daemon's REST/gRPC layers; keeplin-srv",
-          "`keeplin-daemon/src/search.rs` (re-indexes on changes); keeplin-srv's relay stores these",
-          "`keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: references×31; e.g. `.apply_from_server()`, `.push_local_edit()`, `.patch_meta()`)"
+          "sync-change-envelope"
         ]
       },
       "direct_dependencies": [
@@ -1554,20 +1591,29 @@
         "origin": "INFERRED",
         "value": [
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
-            "value": "Every entity carries `vv` + `last_writer` + `updated_at` + soft-delete `deleted_at`; these"
+            "value": "Every entity carries `vv` + `last_writer` + `updated_at` + soft-delete `deleted_at`; these are the inputs `note_log::resolve` reads. Dropping one breaks convergence."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
-            "value": "`notebook_id` is never \"none\": `Uuid::nil()` (the Inbox) is the sentinel; `de_notebook_id`"
+            "value": "`notebook_id` is never \"none\": `Uuid::nil()` (the Inbox) is the sentinel; `de_notebook_id` upgrades old `null`/missing values."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
-            "value": "`Change` evolves additively only (serde `alias`/`default` keep old journals readable); a"
+            "value": "`Change` evolves additively only (serde `alias`/`default` keep old journals readable); a rename breaks stored logs and the server relay."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
-            "value": "All human-readable content (`title`, `body`, `alias`, resource `mime_type`/`file_name`) is"
+            "value": "All human-readable content (`title`, `body`, `alias`, resource `mime_type`/`file_name`) is encrypted at rest; ids/flags/sizes/sync-metadata stay plaintext."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
           }
         ]
       },
@@ -1677,7 +1723,23 @@
       ],
       "invariants": {
         "origin": "INFERRED",
-        "value": []
+        "value": [
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "it honours the same repository traits as production, so what passes here says something about the real backend."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "their async signatures and error types stay as documented; a widened error type silently changes what these tests prove."
+          }
+        ]
       },
       "markers": {
         "origin": "EXTRACTED",
@@ -1751,9 +1813,7 @@
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
-        "value": [
-          "`keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: implements×6, references×5; e.g. `Shared`, `CollabBackend<B>`, `.start()`)"
-        ]
+        "value": []
       },
       "direct_dependencies": [
         {
@@ -1937,11 +1997,7 @@
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
-        "value": [
-          "warns and continues (older keeplin-srv / bare test relay). Finally attempts the",
-          "missed batches on reconnect (keeplin-srv's durable journal); older relays",
-          "**What it does** — One version as served by keeplin-srv's history endpoints"
-        ]
+        "value": []
       },
       "direct_dependencies": [
         {
@@ -1997,7 +2053,13 @@
       ],
       "invariants": {
         "origin": "INFERRED",
-        "value": []
+        "value": [
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          }
+        ]
       },
       "markers": {
         "origin": "EXTRACTED",
@@ -2194,7 +2256,13 @@
       ],
       "invariants": {
         "origin": "INFERRED",
-        "value": []
+        "value": [
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          }
+        ]
       },
       "markers": {
         "origin": "EXTRACTED",
@@ -2400,7 +2468,18 @@
       "high_risk_dependents": [],
       "invariants": {
         "origin": "INFERRED",
-        "value": []
+        "value": [
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "it stays public to the module tree and keeps its ordering semantics."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the `Utc` offset stays fixed and `with_ymd_and_hms` keeps resolving for these dates, so ordering assertions stay deterministic."
+          }
+        ]
       },
       "markers": {
         "origin": "EXTRACTED",
@@ -2448,14 +2527,7 @@
       "cross_repo_contracts": {
         "origin": "INFERRED",
         "value": [
-          "`collab/protocol.rs`/`state.rs` (line versioning), keeplin-srv (pins this crate",
-          "inputs must pick the same winner. `merge`, `resolve`, and keeplin-srv's line",
-          "backends, keeplin-srv.",
-          "`storage/fs.rs` sidecar handling, and keeplin-srv.",
-          "backends keeping only current state (`DbBackend`, keeplin-srv). Rules (matching",
-          "`storage/fs.rs` sidecar entities; keeplin-srv's store (same function via the",
-          "keeplin-srv; changing them means changing distributed convergence semantics.",
-          "`keeplin-core/src/storage/db.rs`, `keeplin-core/src/collab/*`, keeplin-srv — via `resolve`/`VersionVector` (INFERRED: fully-qualified paths the AST pass does not link)"
+          "note-log-resolution"
         ]
       },
       "direct_dependencies": [
@@ -2503,7 +2575,18 @@
       ],
       "invariants": {
         "origin": "INFERRED",
-        "value": []
+        "value": [
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "its public fields and constructor stay usable standalone, without a live store."
+          }
+        ]
       },
       "markers": {
         "origin": "EXTRACTED",
@@ -2706,13 +2789,7 @@
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
-        "value": [
-          "**end-to-end round trip** through a mock keeplin-srv (in-process axum: REST note",
-          "exercised in keeplin-srv's own e2e suite. The mock has no `/version` route, so",
-          "**What it does** — Minimal in-process stand-in for keeplin-srv on an ephemeral",
-          "`keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: references×2; e.g. `CollabBackend`)",
-          "The state-machine layer is tested pure (no I/O); the e2e layer runs against an in-process mock keeplin-srv — the production server end is covered in keeplin-srv's own e2e suite."
-        ]
+        "value": []
       },
       "direct_dependencies": [
         {
@@ -2737,14 +2814,17 @@
         "origin": "INFERRED",
         "value": [
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "The state-machine layer is tested pure (no I/O); the e2e layer runs against an in-process mock keeplin-srv — the production server end is covered in keeplin-srv's own e2e suite."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Deterministic replay (same ops → identical bodies on every mirror) is the core assertion and must stay covered."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "The mock has no `/version` route: `start` exercising the warn-and-continue handshake path is intentional."
           }
@@ -2822,18 +2902,22 @@
         "origin": "INFERRED",
         "value": [
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "The full `StorageBackend` surface of `DbBackend` is covered at the SQLite level; WebSocket paths belong to `ws_sync.rs`."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "The journal invariants (original op type recorded; `apply_change` never re-journals; prune respects the cutoff) are pinned here."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Tombstone-first races (#71) must stay covered for all four versioned entity types."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Concurrency tests must run on a multi-threaded runtime to exercise real interleavings."
           }
@@ -2937,10 +3021,12 @@
         "origin": "INFERRED",
         "value": [
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Plaintext must never be readable in the underlying store; wrong passwords must fail loudly, not return garbage."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Round-trips return the original plaintext byte-for-byte."
           }
@@ -3020,14 +3106,17 @@
         "origin": "INFERRED",
         "value": [
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Replication copies only single-writer logs; projections are regenerated — the tests must never copy `note.md`/`meta.ndjson` between roots."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Convergence (causal, concurrent equal-timestamp, add/remove races) and both compaction bounds (per-note 256, global 512 with epoch snapshots) are pinned here."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Tombstone-first races (#71) stay covered for the sidecar entity types; note deletes converge through the per-note logs."
           }
@@ -3142,10 +3231,12 @@
         "origin": "INFERRED",
         "value": [
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Seeds one of every entity type and asserts a faithful copy in the destination — new entity kinds must be added to the seed when introduced."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Covers crossing the encryption boundary in both directions."
           }
@@ -3208,10 +3299,12 @@
         "origin": "INFERRED",
         "value": [
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Two independent backends converge by exchanging `Change`s via `get_changes_since`/`apply_change` — version-vector semantics (dominance, concurrency tiebreak) are pinned here."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Convergence must be order-independent: applying the same change sets in different orders yields the same final state."
           }
@@ -3262,13 +3355,7 @@
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
-        "value": [
-          "and `CollabBackend::start` (collaborative session). Fake keeplin-srv `/version`",
-          "compatibility is an **exact match**. These behaviours are cross-repo API (the",
-          "keeplin-srv `tests/integration.rs` pins the server end of the same wire",
-          "keeplin-srv): construction succeeds and local CRUD is fully usable",
-          "Pins the three-way handshake contract (compatible / incompatible / missing) for BOTH connect points; these behaviours are cross-repo API and must not regress."
-        ]
+        "value": []
       },
       "direct_dependencies": [],
       "direct_dependents": [],
@@ -3277,10 +3364,12 @@
         "origin": "INFERRED",
         "value": [
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Pins the three-way handshake contract (compatible / incompatible / missing) for BOTH connect points; these behaviours are cross-repo API and must not regress."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "The compatible case must fetch `/version` exactly once (startup priming; no refetch on capability checks)."
           }
@@ -3350,14 +3439,17 @@
         "origin": "INFERRED",
         "value": [
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Drives the genuine wire protocol against an in-process relay: auth-first frame, `changes` envelopes, no echo to the sender."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Undelivered batches must fail the send (watermark unchanged) and be re-sent after reconnect — offline resilience is the point of the suite."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "The capability-negotiation tests (`/version` without `history`, 404-latch) must keep asserting the probe happens at most once."
           }
@@ -3423,14 +3515,17 @@
         "origin": "INFERRED",
         "value": [
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Compiles `proto/keeplin.proto` with `tonic-build` at build time; requires `protoc` on PATH."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
-            "value": "Proto evolution is additive-only: new fields with new tags, never reuse/renumber (old peers"
+            "value": "Proto evolution is additive-only: new fields with new tags, never reuse/renumber (old peers ignore unknown fields)."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "`build_server(true)` must stay on: `src/server.rs` implements the generated server trait."
           }
@@ -3471,9 +3566,7 @@
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
-        "value": [
-          "API; it is unrelated to keeplin-srv's account/JWT auth, which only the collab"
-        ]
+        "value": []
       },
       "direct_dependencies": [],
       "direct_dependents": [
@@ -3498,7 +3591,13 @@
       ],
       "invariants": {
         "origin": "INFERRED",
-        "value": []
+        "value": [
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          }
+        ]
       },
       "markers": {
         "origin": "EXTRACTED",
@@ -3544,9 +3643,7 @@
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
-        "value": [
-          "| `collab_api_url` | `None` | keeplin-srv HTTP base; when set in server mode, note bodies edit collaboratively over `/api/ws` and note changes stop flowing through the relay (notebooks/tags/resources still sync over `server_url`); same `auth_token` |"
-        ]
+        "value": []
       },
       "direct_dependencies": [],
       "direct_dependents": [
@@ -3563,7 +3660,13 @@
       ],
       "invariants": {
         "origin": "INFERRED",
-        "value": []
+        "value": [
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          }
+        ]
       },
       "markers": {
         "origin": "EXTRACTED",
@@ -3649,7 +3752,23 @@
       ],
       "invariants": {
         "origin": "INFERRED",
-        "value": []
+        "value": [
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "it honours the same repository traits as production, so what passes here says something about the real backend."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the variants keep their meaning: `Empty` is 'nothing yet', `Lagged` is 'events were dropped' — collapsing them would hide real loss."
+          }
+        ]
       },
       "markers": {
         "origin": "EXTRACTED",
@@ -3702,9 +3821,7 @@
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
-        "value": [
-          "`keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: imports_from×1, references×3; e.g. `CollabConfig`, `CollabHandle`, `CollabBackend`)"
-        ]
+        "value": []
       },
       "direct_dependencies": [
         {
@@ -3729,20 +3846,39 @@
         "origin": "INFERRED",
         "value": [
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Decorator order is fixed: `MetricsBackend(EventBackend(LinkingBackend([EncryptedBackend](Fs|Db))))` — linking needs plaintext, eventing needs final metadata, metrics counts logical operations."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "One daemon per store: the exclusive `daemon.lock` is taken before any I/O; a second daemon must fail fast."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Startup must fail loudly on an incompatible sync server (the `DbBackend::new` handshake) and on insecure config without the explicit override."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "The encryption salt resolution order (config `key_salt` > persisted `.keeplin/key_salt` > derived-from-device-id, then persisted) must not change — it is a data-recovery contract."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "`STANDARD` stays the padded alphabet the rest of the code uses; an unpadded engine would round-trip here and fail in production."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "its methods stay trait methods; if they move to an inherent impl this import becomes dead and the call sites change meaning."
           }
         ]
       },
@@ -3847,7 +3983,18 @@
       ],
       "invariants": {
         "origin": "INFERRED",
-        "value": []
+        "value": [
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "it honours the same repository traits as production, so what passes here says something about the real backend."
+          }
+        ]
       },
       "markers": {
         "origin": "EXTRACTED",
@@ -3974,9 +4121,7 @@
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
-        "value": [
-          "**server-side** (keeplin-srv is the authority); the daemon does not store or"
-        ]
+        "value": []
       },
       "direct_dependencies": [
         {
@@ -4051,28 +4196,64 @@
         "origin": "INFERRED",
         "value": [
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Tombstones read and update as `404` on this surface; revival is reserved for sync's `apply_change`."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "`updated_at` is stamped server-side on every update handler; client values are ignored (issue #75)."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "The Inbox system notebook (nil UUID) cannot be deleted; ordering rules are enforced by `keeplin_core::ordering`, never re-implemented here."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Operational routes (`/health`, `/ready`, `/metrics`) bypass auth **and** the status counter; every data route passes through both, auth inside the counter."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "The `ApiError` mapping is the single source of truth for REST status codes and must stay aligned with the gRPC `storage_err` mapping in `server.rs`."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "The WebSocket handler subscribes before the upgrade response, and a lagged client gets a `{\"type\":\"resync\"}` hint instead of silent loss."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "it stays the body type the router is generic over."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "header and URI construction stay infallible for the fixed inputs used here."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "`STANDARD` stays the padded alphabet the rest of the code uses; an unpadded engine would round-trip here and fail in production."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "it honours the same repository traits as production, so what passes here says something about the real backend."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "`oneshot` keeps consuming the service and returning the full response, so the tests exercise the real routing stack rather than a handler call."
           }
         ]
       },
@@ -4249,9 +4430,7 @@
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
-        "value": [
-          "**What it does** — Full-text search **in the daemon**, not on keeplin-srv: the"
-        ]
+        "value": []
       },
       "direct_dependencies": [
         {
@@ -4287,7 +4466,13 @@
       ],
       "invariants": {
         "origin": "INFERRED",
-        "value": []
+        "value": [
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          }
+        ]
       },
       "markers": {
         "origin": "EXTRACTED",
@@ -4355,9 +4540,7 @@
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
-        "value": [
-          "same constants keeplin-srv enforces, so the two surfaces cannot disagree."
-        ]
+        "value": []
       },
       "direct_dependencies": [
         {
@@ -4420,28 +4603,54 @@
         "origin": "INFERRED",
         "value": [
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "On the wire, the Inbox (nil UUID) `notebook_id` is absent; absent/empty parses back to nil (`note_to_proto` ↔ `proto_to_note`)."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "`Get*` RPCs serve tombstones (sync reads them); `Update*` RPCs answer `NOT_FOUND` on a tombstone — revival is reserved for sync's `apply_change`."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "`updated_at` is stamped server-side on every update RPC; client-supplied values are ignored (issue #75)."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "The Inbox system notebook cannot be deleted; pinning an Inbox note is rejected."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "The `StorageError` → `Status` mapping in `storage_err` is the single source of truth for gRPC error codes."
           },
           {
+            "basis": "authored-invariant",
             "origin": "INFERRED",
             "value": "Post-sync maintenance (journal prune, resource purge) must stay identical between the gRPC and REST sync handlers — both call the same two helpers."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "field numbers and names stay additive; a renumbered field changes what these frames mean on the wire without failing to compile."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "it honours the same repository traits as production, so what passes here says something about the real backend."
+          },
+          {
+            "basis": "dependency-expectation",
+            "origin": "INFERRED",
+            "value": "each keeps its trait methods in scope for the concrete backend; dropping one from the import makes the affected calls stop resolving rather than silently no-op."
           }
         ]
       },
@@ -4550,5 +4759,5 @@
     }
   ],
   "generator": "scripts/companion_tool.py",
-  "schema_version": 1
+  "schema_version": 2
 }

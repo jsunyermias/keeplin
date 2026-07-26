@@ -1,0 +1,5 @@
+# Descriptive prose only
+
+This component usually preserves order and probably expects compatible peers.
+
+- A bullet outside an explicit metadata section is not an invariant.

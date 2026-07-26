@@ -421,6 +421,10 @@ this companion.
 - `keeplin-core/src/collab/state.rs` — client line state and body↔lines translation (EXTRACTED: references×4; e.g. `NoteLines`, `.from_snapshot()`, `.apply()`)
 - `keeplin-daemon/src/rest.rs` — REST/JSON API + WebSocket feed (axum) (EXTRACTED: references×1; e.g. `note_presence()`)
 
+**Cross-repo contracts**
+
+- `collab-wire` — canonical client/server collaboration message shapes consumed by keeplin-srv.
+
 ## Coverage checklist
 
 | # | Block (source order) | Marker in code |

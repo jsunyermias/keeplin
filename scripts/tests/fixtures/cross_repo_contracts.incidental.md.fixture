@@ -1,0 +1,10 @@
+# keeplin-srv companion
+
+This prose says cross-repo contract and desktop client, but it has no explicit signal.
+
+- A normal bullet mentioning keeplin-srv is still not a contract declaration.
+
+**Cross-repo contracts**
+
+- `Collab Wire` — uppercase and spaces are not a stable identifier.
+- keeplin-srv is mentioned without a backticked identifier.

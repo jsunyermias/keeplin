@@ -932,6 +932,10 @@ this companion.
 - Any change here is a cross-repo change: keeplin-srv's pinned `rev` must be bumped and its
   cross-repo compatibility test re-run.
 
+**Cross-repo contracts**
+
+- `format-limits` — canonical limits and wire error codes imported by keeplin-srv.
+
 ---
 
 ## Coverage checklist

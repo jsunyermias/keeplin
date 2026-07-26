@@ -1086,6 +1086,10 @@ this companion.
 - All human-readable content (`title`, `body`, `alias`, resource `mime_type`/`file_name`) is
   encrypted at rest; ids/flags/sizes/sync-metadata stay plaintext.
 
+**Cross-repo contracts**
+
+- `sync-change-envelope` — canonical `Change` variants serialized through the server's opaque relay.
+
 ## Coverage checklist
 
 | # | Block (source order) | Marker in code |

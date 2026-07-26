@@ -1,0 +1,5 @@
+{
+  "source": "// md:Overview\nuse std::fmt::Debug;\n",
+  "companion": "Prose CRLF stays.\r\n\r\n```rust\r\n// md:Overview\r\nuse std::fmt::Display;\r\n```\n\nProse LF stays.\n",
+  "expected": "Prose CRLF stays.\r\n\r\n```rust\r\n// md:Overview\r\nuse std::fmt::Debug;\r\n```\n\nProse LF stays.\n"
+}

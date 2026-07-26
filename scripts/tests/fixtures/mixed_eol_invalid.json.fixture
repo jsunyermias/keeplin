@@ -1,0 +1,4 @@
+{
+  "source": "// md:Overview\nuse std::fmt::Debug;\n",
+  "companion": "Prose CRLF stays.\r\n\r\n```rust\r\nfn orphan() {}\r\n```\n\nProse LF stays.\n"
+}

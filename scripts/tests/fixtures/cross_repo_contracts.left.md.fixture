@@ -1,0 +1,6 @@
+The name keeplin-srv in ordinary prose is not a manifest signal.
+
+**Cross-repo contracts**
+
+- `format-limits` — Keeplin owns the constants.
+- `collab-wire` — Keeplin owns the client message types.

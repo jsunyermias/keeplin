@@ -11,11 +11,19 @@ source drift, stale/truncated/orphan/duplicate/reordered fences, duplicate sourc
 repeatable read-only check mode, fence-only synchronization with prose preservation, and
 byte-for-byte identical ZIP output across two builds.
 
+Dedicated positive and negative fixtures also prove all four `orden-04b` guarantees:
+stable cross-repo contract identifiers are symmetric while incidental repo prose is
+ignored; authored/extracted invariants and explicit dependency `expects:` clauses are
+covered while ambiguous prose is ignored; only BOM/shebang/blank/inner-attribute
+scaffolding may precede the first marker; and valid mixed-EOL fence sync preserves every
+byte outside the body while invalid structure performs no write.
+
 ## Fixtures
 
-`fixtures/shapes.rs.fixture` and `shapes.md.fixture` intentionally use non-`.rs`/`.md`
-suffixes so repo-wide companion discovery does not mistake test data for product source.
-Each test copies them to an isolated temporary repository with real suffixes.
+Fixtures intentionally use `.fixture` suffixes so repo-wide companion discovery does not
+mistake test data for product source. Each source/companion case is copied or decoded into
+an isolated temporary repository with real suffixes. Mixed-EOL byte sequences are stored
+as JSON escapes so the checked-in fixture itself is portable across Git clients.
 
 ## Run
 

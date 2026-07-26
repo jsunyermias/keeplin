@@ -20,6 +20,12 @@ dependencies explicitly inferred as indispensable contracts; `review` also adds 
 high-risk dependents; `cross-repo` adds the target's external-contract notes to the pack
 metadata. `--max-files` (25) and `--max-bytes` (2,000,000) are hard default bounds.
 
+Manifest schema 2 keeps invariant provenance per value: explicit `(EXTRACTED...)`
+`**Invariants**` bullets remain `EXTRACTED`, while authored bullets and dependency
+`expects:` clauses are `INFERRED` with a distinguishing `basis`. Ambiguous prose is not an
+invariant. Cross-repo metadata contains only sorted stable identifiers declared under
+`**Cross-repo contracts**`; incidental repo names and relationship prose are ignored.
+
 ZIP entries are sorted, carry a fixed timestamp and fixed permissions, so identical inputs
 produce identical bytes. The estimate is printed before the archive is written.
 

@@ -13,6 +13,13 @@
   `sync-companion-code --check` reports the violation as UNCOVERED, so the previous
   wording did not merely under-specify the rule: it described code that CI now rejects.
 
+  MANIFEST METADATA: `**Invariants**` bullets below are explicit manifest input.
+  `(EXTRACTED...)` preserves graph-derived provenance; unprefixed authored bullets remain
+  `INFERRED`. An `expects:` clause in a block's `**Dependencies**` is also an explicit
+  inferred invariant. Ambiguous prose is never promoted. Cross-repository surfaces use an
+  optional `**Cross-repo contracts**` list with stable lowercase backticked identifiers;
+  incidental repo mentions are not manifest signals.
+
   WHAT CHANGED vs v2.3.1: RULE 7 is now enforced by `sync-companion-code --check`.
   Every Rust fence maps to exactly one source leaf and must match it after LF/CRLF
   normalization only. Stale, truncated, orphan, reordered and duplicate fences fail CI.
@@ -106,6 +113,12 @@
   drift, run `scripts/sync-companion-code path/to/file.rs`; it updates only existing fence
   bodies and leaves all authored prose intact. `scripts/check-docs.sh` runs this repo-wide;
   do not mark the migration done until it passes clean.
+
+  Before the first marker, scaffolding is limited to an optional UTF-8 BOM, optional
+  first-line shebang, blank lines and crate-level inner attributes (`#![...]`). Outer
+  attributes and Rust items belong to `Overview` (or another explicit leaf); otherwise the
+  tool reports `UNCOVERED`. Synchronization edits raw fence-body byte ranges, so prose,
+  delimiters and mixed EOL outside valid fences are preserved exactly.
 
   RULE 8 — DEPENDENCIES ARE CONTRACTS. The **Dependencies** subsection is a bullet
   list, one bullet per dependency, in this shape:
@@ -285,6 +298,13 @@ this companion.
 elsewhere)
 
 - {{invariant}}
+
+<!-- OPTIONAL: include only for a real cross-repository surface. The identifier, not the
+     repository-specific explanation, is emitted to the manifest and context pack. Use the
+     same identifier in the companion on the other side. -->
+**Cross-repo contracts**
+
+- `{{stable-contract-id}}` — {{what this file owns or consumes on this side}}
 
 ---
 

@@ -33,6 +33,9 @@ For every `.rs` file in the repo (pruning `target/`, `graphify-out/`, `.git/`), 
    reordered, missing, orphan and duplicate fences fail (HARD RULE 7). A container's
    preamble may carry only its declaration, attributes and braces: an unmarked import,
    const or nested item before the first child marker fails as UNCOVERED (HARD RULE 6).
+   Before the file's first marker, only BOM, a first-line shebang, blank lines and inner
+   crate attributes are scaffolding; any Rust item is UNCOVERED. Write-mode sync replaces
+   raw fence-body ranges only, preserving mixed EOL and all bytes outside valid fences.
 9. **Generated context index** — `context-pack manifest --check` fails if
    `docs/context-manifest.json` no longer matches the source/companion corpus.
 
