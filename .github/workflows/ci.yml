@@ -70,7 +70,11 @@ jobs:
         run: cargo audit
 
   graph:
-    name: Build knowledge graph artifact
+    # This name is the branch-protection required-check identifier. Renaming it
+    # makes protection wait forever for a check nobody reports, silently blocking
+    # every PR with no red signal. Change it only together with the required-check
+    # list in Settings -> Branches of both repositories.
+    name: Knowledge graph up to date
     runs-on: ubuntu-latest
 
     steps:

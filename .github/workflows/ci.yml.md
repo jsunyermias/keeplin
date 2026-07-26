@@ -42,7 +42,7 @@ Runs on `ubuntu-latest`.
 | Install cargo-audit | `taiki-e/install-action@v2` (`tool: cargo-audit`) | Downloads a prebuilt `cargo-audit` binary; compiling it from source with `cargo install` added minutes to every run for no additional coverage |
 | cargo audit | `cargo audit` | Checks `Cargo.lock` against the RustSec advisory database |
 
-### `graph` — Build knowledge graph artifact
+### `graph` — Knowledge graph up to date
 
 Runs on `ubuntu-latest`, in parallel with `test` (no Rust toolchain needed). Enforces
 LAYER 1 of the navigation model by generating it from the exact checked-out commit,

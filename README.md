@@ -518,7 +518,7 @@ independent-review prompts.
 Two navigation layers, one published by CI and one checked in:
 
 1. **LAYER 1 — discovery: the Graphify knowledge graph.** The
-   `Build knowledge graph artifact` CI job publishes `graphify-out/graph.json` and the
+   `Knowledge graph up to date` CI job publishes `graphify-out/graph.json` and the
    readable `GRAPH_REPORT.md` as `knowledge-graph-<commit SHA>`; the directory is ignored
    and never committed. Generate it locally with the pinned `graphifyy==0.9.25` or download
    the artifact, then ask it before reading code: `graphify query "which files depend on
