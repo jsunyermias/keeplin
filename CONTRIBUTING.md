@@ -51,6 +51,13 @@ Repository administrators keep `main` protected in both `jsunyermias/keeplin` an
 Draft PRs are the default during implementation. The maintainer remains the only person who
 performs the final merge in the normal workflow.
 
+A required check is identified by its job `name` in `.github/workflows/ci.yml`, so that name
+is load-bearing configuration rather than a label. Renaming a required job without updating
+the required-check list in Settings → Branches leaves protection waiting forever for a check
+nobody reports: every pull request goes to `blocked` with all jobs green and no red signal
+explaining it. Rename such a job only together with the settings update, in both
+repositories, and say so in the pull request so the reviewer can confirm it.
+
 ## Prompt roles
 
 - [`0.A-prompt-comun.md`](docs/prompts/0.A-prompt-comun.md): shared context and issue
