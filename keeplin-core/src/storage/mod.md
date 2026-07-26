@@ -80,7 +80,7 @@ pub const DEFAULT_PAGE_SIZE: u32 = 100;
 **Dependencies** — none.
 
 **Used by** — `effective_page_size` below; documented contract of every backend list
-method (`fs.rs`, `db.rs`) and of the daemon's list endpoints.
+method (`fs.rs`, the repository modules of `db/`) and of the daemon's list endpoints.
 
 **Repeated context** — All list APIs in the project are cursor-paginated: reply
 carries an opaque cursor; `page_size = 0` means "default".
@@ -211,7 +211,7 @@ strings `to_rfc3339()` already produced, so old and new rows share the offset sh
 
 **Dependencies** — `chrono`.
 
-**Used by** — call sites in `db.rs` / `fs.rs` / `backend.rs` via the trait.
+**Used by** — call sites in `db/` / `fs.rs` / `backend.rs` via the trait.
 
 **Repeated context** — none beyond the trait's.
 

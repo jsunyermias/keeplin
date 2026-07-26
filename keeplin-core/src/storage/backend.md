@@ -263,7 +263,7 @@ the contract the notes-per-notebook cap depends on.
 **Dependencies** — none.
 
 **Used by** — the backends' `notebook_sort_profile` implementations (`fs.rs`,
-`db.rs`); every field including `live_notes` is populated here, so a backend that
+`db/notes.rs`); every field including `live_notes` is populated here, so a backend that
 built a profile by hand would silently report a capacity of zero.
 
 **Repeated context** — none.

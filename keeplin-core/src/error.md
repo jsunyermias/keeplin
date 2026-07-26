@@ -123,7 +123,7 @@ always constructed explicitly at the call site. Variant table:
   bound. Only serde_json decode failures land here; `rmp_serde` failures are mapped to
   `CorruptedData` at their call sites, not here.
 
-**Used by** — every backend/decorator (`fs.rs` ×75 refs, `db.rs` ×69, `encryption.rs`,
+**Used by** — every backend/decorator (`fs.rs` ×75 refs, every module of `db/`, `encryption.rs`,
 `linking.rs`, `collab/mod.rs`, `ordering.rs`, `history.rs`, `interop.rs`, `migrate.rs`), the
 daemon (`event_backend.rs`, `metrics.rs`, `rest.rs`, `server.rs`), and `SyncError` below.
 

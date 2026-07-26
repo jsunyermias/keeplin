@@ -59,7 +59,7 @@ widening. Items defined in one sibling and used by another carry `pub(super)`.
 **Identification** — marker `// md:impl ResourceRepository for DbBackend`;
 per-method markers `> fn <name>`.
 
-**Code** — container: members documented as sub-blocks below: fn create_resource, fn read_resource, fn delete_resource, fn list_resources, fn purge_deleted_resources.
+**Code** — container: members documented as sub-blocks below: fn create_resource, fn read_resource, fn delete_resource, fn list_resources, fn list_resources_for_note, fn purge_deleted_resources.
 
 **What it does** — resources with BLOB payloads.
 

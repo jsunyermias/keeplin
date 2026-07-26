@@ -46,9 +46,9 @@ widening. Items defined in one sibling and used by another carry `pub(super)`.
 ## impl DbBackend (migrations)
 
 **Identification** — the first inherent impl; marker `// md:impl DbBackend (migrations)`.
-Constructor, migrations, journal/WS/row/versioning helpers.
+The schema-version ladder and every forward migration step.
 
-**Code** — container: members documented as sub-blocks below: fn new, fn run_migrations, fn schema_version, fn apply_migration, fn migrate_v1_baseline, fn add_column_if_missing, fn get_or_create_device_id, fn record_change, fn refresh_note_links, fn connect_ws, fn row_to_note, fn parse_uuid, fn parse_required_dt, fn parse_optional_dt, fn row_to_notebook, fn row_to_tag, fn row_to_resource, fn row_to_change, fn begin, fn commit, fn rollback, fn ensure_ws, fn migrate_v2_ordering, fn current_meta, fn incoming_wins, fn next_local_vv, fn row_is_live, fn assoc_meta, fn next_assoc_vv, fn assoc_incoming_wins, fn upsert_assoc, fn resource_meta, fn next_resource_vv, fn resource_incoming_wins.
+**Code** — container: members documented as sub-blocks below: fn run_migrations, fn schema_version, fn apply_migration, fn migrate_v1_baseline, fn add_column_if_missing, fn migrate_v2_ordering, fn migrate_v3_tag_system, fn migrate_v4_resource_media, fn migrate_v5_resource_note_id.
 
 ---
 
@@ -503,9 +503,9 @@ statements are idempotent (`add_column_if_missing` swallows "duplicate column na
 ## mod migration_tests
 
 **Identification** — `#[cfg(test)] mod migration_tests`; marker
-`// md:mod migration_tests`. Two helpers + four tests.
+`// md:mod migration_tests`. An imports block, two helpers and six tests.
 
-**Code** — container: members documented as sub-blocks below: fn raw_conn, fn user_version, fn note_history_reads_this_devices_versions_newest_first, fn fresh_database_is_stamped_current_and_reopen_is_a_noop, fn tag_system_flag_round_trips, fn resource_media_metadata_round_trips, fn migrates_a_pre_framework_database_without_losing_data, fn refuses_to_open_a_newer_schema.
+**Code** — container: members documented as sub-blocks below: imports, fn raw_conn, fn user_version, fn note_history_reads_this_devices_versions_newest_first, fn fresh_database_is_stamped_current_and_reopen_is_a_noop, fn tag_system_flag_round_trips, fn resource_media_metadata_round_trips, fn migrates_a_pre_framework_database_without_losing_data, fn refuses_to_open_a_newer_schema.
 
 **What it does** — Pins the migration framework and the journal-derived
 history.

@@ -52,9 +52,9 @@ widening. Items defined in one sibling and used by another carry `pub(super)`.
 ## impl DbBackend (conflict resolution)
 
 **Identification** — the first inherent impl; marker `// md:impl DbBackend (conflict resolution)`.
-Constructor, migrations, journal/WS/row/versioning helpers.
+Version-vector reads, last-writer-wins comparisons and the next-vector helpers, for entities, note/tag associations and resources.
 
-**Code** — container: members documented as sub-blocks below: fn new, fn run_migrations, fn schema_version, fn apply_migration, fn migrate_v1_baseline, fn add_column_if_missing, fn get_or_create_device_id, fn record_change, fn refresh_note_links, fn connect_ws, fn row_to_note, fn parse_uuid, fn parse_required_dt, fn parse_optional_dt, fn row_to_notebook, fn row_to_tag, fn row_to_resource, fn row_to_change, fn begin, fn commit, fn rollback, fn ensure_ws, fn migrate_v2_ordering, fn current_meta, fn incoming_wins, fn next_local_vv, fn row_is_live, fn assoc_meta, fn next_assoc_vv, fn assoc_incoming_wins, fn upsert_assoc, fn resource_meta, fn next_resource_vv, fn resource_incoming_wins.
+**Code** — container: members documented as sub-blocks below: fn current_meta, fn incoming_wins, fn next_local_vv, fn row_is_live, fn assoc_meta, fn next_assoc_vv, fn assoc_incoming_wins, fn upsert_assoc, fn resource_meta, fn next_resource_vv, fn resource_incoming_wins.
 
 ---
 
