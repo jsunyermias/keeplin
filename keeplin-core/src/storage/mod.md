@@ -80,7 +80,7 @@ pub const DEFAULT_PAGE_SIZE: u32 = 100;
 **Dependencies** — none.
 
 **Used by** — `effective_page_size` below; documented contract of every backend list
-method (`fs.rs`, `db.rs`) and of the daemon's list endpoints.
+method (`fs.rs`, the repository modules of `db/`) and of the daemon's list endpoints.
 
 **Repeated context** — All list APIs in the project are cursor-paginated: reply
 carries an opaque cursor; `page_size = 0` means "default".
@@ -139,7 +139,8 @@ down to it; everything in between passes through. Pure, total, no errors.
 
 **Dependencies** — the two constants above.
 
-**Used by** — every list implementation in `storage/fs.rs` and `storage/db.rs`
+**Used by** — every list implementation in `storage/fs.rs` and in the repository
+modules of `storage/db/`
 (notes, notebooks, tags, resources, history listings).
 
 **Repeated context** — crate-private (`pub(crate)`) on purpose: callers outside the
@@ -178,7 +179,7 @@ match remains best-effort, the same situation mixed-precision writers were alrea
 
 **Dependencies** — none (trait definition only).
 
-**Used by** — `storage/db.rs`, `storage/fs.rs`, and `storage/backend.rs` for every
+**Used by** — `storage/db/`, `storage/fs.rs`, and `storage/backend.rs` for every
 stored/compared timestamp; the `impl` below provides the only implementation.
 
 **Repeated context** — Timestamps-as-TEXT is a deliberate project convention (keeps
@@ -210,7 +211,7 @@ strings `to_rfc3339()` already produced, so old and new rows share the offset sh
 
 **Dependencies** — `chrono`.
 
-**Used by** — call sites in `db.rs` / `fs.rs` / `backend.rs` via the trait.
+**Used by** — call sites in `db/` / `fs.rs` / `backend.rs` via the trait.
 
 **Repeated context** — none beyond the trait's.
 

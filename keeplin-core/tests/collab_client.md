@@ -611,7 +611,7 @@ this companion.
 
 - `keeplin-core/src/collab/mod.rs` — client of the keeplin-srv collaborative channel (EXTRACTED: references×2; e.g. `CollabBackend`)
 - `keeplin-core/src/collab/state.rs` — client line state and body↔lines translation (EXTRACTED: imports_from×1; e.g. `NoteLines`)
-- `keeplin-core/src/storage/db.rs` — DbBackend (LibSQL + WebSocket storage) (EXTRACTED: references×2; e.g. `DbBackend`)
+- `keeplin-core/src/storage/db/mod.rs` — defines `DbBackend` (INFERRED: the test reaches it through the fully-qualified `keeplin_core::storage::db::DbBackend`, which the AST pass does not link)
 
 **Direct dependents** (files whose symbols reference this one)
 

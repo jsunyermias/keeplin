@@ -45,7 +45,7 @@ collaborative channel):
 **Dependencies** — `serde` (deserialising `ServerInfo`); `reqwest` appears in
 `negotiate`'s signature.
 
-**Used by** — `storage/db.rs` (`DbBackend::new`), `collab/mod.rs`
+**Used by** — `storage/db/mod.rs` (`DbBackend::new`), `collab/mod.rs`
 (`CollabBackend::start`), `keeplin-core/tests/version_handshake.rs`.
 
 **Repeated context** — Version-bump procedure (documented in both repos' READMEs):
@@ -170,7 +170,7 @@ unreachable, or not an HTTP endpoint at all — the caller warns and continues).
 
 **Dependencies** — `ServerInfo`.
 
-**Used by** — returned by `negotiate`; matched in `storage/db.rs` and
+**Used by** — returned by `negotiate`; matched in `storage/db/mod.rs` and
 `collab/mod.rs`.
 
 **Repeated context** — only `Incompatible` may block startup; ambiguity always
@@ -268,7 +268,7 @@ until the versions match."
 
 **Dependencies** — `ServerInfo`, `PROTOCOL_VERSION`.
 
-**Used by** — the failure paths in `storage/db.rs` and `collab/mod.rs`; unit test
+**Used by** — the failure paths in `storage/db/mod.rs` and `collab/mod.rs`; unit test
 `incompatible_message_names_the_side_to_upgrade`.
 
 **Repeated context** — error-message convention: operator-facing errors must be
@@ -416,7 +416,7 @@ this companion.
 **Direct dependents** (files whose symbols reference this one)
 
 - (none in the graph — the callers use fully-qualified `crate::compat::…` paths the AST pass does not link) (EXTRACTED)
-- `keeplin-core/src/storage/db.rs` — `DbBackend::new` calls `negotiate`/`incompatible_message` for the relay-side startup handshake (INFERRED)
+- `keeplin-core/src/storage/db/mod.rs` — `DbBackend::new` calls `negotiate`/`incompatible_message` for the relay-side startup handshake (INFERRED)
 - `keeplin-core/src/collab/mod.rs` — `CollabBackend::start` calls the same pair for the collab session handshake (INFERRED)
 - `keeplin-core/tests/version_handshake.rs` — imports `PROTOCOL_VERSION` to drive the three fake-server behaviours (INFERRED)
 

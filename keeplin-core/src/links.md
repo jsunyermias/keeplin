@@ -54,7 +54,7 @@ segment resolves as a note, otherwise falls back to `note#bookmark`, so
 `serde`, `uuid`.
 
 **Used by** — `models.rs` (`Note.bookmarks`/`Note.links`), `linking.rs` (derives
-and resolves), `storage/db.rs` (JSON (de)serialisation helpers),
+and resolves), `storage/db/convert.rs` (JSON (de)serialisation helpers),
 `keeplin-daemon/src/rest.rs` and `server.rs` (link endpoints).
 
 **Repeated context** — The `#…` reference and `[t](###)` bookmark grammar is a
@@ -291,7 +291,7 @@ defaulting to `text`). Derives `Hash`/`Eq` so `Note` — which contains a
 **Dependencies** — `serde`.
 
 **Used by** — `models::Note.bookmarks`; built by `linking.rs` from
-`parse_bookmarks` output; `storage/db.rs` JSON helpers.
+`parse_bookmarks` output; `storage/db/convert.rs` JSON helpers.
 
 **Repeated context** — bookmarks are body-derived: the persisted list is a cache
 recomputed on every note write, never edited directly.
@@ -358,7 +358,7 @@ like `notebook_id`.
 **Dependencies** — `LinkSource`, `uuid`, `serde`.
 
 **Used by** — `models::Note.links`; `linking.rs` (derivation, resolution,
-backlinks); `storage/db.rs` (`note_links` projection); the daemon's link
+backlinks); `storage/db/mod.rs` (`note_links` projection); the daemon's link
 endpoints.
 
 **Repeated context** — at-rest encryption (project-wide) encrypts human-readable
@@ -835,7 +835,7 @@ this companion.
 **Direct dependents** (files whose symbols reference this one)
 
 - `keeplin-core/src/models.rs` — domain data types (EXTRACTED: references×2; e.g. `Note`)
-- `keeplin-core/src/storage/db.rs` — DbBackend (LibSQL + WebSocket storage) (EXTRACTED: references×4; e.g. `bookmarks_to_json()`, `json_to_bookmarks()`, `json_to_links()`)
+- `keeplin-core/src/storage/db/convert.rs` — the DbBackend encoding helpers (EXTRACTED: references×4; e.g. `bookmarks_to_json()`, `json_to_bookmarks()`, `json_to_links()`)
 - `keeplin-daemon/src/rest.rs` — REST/JSON API + WebSocket feed (axum) (EXTRACTED: calls×1, references×1; e.g. `list_links()`, `add_link()`)
 - `keeplin-daemon/src/server.rs` — gRPC service implementation (EXTRACTED: references×1; e.g. `link_source_str()`)
 
