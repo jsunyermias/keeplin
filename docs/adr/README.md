@@ -100,8 +100,11 @@ the fix crosses a decision boundary.
 | [0001 — Current synchronization delivery semantics](0001-current-sync-delivery.md) | accepted (retrospective) | cross-repo | [keeplin#150](https://github.com/jsunyermias/keeplin/issues/150), [keeplin#151](https://github.com/jsunyermias/keeplin/issues/151), [keeplin-srv#74](https://github.com/jsunyermias/keeplin-srv/issues/74), [keeplin-srv#75](https://github.com/jsunyermias/keeplin-srv/issues/75) |
 | [0002 — Shared domain model and server projections](0002-shared-domain-model.md) | accepted (retrospective) | cross-repo | current implementation |
 | [0003 — Versioned persistent formats and forward migrations](0003-versioned-persistence.md) | accepted (retrospective) | cross-repo | current implementation |
+| [0004 — E2EE collaborative editing: threat model and v1 ambition](0004-e2ee-collab-threat-model.md) | proposed | cross-repo | [keeplin#143](https://github.com/jsunyermias/keeplin/issues/143), [keeplin#142](https://github.com/jsunyermias/keeplin/issues/142), [keeplin#154](https://github.com/jsunyermias/keeplin/issues/154), [keeplin-srv#72](https://github.com/jsunyermias/keeplin-srv/issues/72) |
 
 The first prospective use of this framework is
-[keeplin#143](https://github.com/jsunyermias/keeplin/issues/143), which must create its E2EE
-threat-model ADR from the template and obtain maintainer acceptance before cryptographic or
-collaboration implementation begins.
+[keeplin#143](https://github.com/jsunyermias/keeplin/issues/143). Its ADR now exists as 0004 and
+is `proposed`: it still needs maintainer acceptance before cryptographic or collaboration
+implementation begins, and it carries four decisions marked for the maintainer, including the one
+[keeplin#162](https://github.com/jsunyermias/keeplin/issues/162) assigned to it — whether granular
+encryption survives a blind server.
