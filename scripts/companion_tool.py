@@ -32,6 +32,15 @@ RISK_RULES = (
 CONTRACT_TERMS = ("contract", "must", "expects", "wire", "protocol", "format", "compatib", "security")
 IGNORED_DIRS = {".git", "target", "graphify-out"}
 CONTRACT_REGISTRY = "docs/cross-repo-contracts.txt"
+REVIEW_DEBT_REGISTRY = "docs/review-debt.md"
+REVIEW_DEBT_SECTIONS = {
+    "Open": ("Merged", "Change", "Implementer", "What went unreviewed", "Follow-up"),
+    "Cleared": ("Merged", "Change", "Reviewer", "Review"),
+}
+REVIEW_DEBT_EMPTY_CELL = "—"
+PULL_REQUEST_RE = re.compile(
+    r"https://github\.com/jsunyermias/(?P<repo>keeplin|keeplin-srv)/pull/(?P<number>\d+)\b"
+)
 SCHEMA_VERSION = 2
 
 
@@ -915,6 +924,106 @@ def verify_contract_registry(root: Path, manifest: dict[str, object]) -> list[st
     return errors
 
 
+def _review_debt_rows(text: str) -> tuple[dict[str, list[tuple[int, list[str]]]], list[str]]:
+    """Split the registry into its declared sections and their table rows.
+
+    Returns one entry per section named in REVIEW_DEBT_SECTIONS, each a list of
+    (line number, cells). Header and separator rows are consumed here so callers
+    only see data rows.
+    """
+    sections: dict[str, list[tuple[int, list[str]]]] = {name: [] for name in REVIEW_DEBT_SECTIONS}
+    errors: list[str] = []
+    current: str | None = None
+    header_seen: set[str] = set()
+    for number, line in enumerate(text.splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            heading = stripped[3:].strip()
+            current = heading if heading in REVIEW_DEBT_SECTIONS else None
+            continue
+        if current is None or not stripped.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if current not in header_seen:
+            header_seen.add(current)
+            expected = list(REVIEW_DEBT_SECTIONS[current])
+            if cells != expected:
+                errors.append(
+                    f"{REVIEW_DEBT_REGISTRY}:{number}: HEADER of '## {current}' is "
+                    f"{cells}, expected {expected}. The check reads these columns by name."
+                )
+            continue
+        if set("".join(cells)) <= {"-", ":", " "}:
+            continue
+        sections[current].append((number, cells))
+    for name in REVIEW_DEBT_SECTIONS:
+        if name not in header_seen:
+            errors.append(f"MISSING '## {name}' section with its table header in {REVIEW_DEBT_REGISTRY}")
+    return sections, errors
+
+
+def verify_review_debt(root: Path) -> list[str]:
+    """Fail when the review-debt registry is malformed.
+
+    A waived merge is only recoverable if its entry stays complete and unambiguous.
+    Nothing else notices a half-written row, a debt recorded twice, or a cleared
+    entry that never links the review that cleared it.
+    """
+    registry = root / REVIEW_DEBT_REGISTRY
+    if not registry.is_file():
+        return [f"MISSING review-debt registry: {REVIEW_DEBT_REGISTRY}"]
+    text, _ = _read(registry)
+    sections, errors = _review_debt_rows(text)
+    seen: dict[tuple[str, str], tuple[str, int]] = {}
+    for name, rows in sections.items():
+        columns = REVIEW_DEBT_SECTIONS[name]
+        placeholder_rows = [number for number, cells in rows if set(cells) == {REVIEW_DEBT_EMPTY_CELL}]
+        if placeholder_rows and len(rows) > 1:
+            errors.append(
+                f"{REVIEW_DEBT_REGISTRY}:{placeholder_rows[0]}: PLACEHOLDER row in '## {name}' "
+                f"alongside real entries. It marks an empty section; remove it."
+            )
+        for number, cells in rows:
+            if set(cells) == {REVIEW_DEBT_EMPTY_CELL}:
+                continue
+            if len(cells) != len(columns):
+                errors.append(
+                    f"{REVIEW_DEBT_REGISTRY}:{number}: ROW in '## {name}' has {len(cells)} "
+                    f"cells, expected {len(columns)}"
+                )
+                continue
+            for column, cell in zip(columns, cells):
+                if not cell or cell == REVIEW_DEBT_EMPTY_CELL:
+                    errors.append(
+                        f"{REVIEW_DEBT_REGISTRY}:{number}: EMPTY '{column}' in '## {name}'. "
+                        f"An entry nobody can act on is the same as no entry."
+                    )
+            change = cells[columns.index("Change")]
+            matches = list(PULL_REQUEST_RE.finditer(change))
+            if not matches:
+                errors.append(
+                    f"{REVIEW_DEBT_REGISTRY}:{number}: NO pull request link in 'Change' of "
+                    f"'## {name}'. Link the merged pull request so the diff stays reachable."
+                )
+            if name == "Cleared" and not PULL_REQUEST_RE.search(cells[columns.index("Review")]) \
+                    and "http" not in cells[columns.index("Review")]:
+                errors.append(
+                    f"{REVIEW_DEBT_REGISTRY}:{number}: CLEARED without a link to the review. "
+                    f"A claim that a review happened is not the review."
+                )
+            for match in matches:
+                key = (match.group("repo"), match.group("number"))
+                previous = seen.get(key)
+                if previous and previous[0] != name:
+                    errors.append(
+                        f"{REVIEW_DEBT_REGISTRY}:{number}: {key[0]}#{key[1]} appears in both "
+                        f"'## {previous[0]}' (line {previous[1]}) and '## {name}'. A debt is "
+                        f"open or cleared, never both."
+                    )
+                seen.setdefault(key, (name, number))
+    return errors
+
+
 def write_or_check_manifest(root: Path, output: Path, check: bool) -> list[str]:
     manifest = build_manifest(root)
     errors = verify_contract_registry(root, manifest)
@@ -1024,6 +1133,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     manifest_parser.add_argument("--check", action="store_true", help="report a stale manifest without writing")
     manifest_parser.add_argument("--output", default="docs/context-manifest.json")
 
+    sub.add_parser("review-debt", help="verify the review-debt registry is well formed")
+
     pack_parser = sub.add_parser("pack", help="list or build a bounded context ZIP")
     pack_parser.add_argument("target", help="source/companion path or unique marker symbol")
     pack_parser.add_argument("--profile", choices=("understand", "edit", "review", "cross-repo"), default="understand")
@@ -1043,6 +1154,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 1
             action = "verified" if args.check else "synchronized"
             print(f"companion code {action}: {checked} source files ({changed} companion files differed)")
+            return 0
+        if args.command == "review-debt":
+            errors = verify_review_debt(root)
+            for error in errors:
+                print(error, file=sys.stderr)
+            if errors:
+                return 1
+            print(f"review-debt registry verified: {REVIEW_DEBT_REGISTRY}")
             return 0
         if args.command == "manifest":
             output = (root / args.output).resolve() if not Path(args.output).is_absolute() else Path(args.output)

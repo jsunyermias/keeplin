@@ -1,0 +1,14 @@
+# Review debt
+
+## Open
+
+| Merged | Change | Implementer | What went unreviewed | Follow-up |
+|---|---|---|---|---|
+| 2026-07-26 | [keeplin#180](https://github.com/jsunyermias/keeplin/pull/180) — prepared-issue format | Claude | No independent review at all | maintainer sweep, pending |
+| 2026-07-26 | [keeplin-srv#93](https://github.com/jsunyermias/keeplin-srv/pull/93) — waiver rule | Claude | The family the rule binds wrote it | maintainer sweep, pending |
+
+## Cleared
+
+| Merged | Change | Reviewer | Review |
+|---|---|---|---|
+| 2026-07-25 | [keeplin#100](https://github.com/jsunyermias/keeplin/pull/100) — earlier change | Codex | [review](https://github.com/jsunyermias/keeplin/pull/100#issuecomment-1) |

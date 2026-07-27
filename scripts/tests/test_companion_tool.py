@@ -314,6 +314,58 @@ class CompanionToolTests(unittest.TestCase):
             ],
         )
 
+    def _review_debt(self, text: str) -> list[str]:
+        (self.root / "docs").mkdir(exist_ok=True)
+        (self.root / TOOL.REVIEW_DEBT_REGISTRY).write_text(text, encoding="utf-8")
+        return TOOL.verify_review_debt(self.root)
+
+    def test_review_debt_valid_registry_passes(self) -> None:
+        self.assertEqual(self._review_debt(fixture_text("review_debt.valid.md.fixture")), [])
+
+    def test_review_debt_missing_registry_is_detected(self) -> None:
+        self.assertTrue(any("MISSING review-debt registry" in e for e in TOOL.verify_review_debt(self.root)))
+
+    def test_review_debt_empty_cell_is_detected(self) -> None:
+        text = fixture_text("review_debt.valid.md.fixture").replace("| Claude | No independent review at all |", "|  | No independent review at all |")
+        self.assertTrue(any("EMPTY 'Implementer'" in e for e in self._review_debt(text)))
+
+    def test_review_debt_entry_without_pull_request_link_is_detected(self) -> None:
+        text = fixture_text("review_debt.valid.md.fixture").replace(
+            "[keeplin#180](https://github.com/jsunyermias/keeplin/pull/180) — prepared-issue format",
+            "prepared-issue format",
+        )
+        self.assertTrue(any("NO pull request link" in e for e in self._review_debt(text)))
+
+    def test_review_debt_same_pull_request_open_and_cleared_is_detected(self) -> None:
+        text = fixture_text("review_debt.valid.md.fixture").replace(
+            "https://github.com/jsunyermias/keeplin/pull/100", "https://github.com/jsunyermias/keeplin/pull/180"
+        )
+        self.assertTrue(any("appears in both" in e for e in self._review_debt(text)))
+
+    def test_review_debt_cleared_without_review_link_is_detected(self) -> None:
+        text = fixture_text("review_debt.valid.md.fixture").replace(
+            "[review](https://github.com/jsunyermias/keeplin/pull/100#issuecomment-1)", "reviewed it"
+        )
+        self.assertTrue(any("CLEARED without a link" in e for e in self._review_debt(text)))
+
+    def test_review_debt_altered_header_is_detected(self) -> None:
+        text = fixture_text("review_debt.valid.md.fixture").replace(
+            "| Merged | Change | Implementer | What went unreviewed | Follow-up |",
+            "| Merged | Change | Implementer | Notes | Follow-up |",
+        )
+        self.assertTrue(any("HEADER of '## Open'" in e for e in self._review_debt(text)))
+
+    def test_review_debt_missing_section_is_detected(self) -> None:
+        text = fixture_text("review_debt.valid.md.fixture").split("## Cleared")[0]
+        self.assertTrue(any("MISSING '## Cleared'" in e for e in self._review_debt(text)))
+
+    def test_review_debt_placeholder_marks_an_empty_section_only(self) -> None:
+        text = fixture_text("review_debt.valid.md.fixture")
+        empty = text.split("## Cleared")[0] + "## Cleared\n\n| Merged | Change | Reviewer | Review |\n|---|---|---|---|\n| — | — | — | — |\n"
+        self.assertEqual(self._review_debt(empty), [])
+        crowded = empty + "| 2026-07-25 | [keeplin#100](https://github.com/jsunyermias/keeplin/pull/100) | Codex | [r](https://example.invalid/1) |\n"
+        self.assertTrue(any("PLACEHOLDER row" in e for e in self._review_debt(crowded)))
+
     def test_manifest_invariants_ignore_ambiguous_prose(self) -> None:
         text = fixture_text("invariants.ambiguous.md.fixture")
         self.assertEqual(TOOL._manifest_invariants(text), [])

@@ -22,6 +22,10 @@
 #      one complete verbatim sql fence, unsupported formats are ignored, and sync never
 #      writes source SQL or bytes outside valid companion fences.
 #  10. the generated context manifest is current.
+#  11. the review-debt registry stays actionable: both sections present with their
+#      exact headers, every row complete, every entry linking its merged pull
+#      request, every cleared entry linking the review that cleared it, and no
+#      pull request open and cleared at once.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -100,10 +104,15 @@ if ! ./scripts/context-pack manifest --check; then
   fail=1
 fi
 
+# 11. A waived review is only recoverable while its registry entry stays complete.
+if ! python3 scripts/companion_tool.py review-debt; then
+  fail=1
+fi
+
 if [[ $fail -ne 0 ]]; then
   echo
   echo "Every supported source needs a mechanically faithful companion:"
   echo "docs/templates/source-module.md (v2.5). See its 9 HARD RULES."
   exit 1
 fi
-echo "docs check OK: structure, exact fences and context manifest are consistent"
+echo "docs check OK: structure, exact fences, context manifest and review debt are consistent"

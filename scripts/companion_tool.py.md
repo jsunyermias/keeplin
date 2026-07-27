@@ -74,6 +74,20 @@ terms retained as its basis.
 Context packs include a generated `context-pack.json`, fixed ZIP metadata and sorted input
 paths. Size/file limits are checked before writing.
 
+## Review-debt registry
+
+`review-debt` verifies `docs/review-debt.md`, the record of merges that went in without an
+independent reviewer. It is the only subject the tool does not derive from source: a
+hand-written table whose value depends entirely on staying complete. The check requires the
+`## Open` and `## Cleared` sections with their exact column headers, every cell filled,
+every `Change` linking at least one merged pull request of either repository, every
+`Cleared` row linking the review that cleared it, and no pull request recorded as open and
+cleared at once. A row whose cells are all `—` marks an empty section and is rejected when
+real entries sit beside it.
+
+The limit is deliberate and stated where the registry is filled in: this verifies that a
+waiver left an actionable record, not that any review took place.
+
 ## Failure behavior
 
 All validation errors are printed to stderr and return exit code 1. Commands write no
@@ -92,7 +106,10 @@ invariants, ambiguous-prose rejection, type definitions used as containers, and 
 `EXTRACTED` origin annotations. It also covers exact shell blocks, extensionless launcher
 discovery, uncovered shell prefixes, fence-only shell synchronization, ignored unsupported
 types, mandatory whole-file SQL companions, stale SQL synchronization without source
-writes, and forbidden SQL markers.
+writes, and forbidden SQL markers. For the review-debt registry it covers a valid table, a
+missing file, an empty cell, an entry without a pull request link, the same pull request
+open and cleared at once, a cleared entry with no review link, an altered column header, a
+missing section, and the empty-section placeholder both alone and beside real entries.
 
 ## Related files
 

@@ -26,6 +26,10 @@
 #      one complete verbatim sql fence, unsupported formats are ignored, and sync never
 #      writes source SQL or bytes outside valid companion fences.
 #  10. the generated context manifest is current.
+#  11. the review-debt registry stays actionable: both sections present with their
+#      exact headers, every row complete, every entry linking its merged pull
+#      request, every cleared entry linking the review that cleared it, and no
+#      pull request open and cleared at once.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -104,13 +108,18 @@ if ! ./scripts/context-pack manifest --check; then
   fail=1
 fi
 
+# 11. A waived review is only recoverable while its registry entry stays complete.
+if ! python3 scripts/companion_tool.py review-debt; then
+  fail=1
+fi
+
 if [[ $fail -ne 0 ]]; then
   echo
   echo "Every supported source needs a mechanically faithful companion:"
   echo "docs/templates/source-module.md (v2.5). See its 9 HARD RULES."
   exit 1
 fi
-echo "docs check OK: structure, exact fences and context manifest are consistent"
+echo "docs check OK: structure, exact fences, context manifest and review debt are consistent"
 ```
 
 ## Purpose
@@ -151,6 +160,14 @@ For every `.rs` file in the repo (pruning `target/`, `graphify-out/`, `.git/`), 
    raw fence-body ranges only, preserving mixed EOL and all bytes outside valid fences.
 9. **Generated context index** — `context-pack manifest --check` fails if
    `docs/context-manifest.json` no longer matches the source/companion corpus.
+10. **Review-debt registry** — `companion_tool.py review-debt` fails if
+   `docs/review-debt.md` loses either section or its exact column header, carries a row
+   with an empty or missing cell, records an entry whose `Change` links no merged pull
+   request, marks an entry `Cleared` without linking the review that cleared it, or lists
+   the same pull request as open and cleared at once. A row of `—` marks a genuinely empty
+   section and is rejected next to real entries. This is the one check whose subject is a
+   hand-written registry rather than generated output: it verifies that a waived review
+   left a usable record, never that the review happened.
 
 ## Known caveat
 

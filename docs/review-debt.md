@@ -21,6 +21,19 @@ that review.
 A re-read by the implementing family does not clear an entry, and neither does a green CI
 run: both are what the waiver already had.
 
+## The format this file must keep
+
+`scripts/check-docs.sh` verifies the shape of this registry on every run, because an entry
+nobody can act on is the same as no entry. Both sections below must exist with their exact
+column headers, every cell must be filled, every `Change` must link at least one merged
+pull request of either repository, every `Cleared` row must link the review that cleared
+it, and no pull request may sit in both sections. A row whose cells are all `—` marks a
+genuinely empty section and fails next to real entries.
+
+What no check can see is whether the review happened. A named reviewer and a linked thread
+are a claim; the registry keeps that claim visible and attributable, which is the most a
+mechanical check can honestly offer here.
+
 ## Open
 
 | Merged | Change | Implementer | What went unreviewed | Follow-up |
