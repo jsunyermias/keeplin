@@ -25,6 +25,27 @@ a mechanical refactor that preserves every contract, a documentation correction 
 new decision, or a bug fix that restores an already documented invariant. When the boundary is
 unclear, open a proposed ADR and resolve that question before production implementation.
 
+### Relocation is not a decision
+
+Splitting a file or moving code between modules keeps reaching this boundary, because the code
+it moves — persistence, migrations, protocol — is named in the triggers above. It is not a
+decision and needs no ADR when the change preserves, and the pull request demonstrates that it
+preserves, all four of:
+
+- every public path a caller outside the moved tree can name;
+- observable behavior, including error paths and ordering;
+- every persisted or on-wire format, and the version constants that gate them;
+- the migration sequence, including which migration runs at which schema version.
+
+Show the four with the evidence that establishes them, not as an assertion. A relocation that
+cannot show all four is not a relocation, and the boundary applies normally.
+
+Maintainer decision of 2026-07-27, from the question raised in
+[keeplin#178](https://github.com/jsunyermias/keeplin/pull/178). It is deliberately narrow: the
+defects relocation actually produces are stale references and inherited container inventories,
+which no ADR would have caught. [keeplin#179](https://github.com/jsunyermias/keeplin/issues/179)
+is what covers those, and it is scheduled before the remaining fragmentation for that reason.
+
 ## Lifecycle
 
 The allowed states are:
