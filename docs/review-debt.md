@@ -30,6 +30,10 @@ pull request of either repository, every `Cleared` row must link the review that
 it, and no pull request may sit in both sections. A row whose cells are all `—` marks a
 genuinely empty section and fails next to real entries.
 
+On the pull request side, the `Review independence declared` job requires either a named
+independent reviewer or a complete maintainer waiver whose entry already exists here — so a
+waiver and its record land in the same pull request, not in a later one that never comes.
+
 What no check can see is whether the review happened. A named reviewer and a linked thread
 are a claim; the registry keeps that claim visible and attributable, which is the most a
 mechanical check can honestly offer here.

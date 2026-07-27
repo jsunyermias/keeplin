@@ -42,6 +42,28 @@ Runs on `ubuntu-latest`.
 | Install cargo-audit | `taiki-e/install-action@v2` (`tool: cargo-audit`) | Downloads a prebuilt `cargo-audit` binary; compiling it from source with `cargo install` added minutes to every run for no additional coverage |
 | cargo audit | `cargo audit` | Checks `Cargo.lock` against the RustSec advisory database |
 
+### `review` — Review independence declared
+
+Runs on `ubuntu-latest`, only for `pull_request` events, in parallel with the others.
+Enforces the rule that independent review is not the implementer's to skip: a pull request
+must either name an independent reviewer with the independence box ticked, or carry a
+complete maintainer waiver whose entry already exists in `docs/review-debt.md`.
+
+| Step | Action / Command | Purpose |
+|------|-----------------|---------|
+| Checkout | `actions/checkout@v4` | Clones the repository at the triggering commit, so the registry read is the one this pull request proposes |
+| Install Python | `actions/setup-python@v5` (`python-version: 3.12`) | Provides the runtime; the check uses only the standard library |
+| Capture the pull request body | `printf '%s' "$PR_BODY"` with `PR_BODY` in `env` | Moves untrusted author-written text into a file without ever passing it through shell interpolation |
+| Check review independence | `companion_tool.py review-gate --body-file … --repo … --number …` | Fails when neither a reviewer nor a complete, recorded waiver is declared |
+
+The job name is a branch-protection required-check identifier. Until it is added to the
+required list in Settings → Branches of both repositories it reports without blocking,
+which is how it is meant to land: visible first, enforcing once the open pull requests
+have adopted the block.
+
+It verifies a declaration, not a review. A named reviewer who did not review still passes.
+What it removes is the silent path, where an unreviewed merge left no trace at all.
+
 ### `graph` — Knowledge graph up to date
 
 Runs on `ubuntu-latest`, in parallel with `test` (no Rust toolchain needed). Enforces

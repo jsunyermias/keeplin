@@ -69,6 +69,41 @@ jobs:
       - name: Audit dependencies
         run: cargo audit
 
+  review:
+    # Like the graph job below, this name is a branch-protection required-check
+    # identifier. It only gates merges once it is added to the required list in
+    # Settings -> Branches of both repositories; until then it reports without
+    # blocking, which is the intended way to land it.
+    name: Review independence declared
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The body is untrusted text written by whoever opened the pull request, so it
+      # reaches the script through an environment variable and a file — never through
+      # shell interpolation, which would execute whatever a body chose to contain.
+      - name: Capture the pull request body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
+
+      - name: Check review independence
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_REPO: ${{ github.event.repository.name }}
+        run: |
+          python3 scripts/companion_tool.py review-gate \
+            --body-file "$RUNNER_TEMP/pr-body.md" \
+            --repo "$PR_REPO" \
+            --number "$PR_NUMBER"
+
   graph:
     # This name is the branch-protection required-check identifier. Renaming it
     # makes protection wait forever for a check nobody reports, silently blocking

@@ -366,6 +366,51 @@ class CompanionToolTests(unittest.TestCase):
         crowded = empty + "| 2026-07-25 | [keeplin#100](https://github.com/jsunyermias/keeplin/pull/100) | Codex | [r](https://example.invalid/1) |\n"
         self.assertTrue(any("PLACEHOLDER row" in e for e in self._review_debt(crowded)))
 
+    def _gate(self, body: str, number: str = "999") -> list[str]:
+        (self.root / "docs").mkdir(exist_ok=True)
+        (self.root / TOOL.REVIEW_DEBT_REGISTRY).write_text(
+            fixture_text("review_debt.valid.md.fixture"), encoding="utf-8"
+        )
+        return TOOL.verify_review_gate(self.root, body, "keeplin", number)
+
+    def test_review_gate_blank_template_is_unreviewed(self) -> None:
+        self.assertTrue(any("UNREVIEWED" in e for e in self._gate(fixture_text("pr_body.template.md.fixture"))))
+
+    def test_review_gate_named_reviewer_with_ticked_box_passes(self) -> None:
+        body = fixture_text("pr_body.template.md.fixture").replace(
+            f"{TOOL.REVIEWER_KEY}", f"{TOOL.REVIEWER_KEY} Codex"
+        ).replace(f"- [ ] {TOOL.INDEPENDENCE_KEY}", f"- [x] {TOOL.INDEPENDENCE_KEY}")
+        self.assertEqual(self._gate(body), [])
+
+    def test_review_gate_reviewer_without_independence_box_fails(self) -> None:
+        body = fixture_text("pr_body.template.md.fixture").replace(
+            f"{TOOL.REVIEWER_KEY}", f"{TOOL.REVIEWER_KEY} Codex"
+        )
+        self.assertTrue(any("UNREVIEWED" in e for e in self._gate(body)))
+
+    def test_review_gate_rejects_filler_reviewer(self) -> None:
+        body = fixture_text("pr_body.template.md.fixture").replace(
+            f"{TOOL.REVIEWER_KEY}", f"{TOOL.REVIEWER_KEY} pendiente"
+        ).replace(f"- [ ] {TOOL.INDEPENDENCE_KEY}", f"- [x] {TOOL.INDEPENDENCE_KEY}")
+        self.assertTrue(any("UNREVIEWED" in e for e in self._gate(body)))
+
+    def test_review_gate_complete_waiver_without_registry_entry_fails(self) -> None:
+        self.assertTrue(any("WAIVED but unrecorded" in e for e in self._gate(fixture_text("pr_body.waived.md.fixture"))))
+
+    def test_review_gate_complete_waiver_with_registry_entry_passes(self) -> None:
+        self.assertEqual(self._gate(fixture_text("pr_body.waived.md.fixture"), number="180"), [])
+
+    def test_review_gate_removed_review_block_is_detected(self) -> None:
+        self.assertTrue(any("MISSING" in e for e in self._gate("## Summary\n\nUn resumen y nada más.\n")))
+
+    def test_review_gate_reports_a_malformed_registry_before_accepting_a_waiver(self) -> None:
+        (self.root / "docs").mkdir(exist_ok=True)
+        (self.root / TOOL.REVIEW_DEBT_REGISTRY).write_text(
+            fixture_text("review_debt.valid.md.fixture").replace("| Claude |", "|  |"), encoding="utf-8"
+        )
+        errors = TOOL.verify_review_gate(self.root, fixture_text("pr_body.waived.md.fixture"), "keeplin", "180")
+        self.assertTrue(any("EMPTY 'Implementer'" in e for e in errors))
+
     def test_manifest_invariants_ignore_ambiguous_prose(self) -> None:
         text = fixture_text("invariants.ambiguous.md.fixture")
         self.assertEqual(TOOL._manifest_invariants(text), [])

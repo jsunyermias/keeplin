@@ -41,6 +41,18 @@ REVIEW_DEBT_EMPTY_CELL = "—"
 PULL_REQUEST_RE = re.compile(
     r"https://github\.com/jsunyermias/(?P<repo>keeplin|keeplin-srv)/pull/(?P<number>\d+)\b"
 )
+REVIEWER_KEY = "- Reviewer (human or model family):"
+INDEPENDENCE_KEY = "Reviewer is independent from the implementer."
+WAIVER_KEYS = (
+    "- Where the maintainer said so:",
+    "- What goes unreviewed:",
+    "- Entry in `docs/review-debt.md`:",
+    "- Follow-up issue or sweep that will carry the deferred review:",
+)
+FILLER_VALUES = {
+    "", "-", "—", "–", "tbd", "todo", "n/a", "na", "none", "null", "pending", "pendiente",
+    "ninguno", "ninguna", "por determinar", "?", "??", "...",
+}
 SCHEMA_VERSION = 2
 
 
@@ -1024,6 +1036,78 @@ def verify_review_debt(root: Path) -> list[str]:
     return errors
 
 
+def _is_filled(value: str) -> bool:
+    """A field counts as answered only when it says something actionable."""
+    stripped = value.strip().strip("`*_ ")
+    return stripped.casefold() not in FILLER_VALUES
+
+
+def _field_value(body: str, key: str) -> str | None:
+    """Return the text after the first line whose stripped form starts with key."""
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(key):
+            return stripped[len(key):].strip()
+    return None
+
+
+def verify_review_gate(root: Path, body: str, repo: str, number: str) -> list[str]:
+    """Fail when a pull request declares neither an independent review nor a waiver.
+
+    This reads a declaration; it cannot observe whether a review happened. What it
+    removes is the silent path: before, an unreviewed merge could simply leave no
+    trace, and nothing noticed. Now the absence has to be asserted on purpose.
+    """
+    reviewer = _field_value(body, REVIEWER_KEY)
+    if reviewer is None:
+        return [
+            f"MISSING '{REVIEWER_KEY}' in the pull request body. Keep the Independent "
+            f"review block of .github/pull_request_template.md: this check reads it."
+        ]
+    independent = any(
+        line.strip().startswith(("- [x]", "- [X]")) and INDEPENDENCE_KEY in line
+        for line in body.splitlines()
+    )
+    if _is_filled(reviewer) and independent:
+        return []
+
+    waiver = {key: _field_value(body, key) for key in WAIVER_KEYS}
+    missing_keys = [key for key, value in waiver.items() if value is None]
+    if missing_keys:
+        return [
+            f"MISSING '{missing_keys[0]}' in the pull request body. Without an independent "
+            f"reviewer, the maintainer waiver block is what this check needs."
+        ]
+    unfilled = [key for key, value in waiver.items() if not _is_filled(value or "")]
+    if unfilled:
+        detail = "" if _is_filled(reviewer) else " and no reviewer is named"
+        return [
+            f"UNREVIEWED pull request: '{unfilled[0]}' is empty{detail}. Either record an "
+            f"independent reviewer and tick '{INDEPENDENCE_KEY}', or complete every field of "
+            f"the maintainer waiver. Only the maintainer waives independent review."
+        ]
+
+    errors = verify_review_debt(root)
+    if errors:
+        return errors + [
+            "The waiver above needs a well-formed registry, and it is not well formed yet."
+        ]
+    text, _ = _read(root / REVIEW_DEBT_REGISTRY)
+    sections, _ = _review_debt_rows(text)
+    recorded = any(
+        match.group("repo") == repo and match.group("number") == number
+        for _, cells in sections["Open"]
+        for match in PULL_REQUEST_RE.finditer(" ".join(cells))
+    )
+    if not recorded:
+        return [
+            f"WAIVED but unrecorded: {repo}#{number} declares a maintainer waiver, but no "
+            f"open entry in {REVIEW_DEBT_REGISTRY} links it. Add the entry in this pull "
+            f"request; a waiver nobody can find later is the failure this check exists for."
+        ]
+    return []
+
+
 def write_or_check_manifest(root: Path, output: Path, check: bool) -> list[str]:
     manifest = build_manifest(root)
     errors = verify_contract_registry(root, manifest)
@@ -1135,6 +1219,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     sub.add_parser("review-debt", help="verify the review-debt registry is well formed")
 
+    gate_parser = sub.add_parser(
+        "review-gate", help="verify a pull request declares a reviewer or a recorded waiver"
+    )
+    gate_parser.add_argument("--body-file", required=True, help="file holding the pull request body")
+    gate_parser.add_argument("--repo", required=True, choices=("keeplin", "keeplin-srv"))
+    gate_parser.add_argument("--number", required=True)
+
     pack_parser = sub.add_parser("pack", help="list or build a bounded context ZIP")
     pack_parser.add_argument("target", help="source/companion path or unique marker symbol")
     pack_parser.add_argument("--profile", choices=("understand", "edit", "review", "cross-repo"), default="understand")
@@ -1162,6 +1253,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             if errors:
                 return 1
             print(f"review-debt registry verified: {REVIEW_DEBT_REGISTRY}")
+            return 0
+        if args.command == "review-gate":
+            body, _ = _read(Path(args.body_file))
+            errors = verify_review_gate(root, body, args.repo, str(args.number))
+            for error in errors:
+                print(error, file=sys.stderr)
+            if errors:
+                return 1
+            print(f"review independence declared: {args.repo}#{args.number}")
             return 0
         if args.command == "manifest":
             output = (root / args.output).resolve() if not Path(args.output).is_absolute() else Path(args.output)

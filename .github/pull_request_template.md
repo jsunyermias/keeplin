@@ -63,6 +63,11 @@ the sole source.
 Independent review is not the implementer's to skip. If it did not happen, this PR merges
 only on an explicit maintainer waiver for this PR, and merges as review debt.
 
+The `Reviewer` line, the independence checkbox and the four waiver fields below are read
+mechanically by the `Review independence declared` check. Fill them in; do not reword the
+labels, and do not answer with `pendiente`, `TBD` or a dash — the check treats those as
+unanswered, which is what they are.
+
 - Maintainer waiver (leave empty unless the maintainer set the review aside here):
   - Where the maintainer said so:
   - What goes unreviewed:

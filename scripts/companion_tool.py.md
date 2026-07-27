@@ -88,6 +88,18 @@ real entries sit beside it.
 The limit is deliberate and stated where the registry is filled in: this verifies that a
 waiver left an actionable record, not that any review took place.
 
+`review-gate` closes the other half in CI. Given a pull request body, its repository and
+number, it requires either a named reviewer with `Reviewer is independent from the
+implementer.` ticked, or all four maintainer-waiver fields answered *and* an open registry
+entry linking that pull request. Filler answers — `pendiente`, `TBD`, a dash — count as
+unanswered, because they are. The labels it reads are the ones in
+`.github/pull_request_template.md`; rewording them there breaks the check, which is why
+that file says so.
+
+The body is untrusted author-written text and is only ever read from a file. The gate is a
+declaration check: a reviewer who is named but did not review still passes. What it removes
+is the silent path, where an unreviewed merge simply left no trace.
+
 ## Failure behavior
 
 All validation errors are printed to stderr and return exit code 1. Commands write no
@@ -109,7 +121,10 @@ types, mandatory whole-file SQL companions, stale SQL synchronization without so
 writes, and forbidden SQL markers. For the review-debt registry it covers a valid table, a
 missing file, an empty cell, an entry without a pull request link, the same pull request
 open and cleared at once, a cleared entry with no review link, an altered column header, a
-missing section, and the empty-section placeholder both alone and beside real entries.
+missing section, and the empty-section placeholder both alone and beside real entries. For
+the review gate it covers a blank template, a named reviewer with and without the
+independence box, a filler reviewer, a complete waiver with and without its registry entry,
+a body whose review block was deleted, and a waiver presented against a malformed registry.
 
 ## Related files
 
