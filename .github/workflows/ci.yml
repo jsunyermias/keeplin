@@ -6,6 +6,10 @@ on:
       - main
       - "claude/**"
   pull_request:
+    # `edited` and `ready_for_review` are not in the default set. Without them the
+    # review-independence gate can never clear: filling the waiver block edits the
+    # body, and a re-run replays the original payload with the body it had before.
+    types: [opened, synchronize, reopened, edited, ready_for_review]
     branches:
       - main
 
