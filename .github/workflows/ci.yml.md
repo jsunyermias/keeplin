@@ -2,16 +2,21 @@
 
 ## Purpose
 
-This workflow validates every push and pull request by checking formatting, compiling the
-workspace, running all tests, and linting with Clippy. It must pass on all commits to
-`main` and on every commit to branches whose names start with `claude/`.
+This workflow validates every push and pull request by checking pull-request review
+governance, formatting, compiling the workspace, running all tests, and linting with
+Clippy. It must pass on all commits to `main` and on every commit to branches whose names
+start with `claude/`.
 
 ## Triggers
 
 | Event | Branches / filters |
 |-------|--------------------|
 | `push` | `main`, `claude/**` |
-| `pull_request` | target branch: `main` |
+| `pull_request` | target branch: `main`; events `opened`, `synchronize`, `reopened`, `edited`, `ready_for_review` |
+
+The workflow has read-only access to repository contents and pull-request metadata. Body
+edits retrigger it so completing or removing review evidence is reflected in the required
+check without a new commit.
 
 ## Environment variables
 
@@ -29,6 +34,8 @@ Runs on `ubuntu-latest`.
 | Step | Action / Command | Purpose |
 |------|-----------------|---------|
 | Checkout | `actions/checkout@v4` | Clones the repository at the triggering commit |
+| Test pull-request governance check | `node --test .github/scripts/check-review-governance.test.js` | Exercises the reviewed and maintainer-waiver paths, including negative cases |
+| Check pull-request review governance | `actions/github-script@v7` (non-draft pull requests only) | Requires either an independent review with evidence, or a complete maintainer waiver whose exact PR is recorded in the changed `docs/review-debt.md` |
 | Install Python | `actions/setup-python@v5` (`3.12`) | Provides the standard-library runtime used by the deterministic companion checks |
 | Check companion docs | `./scripts/check-docs.sh` | Enforces structure, exact source↔fence fidelity and the generated context manifest (the two-layer navigation model) |
 | Test companion tooling | `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` | Exercises syntax fixtures, drift/error detection, fence-only sync and reproducible packs |
