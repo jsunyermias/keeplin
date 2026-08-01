@@ -281,7 +281,7 @@ shapes `log_entry_to_change` reconstructs.
 ```rust
 // md:fn fs_assoc_from_data
 pub(super) fn fs_assoc_from_data(
-    pub(super) data: &serde_json::Value,
+    data: &serde_json::Value,
     fallback_ts: DateTime<Utc>,
 ) -> (DateTime<Utc>, VersionVector, String) {
     let updated_at = data
@@ -319,7 +319,7 @@ vector/writer for pre-version records.
 ```rust
 // md:fn fs_tombstone_from_data
 pub(super) fn fs_tombstone_from_data(
-    pub(super) data: &serde_json::Value,
+    data: &serde_json::Value,
     fallback_ts: DateTime<Utc>,
 ) -> (DateTime<Utc>, VersionVector, String) {
     let deleted_at = data

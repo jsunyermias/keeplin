@@ -120,7 +120,7 @@ pub(super) fn snapshot_entry_from_value(
 
 // md:fn fs_assoc_from_data
 pub(super) fn fs_assoc_from_data(
-    pub(super) data: &serde_json::Value,
+    data: &serde_json::Value,
     fallback_ts: DateTime<Utc>,
 ) -> (DateTime<Utc>, VersionVector, String) {
     let updated_at = data
@@ -142,7 +142,7 @@ pub(super) fn fs_assoc_from_data(
 
 // md:fn fs_tombstone_from_data
 pub(super) fn fs_tombstone_from_data(
-    pub(super) data: &serde_json::Value,
+    data: &serde_json::Value,
     fallback_ts: DateTime<Utc>,
 ) -> (DateTime<Utc>, VersionVector, String) {
     let deleted_at = data
