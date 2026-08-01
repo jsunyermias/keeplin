@@ -8,6 +8,11 @@ on:
   pull_request:
     branches:
       - main
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,6 +25,44 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Test pull-request governance check
+        run: node --test .github/scripts/check-review-governance.test.js
+
+      - name: Check pull-request review governance
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('node:fs');
+            const {
+              DEBT_PATH,
+              evaluateReviewGovernance,
+            } = require('./.github/scripts/check-review-governance.js');
+
+            const changedFiles = await github.paginate(
+              github.rest.pulls.listFiles,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                per_page: 100,
+              },
+              response => response.data.map(file => file.filename),
+            );
+            const debtContent = fs.existsSync(DEBT_PATH)
+              ? fs.readFileSync(DEBT_PATH, 'utf8')
+              : '';
+            const result = evaluateReviewGovernance({
+              body: context.payload.pull_request.body || '',
+              changedFiles,
+              debtContent,
+              repository: `${context.repo.owner}/${context.repo.repo}`,
+              pullNumber: context.issue.number,
+            });
+
+            core.info(result.message);
+            if (!result.ok) core.setFailed(result.message);
 
       - name: Install Python
         uses: actions/setup-python@v5
