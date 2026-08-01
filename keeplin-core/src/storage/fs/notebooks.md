@@ -21,6 +21,7 @@ use uuid::Uuid;
 
 use crate::error::StorageError;
 use crate::models::{now, Notebook};
+use crate::storage::note_log;
 use crate::storage::{NotebookRepository, SortableRfc3339};
 
 use super::convert::fs_tombstone_value;
@@ -211,7 +212,7 @@ write back, `"delete"` entry with `fs_tombstone_value`.
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Notebook>, Option<String>), StorageError> {
-        let limit = super::effective_page_size(page_size) as usize;
+        let limit = crate::storage::effective_page_size(page_size) as usize;
         let mut notebooks = Vec::new();
         let mut dir = tokio::fs::read_dir(self.root.join("notebooks")).await?;
         while let Some(entry) = dir.next_entry().await? {

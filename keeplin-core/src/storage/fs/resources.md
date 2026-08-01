@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::StorageError;
-use crate::models::{Resource, SYSTEM_RESOURCE_NOTE_ID};
+use crate::models::{now, Resource};
 use crate::storage::note_log::{self, resolve, VersionVector, Winner};
 use crate::storage::{ResourceRepository, SortableRfc3339};
 
@@ -701,7 +701,7 @@ carries that id.
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
-        let limit = super::effective_page_size(page_size) as usize;
+        let limit = crate::storage::effective_page_size(page_size) as usize;
         let mut resources = Vec::new();
         for note_id in self.all_note_ids().await? {
             for id in self.note_resource_ids(note_id).await? {
@@ -741,7 +741,7 @@ carries that id.
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Resource>, Option<String>), StorageError> {
-        let limit = super::effective_page_size(page_size) as usize;
+        let limit = crate::storage::effective_page_size(page_size) as usize;
         let mut resources = Vec::new();
         for id in self.note_resource_ids(note_id).await? {
             let meta_path = self.resource_meta_path(note_id, id);
@@ -767,7 +767,7 @@ listings. Live sidecars are sorted by `(created_at, id)` and paginated.
 
 **Dependencies** —
 - `note_resource_ids` — the note's attachment ids; expects a missing folder to yield an empty list.
-- `resource_meta_path`, `read_sidecar`, `paginate`, `super::effective_page_size` — the same
+- `resource_meta_path`, `read_sidecar`, `paginate`, `crate::storage::effective_page_size` — the same
   machinery as `list_resources`; expect the `(sortable-created_at, id)` cursor.
 
 **Used by** — the daemon's `list_resources` RPC / REST handler when a `note_id` filter is

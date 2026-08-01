@@ -3,9 +3,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::error::StorageError;
-use crate::models::{Change, Notebook, Resource, Tag};
-use crate::storage::note_log::{NoteLogEntry, VersionVector};
+use crate::models::Change;
+use crate::storage::note_log::VersionVector;
 
 // md:LogEntry
 #[derive(Debug, Serialize, Deserialize)]

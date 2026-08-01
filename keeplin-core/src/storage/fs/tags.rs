@@ -1,5 +1,5 @@
 // md:Overview
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -11,7 +11,7 @@ use crate::models::{now, NoteTag, Tag};
 use crate::storage::note_log::{self, resolve, VersionVector, Winner};
 use crate::storage::{SortableRfc3339, TagRepository};
 
-use super::convert::fs_assoc_value;
+use super::convert::{fs_assoc_value, fs_tombstone_value};
 use super::pagination::paginate;
 use super::FsBackend;
 
@@ -186,7 +186,7 @@ impl TagRepository for FsBackend {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
-        let limit = super::effective_page_size(page_size) as usize;
+        let limit = crate::storage::effective_page_size(page_size) as usize;
         let mut tags = Vec::new();
         let mut dir = tokio::fs::read_dir(self.root.join("tags")).await?;
         while let Some(entry) = dir.next_entry().await? {
@@ -269,7 +269,7 @@ impl TagRepository for FsBackend {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Tag>, Option<String>), StorageError> {
-        let limit = super::effective_page_size(page_size) as usize;
+        let limit = crate::storage::effective_page_size(page_size) as usize;
         let dir_path = self.note_tag_dir(note_id);
         if !dir_path.exists() {
             return Ok((vec![], None));

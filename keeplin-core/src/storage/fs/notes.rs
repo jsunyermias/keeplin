@@ -1,5 +1,5 @@
 // md:Overview
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -11,7 +11,6 @@ use crate::models::{now, Change, Note};
 use crate::storage::note_log::{self, NoteLogEntry, NoteOp, VersionVector};
 use crate::storage::{NoteRepository, NotebookSortProfile, SortableRfc3339};
 
-use super::convert::parse_note_log;
 use super::io::atomic_write;
 use super::pagination::PageCollector;
 use super::FsBackend;
@@ -394,7 +393,7 @@ impl NoteRepository for FsBackend {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
-        let limit = super::effective_page_size(page_size) as usize;
+        let limit = crate::storage::effective_page_size(page_size) as usize;
         let (ids, next) = self
             .with_note_index(|idx| {
                 let mut collector = PageCollector::new(limit, page_token.as_deref());
@@ -414,7 +413,7 @@ impl NoteRepository for FsBackend {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
-        let limit = super::effective_page_size(page_size) as usize;
+        let limit = crate::storage::effective_page_size(page_size) as usize;
         let (ids, next) = self
             .with_note_index(|idx| {
                 let mut collector = PageCollector::new(limit, page_token.as_deref());
@@ -435,7 +434,7 @@ impl NoteRepository for FsBackend {
         page_size: u32,
         page_token: Option<String>,
     ) -> Result<(Vec<Note>, Option<String>), StorageError> {
-        let limit = super::effective_page_size(page_size) as usize;
+        let limit = crate::storage::effective_page_size(page_size) as usize;
         let (ids, next) = self
             .with_note_index(|idx| {
                 let mut collector = PageCollector::new(limit, page_token.as_deref());

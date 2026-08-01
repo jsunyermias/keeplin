@@ -17,7 +17,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 
 use crate::error::StorageError;
-use crate::models::{now, Note, NoteTag, Notebook, Resource, Tag, SYSTEM_RESOURCE_NOTE_ID};
+use crate::models::{now, Change, Note, NoteTag, Notebook, Resource, Tag, SYSTEM_RESOURCE_NOTE_ID};
 use crate::storage::note_log::{self, VersionVector};
 use crate::storage::{
     NoteRepository, NotebookRepository, ResourceRepository, SyncBackend, TagRepository,

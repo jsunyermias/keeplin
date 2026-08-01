@@ -18,9 +18,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::error::StorageError;
-use crate::models::{Change, Notebook, Resource, Tag};
-use crate::storage::note_log::{NoteLogEntry, VersionVector};
+use crate::models::Change;
+use crate::storage::note_log::VersionVector;
 ```
 
 **What it does** — Owns filesystem journal serialization and Change conversion. This is a structural relocation from the former monolithic filesystem module; storage behavior, on-disk format version 8, serialization shapes, conflict resolution, and public `storage::fs::FsBackend` API are unchanged.

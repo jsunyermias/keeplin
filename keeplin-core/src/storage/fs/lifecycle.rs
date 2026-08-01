@@ -7,7 +7,6 @@ use tokio::sync::{Mutex, RwLock};
 use crate::error::StorageError;
 use crate::models::new_id;
 
-use super::notes::NoteMetaIndex;
 use super::FsBackend;
 
 // md:impl FsBackend
