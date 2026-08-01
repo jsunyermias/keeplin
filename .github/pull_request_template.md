@@ -2,6 +2,25 @@
 
 <!-- What changes, why, and who is affected? -->
 
+## Companion read before the code
+
+Mandatory whenever the diff touches a supported source file. `Check pull-request review
+governance` verifies the marker exists in the repository; a fabricated one fails.
+
+- Companion marker preserved: `// md:...`
+- Invariant it preserves:
+- Test fails when the fix is reverted: Sí / No / No aplica
+
+## Soft-rail exception
+
+See `AGENTS.md` § "Protocolo de Excepción Secuencial". Leave `No` unless the maintainer
+walked all three steps for **this** pull request.
+
+- Soft-rail exception invoked: No
+- Step 1 comment:
+- Step 2 comment:
+- Step 3 comment:
+
 ## Linked work
 
 - Issue:
@@ -55,6 +74,8 @@ the sole source.
 
 - Reviewer (human or model family):
 - Implementer (human or model family):
+- Reviewer family (claude / codex / kimi / gemini / llama / mistral / human):
+- Implementer family (claude / codex / kimi / gemini / llama / mistral / human):
 - Prompt/checklist used: `docs/prompts/0.C-prompt-revision-seguridad.md`
 - [ ] Reviewer is independent from the implementer.
 - [ ] Blocking findings are resolved and conversations are closed.

@@ -6466,6 +6466,50 @@
     {
       "companion": {
         "origin": "EXTRACTED",
+        "value": "scripts/check-review-debt.sh.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "check-review-debt"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`scripts/check-review-debt.sh` — cap on open review debt"
+      },
+      "risk": {
+        "basis": [
+          "no elevated-risk term matched"
+        ],
+        "origin": "INFERRED",
+        "value": "normal"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "scripts/check-review-debt.sh"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test --workspace"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
         "value": "scripts/context-pack.md"
       },
       "cross_repo_contracts": {

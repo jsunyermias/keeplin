@@ -1,10 +1,12 @@
 name: CI
 
 on:
+  # `claude/**` is deliberately absent. A push run and a pull-request run publish the
+  # same `Check, Test & Lint` check for the same commit, and the push run skips the
+  # governance step — so a governance failure could be overwritten by a later green.
   push:
     branches:
       - main
-      - "claude/**"
   pull_request:
     branches:
       - main
@@ -29,12 +31,18 @@ jobs:
       - name: Test pull-request governance check
         run: node --test .github/scripts/check-review-governance.test.js
 
+      - name: Cap open review debt
+        run: ./scripts/check-review-debt.sh
+        env:
+          MAX_OPEN_REVIEW_DEBT: "2"
+
       - name: Check pull-request review governance
         if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('node:fs');
+            const { execSync } = require('node:child_process');
             const {
               DEBT_PATH,
               evaluateReviewGovernance,
@@ -50,6 +58,26 @@ jobs:
               },
               response => response.data.map(file => file.filename),
             );
+            // Maintainer comments carrying the sequential-exception phrases.
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                per_page: 100,
+              },
+              response => response.data.map(c => ({ id: c.id, body: c.body || '' })),
+            );
+
+            // Every `// md:` marker that actually exists, so a fabricated one fails.
+            const repoMarkers = execSync(
+              "grep -rho '// md:.*' --include='*.rs' . | sed 's/[[:space:]]*$//' | sort -u",
+              { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
+            ).split('\n').map(s => s.trim()).filter(Boolean);
+
+            const touchesCode = changedFiles.some(f => /\.(rs|sh|sql|py)$/.test(f));
+
             const debtContent = fs.existsSync(DEBT_PATH)
               ? fs.readFileSync(DEBT_PATH, 'utf8')
               : '';
@@ -57,6 +85,9 @@ jobs:
               body: context.payload.pull_request.body || '',
               changedFiles,
               debtContent,
+              comments,
+              repoMarkers,
+              touchesCode,
               repository: `${context.repo.owner}/${context.repo.repo}`,
               pullNumber: context.issue.number,
             });

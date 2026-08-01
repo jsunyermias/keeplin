@@ -11,7 +11,7 @@ start with `claude/`.
 
 | Event | Branches / filters |
 |-------|--------------------|
-| `push` | `main`, `claude/**` |
+| `push` | `main` only. `claude/**` was removed: a push run and a pull-request run publish the same `Check, Test & Lint` check for the same commit, and the push run skips the governance step, so a governance failure could be overwritten by a later green |
 | `pull_request` | target branch: `main`; events `opened`, `synchronize`, `reopened`, `edited`, `ready_for_review` |
 
 The workflow has read-only access to repository contents and pull-request metadata. Body
@@ -35,7 +35,8 @@ Runs on `ubuntu-latest`.
 |------|-----------------|---------|
 | Checkout | `actions/checkout@v4` | Clones the repository at the triggering commit |
 | Test pull-request governance check | `node --test .github/scripts/check-review-governance.test.js` | Exercises the reviewed and maintainer-waiver paths, including negative cases |
-| Check pull-request review governance | `actions/github-script@v7` (non-draft pull requests only) | Requires either an independent review with evidence, or a complete maintainer waiver whose exact PR is recorded in the changed `docs/review-debt.md` |
+| Cap open review debt | `./scripts/check-review-debt.sh` (`MAX_OPEN_REVIEW_DEBT: 2`) | Fails above two open entries in `docs/review-debt.md`. A waiver defers a review; past the cap the repository stops accepting new code until the backlog is paid down |
+| Check pull-request review governance | `actions/github-script@v7` (non-draft pull requests only) | Requires an independent review with evidence from a **different model family**, or a complete maintainer waiver whose exact PR is recorded in the changed `docs/review-debt.md`. Also enforces the companion-marker citation, the revert answer, and the sequential-exception protocol |
 | Install Python | `actions/setup-python@v5` (`3.12`) | Provides the standard-library runtime used by the deterministic companion checks |
 | Check companion docs | `./scripts/check-docs.sh` | Enforces structure, exact source↔fence fidelity and the generated context manifest (the two-layer navigation model) |
 | Test companion tooling | `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` | Exercises syntax fixtures, drift/error detection, fence-only sync and reproducible packs |

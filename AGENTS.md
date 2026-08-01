@@ -258,3 +258,52 @@ Both repositories require changes through PRs, required status checks on the exa
 candidate, resolved conversations, and protection against force-pushes and deletion. The
 maintainer performs merges. See `CONTRIBUTING.md` for the contributor flow and repository
 settings that enforce it.
+
+## Protocolo de Excepción Secuencial
+
+Un rail blando se levanta solo por este protocolo. No hay otra vía. Un agente que pida una
+excepción por cualquier otro medio está incumpliendo esta sección.
+
+### Los tres pasos
+
+El agente abre la petición en un comentario del pull request, con este formato exacto:
+
+    SOLICITUD DE EXCEPCIÓN
+    Rail: <el rail blando concreto>
+    Por qué no puede cumplirse: <una frase>
+    Qué se pierde si se levanta: <una frase>
+    Alternativa descartada: <una frase>
+
+El mantenedor responde en **tres comentarios separados**, uno por paso, en orden:
+
+| Paso | Frase exacta del mantenedor | Qué confirma |
+|---|---|---|
+| 1 | `EXCEPCIÓN ACEPTADA PASO 1` | He leído qué rail se levanta y por qué |
+| 2 | `EXCEPCIÓN ACEPTADA PASO 2` | He leído qué se pierde y acepto perderlo |
+| 3 | `EXCEPCIÓN ACEPTADA PASO 3` | Autorizo esta excepción, solo para este pull request |
+
+La frase va sola en su comentario, sin nada más. Un paso sin su comentario propio no cuenta.
+
+### Regla anti-lotes
+
+**Un comentario, un paso.** Está prohibido pedir varias excepciones en un mismo comentario,
+responder a varios pasos en un mismo comentario, reutilizar los pasos de una excepción anterior
+para otra, o arrastrar una excepción de un pull request a otro.
+
+`Check pull-request review governance` rechaza el pull request si las tres frases comparten
+comentario, si llegan desordenadas, si falta alguna, o si el cuerpo del pull request no enlaza
+los tres identificadores de comentario.
+
+Una excepción caduca al fusionar. La siguiente empieza por el paso 1.
+
+### Trazabilidad
+
+El cuerpo del pull request declara `Soft-rail exception invoked: Sí` y enlaza los tres
+comentarios. Sin esos enlaces la excepción no existe, por mucho que las frases estén escritas.
+
+### Lo que este protocolo no puede garantizar
+
+Todos los actores de este repositorio publican bajo la misma cuenta de GitHub. Ningún check
+puede distinguir un comentario escrito por el mantenedor de uno escrito por un agente. Lo que el
+check sí impide es el lote: tres decisiones separadas exigen tres comentarios separados, en
+orden. Quien quiera saltarse esto tiene que falsificar tres actos, no uno.
