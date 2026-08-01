@@ -287,7 +287,7 @@ this companion.
 - `keeplin-core/src/migrate.rs` — one-shot state copy between backends (EXTRACTED: references×2)
 - `keeplin-core/src/ordering.rs` — the inbox, pinning, manual ordering, and starring (EXTRACTED: references×11)
 - `keeplin-core/src/storage/db/` — DbBackend across the ten modules that touch LibSQL; `convert.rs` is I/O-free and does not (INFERRED: the AST pass reports no file-level edge for this tree)
-- `keeplin-core/src/storage/fs.rs` — FsBackend (filesystem storage) (EXTRACTED: references×75)
+- `keeplin-core/src/storage/fs/` — FsBackend directory module (INFERRED)
 - `keeplin-core/src/sync/engine.rs` — SyncEngine (EXTRACTED: references×2)
 - `keeplin-daemon/src/event_backend.rs` — `EventBackend` change-publishing decorator (EXTRACTED: references×37)
 - `keeplin-daemon/src/metrics.rs` — operational metrics (EXTRACTED: references×38)

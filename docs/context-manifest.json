@@ -539,10 +539,6 @@
         },
         {
           "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/fs.rs"
-        },
-        {
-          "origin": "EXTRACTED",
           "path": "keeplin-core/src/sync/engine.rs"
         },
         {
@@ -578,10 +574,6 @@
         {
           "origin": "EXTRACTED",
           "path": "keeplin-core/src/migrate.rs"
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/fs.rs"
         },
         {
           "origin": "EXTRACTED",
@@ -817,11 +809,6 @@
           "origin": "EXTRACTED",
           "path": "keeplin-core/src/storage/backend.rs",
           "required": false
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/fs.rs",
-          "required": false
         }
       ],
       "direct_dependents": [],
@@ -927,11 +914,6 @@
         {
           "origin": "EXTRACTED",
           "path": "keeplin-core/src/storage/backend.rs",
-          "required": false
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/fs.rs",
           "required": false
         }
       ],
@@ -1498,10 +1480,6 @@
         },
         {
           "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/fs.rs"
-        },
-        {
-          "origin": "EXTRACTED",
           "path": "keeplin-core/src/storage/note_log.rs"
         },
         {
@@ -1545,10 +1523,6 @@
         {
           "origin": "EXTRACTED",
           "path": "keeplin-core/src/storage/backend.rs"
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/fs.rs"
         },
         {
           "origin": "EXTRACTED",
@@ -1677,11 +1651,6 @@
         {
           "origin": "EXTRACTED",
           "path": "keeplin-core/src/storage/backend.rs",
-          "required": false
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/fs.rs",
           "required": false
         }
       ],
@@ -1837,10 +1806,6 @@
         },
         {
           "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/fs.rs"
-        },
-        {
-          "origin": "EXTRACTED",
           "path": "keeplin-core/src/sync/engine.rs"
         },
         {
@@ -1888,10 +1853,6 @@
         {
           "origin": "EXTRACTED",
           "path": "keeplin-core/src/migrate.rs"
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/fs.rs"
         },
         {
           "origin": "EXTRACTED",
@@ -2952,7 +2913,7 @@
     {
       "companion": {
         "origin": "EXTRACTED",
-        "value": "keeplin-core/src/storage/fs.md"
+        "value": "keeplin-core/src/storage/fs/convert.md"
       },
       "cross_repo_contracts": {
         "origin": "INFERRED",
@@ -2960,53 +2921,585 @@
       },
       "direct_dependencies": [
         {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/error.rs",
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs/mod.rs",
           "required": false
         },
         {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/models.rs",
-          "required": false
-        },
-        {
-          "origin": "EXTRACTED",
+          "origin": "INFERRED",
           "path": "keeplin-core/src/storage/backend.rs",
-          "required": false
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/note_log.rs",
-          "required": false
+          "required": true
         }
       ],
-      "direct_dependents": [
-        {
-          "origin": "INFERRED",
-          "path": "keeplin-daemon/src/main.rs"
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/tests/fs_backend.rs"
-        }
-      ],
-      "high_risk_dependents": [
-        {
-          "origin": "INFERRED",
-          "path": "keeplin-daemon/src/main.rs"
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/tests/fs_backend.rs"
-        }
-      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
       "invariants": {
         "origin": "INFERRED",
         "value": [
           {
-            "basis": "dependency-expectation",
+            "basis": "authored-invariant",
             "origin": "INFERRED",
-            "value": "the parent keeps them at module scope; a rename or a move into a submodule breaks these tests at compile time, which is the intended early signal."
+            "value": "This split does not change the on-disk format; `FsBackend::FORMAT_VERSION` remains 8."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The public backend path remains `crate::storage::fs::FsBackend`."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "Filesystem writes, journal replay, version-vector resolution, tombstones, and resource hashing preserve their pre-split behavior."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "LogEntry",
+          "fn default_entity_type",
+          "EpochHeader",
+          "fn parse_epoch_header",
+          "fn fs_tombstone_value",
+          "fn fs_assoc_value",
+          "fn snapshot_entry_from_sidecar",
+          "fn snapshot_entry_from_value",
+          "fn fs_assoc_from_data",
+          "fn fs_tombstone_from_data",
+          "fn log_entry_to_change"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/fs/convert.rs` — filesystem journal serialization and Change conversion"
+      },
+      "risk": {
+        "basis": [
+          "format_version"
+        ],
+        "origin": "INFERRED",
+        "value": "migration"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/convert.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/history.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": true
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "This split does not change the on-disk format; `FsBackend::FORMAT_VERSION` remains 8."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The public backend path remains `crate::storage::fs::FsBackend`."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "Filesystem writes, journal replay, version-vector resolution, tombstones, and resource hashing preserve their pre-split behavior."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "impl FsBackend (global history)",
+          "impl FsBackend (global history) > fn read_all_global_entries",
+          "impl HistoryRepository for FsBackend",
+          "impl HistoryRepository for FsBackend > fn note_history",
+          "impl HistoryRepository for FsBackend > fn notebook_history",
+          "fn sort_and_cap"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/fs/history.rs` — journal-derived HistoryRepository"
+      },
+      "risk": {
+        "basis": [
+          "format_version"
+        ],
+        "origin": "INFERRED",
+        "value": "migration"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/history.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/io.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": true
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "This split does not change the on-disk format; `FsBackend::FORMAT_VERSION` remains 8."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The public backend path remains `crate::storage::fs::FsBackend`."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "Filesystem writes, journal replay, version-vector resolution, tombstones, and resource hashing preserve their pre-split behavior."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "fn atomic_write",
+          "impl FsBackend",
+          "impl FsBackend > fn write_sidecar",
+          "impl FsBackend > fn read_sidecar"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/fs/io.rs` — atomic writes and generic sidecar I/O"
+      },
+      "risk": {
+        "basis": [
+          "format_version"
+        ],
+        "origin": "INFERRED",
+        "value": "migration"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/io.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/journal.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": true
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "This split does not change the on-disk format; `FsBackend::FORMAT_VERSION` remains 8."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The public backend path remains `crate::storage::fs::FsBackend`."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "Filesystem writes, journal replay, version-vector resolution, tombstones, and resource hashing preserve their pre-split behavior."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "impl FsBackend",
+          "impl FsBackend > fn device_log_path",
+          "impl FsBackend > fn append_log",
+          "impl FsBackend > fn maybe_compact_global_log_locked",
+          "impl FsBackend > fn own_log_entry_count",
+          "impl FsBackend > fn read_own_epoch",
+          "impl FsBackend > fn compact_global_log_locked",
+          "impl FsBackend > fn build_global_snapshot",
+          "impl FsBackend > fn log_offset_path",
+          "impl FsBackend > fn read_log_offset",
+          "impl FsBackend > fn write_log_offset",
+          "impl FsBackend > fn read_log_header",
+          "impl FsBackend > fn read_other_logs_since",
+          "impl FsBackend > fn read_new_entries"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/fs/journal.rs` — global NDJSON journal, compaction, epochs, and cursors"
+      },
+      "risk": {
+        "basis": [
+          "format_version"
+        ],
+        "origin": "INFERRED",
+        "value": "migration"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/journal.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/lifecycle.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": true
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "This split does not change the on-disk format; `FsBackend::FORMAT_VERSION` remains 8."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The public backend path remains `crate::storage::fs::FsBackend`."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "Filesystem behavior remains unchanged."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "impl FsBackend",
+          "impl FsBackend > fn new",
+          "impl FsBackend > fn sweep_orphan_tmp_files",
+          "impl FsBackend > fn scan_sync_conflicts",
+          "impl FsBackend > fn sweep_tmp_in_dir",
+          "impl FsBackend > fn format_version_path",
+          "impl FsBackend > fn ensure_format_version",
+          "impl FsBackend > fn apply_format_migration",
+          "impl FsBackend > fn read_or_create_device_id"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/fs/lifecycle.rs` — startup hygiene and on-disk format lifecycle"
+      },
+      "risk": {
+        "basis": [
+          "format_version"
+        ],
+        "origin": "INFERRED",
+        "value": "migration"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/lifecycle.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/mod.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": true
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "This split does not change the on-disk format; `FsBackend::FORMAT_VERSION` remains 8."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The public backend path remains `crate::storage::fs::FsBackend`."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "Filesystem writes, journal replay, version-vector resolution, tombstones, and resource hashing preserve their pre-split behavior."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "FsBackend"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/fs/mod.rs` — filesystem backend root type and module topology"
+      },
+      "risk": {
+        "basis": [
+          "format_version"
+        ],
+        "origin": "INFERRED",
+        "value": "migration"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/mod.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/notebooks.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": true
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "This split does not change the on-disk format; `FsBackend::FORMAT_VERSION` remains 8."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The public backend path remains `crate::storage::fs::FsBackend`."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "Filesystem writes, journal replay, version-vector resolution, tombstones, and resource hashing preserve their pre-split behavior."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "impl FsBackend",
+          "impl FsBackend > fn notebook_path",
+          "impl NotebookRepository for FsBackend",
+          "impl NotebookRepository for FsBackend > fn create_notebook",
+          "impl NotebookRepository for FsBackend > fn read_notebook",
+          "impl NotebookRepository for FsBackend > fn update_notebook",
+          "impl NotebookRepository for FsBackend > fn delete_notebook",
+          "impl NotebookRepository for FsBackend > fn list_notebooks"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/fs/notebooks.rs` — NotebookRepository filesystem sidecars"
+      },
+      "risk": {
+        "basis": [
+          "format_version"
+        ],
+        "origin": "INFERRED",
+        "value": "migration"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/notebooks.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/notes.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": true
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "This split does not change the on-disk format; `FsBackend::FORMAT_VERSION` remains 8."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The public backend path remains `crate::storage::fs::FsBackend`."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "Note merge, projection, and pagination behavior remains unchanged."
           }
         ]
       },
@@ -3021,76 +3514,13 @@
           "NoteMetaIndex",
           "impl NoteMetaIndex",
           "impl NoteMetaIndex > fn apply",
-          "NoteTagState",
-          "LogEntry",
-          "fn default_entity_type",
-          "EpochHeader",
-          "fn parse_epoch_header",
-          "fn fs_tombstone_value",
-          "fn content_hash",
-          "StoredResource",
-          "fn fs_assoc_value",
-          "fn snapshot_entry_from_sidecar",
-          "fn snapshot_entry_from_value",
-          "fn fs_assoc_from_data",
-          "fn fs_tombstone_from_data",
-          "fn log_entry_to_change",
           "fn parse_note_log",
-          "fn atomic_write",
-          "SyncState",
-          "FsBackend",
           "impl FsBackend",
-          "impl FsBackend > fn new",
-          "impl FsBackend > fn sweep_orphan_tmp_files",
-          "impl FsBackend > fn scan_sync_conflicts",
-          "impl FsBackend > fn sweep_tmp_in_dir",
-          "impl FsBackend > fn format_version_path",
-          "impl FsBackend > fn ensure_format_version",
-          "impl FsBackend > fn apply_format_migration",
           "impl FsBackend > fn note_dir",
           "impl FsBackend > fn note_md_path",
           "impl FsBackend > fn note_meta_path",
           "impl FsBackend > fn note_log_path",
-          "impl FsBackend > fn device_log_path",
-          "impl FsBackend > fn notebook_path",
-          "impl FsBackend > fn tag_path",
-          "impl FsBackend > fn note_tag_dir",
-          "impl FsBackend > fn note_tag_path",
-          "impl FsBackend > fn note_resources_dir",
-          "impl FsBackend > fn resource_meta_path",
-          "impl FsBackend > fn resource_blob_path",
-          "impl FsBackend > fn all_note_ids",
-          "impl FsBackend > fn note_resource_ids",
-          "impl FsBackend > fn locate_resource_note",
-          "impl FsBackend > fn read_resource_sidecar",
-          "impl FsBackend > fn read_or_create_device_id",
-          "impl FsBackend > fn append_log",
-          "impl FsBackend > fn maybe_compact_global_log_locked",
-          "impl FsBackend > fn own_log_entry_count",
-          "impl FsBackend > fn read_own_epoch",
-          "impl FsBackend > fn compact_global_log_locked",
-          "impl FsBackend > fn build_global_snapshot",
-          "impl FsBackend > fn log_offset_path",
-          "impl FsBackend > fn read_log_offset",
-          "impl FsBackend > fn write_log_offset",
-          "impl FsBackend > fn read_log_header",
-          "impl FsBackend > fn read_other_logs_since",
-          "impl FsBackend > fn read_new_entries",
-          "impl FsBackend > fn write_sidecar",
           "impl FsBackend > fn write_note_log",
-          "impl FsBackend > fn read_sidecar",
-          "impl FsBackend > fn sidecar_vv",
-          "impl FsBackend > fn next_sidecar_vv",
-          "impl FsBackend > fn sidecar_incoming_wins",
-          "impl FsBackend > fn read_assoc_state",
-          "impl FsBackend > fn next_assoc_vv",
-          "impl FsBackend > fn assoc_incoming_wins",
-          "impl FsBackend > fn write_assoc_state",
-          "impl FsBackend > fn read_resource_meta",
-          "impl FsBackend > fn next_resource_vv",
-          "impl FsBackend > fn resource_incoming_wins",
-          "impl FsBackend > fn cascade_stamp_resources",
-          "impl FsBackend > fn cascade_unstamp_resources",
           "impl FsBackend > fn note_vv",
           "impl FsBackend > fn read_note_logs",
           "impl FsBackend > fn merge_note",
@@ -3102,6 +3532,86 @@
           "impl FsBackend > fn materialize_page",
           "impl FsBackend > fn append_note_op",
           "impl FsBackend > fn collect_advanced_notes",
+          "impl NoteRepository for FsBackend",
+          "impl NoteRepository for FsBackend > fn create_note",
+          "impl NoteRepository for FsBackend > fn read_note",
+          "impl NoteRepository for FsBackend > fn update_note",
+          "impl NoteRepository for FsBackend > fn delete_note",
+          "impl NoteRepository for FsBackend > fn list_notes",
+          "impl NoteRepository for FsBackend > fn list_notes_in_notebook",
+          "impl NoteRepository for FsBackend > fn list_starred_notes",
+          "impl NoteRepository for FsBackend > fn notebook_sort_profile"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/fs/notes.rs` — per-device note logs, projections, indexing, and NoteRepository"
+      },
+      "risk": {
+        "basis": [
+          "format_version"
+        ],
+        "origin": "INFERRED",
+        "value": "migration"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/notes.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/pagination.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": true
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "This split does not change the on-disk format; `FsBackend::FORMAT_VERSION` remains 8."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The public backend path remains `crate::storage::fs::FsBackend`."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "Filesystem writes, journal replay, version-vector resolution, tombstones, and resource hashing preserve their pre-split behavior."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
           "KeyedItem",
           "impl PartialEq for KeyedItem",
           "impl Eq for KeyedItem",
@@ -3112,38 +3622,247 @@
           "impl PageCollector > fn new",
           "impl PageCollector > fn push",
           "impl PageCollector > fn into_page",
-          "fn paginate",
-          "impl NoteRepository for FsBackend",
-          "impl NoteRepository for FsBackend > fn create_note",
-          "impl NoteRepository for FsBackend > fn read_note",
-          "impl NoteRepository for FsBackend > fn update_note",
-          "impl NoteRepository for FsBackend > fn delete_note",
-          "impl NoteRepository for FsBackend > fn list_notes",
-          "impl NoteRepository for FsBackend > fn list_notes_in_notebook",
-          "impl NoteRepository for FsBackend > fn list_starred_notes",
-          "impl NoteRepository for FsBackend > fn notebook_sort_profile",
-          "impl NotebookRepository for FsBackend",
-          "impl NotebookRepository for FsBackend > fn create_notebook",
-          "impl NotebookRepository for FsBackend > fn read_notebook",
-          "impl NotebookRepository for FsBackend > fn update_notebook",
-          "impl NotebookRepository for FsBackend > fn delete_notebook",
-          "impl NotebookRepository for FsBackend > fn list_notebooks",
-          "impl TagRepository for FsBackend",
-          "impl TagRepository for FsBackend > fn create_tag",
-          "impl TagRepository for FsBackend > fn read_tag",
-          "impl TagRepository for FsBackend > fn update_tag",
-          "impl TagRepository for FsBackend > fn delete_tag",
-          "impl TagRepository for FsBackend > fn list_tags",
-          "impl TagRepository for FsBackend > fn add_note_tag",
-          "impl TagRepository for FsBackend > fn remove_note_tag",
-          "impl TagRepository for FsBackend > fn list_note_tags",
+          "fn paginate"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/fs/pagination.rs` — cursor pagination helpers"
+      },
+      "risk": {
+        "basis": [
+          "format_version"
+        ],
+        "origin": "INFERRED",
+        "value": "migration"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/pagination.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/resources.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": true
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "This split does not change the on-disk format; `FsBackend::FORMAT_VERSION` remains 8."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The public backend path remains `crate::storage::fs::FsBackend`."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "Filesystem writes, journal replay, version-vector resolution, tombstones, and resource hashing preserve their pre-split behavior."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "fn content_hash",
+          "StoredResource",
+          "impl FsBackend",
+          "impl FsBackend > fn note_resources_dir",
+          "impl FsBackend > fn resource_meta_path",
+          "impl FsBackend > fn resource_blob_path",
+          "impl FsBackend > fn all_note_ids",
+          "impl FsBackend > fn note_resource_ids",
+          "impl FsBackend > fn locate_resource_note",
+          "impl FsBackend > fn read_resource_sidecar",
+          "impl FsBackend > fn read_resource_meta",
+          "impl FsBackend > fn next_resource_vv",
+          "impl FsBackend > fn resource_incoming_wins",
+          "impl FsBackend > fn cascade_stamp_resources",
+          "impl FsBackend > fn cascade_unstamp_resources",
           "impl ResourceRepository for FsBackend",
           "impl ResourceRepository for FsBackend > fn create_resource",
           "impl ResourceRepository for FsBackend > fn read_resource",
           "impl ResourceRepository for FsBackend > fn delete_resource",
           "impl ResourceRepository for FsBackend > fn list_resources",
           "impl ResourceRepository for FsBackend > fn list_resources_for_note",
-          "impl ResourceRepository for FsBackend > fn purge_deleted_resources",
+          "impl ResourceRepository for FsBackend > fn purge_deleted_resources"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/fs/resources.rs` — content-addressed attachment storage"
+      },
+      "risk": {
+        "basis": [
+          "format_version"
+        ],
+        "origin": "INFERRED",
+        "value": "migration"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/resources.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/sidecars.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": true
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "This split does not change the on-disk format; `FsBackend::FORMAT_VERSION` remains 8."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The public backend path remains `crate::storage::fs::FsBackend`."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "Filesystem writes, journal replay, version-vector resolution, tombstones, and resource hashing preserve their pre-split behavior."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "impl FsBackend",
+          "impl FsBackend > fn sidecar_vv",
+          "impl FsBackend > fn next_sidecar_vv",
+          "impl FsBackend > fn sidecar_incoming_wins"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/fs/sidecars.rs` — version-vector resolution for notebook and tag sidecars"
+      },
+      "risk": {
+        "basis": [
+          "format_version"
+        ],
+        "origin": "INFERRED",
+        "value": "migration"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/sidecars.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/sync.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": true
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "This split does not change the on-disk format; `FsBackend::FORMAT_VERSION` remains 8."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The public backend path remains `crate::storage::fs::FsBackend`."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "Filesystem writes, journal replay, version-vector resolution, tombstones, and resource hashing preserve their pre-split behavior."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "SyncState",
           "impl SyncBackend for FsBackend",
           "impl SyncBackend for FsBackend > fn get_changes_since",
           "impl SyncBackend for FsBackend > fn apply_change",
@@ -3152,46 +3871,181 @@
           "impl SyncBackend for FsBackend > fn send_changes",
           "impl SyncBackend for FsBackend > fn receive_changes",
           "impl SyncBackend for FsBackend > fn get_device_id",
-          "impl SyncBackend for FsBackend > fn prune_change_journal",
-          "impl FsBackend (global history)",
-          "impl FsBackend (global history) > fn read_all_global_entries",
-          "impl HistoryRepository for FsBackend",
-          "impl HistoryRepository for FsBackend > fn note_history",
-          "impl HistoryRepository for FsBackend > fn notebook_history",
-          "fn sort_and_cap",
-          "mod tests",
-          "mod tests > imports",
-          "mod tests > fn concurrent_same_note_updates_keep_every_log_entry",
-          "mod tests > fn read_does_not_rewrite_projection",
-          "mod tests > fn list_notes_pages_match_full_walk",
-          "mod tests > fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones",
-          "mod tests > fn failed_atomic_write_cleans_up_its_temp_file",
-          "mod tests > fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it",
-          "mod tests > fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair",
-          "mod tests > fn detects_syncthing_conflict_copies_without_removing_them",
-          "mod tests > fn purge_reclaims_old_tombstoned_payloads_only",
-          "mod tests > fn attachments_live_as_content_hashed_knrs_in_their_note_folder",
-          "mod tests > fn identical_attachments_in_a_note_share_one_blob",
-          "mod tests > fn fresh_store_is_stamped_current_version",
-          "mod tests > fn migrates_a_legacy_stamp_and_preserves_data",
-          "mod tests > fn refuses_to_open_a_newer_format"
+          "impl SyncBackend for FsBackend > fn prune_change_journal"
         ]
       },
       "purpose": {
         "origin": "EXTRACTED",
-        "value": "`storage/fs.rs` — FsBackend (filesystem storage)"
+        "value": "`storage/fs/sync.rs` — passive filesystem SyncBackend"
       },
       "risk": {
         "basis": [
-          "backend",
-          "storage"
+          "format_version"
         ],
         "origin": "INFERRED",
-        "value": "persistence"
+        "value": "migration"
       },
       "source": {
         "origin": "EXTRACTED",
-        "value": "keeplin-core/src/storage/fs.rs"
+        "value": "keeplin-core/src/storage/fs/sync.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/tags.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/fs/mod.rs",
+          "required": false
+        },
+        {
+          "origin": "INFERRED",
+          "path": "keeplin-core/src/storage/backend.rs",
+          "required": true
+        }
+      ],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "This split does not change the on-disk format; `FsBackend::FORMAT_VERSION` remains 8."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "The public backend path remains `crate::storage::fs::FsBackend`."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "Filesystem behavior remains unchanged."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "NoteTagState",
+          "impl FsBackend",
+          "impl FsBackend > fn tag_path",
+          "impl FsBackend > fn note_tag_dir",
+          "impl FsBackend > fn note_tag_path",
+          "impl FsBackend > fn read_assoc_state",
+          "impl FsBackend > fn next_assoc_vv",
+          "impl FsBackend > fn assoc_incoming_wins",
+          "impl FsBackend > fn write_assoc_state",
+          "impl TagRepository for FsBackend",
+          "impl TagRepository for FsBackend > fn create_tag",
+          "impl TagRepository for FsBackend > fn read_tag",
+          "impl TagRepository for FsBackend > fn update_tag",
+          "impl TagRepository for FsBackend > fn delete_tag",
+          "impl TagRepository for FsBackend > fn list_tags",
+          "impl TagRepository for FsBackend > fn add_note_tag",
+          "impl TagRepository for FsBackend > fn remove_note_tag",
+          "impl TagRepository for FsBackend > fn list_note_tags"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/fs/tags.rs` — tag and note-tag association storage"
+      },
+      "risk": {
+        "basis": [
+          "format_version"
+        ],
+        "origin": "INFERRED",
+        "value": "migration"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/tags.rs"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test -p keeplin-core"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/tests.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": [
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "Assertions and fixture operations remain identical to the pre-split inline tests."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "`FsBackend::FORMAT_VERSION` remains 8."
+          }
+        ]
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "Overview",
+          "fn concurrent_same_note_updates_keep_every_log_entry",
+          "fn read_does_not_rewrite_projection",
+          "fn list_notes_pages_match_full_walk",
+          "fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones",
+          "fn failed_atomic_write_cleans_up_its_temp_file",
+          "fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it",
+          "fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair",
+          "fn detects_syncthing_conflict_copies_without_removing_them",
+          "fn purge_reclaims_old_tombstoned_payloads_only",
+          "fn attachments_live_as_content_hashed_knrs_in_their_note_folder",
+          "fn identical_attachments_in_a_note_share_one_blob",
+          "fn fresh_store_is_stamped_current_version",
+          "fn migrates_a_legacy_stamp_and_preserves_data",
+          "fn refuses_to_open_a_newer_format"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`storage/fs/tests.rs` — filesystem backend regression tests"
+      },
+      "risk": {
+        "basis": [
+          "format_version"
+        ],
+        "origin": "INFERRED",
+        "value": "migration"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "keeplin-core/src/storage/fs/tests.rs"
       },
       "tests": {
         "origin": "INFERRED",
@@ -3286,10 +4140,6 @@
       "direct_dependents": [
         {
           "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/fs.rs"
-        },
-        {
-          "origin": "EXTRACTED",
           "path": "keeplin-core/tests/db_backend.rs"
         },
         {
@@ -3298,10 +4148,6 @@
         }
       ],
       "high_risk_dependents": [
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/fs.rs"
-        },
         {
           "origin": "EXTRACTED",
           "path": "keeplin-core/tests/db_backend.rs"
@@ -3746,11 +4592,6 @@
           "origin": "EXTRACTED",
           "path": "keeplin-core/src/encryption.rs",
           "required": false
-        },
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/fs.rs",
-          "required": false
         }
       ],
       "direct_dependents": [],
@@ -3822,11 +4663,6 @@
         "value": []
       },
       "direct_dependencies": [
-        {
-          "origin": "EXTRACTED",
-          "path": "keeplin-core/src/storage/fs.rs",
-          "required": false
-        },
         {
           "origin": "EXTRACTED",
           "path": "keeplin-core/src/storage/note_log.rs",

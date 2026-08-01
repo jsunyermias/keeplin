@@ -58,7 +58,7 @@ EventBackend( LinkingBackend( [EncryptedBackend]( Fs | Db ) ) )
 
 For a one‑page tour of how it all fits together, read
 [`ARCHITECTURE.md`](ARCHITECTURE.md). Every `.rs` source file also has a companion `.md`
-describing it in depth (e.g. [`keeplin-core/src/storage/fs.md`](keeplin-core/src/storage/fs.md),
+describing it in depth (e.g. [`keeplin-core/src/storage/fs/mod.md`](keeplin-core/src/storage/fs/mod.md),
 [`keeplin-core/src/storage/note_log.md`](keeplin-core/src/storage/note_log.md)). When adding or
 changing a file, keep its companion current — the templates and conventions live in
 [`docs/templates/`](docs/templates/).

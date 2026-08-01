@@ -1066,7 +1066,7 @@ this companion.
 - `keeplin-core/src/ordering.rs` — the Inbox, pinning, manual ordering, and starring (EXTRACTED: references×12; e.g. `create_placed()`, `move_note()`, `pin_note()`)
 - `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: references×1; e.g. `paginate_notes()`)
 - `keeplin-core/src/storage/db/` — DbBackend across its modules (EXTRACTED: edges to `mod.rs`, `migrations.rs`, `rows.rs`, `notes.rs`, `notebooks.rs`, `tags.rs`, `resources.rs`, `sync.rs`, `server.rs`; e.g. `.get_or_create_device_id()`, `.send_changes()`, `.create_note()`)
-- `keeplin-core/src/storage/fs.rs` — FsBackend (filesystem storage) (EXTRACTED: calls×1, references×37; e.g. `.read_or_create_device_id()`, `.append_note_op()`, `.create_note()`)
+- `keeplin-core/src/storage/fs/` — FsBackend directory module (INFERRED)
 - `keeplin-core/src/storage/note_log.rs` — version-vector resolution (EXTRACTED: imports_from×1, references×2; e.g. `Merged`, `NoteOp`)
 - `keeplin-core/src/sync/engine.rs` — SyncEngine (EXTRACTED: references×2; e.g. `run_sync()`, `.sync()`)
 - `keeplin-daemon/src/event_backend.rs` — `EventBackend` change-publishing decorator (EXTRACTED: references×30; e.g. `.create_note()`, `.list_notes()`, `.list_notes_in_notebook()`)
