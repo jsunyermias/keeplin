@@ -50,7 +50,7 @@ version and the wire protocol version move independently.
 
 ### Filesystem format v8 — attachments in their note's folder (#127)
 
-- **`FsBackend` attachment layout** (`keeplin-core/src/storage/fs.rs`): attachments
+- **`FsBackend` attachment layout** (`keeplin-core/src/storage/fs/`): attachments
   leave the global `resources/{uuid}/` pool and live under their owning note as
   `notes/{note_id}/resources/{hash}.knrs` (original bytes, named by a BLAKE2s-256
   content hash) plus a `notes/{note_id}/resources/{id}.meta.ndjson` sidecar

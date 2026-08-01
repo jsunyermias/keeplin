@@ -42,7 +42,7 @@ The module is intentionally **pure** (no I/O): the on-disk log types plus `merge
 **Dependencies** — `std::collections::BTreeMap`, `chrono`, `serde`,
 `crate::models::Note`.
 
-**Used by** — `storage/fs.rs` (log merge + append), `storage/db/sync.rs` (`resolve`
+**Used by** — `storage/fs/` (log merge + append), `storage/db/sync.rs` (`resolve`
 on every applied change), `models.rs` (every entity carries a `VersionVector`),
 `collab/protocol.rs`/`state.rs` (line versioning), keeplin-srv (pins this crate
 and calls `resolve` for its rows), backend integration tests.
@@ -457,7 +457,7 @@ value — incoming is stale, equal, or loses the tiebreak) or `Incoming`
 **Dependencies** — none.
 
 **Used by** — returned by `resolve`; matched in `storage/db/conflict.rs`,
-`storage/fs.rs` sidecar handling, and keeplin-srv.
+`storage/fs/` sidecar handling, and keeplin-srv.
 
 **Repeated context** — none.
 
@@ -515,7 +515,7 @@ arrival order):
 **Dependencies** — `dominates`, `Winner`.
 
 **Used by** — `storage/db/sync.rs::apply_change` for every entity kind;
-`storage/fs.rs` sidecar entities; keeplin-srv's store (same function via the
+`storage/fs/` sidecar entities; keeplin-srv's store (same function via the
 pinned crate); backend integration tests.
 
 **Repeated context** — this is why `apply_change` idempotency holds everywhere:
@@ -1089,7 +1089,7 @@ this companion.
 
 **Direct dependents** (files whose symbols reference this one)
 
-- `keeplin-core/src/storage/fs.rs` — FsBackend (filesystem storage) (EXTRACTED: references×2; e.g. `.read_note_logs()`, `.append_note_op()`)
+- `keeplin-core/src/storage/fs/` — FsBackend directory module (INFERRED)
 - `keeplin-core/tests/db_backend.rs` — DbBackend integration tests (EXTRACTED: calls×1; e.g. `delete_for_unknown_entity_leaves_a_tombstone_blocking_a_stale_create()`)
 - `keeplin-core/tests/fs_backend.rs` — FsBackend integration tests (EXTRACTED: calls×1; e.g. `delete_for_unknown_sidecar_entity_leaves_a_tombstone_blocking_a_stale_create()`)
 - `keeplin-core/src/storage/db/`, `keeplin-core/src/collab/*`, keeplin-srv — via `resolve`/`VersionVector` (INFERRED: fully-qualified paths the AST pass does not link; the graph does link `conflict.rs`)

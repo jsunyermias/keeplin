@@ -139,7 +139,7 @@ down to it; everything in between passes through. Pure, total, no errors.
 
 **Dependencies** — the two constants above.
 
-**Used by** — every list implementation in `storage/fs.rs` and in the repository
+**Used by** — every list implementation in `storage/fs/` and in the repository
 modules of `storage/db/`
 (notes, notebooks, tags, resources, history listings).
 
@@ -179,7 +179,7 @@ match remains best-effort, the same situation mixed-precision writers were alrea
 
 **Dependencies** — none (trait definition only).
 
-**Used by** — `storage/db/`, `storage/fs.rs`, and `storage/backend.rs` for every
+**Used by** — `storage/db/`, `storage/fs/`, and `storage/backend.rs` for every
 stored/compared timestamp; the `impl` below provides the only implementation.
 
 **Repeated context** — Timestamps-as-TEXT is a deliberate project convention (keeps
@@ -211,7 +211,7 @@ strings `to_rfc3339()` already produced, so old and new rows share the offset sh
 
 **Dependencies** — `chrono`.
 
-**Used by** — call sites in `db/` / `fs.rs` / `backend.rs` via the trait.
+**Used by** — call sites in `db/` / `fs/` / `backend.rs` via the trait.
 
 **Repeated context** — none beyond the trait's.
 

@@ -662,7 +662,7 @@ this companion.
 - `keeplin-core/src/error.rs` — error types (EXTRACTED: references×4; e.g. `StorageError`)
 - `keeplin-core/src/models.rs` — domain data types (EXTRACTED: references×4; e.g. `Note`, `Notebook`)
 - `keeplin-core/src/storage/backend.rs` — the `StorageBackend` supertrait (EXTRACTED: references×7; e.g. `EntityVersion`, `T`, `StorageBackend`)
-- `keeplin-core/src/storage/fs.rs` — FsBackend (filesystem storage) (EXTRACTED: imports_from×1, references×1; e.g. `FsBackend`)
+- `keeplin-core/src/storage/fs/` — FsBackend directory module (INFERRED)
 
 **Direct dependents** (files whose symbols reference this one)
 
