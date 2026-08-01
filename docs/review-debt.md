@@ -25,10 +25,12 @@ run: both are what the waiver already had.
 
 `scripts/check-docs.sh` verifies the shape of this registry on every run, because an entry
 nobody can act on is the same as no entry. Both sections below must exist with their exact
-column headers, every cell must be filled, every `Change` must link at least one merged
-pull request of either repository, every `Cleared` row must link the review that cleared
-it, and no pull request may sit in both sections. A row whose cells are all `—` marks a
-genuinely empty section and fails next to real entries.
+column headers, every cell must be filled, every `Change` must contain at least one
+pull-request URL of the expected shape for either repository, every `Cleared` row must
+carry an HTTP(S) link to the review that cleared it, and no pull request may appear more
+than once or sit in both sections. A row whose cells are all `—` marks a genuinely empty
+section and fails next to real entries. The check is offline: it validates link shape, not
+pull-request state.
 
 What no check can see is whether the review happened. A named reviewer and a linked thread
 are a claim; the registry keeps that claim visible and attributable, which is the most a
