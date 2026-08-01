@@ -456,8 +456,7 @@ async fn purge_reclaims_old_tombstoned_payloads_only() {
     assert_eq!(bytes, b"live", "live resources are untouched");
 
     assert_eq!(be.purge_deleted_resources(now()).await.unwrap(), 0);
-    let mut revived =
-        Resource::new(SYSTEM_RESOURCE_NOTE_ID, "revived", "text/plain", "r.txt", 3);
+    let mut revived = Resource::new(SYSTEM_RESOURCE_NOTE_ID, "revived", "text/plain", "r.txt", 3);
     revived.id = dead_id;
     be.create_resource(revived, b"new".to_vec()).await.unwrap();
     let (_, bytes) = be.read_resource(dead_id).await.unwrap();
