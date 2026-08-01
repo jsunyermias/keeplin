@@ -80,25 +80,14 @@ paths. Size/file limits are checked before writing.
 independent reviewer. It is the only subject the tool does not derive from source: a
 hand-written table whose value depends entirely on staying complete. The check requires the
 `## Open` and `## Cleared` sections with their exact column headers, every cell filled,
-every `Change` linking at least one merged pull request of either repository, every
-`Cleared` row linking the review that cleared it, and no pull request recorded as open and
-cleared at once. A row whose cells are all `—` marks an empty section and is rejected when
-real entries sit beside it.
+every `Change` containing at least one pull-request URL whose shape names either repository,
+every `Cleared` row containing an HTTP(S) link to the review that cleared it, and no pull
+request recorded more than once or in both sections. Fenced examples are ignored. A row
+whose cells are all `—` marks an empty section and is rejected when real entries sit beside
+it. The check is deliberately offline: it validates URL shape, not pull-request state.
 
 The limit is deliberate and stated where the registry is filled in: this verifies that a
 waiver left an actionable record, not that any review took place.
-
-`review-gate` closes the other half in CI. Given a pull request body, its repository and
-number, it requires either a named reviewer with `Reviewer is independent from the
-implementer.` ticked, or all four maintainer-waiver fields answered *and* an open registry
-entry linking that pull request. Filler answers — `pendiente`, `TBD`, a dash — count as
-unanswered, because they are. The labels it reads are the ones in
-`.github/pull_request_template.md`; rewording them there breaks the check, which is why
-that file says so.
-
-The body is untrusted author-written text and is only ever read from a file. The gate is a
-declaration check: a reviewer who is named but did not review still passes. What it removes
-is the silent path, where an unreviewed merge simply left no trace.
 
 ## Failure behavior
 
@@ -119,12 +108,10 @@ invariants, ambiguous-prose rejection, type definitions used as containers, and 
 discovery, uncovered shell prefixes, fence-only shell synchronization, ignored unsupported
 types, mandatory whole-file SQL companions, stale SQL synchronization without source
 writes, and forbidden SQL markers. For the review-debt registry it covers a valid table, a
-missing file, an empty cell, an entry without a pull request link, the same pull request
-open and cleared at once, a cleared entry with no review link, an altered column header, a
-missing section, and the empty-section placeholder both alone and beside real entries. For
-the review gate it covers a blank template, a named reviewer with and without the
-independence box, a filler reviewer, a complete waiver with and without its registry entry,
-a body whose review block was deleted, and a waiver presented against a malformed registry.
+missing file, an empty cell, an entry without a pull request link, a duplicate pull request
+within one section, the same pull request open and cleared at once, a cleared entry with no
+HTTP(S) link, an altered column header, a missing section, fenced examples, offline URL-shape
+validation, and the empty-section placeholder both alone and beside real entries.
 
 ## Related files
 

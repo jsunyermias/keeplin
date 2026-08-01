@@ -23,9 +23,9 @@
 #      writes source SQL or bytes outside valid companion fences.
 #  10. the generated context manifest is current.
 #  11. the review-debt registry stays actionable: both sections present with their
-#      exact headers, every row complete, every entry linking its merged pull
-#      request, every cleared entry linking the review that cleared it, and no
-#      pull request open and cleared at once.
+#      exact headers, every row complete, every Change containing a pull-request
+#      URL of the expected shape, every cleared entry linking the review that
+#      cleared it, and no pull request duplicated or both open and cleared.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 

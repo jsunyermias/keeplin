@@ -27,9 +27,9 @@
 #      writes source SQL or bytes outside valid companion fences.
 #  10. the generated context manifest is current.
 #  11. the review-debt registry stays actionable: both sections present with their
-#      exact headers, every row complete, every entry linking its merged pull
-#      request, every cleared entry linking the review that cleared it, and no
-#      pull request open and cleared at once.
+#      exact headers, every row complete, every Change containing a pull-request
+#      URL of the expected shape, every cleared entry linking the review that
+#      cleared it, and no pull request duplicated or both open and cleared.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -162,12 +162,13 @@ For every `.rs` file in the repo (pruning `target/`, `graphify-out/`, `.git/`), 
    `docs/context-manifest.json` no longer matches the source/companion corpus.
 10. **Review-debt registry** — `companion_tool.py review-debt` fails if
    `docs/review-debt.md` loses either section or its exact column header, carries a row
-   with an empty or missing cell, records an entry whose `Change` links no merged pull
-   request, marks an entry `Cleared` without linking the review that cleared it, or lists
-   the same pull request as open and cleared at once. A row of `—` marks a genuinely empty
-   section and is rejected next to real entries. This is the one check whose subject is a
-   hand-written registry rather than generated output: it verifies that a waived review
-   left a usable record, never that the review happened.
+   with an empty or missing cell, records an entry whose `Change` contains no pull-request
+   URL of the expected repository/number shape, marks an entry `Cleared` without an HTTP(S)
+   review link, or lists the same pull request more than once or in both sections. Fenced
+   examples are ignored. A row of `—` marks a genuinely empty section and is rejected next
+   to real entries. The offline check validates link shape, not pull-request state. This is
+   the one check whose subject is a hand-written registry rather than generated output: it
+   verifies that a waived review left a usable record, never that the review happened.
 
 ## Known caveat
 
