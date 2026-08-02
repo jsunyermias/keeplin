@@ -23,7 +23,12 @@ let OUT_NAME = 'prompt.txt';
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--prior') {
-    while (argv[i + 1] && !argv[i + 1].startsWith('--')) PRIOR.push(argv[++i]);
+    // Bounded to the two blind reviews. Consuming greedily swallowed the
+    // positional meta.md when it followed the flag, and it was then attached
+    // as a third "prior review" instead of the objective.
+    while (PRIOR.length < 2 && argv[i + 1] && !argv[i + 1].startsWith('--')) {
+      PRIOR.push(argv[++i]);
+    }
   } else if (argv[i] === '--out') {
     OUT_NAME = argv[++i];
   } else {

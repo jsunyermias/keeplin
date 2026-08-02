@@ -53,9 +53,13 @@ PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm i playwright @openai/codex
 Sessions come from the sibling skills: `kimi-web-chat` (SMS login),
 `glm-web-chat` and `qwen-web-chat` (cookie import). Codex uses
 `~/.codex/auth.json`, written by `codex login` on a machine with a browser and
-copied here; `codex login status` must print `Logged in using ChatGPT`. An
-OpenAI API key is *not* enough — a ChatGPT subscription does not fund the API,
-which answers 429 on every model.
+copied here; `codex login status` must print `Logged in using ChatGPT`.
+
+An OpenAI API key is *not* an alternative: a ChatGPT subscription does not fund
+the API, which answers 429 on every model. There is deliberately no API-key
+driver in this skill — one existed and was removed, because it contradicted the
+documented route and, unlike `codex exec`, ran the model without a read-only
+sandbox against the very tree it was judging.
 
 ## Running a cycle
 

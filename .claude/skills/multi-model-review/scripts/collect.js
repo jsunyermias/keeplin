@@ -49,8 +49,19 @@ const [REPO, PR, OUT] = process.argv.slice(2);
   // Reviewers reason better with the whole post-change file than with hunks
   // alone — but only for the files this PR touches. That is the "minimum
   // necessary context" the pipeline is built around, not the whole tree.
+  // Binary files come back as replacement characters once read as UTF-8: pure
+  // noise that costs tokens and tells a reviewer nothing. git reports them as
+  // "-\t-" in numstat, so leave them to the diff alone.
+  const binary = new Set(
+    gitText(['diff', '--numstat', range]).split('\n')
+      .filter((l) => l.startsWith('-\t-\t'))
+      .map((l) => l.split('\t')[2])
+      .filter(Boolean)
+  );
+
   let written = 0;
   for (const f of changed) {
+    if (binary.has(f)) continue;
     try {
       const body = git(['show', `${headRef}:${f}`]);
       fs.mkdirSync(path.join(OUT, 'files', path.dirname(f)), { recursive: true });
@@ -94,6 +105,7 @@ const [REPO, PR, OUT] = process.argv.slice(2);
     `head: ${gitText(['rev-parse', headRef]).trim()}`,
     `changed_files: ${changed.length}`,
     `files_captured: ${written}`,
+    `binary_skipped: ${binary.size}`,
     `diff_bytes: ${fs.statSync(path.join(OUT, 'diff.patch')).size}`,
     `context: ${carried.join(', ')}`,
   ].join('\n');
