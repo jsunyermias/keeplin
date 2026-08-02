@@ -79,7 +79,13 @@ const DRIVERS = {
 
   const stdout = (run.stdout || '').toString();
   const stderr = (run.stderr || '').toString();
-  fs.writeFileSync(OUT, stdout);
+  // Whatever came back goes to .raw for diagnosis, never straight to OUT. A
+  // failed run used to leave a short file at the reviewer's own path — one
+  // stall wrote 15 bytes of driver banner there — and nothing downstream
+  // distinguishes that from a review. The gate is safe because it also wants
+  // .meta.json, but `build-prompt --prior` would attach the banner to the
+  // adjudicator's prompt as though a reviewer had said it.
+  fs.writeFileSync(`${OUT}.raw`, stdout);
   if (stderr) fs.writeFileSync(`${OUT}.err`, stderr);
 
   if (run.error && run.error.code === 'ETIMEDOUT') {
@@ -96,15 +102,21 @@ const DRIVERS = {
     );
   }
 
-  // An empty reply is not a review. The browser drivers already throw on one,
-  // but codex reaches this point through a different path, and a zero-byte file
-  // with no VEREDICTO line would otherwise be handed to the gate as though the
-  // model had looked and found nothing.
-  if (!stdout.trim()) {
+  // An empty reply is not a review, and neither is a non-empty one with no
+  // verdict in it. Both mean the run failed — a stall, a truncation, a driver
+  // that returned its own banner — and the worst outcome for a review gate is a
+  // failure that reads like "looked, found nothing".
+  const verdictLine = (stdout.match(/^VEREDICTO:.*$/m) || [])[0];
+  if (!stdout.trim() || !verdictLine) {
     throw new Error(
-      `${REVIEWER} returned an empty reply. That is a failed run, not a clean review — rerun it.`
+      `${REVIEWER} produced no verdict line (${Buffer.byteLength(stdout)} bytes). That is a ` +
+      `failed run, not a clean review — the reply is in ${OUT}.raw. Rerun it, or split the prompt.`
     );
   }
+
+  // Only now does the file appear at the reviewer's path, so anything that
+  // finds one can rely on it being a real review.
+  fs.writeFileSync(OUT, stdout);
 
   // Record who produced this file, and for which pull request. Without the
   // first the gate can only trust that whoever ran the command typed the right
@@ -117,7 +129,6 @@ const DRIVERS = {
     at: new Date().toISOString(),
   }, null, 2) + '\n');
 
-  const verdict = (stdout.match(/^VEREDICTO:.*$/m) || ['(no verdict line)'])[0];
   console.error(`${REVIEWER} -> ${OUT} (${Buffer.byteLength(stdout)} bytes)`);
-  console.log(verdict);
+  console.log(verdictLine);
 })();

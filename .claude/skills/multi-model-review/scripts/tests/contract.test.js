@@ -150,6 +150,65 @@ test('apply-files refuses to write through a symlink leaving the repository', ()
   assert.ok(!fs.existsSync(path.join(outside, 'robado.js')), 'nothing written outside');
 });
 
+// ask.js shells out to `codex`, so a stub earlier on PATH lets the failure
+// modes be driven end to end. They had no coverage at all, and one of them —
+// a driver returning its own banner instead of a review — happened in the very
+// round this pull request was reviewed in.
+function stubCodex(script) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-bin-'));
+  const bin = path.join(dir, 'codex');
+  fs.writeFileSync(bin, `#!/bin/sh\n${script}\n`);
+  fs.chmodSync(bin, 0o755);
+  return { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}` };
+}
+
+test('ask refuses a reply with no verdict line', () => {
+  // 15 bytes of driver banner is what a stalled browser session produced. It
+  // is not empty, so an emptiness check alone would have let it through as a
+  // review of a change nobody looked at.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-ask-'));
+  const prompt = path.join(dir, 'p.txt');
+  fs.writeFileSync(prompt, 'revisa esto\n');
+  const out = path.join(dir, 'review.md');
+
+  const r = run('ask.js', ['codex', prompt, out, '--pr', '197'],
+    { env: stubCodex('cat >/dev/null; echo "model: GLM-5.2"') });
+
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /no verdict line/);
+  assert.ok(!fs.existsSync(out), 'no file may appear at the reviewer path');
+  assert.ok(!fs.existsSync(`${out}.meta.json`), 'and it must not be attributed');
+  // The reply is still kept, or there is nothing to diagnose the stall with.
+  assert.match(fs.readFileSync(`${out}.raw`, 'utf8'), /GLM-5\.2/);
+});
+
+test('ask refuses an empty reply', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-ask-'));
+  const prompt = path.join(dir, 'p.txt');
+  fs.writeFileSync(prompt, 'revisa esto\n');
+  const out = path.join(dir, 'review.md');
+
+  const r = run('ask.js', ['codex', prompt, out], { env: stubCodex('cat >/dev/null; true') });
+  assert.strictEqual(r.code, 1);
+  assert.ok(!fs.existsSync(out));
+});
+
+test('ask records the reviewer and pull request of a real review', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-ask-'));
+  const prompt = path.join(dir, 'p.txt');
+  fs.writeFileSync(prompt, 'revisa esto\n');
+  const out = path.join(dir, 'review.md');
+
+  const r = run('ask.js', ['codex', prompt, out, '--pr', '197'],
+    { env: stubCodex('cat >/dev/null; printf "VEREDICTO: OBSERVACIONES\\n\\nUn hallazgo.\\n"') });
+
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stdout, /VEREDICTO: OBSERVACIONES/);
+  const meta = JSON.parse(fs.readFileSync(`${out}.meta.json`, 'utf8'));
+  assert.strictEqual(meta.reviewer, 'codex');
+  assert.strictEqual(meta.pr, 197);
+});
+
 test('apply-files refuses when the target itself is the symlink', () => {
   // The previous fix walked up from path.dirname(target), so when the target
   // *was* the link its parent looked legitimate and the write followed it out.
