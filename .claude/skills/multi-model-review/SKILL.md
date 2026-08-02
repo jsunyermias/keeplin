@@ -89,8 +89,9 @@ node scripts/build-prompt.js work/pr197 docs/prompts/0.C-prompt-revision-segurid
 # hand it its own work to judge, and gate.js does not check who replied.
 node scripts/ask.js kimi work/pr197/prompt-adjudicator.txt work/pr197/review-kimi.md
 
-# 6. Read only the verdicts
-grep -m1 -h "VEREDICTO" work/pr197/review-*.md
+# 6. Read only the verdicts. One line each; never open the files to decide.
+grep -m1 -h "VEREDICTO" work/pr197/review-qwen.md work/pr197/review-glm.md \
+  work/pr197/review-kimi.md
 
 # 7. The gate decides whether the cycle closes. This step is not optional:
 #    "everyone said SIN HALLAZGOS" is not the criterion, the gate is.
@@ -120,6 +121,11 @@ The browser reviewers accept a large paste — `fill()` moves 100 KB in
 milliseconds — but they do not necessarily *answer* one. A 104 KB prompt
 produced no reply at all from GLM; the same review at 24 KB worked. Codex, going
 over the API, handled the full 104 KB.
+
+The adjudicator's prompt is the largest of all — the change plus both blind
+reviews — and a 95 KB one was cut off at the default poll ceiling mid-answer.
+Raise it for that step (`MAX_POLLS=300 node scripts/ask.js …`) and check the
+driver's `hit the poll ceiling` note before trusting the result.
 
 So keep the browser prompts small: prefer the diff alone, drop the whole-file
 section (`build-prompt.js` already caps it), and split a large PR by area,
@@ -214,8 +220,9 @@ real defects.
 
 ## Recording the outcome
 
-`AGENTS.md` wants the reviewing family recorded on the PR. The rotation is
-derived from the cycle number precisely so it can be reconstructed later. When
+`AGENTS.md` wants the reviewing family recorded on the PR. The assignment is
+derived from the pull request number, and holds for every cycle of that pull
+request, precisely so it can be reconstructed later. When
 the cycle closes, fill the PR's *Independent review* section with the families
 that reviewed and a link or path to their findings — and do not tick those boxes
 on the strength of your own re-reading of the diff.

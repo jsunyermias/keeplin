@@ -15,6 +15,11 @@ const { spawnSync } = require('child_process');
 
 const [REVIEWER, PROMPT, OUT] = process.argv.slice(2);
 
+// A driver that hangs would hang the pipeline with it: spawnSync blocks and
+// there is nothing to report. Bound it, and say plainly that a timeout is not
+// a review.
+const TIMEOUT_MS = Number(process.env.ASK_TIMEOUT_MS || 20 * 60 * 1000);
+
 const SKILLS = path.dirname(path.dirname(__dirname));
 const MODELS = {
   qwen: process.env.QWEN_MODEL || 'Qwen3.8-Max-Preview',
@@ -53,12 +58,12 @@ const DRIVERS = {
     run = spawnSync('codex', [
       'exec', '-c', `model="${MODELS.codex}"`,
       '--sandbox', 'read-only', '--skip-git-repo-check', '-',
-    ], { env, input: fs.readFileSync(PROMPT), maxBuffer: 64 * 1024 * 1024 });
+    ], { env, input: fs.readFileSync(PROMPT), maxBuffer: 64 * 1024 * 1024, timeout: TIMEOUT_MS });
   } else {
     const [dir, file] = DRIVERS[REVIEWER];
     run = spawnSync('node', [
       path.join(SKILLS, dir, 'scripts', file), `@${PROMPT}`, MODELS[REVIEWER],
-    ], { env, maxBuffer: 64 * 1024 * 1024 });
+    ], { env, maxBuffer: 64 * 1024 * 1024, timeout: TIMEOUT_MS });
   }
 
   const stdout = (run.stdout || '').toString();
@@ -66,6 +71,12 @@ const DRIVERS = {
   fs.writeFileSync(OUT, stdout);
   if (stderr) fs.writeFileSync(`${OUT}.err`, stderr);
 
+  if (run.error && run.error.code === 'ETIMEDOUT') {
+    throw new Error(
+      `${REVIEWER} timed out after ${Math.round(TIMEOUT_MS / 60000)} min. A timeout is not a ` +
+      'clean review — rerun it, or split the prompt.'
+    );
+  }
   if (run.status !== 0) {
     // Say why. A reviewer that failed must never be mistaken for one that
     // looked and found nothing — that is the worst outcome for a review gate.
