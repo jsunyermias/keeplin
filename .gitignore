@@ -11,6 +11,15 @@ graphify-out/
 .claude/settings.local.json
 .claude/settings.json
 
+# Browser sessions minted by the .claude/skills/*-web-chat tooling. These hold live
+# account cookies and one-time codes; they are credentials, never repository content.
+kimi-state.json
+zai-state.json
+qwen-state.json
+*_cookies.json
+otp.txt
+login.log
+
 # Standard-library companion tooling caches.
 __pycache__/
 *.py[cod]
