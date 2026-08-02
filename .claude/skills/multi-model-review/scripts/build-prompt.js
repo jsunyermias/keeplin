@@ -59,8 +59,26 @@ const read = (p) => fs.readFileSync(p, 'utf8');
   const diff = read(path.join(DIR, 'diff.patch'));
   const changed = read(path.join(DIR, 'changed-files.txt')).split('\n').filter(Boolean);
 
+  // collect.js writes collect.info last, so its presence is the only evidence
+  // that this package was assembled by the pipeline rather than put together by
+  // hand. Without it there is no way to tell a file missing from files/ apart
+  // from a file the pull request deleted — and that ambiguity is not academic:
+  // a hand-made package with an empty files/ once produced a prompt carrying no
+  // whole-file context at all, and the run reported "9 files" because it was
+  // counting changed-files.txt. Three reviewers judged that change on the diff
+  // alone and only one noticed.
+  const infoPath = path.join(DIR, 'collect.info');
+  if (!fs.existsSync(infoPath)) {
+    throw new Error(
+      `${DIR} has no collect.info, so it was not produced by collect.js and what is missing ` +
+      'from files/ cannot be distinguished from what the pull request deleted. Rerun collect.js.'
+    );
+  }
+  const captured = Number((read(infoPath).match(/^files_captured:\s*(\d+)$/m) || [])[1]);
+
   let filesSection = '';
   let used = 0;
+  let embedded = 0;
   const skipped = [];
   for (const f of changed) {
     const p = path.join(DIR, 'files', f);
@@ -71,7 +89,16 @@ const read = (p) => fs.readFileSync(p, 'utf8');
       continue;
     }
     used += body.length;
+    embedded += 1;
     filesSection += `\n### ${f}\n\n\`\`\`\n${body}\n\`\`\`\n`;
+  }
+
+  if (Number.isInteger(captured) && embedded + skipped.length !== captured) {
+    throw new Error(
+      `collect.info records ${captured} captured file(s) but only ${embedded + skipped.length} ` +
+      'could be read back. The package is incomplete; rerun collect.js rather than sending a ' +
+      'prompt whose context does not match what it claims.'
+    );
   }
 
   const parts = [
@@ -136,6 +163,17 @@ const read = (p) => fs.readFileSync(p, 'utf8');
         `Omitidos por tamaño (juzga estos solo por el diff): ${skipped.join(', ')}`
       );
     }
+  } else if (changed.length) {
+    // Silence here reads as "there was nothing to add". Say it outright, so a
+    // reviewer knows which of its conclusions rest on the diff alone.
+    parts.push(
+      '---',
+      '',
+      'No se adjunta el texto completo de ningún fichero: este cambio solo borra ficheros,',
+      'o el paquete se recolectó sin ellos. Juzga únicamente por el diff y di explícitamente',
+      'qué no has podido verificar por esa razón.',
+      ''
+    );
   }
 
   if (PRIOR.length) {
@@ -191,8 +229,12 @@ const read = (p) => fs.readFileSync(p, 'utf8');
   const out = path.join(DIR, OUT_NAME);
   fs.writeFileSync(out, prompt);
 
+  // Report what went in, not what was asked for. The old line counted
+  // changed-files.txt, so it said "9 files" about a prompt containing none, and
+  // the operator read that as confirmation the context had travelled.
   console.error(`wrote ${out}: ${Buffer.byteLength(prompt)} bytes ` +
-    `(diff ${Buffer.byteLength(diff)}, ${changed.length} files, ${skipped.length} omitted` +
+    `(diff ${Buffer.byteLength(diff)}, ${embedded}/${changed.length} files embedded, ` +
+    `${skipped.length} omitted by size` +
     `, context ${ctxIncluded.length} in/${ctxOmitted.length} out` +
     `${PRIOR.length ? `, ${PRIOR.length} prior review(s)` : ''})`);
   if (Buffer.byteLength(diff) > DIFF_WARN_BYTES) {

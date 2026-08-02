@@ -21,18 +21,46 @@ const PHRASE = process.env.REVIEW_PHRASE || 'REVISION-COMPLETADA-SIN-BLOQUEANTES
 
 const argv = process.argv.slice(2);
 const FILE = argv.find((a) => !a.startsWith('--'));
+
+// Number() turns a missing or misspelt value into NaN, and every comparison
+// against NaN is false — so `--cycle cinco` sailed past the cap check and the
+// gate exited 1, "run another cycle", while reporting `"cycle": null`. An
+// invalid invocation must be misuse (exit 2), never an invitation to iterate.
+const bad = [];
 const flag = (name, dflt) => {
   const i = argv.indexOf(`--${name}`);
-  return i === -1 ? dflt : Number(argv[i + 1]);
+  if (i === -1) return dflt;
+  const raw = argv[i + 1];
+  if (raw === undefined || raw.startsWith('--')) {
+    bad.push(`--${name} needs a value`);
+    return dflt;
+  }
+  if (!/^\d+$/.test(raw) || Number(raw) < 1) {
+    bad.push(`--${name} must be an integer >= 1, got "${raw}"`);
+    return dflt;
+  }
+  return Number(raw);
 };
 const CYCLE = flag('cycle', 1);
 const MAX_CYCLES = flag('max-cycles', 5);
 const rolesAt = argv.indexOf('--roles');
 const ROLES = rolesAt === -1 ? null : argv[rolesAt + 1];
+if (rolesAt !== -1 && (ROLES === undefined || ROLES.startsWith('--'))) {
+  bad.push('--roles needs a value');
+}
+if (!bad.length && CYCLE > MAX_CYCLES) {
+  bad.push(`--cycle ${CYCLE} is past --max-cycles ${MAX_CYCLES}`);
+}
 
 (() => {
+  if (bad.length) {
+    for (const b of bad) console.error(`bad argument: ${b}`);
+    console.error('refusing to judge on an invalid invocation');
+    process.exit(2);
+  }
   if (!FILE) {
-    console.error('usage: node gate.js <adjudicator-review.md> [--cycle N] [--max-cycles M]');
+    console.error('usage: node gate.js <adjudicator-review.md> --roles <roles-prN.json> ' +
+      '[--cycle N] [--max-cycles M]');
     process.exit(2);
   }
   if (!fs.existsSync(FILE)) {
@@ -62,6 +90,23 @@ const ROLES = rolesAt === -1 ? null : argv[rolesAt + 1];
         `refusing: this review is from "${meta.reviewer}" but pull request ${roles.pr} assigns ` +
         `adjudication to "${roles.adjudicator}"` +
         (meta.reviewer === roles.implementer ? ' — that is the implementer' : '')
+      );
+      process.exit(2);
+    }
+    // Matching the family is not enough. Two pull requests can share an
+    // adjudicator, so a roles file from the wrong one passes the check above
+    // and closes a cycle on a review of some other change entirely.
+    if (meta.pr === undefined) {
+      console.error(
+        `${metaPath} records no pull request, so this review cannot be tied to ${roles.pr}. ` +
+        'Rerun ask.js with --pr rather than accepting a review that could belong to another change.'
+      );
+      process.exit(2);
+    }
+    if (Number(meta.pr) !== Number(roles.pr)) {
+      console.error(
+        `refusing: this review is of pull request ${meta.pr} but the roles file is for ` +
+        `${roles.pr}`
       );
       process.exit(2);
     }

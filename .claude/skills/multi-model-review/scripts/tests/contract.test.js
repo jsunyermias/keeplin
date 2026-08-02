@@ -11,24 +11,23 @@ const assert = require('node:assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 
 const SCRIPTS = path.dirname(__dirname);
 const PHRASE = 'REVISION-COMPLETADA-SIN-BLOQUEANTES';
 
+// spawnSync rather than execFileSync: the latter only hands back stderr when
+// the process fails, so an assertion about what a *successful* run reported
+// always saw an empty string and passed for the wrong reason.
 function run(script, args, opts = {}) {
-  try {
-    const stdout = execFileSync('node', [path.join(SCRIPTS, script), ...args], {
-      encoding: 'utf8', ...opts,
-    });
-    return { code: 0, stdout, stderr: '' };
-  } catch (e) {
-    return {
-      code: e.status === undefined ? 1 : e.status,
-      stdout: (e.stdout || '').toString(),
-      stderr: (e.stderr || '').toString(),
-    };
-  }
+  const r = spawnSync('node', [path.join(SCRIPTS, script), ...args], {
+    encoding: 'utf8', ...opts,
+  });
+  return {
+    code: r.status === null ? 1 : r.status,
+    stdout: r.stdout || '',
+    stderr: r.stderr || '',
+  };
 }
 
 function tmpFile(name, body) {
@@ -149,6 +148,150 @@ test('apply-files refuses to write through a symlink leaving the repository', ()
   assert.strictEqual(r.code, 1);
   assert.match(r.stderr, /symlink that leaves the repository/);
   assert.ok(!fs.existsSync(path.join(outside, 'robado.js')), 'nothing written outside');
+});
+
+test('apply-files refuses when the target itself is the symlink', () => {
+  // The previous fix walked up from path.dirname(target), so when the target
+  // *was* the link its parent looked legitimate and the write followed it out.
+  // Reproduced before this test existed: the external file was overwritten and
+  // the script reported "wrote link.js".
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-outside-'));
+  const victim = path.join(outside, 'external.js');
+  fs.writeFileSync(victim, 'ORIGINAL\n');
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-repo-'));
+  fs.symlinkSync(victim, path.join(repo, 'link.js'));
+  const reply = tmpFile('reply.md', 'FICHERO: link.js\n```\nPWNED\n```\n');
+
+  const r = run('apply-files.js', [repo, reply]);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /through a symlink/);
+  assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'ORIGINAL\n', 'the outside file is intact');
+});
+
+test('apply-files refuses a symlink target even when it stays inside the repository', () => {
+  // Redirecting a write is the implementer's decision to make explicit, not
+  // something the pipeline should silently honour, whatever the destination.
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-repo-'));
+  fs.writeFileSync(path.join(repo, 'real.js'), 'ORIGINAL\n');
+  fs.symlinkSync(path.join(repo, 'real.js'), path.join(repo, 'alias.js'));
+  const reply = tmpFile('reply.md', 'FICHERO: alias.js\n```\nx\n```\n');
+
+  const r = run('apply-files.js', [repo, reply]);
+  assert.strictEqual(r.code, 1);
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'real.js'), 'utf8'), 'ORIGINAL\n');
+});
+
+test('apply-files writes when the repository is reached through a symlink', () => {
+  // The mirror image of the containment bug, and just as wrong: repoReal was
+  // canonicalised while the target was not, so in a workspace like
+  // /workspace -> /real/repo every legitimate write was refused.
+  const real = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-real-'));
+  const link = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-link-')), 'workspace');
+  fs.symlinkSync(real, link);
+  const reply = tmpFile('reply.md', 'FICHERO: sub/nuevo.js\n```\nconst a = 1;\n```\n');
+
+  const r = run('apply-files.js', [link, reply]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.strictEqual(fs.readFileSync(path.join(real, 'sub', 'nuevo.js'), 'utf8'),
+    'const a = 1;\n');
+});
+
+test('gate treats an unparseable cycle as misuse, not as licence to iterate', () => {
+  // Number('cinco') is NaN and every comparison with NaN is false, so the cap
+  // check passed and the gate exited 1 — "run another cycle" — on an invocation
+  // it could not understand.
+  const f = tmpFile('r.md', 'VEREDICTO: BLOQUEANTE\n');
+  for (const args of [
+    [f, '--cycle', 'cinco', '--max-cycles', '5'],
+    [f, '--cycle', '0'],
+    [f, '--cycle'],
+    [f, '--cycle', '--max-cycles', '5'],
+    [f, '--max-cycles', 'nope'],
+  ]) {
+    const r = run('gate.js', args);
+    assert.strictEqual(r.code, 2, `expected misuse for: ${args.slice(1).join(' ')}`);
+    assert.match(r.stderr, /bad argument/);
+  }
+});
+
+test('gate refuses a cycle past its own cap', () => {
+  const f = tmpFile('r.md', 'VEREDICTO: BLOQUEANTE\n');
+  const r = run('gate.js', [f, '--cycle', '7', '--max-cycles', '5']);
+  assert.strictEqual(r.code, 2);
+  assert.match(r.stderr, /past --max-cycles/);
+});
+
+test('gate refuses a review that belongs to another pull request', () => {
+  // Two pull requests can share an adjudicator, so matching the family alone
+  // would let a roles file from the wrong one close a cycle.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-roles-'));
+  const roles = JSON.parse(run('roles.js', ['197', '--dir', dir]).stdout);
+  const review = path.join(dir, 'review.md');
+  fs.writeFileSync(review, `VEREDICTO: SIN HALLAZGOS\n\n${PHRASE}\n`);
+  fs.writeFileSync(`${review}.meta.json`,
+    JSON.stringify({ reviewer: roles.adjudicator, pr: 999 }));
+
+  const r = run('gate.js', [review, '--roles', path.join(dir, 'roles-pr197.json')]);
+  assert.strictEqual(r.code, 2);
+  assert.match(r.stderr, /pull request 999 but the roles file is for 197/);
+});
+
+test('gate refuses a review not tied to any pull request', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-roles-'));
+  const roles = JSON.parse(run('roles.js', ['197', '--dir', dir]).stdout);
+  const review = path.join(dir, 'review.md');
+  fs.writeFileSync(review, `VEREDICTO: SIN HALLAZGOS\n\n${PHRASE}\n`);
+  fs.writeFileSync(`${review}.meta.json`, JSON.stringify({ reviewer: roles.adjudicator }));
+
+  const r = run('gate.js', [review, '--roles', path.join(dir, 'roles-pr197.json')]);
+  assert.strictEqual(r.code, 2);
+  assert.match(r.stderr, /records no pull request/);
+});
+
+test('gate clears a properly attributed review', () => {
+  // The negative cases above are only meaningful if the positive one still
+  // passes through the same checks.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-roles-'));
+  const roles = JSON.parse(run('roles.js', ['197', '--dir', dir]).stdout);
+  const review = path.join(dir, 'review.md');
+  fs.writeFileSync(review, `VEREDICTO: SIN HALLAZGOS\n\nTodo correcto.\n\n${PHRASE}\n`);
+  fs.writeFileSync(`${review}.meta.json`,
+    JSON.stringify({ reviewer: roles.adjudicator, pr: 197 }));
+
+  const r = run('gate.js', [review, '--roles', path.join(dir, 'roles-pr197.json'),
+    '--cycle', '1', '--max-cycles', '5']);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.strictEqual(JSON.parse(r.stdout).cleared, true);
+});
+
+test('roles requires an explicit directory', () => {
+  // Defaulting to the current directory meant the same pull request run from
+  // two places produced two independent assignments, so the persistence that
+  // keeps an implementer from adjudicating guarded nothing.
+  const r = run('roles.js', ['197']);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /--dir is required/);
+});
+
+test('roles can record an implementer from outside the rotation', () => {
+  // This is what actually happened on pull request 197: Claude implemented it,
+  // roles.js could only name kimi or codex, and the gate therefore ran without
+  // --roles — the independence check switched off in the one case it was
+  // written for.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-roles-'));
+  const roles = JSON.parse(run('roles.js', ['197', 'claude', '--dir', dir]).stdout);
+  assert.strictEqual(roles.implementer, 'claude');
+  assert.strictEqual(roles.implementer_in_rotation, false);
+  assert.ok(['kimi', 'codex'].includes(roles.adjudicator));
+  assert.notStrictEqual(roles.adjudicator, roles.implementer);
+  assert.strictEqual(roles.reviewers.length, 3);
+});
+
+test('roles refuses to let a fixed reviewer implement', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-roles-'));
+  const r = run('roles.js', ['197', 'qwen', '--dir', dir]);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /never implements/);
 });
 
 test('roles alternate across pull requests', () => {
@@ -314,11 +457,25 @@ test('apply-patch applies a patch that deletes and renames', () => {
   assert.ok(fs.existsSync(path.join(repo, 'nuevo.txt')), 'rename applied');
 });
 
-test('build-prompt keeps the required contract whatever the budget', () => {
+// A review package shaped like the one collect.js produces.
+function collected({ changed = [], files = {}, diff = 'diff --git a/x b/x\n' } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-bp-'));
   fs.mkdirSync(path.join(dir, 'context'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'diff.patch'), 'diff --git a/x b/x\n');
-  fs.writeFileSync(path.join(dir, 'changed-files.txt'), '');
+  fs.mkdirSync(path.join(dir, 'files'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'diff.patch'), diff);
+  fs.writeFileSync(path.join(dir, 'changed-files.txt'), changed.join('\n') + '\n');
+  fs.writeFileSync(path.join(dir, 'context', 'AGENTS.md'), '# contrato\n');
+  for (const [f, body] of Object.entries(files)) {
+    fs.mkdirSync(path.join(dir, 'files', path.dirname(f)), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'files', f), body);
+  }
+  fs.writeFileSync(path.join(dir, 'collect.info'),
+    `pr: 1\nfiles_captured: ${Object.keys(files).length}\n`);
+  return dir;
+}
+
+test('build-prompt keeps the required contract whatever the budget', () => {
+  const dir = collected();
   // Deliberately larger than CONTEXT_BUDGET_BYTES: it must still be carried.
   fs.writeFileSync(path.join(dir, 'context', 'AGENTS.md'),
     '# contrato\n' + 'x'.repeat(70 * 1024));
@@ -328,6 +485,64 @@ test('build-prompt keeps the required contract whatever the budget', () => {
   assert.strictEqual(r.code, 0, r.stderr);
   const prompt = fs.readFileSync(path.join(dir, 'prompt.txt'), 'utf8');
   assert.match(prompt, /# contrato/);
+});
+
+test('build-prompt counts the files it embedded, not the ones it was asked for', () => {
+  // The bug this guards: the report counted changed-files.txt, so a package
+  // whose files/ held nothing announced "9 files" and the operator read that as
+  // confirmation the context had travelled. Three reviewers then judged a
+  // change on the diff alone.
+  const dir = collected({
+    changed: ['a.js', 'b.js', 'c.js'],
+    files: { 'a.js': 'const a = 1;\n' },
+  });
+  fs.writeFileSync(path.join(dir, 'collect.info'), 'pr: 1\nfiles_captured: 1\n');
+  const r = run('build-prompt.js', [dir, tmpFile('c.md', '# checklist\n')]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stderr, /1\/3 files embedded/);
+});
+
+test('build-prompt refuses a package that collect.js did not produce', () => {
+  // Without collect.info there is no way to tell a file missing from files/
+  // apart from one the pull request deleted, so the prompt cannot honestly say
+  // what it carries.
+  const dir = collected({ changed: ['a.js'], files: { 'a.js': 'x\n' } });
+  fs.rmSync(path.join(dir, 'collect.info'));
+  const r = run('build-prompt.js', [dir, tmpFile('c.md', '# checklist\n')]);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /no collect\.info/);
+});
+
+test('build-prompt refuses when the package lost files collect.js captured', () => {
+  const dir = collected({ changed: ['a.js', 'b.js'], files: { 'a.js': 'x\n', 'b.js': 'y\n' } });
+  fs.rmSync(path.join(dir, 'files', 'b.js'));
+  const r = run('build-prompt.js', [dir, tmpFile('c.md', '# checklist\n')]);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /records 2 captured file/);
+});
+
+test('build-prompt says outright when no whole-file context travels', () => {
+  const dir = collected({ changed: ['borrado.js'], files: {} });
+  const r = run('build-prompt.js', [dir, tmpFile('c.md', '# checklist\n')]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const prompt = fs.readFileSync(path.join(dir, 'prompt.txt'), 'utf8');
+  assert.match(prompt, /No se adjunta el texto completo/);
+});
+
+test('apply-patch cleans up its temporary directory when the patch fails', () => {
+  // The cleanup used to sit after the successful apply, so the ordinary
+  // outcome in a review cycle — a patch that does not apply — stranded a
+  // directory holding the implementer's diff on every attempt.
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-tmpdir-'));
+  const repo = gitRepo({ 'src.js': 'const a = 1;\n' });
+  const reply = tmpFile('reply.md',
+    'diff --git a/src.js b/src.js\n--- a/src.js\n+++ b/src.js\n' +
+    '@@ -1 +1 @@\n-linea que no existe\n+otra\n');
+
+  const r = run('apply-patch.js', [repo, reply], { env: { ...process.env, TMPDIR: scratch } });
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /does not apply cleanly/);
+  assert.deepStrictEqual(fs.readdirSync(scratch), [], 'no temporary directory left behind');
 });
 
 test('apply-patch refuses prose instead of guessing', () => {

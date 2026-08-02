@@ -13,7 +13,13 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const [REVIEWER, PROMPT, OUT] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+const prAt = argv.indexOf('--pr');
+const PR = prAt === -1 ? undefined : argv[prAt + 1];
+// The prAt guard is not cosmetic: with --pr absent, prAt is -1 and `i !== prAt+1`
+// would drop argv[0], the reviewer name.
+const [REVIEWER, PROMPT, OUT] =
+  argv.filter((a, i) => !a.startsWith('--') && (prAt === -1 || i !== prAt + 1));
 
 // A driver that hangs would hang the pipeline with it: spawnSync blocks and
 // there is nothing to report. Bound it, and say plainly that a timeout is not
@@ -36,10 +42,15 @@ const DRIVERS = {
 
 (() => {
   if (!REVIEWER || !PROMPT || !OUT) {
-    throw new Error('usage: node ask.js <qwen|glm|kimi|codex> <prompt-file> <out-file>');
+    throw new Error(
+      'usage: node ask.js <qwen|glm|kimi|codex> <prompt-file> <out-file> [--pr N]'
+    );
   }
   if (!fs.existsSync(PROMPT)) throw new Error(`no such prompt file: ${PROMPT}`);
   if (!MODELS[REVIEWER]) throw new Error(`unknown reviewer: ${REVIEWER}`);
+  if (PR !== undefined && !/^\d+$/.test(PR)) {
+    throw new Error(`--pr must be a number, got "${PR}"`);
+  }
 
   const env = {
     ...process.env,
@@ -85,12 +96,24 @@ const DRIVERS = {
     );
   }
 
-  // Record who produced this file. Without it the gate can only trust that
-  // whoever ran the command typed the right reviewer name, which leaves the
-  // independence rule resting on copy-paste.
+  // An empty reply is not a review. The browser drivers already throw on one,
+  // but codex reaches this point through a different path, and a zero-byte file
+  // with no VEREDICTO line would otherwise be handed to the gate as though the
+  // model had looked and found nothing.
+  if (!stdout.trim()) {
+    throw new Error(
+      `${REVIEWER} returned an empty reply. That is a failed run, not a clean review — rerun it.`
+    );
+  }
+
+  // Record who produced this file, and for which pull request. Without the
+  // first the gate can only trust that whoever ran the command typed the right
+  // reviewer name; without the second a roles file from another pull request
+  // with the same adjudicator would pass the independence check.
   fs.writeFileSync(`${OUT}.meta.json`, JSON.stringify({
     reviewer: REVIEWER,
     model: MODELS[REVIEWER],
+    ...(PR === undefined ? {} : { pr: Number(PR) }),
     at: new Date().toISOString(),
   }, null, 2) + '\n');
 

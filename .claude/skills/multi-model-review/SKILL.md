@@ -64,12 +64,22 @@ sandbox against the very tree it was judging.
 ## Running a cycle
 
 ```bash
-# 1. Who does what. The implementer is fixed for the whole pull request; only
-#    the pull request number decides it, so it can be reconstructed later.
-node scripts/roles.js 197      # -> implementer codex, adjudicator kimi
-
-# 2. Gather the change (free)
+# 1. Gather the change (free). This comes first: --dir below must exist, and
+#    the package it writes is where the assignment lives.
 node scripts/collect.js /path/to/repo 197 work/pr197
+
+# 2. Who does what. The implementer is fixed for the whole pull request; only
+#    the pull request number decides it, so it can be reconstructed later.
+#    --dir is required — without it the assignment would follow the operator's
+#    current directory instead of the review, and two runs from two places
+#    would produce two different implementers for the same pull request.
+node scripts/roles.js 197 --dir work/pr197      # -> implementer codex, adjudicator kimi
+
+#    If the change came from outside the rotation — Claude, or a person — say
+#    so, once, on the first call. The seat then goes to whichever of kimi and
+#    codex parity picks, and --roles below still works. Do not leave it to the
+#    default: that records a false implementer.
+# node scripts/roles.js 197 claude --dir work/pr197
 
 # 3. Mirror the objective into work/pr197/meta.md using the GitHub MCP tools,
 #    then assemble the prompt
@@ -77,8 +87,10 @@ node scripts/build-prompt.js work/pr197 docs/prompts/0.C-prompt-revision-segurid
 
 # 4. The two blind reviewers. Run them on the same prompt; neither sees the
 #    other, so their findings are two readings rather than one and an echo.
-node scripts/ask.js qwen work/pr197/prompt.txt work/pr197/review-qwen.md
-node scripts/ask.js glm  work/pr197/prompt.txt work/pr197/review-glm.md
+#    --pr binds each reply to this pull request, so a roles file from another
+#    one cannot be used to close this cycle.
+node scripts/ask.js qwen work/pr197/prompt.txt work/pr197/review-qwen.md --pr 197
+node scripts/ask.js glm  work/pr197/prompt.txt work/pr197/review-glm.md  --pr 197
 
 # 5. The adjudicator, with both prior reviews attached
 node scripts/build-prompt.js work/pr197 docs/prompts/0.C-prompt-revision-seguridad.md \
@@ -86,8 +98,9 @@ node scripts/build-prompt.js work/pr197 docs/prompts/0.C-prompt-revision-segurid
   --out prompt-adjudicator.txt
 # roles.js said adjudicator: kimi for this pull request. Use what it returned,
 # never a name copied from an example — sending this to the implementer would
-# hand it its own work to judge, and gate.js does not check who replied.
-node scripts/ask.js kimi work/pr197/prompt-adjudicator.txt work/pr197/review-kimi.md
+# hand it its own work to judge. The gate checks this in step 7, but only if
+# you pass it --roles, so the name here still has to be right.
+node scripts/ask.js kimi work/pr197/prompt-adjudicator.txt work/pr197/review-kimi.md --pr 197
 
 # 6. Read only the verdicts. One line each; never open the files to decide.
 grep -m1 -h "VEREDICTO" work/pr197/review-qwen.md work/pr197/review-glm.md \
@@ -95,7 +108,12 @@ grep -m1 -h "VEREDICTO" work/pr197/review-qwen.md work/pr197/review-glm.md \
 
 # 7. The gate decides whether the cycle closes. This step is not optional:
 #    "everyone said SIN HALLAZGOS" is not the criterion, the gate is.
-node scripts/gate.js work/pr197/review-kimi.md --cycle 1 --max-cycles 5
+#    --roles is not optional either. Without it the gate never checks who
+#    replied, so a clean verdict from the implementer closes the cycle — the
+#    protection exists, and omitting the flag is what switches it off.
+node scripts/gate.js work/pr197/review-kimi.md \
+  --roles work/pr197/roles-pr197.json \
+  --cycle 1 --max-cycles 5
 ```
 
 `gate.js` is the only thing that ends a review, and its exit code is the whole

@@ -83,6 +83,17 @@ function trimToPatch(block) {
   // A predictable /tmp path that writeFileSync follows through a symlink could
   // clobber another file owned by this user. Own the directory instead.
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'impl-'));
+  // Every exit removes it, not just the successful one. A patch that fails
+  // --check is the ordinary case in a review cycle, and each failure used to
+  // strand a directory holding the implementer's diff.
+  try {
+    run(tmpDir, patch);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+})();
+
+function run(tmpDir, patch) {
   const tmp = path.join(tmpDir, 'change.patch');
   // Patches that lose their trailing newline are rejected by git apply.
   fs.writeFileSync(tmp, patch.endsWith('\n') ? patch : `${patch}\n`);
@@ -133,7 +144,6 @@ function trimToPatch(block) {
   // common once a review cycle has already changed the branch.
   git(['apply', '--3way', ...mode, tmp]);
   const stat = git(['diff', '--stat']).trim();
-  fs.rmSync(tmpDir, { recursive: true, force: true });
 
   console.error(stat || '(patch applied, no net change)');
-})();
+}

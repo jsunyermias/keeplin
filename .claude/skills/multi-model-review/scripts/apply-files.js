@@ -62,7 +62,10 @@ function parse(text) {
       seg = closes === -1 ? rest : rest.slice(0, closes);
     }
 
-    const body = seg.join('\n').replace(/^\n+/, '').replace(/\s+$/, '\n');
+    // Exactly one trailing newline. `replace(/\s+$/, '\n')` only fires when
+    // there is trailing whitespace to replace, so a body ending in a normal
+    // character was written with no final newline at all.
+    const body = seg.join('\n').replace(/^\n+/, '').replace(/\s*$/, '') + '\n';
     return { file: mark.file, body };
   }).filter((f) => f.body.trim());
 }
@@ -82,34 +85,81 @@ function parse(text) {
 
   // path.resolve alone is a textual check: a symlink inside the repository that
   // points elsewhere passes it, and writeFileSync then follows the link out.
-  // Resolve the real path of the repository and of the deepest ancestor that
-  // actually exists, and require containment of both.
+  //
+  // Containment therefore has three parts, and two earlier attempts got it
+  // wrong by shipping only one of them:
+  //
+  //  - The repository itself is canonicalised, and targets are resolved against
+  //    the canonical path. Resolving against the argument instead means a
+  //    workspace reached through a symlink (/workspace -> /real/repo) produces
+  //    targets that can never start with the canonical prefix, and every
+  //    legitimate write is refused.
+  //  - Every existing ancestor directory is canonicalised, which catches a
+  //    directory symlink pointing out of the tree.
+  //  - The final component is checked on its own. The ancestor walk starts at
+  //    the parent, so when the target *is* the symlink its parent looks
+  //    perfectly legitimate and the write follows the link straight out.
   const repoReal = fs.realpathSync(path.resolve(REPO));
+  const inside = (p) => p === repoReal || p.startsWith(repoReal + path.sep);
+
   for (const { file } of files) {
-    const target = path.resolve(REPO, file);
-    if (target !== repoReal && !target.startsWith(repoReal + path.sep)) {
+    const target = path.resolve(repoReal, file);
+    if (!inside(target)) {
       throw new Error(`refusing to write outside the repository: ${file}`);
     }
     let ancestor = path.dirname(target);
     while (!fs.existsSync(ancestor) && ancestor !== path.dirname(ancestor)) {
       ancestor = path.dirname(ancestor);
     }
-    const ancestorReal = fs.realpathSync(ancestor);
-    if (ancestorReal !== repoReal && !ancestorReal.startsWith(repoReal + path.sep)) {
+    if (!inside(fs.realpathSync(ancestor))) {
       throw new Error(
         `refusing to write through a symlink that leaves the repository: ${file}`
       );
     }
+    // lstat, not stat: the question is what the last component *is*, not what
+    // it points at. A symlink is refused whatever its destination — one that
+    // stays inside the tree is still the implementer redirecting a write.
+    let self = null;
+    try {
+      self = fs.lstatSync(target);
+    } catch {
+      /* does not exist yet, which is the ordinary case for a new file */
+    }
+    if (self && self.isSymbolicLink()) {
+      throw new Error(`refusing to write through a symlink: ${file}`);
+    }
   }
 
   for (const { file, body } of files) {
-    const target = path.resolve(REPO, file);
+    const target = path.resolve(repoReal, file);
     if (CHECK) {
       console.error(`would write ${file} (${Buffer.byteLength(body)} bytes)`);
       continue;
     }
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, body);
+    // O_NOFOLLOW closes the gap between the check above and the write: the
+    // kernel refuses to open a final component that is a symlink, so a link
+    // planted after validation fails with ELOOP instead of being followed.
+    // The lstat check is still worth keeping — it names the problem, while
+    // this only reports an errno.
+    let fd;
+    try {
+      fd = fs.openSync(
+        target,
+        fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW,
+        0o666
+      );
+    } catch (e) {
+      if (e.code === 'ELOOP') {
+        throw new Error(`refusing to write through a symlink: ${file}`);
+      }
+      throw e;
+    }
+    try {
+      fs.writeFileSync(fd, body);
+    } finally {
+      fs.closeSync(fd);
+    }
     console.error(`wrote ${file} (${Buffer.byteLength(body)} bytes)`);
   }
 })();
