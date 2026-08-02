@@ -34,6 +34,17 @@ const MODELS = {
   codex: process.env.CODEX_MODEL || 'gpt-5.6-sol',
 };
 
+// Input ceilings, in characters. Only what has actually been measured belongs
+// here: Qwen refuses above this with "si necesita superar los 131072 caracteres
+// de entrada de texto...", which costs ten minutes of driving a browser to
+// discover. A family whose limit is unknown is absent rather than guessed — a
+// wrong number here would refuse work that would have succeeded, and inventing
+// one to look complete is the kind of confident-but-unfounded claim this
+// pipeline exists to catch.
+const INPUT_LIMITS = {
+  qwen: 131072,
+};
+
 const DRIVERS = {
   qwen: ['qwen-web-chat', 'qwen.js'],
   glm: ['glm-web-chat', 'glm.js'],
@@ -50,6 +61,19 @@ const DRIVERS = {
   if (!MODELS[REVIEWER]) throw new Error(`unknown reviewer: ${REVIEWER}`);
   if (PR !== undefined && !/^\d+$/.test(PR)) {
     throw new Error(`--pr must be a number, got "${PR}"`);
+  }
+
+  // Fail in a second rather than after ten minutes of driving a browser to a
+  // refusal. The prompt is unchanged and can be rebuilt smaller — with
+  // --no-files, or split with collect.js --area — and rerun.
+  const limit = INPUT_LIMITS[REVIEWER];
+  const size = fs.readFileSync(PROMPT, 'utf8').length;
+  if (limit && size > limit) {
+    throw new Error(
+      `${PROMPT} is ${size} characters and ${REVIEWER} refuses anything over ${limit}. ` +
+      'Rebuild it smaller (build-prompt --no-files, or collect --area) rather than sending a ' +
+      'prompt that cannot be answered.'
+    );
   }
 
   const env = {

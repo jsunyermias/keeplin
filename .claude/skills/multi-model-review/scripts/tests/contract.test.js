@@ -724,6 +724,35 @@ test('collect can scope a large pull request to one area', () => {
   assert.match(fs.readFileSync(path.join(out, 'collect.info'), 'utf8'), /^area: dentro$/m);
 });
 
+test('collect accepts several areas', () => {
+  // One prefix cannot always name the seam: this skill's own tests sit in a
+  // single file beside the scripts they cover.
+  const repo = repoWithPullRef(
+    { 'AGENTS.md': '# contrato\n' },
+    { 'uno/a.js': 'const a = 1;\n', 'dos/b.js': 'const b = 2;\n', 'tres/c.js': 'const c = 3;\n' }
+  );
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-out-'));
+  const r = run('collect.js', [repo, '1', out, '--area', 'uno', '--area', 'tres']);
+  assert.strictEqual(r.code, 0, r.stderr);
+
+  const changed = fs.readFileSync(path.join(out, 'changed-files.txt'), 'utf8');
+  assert.match(changed, /uno\/a\.js/);
+  assert.match(changed, /tres\/c\.js/);
+  assert.doesNotMatch(changed, /dos\/b\.js/);
+  assert.match(fs.readFileSync(path.join(out, 'collect.info'), 'utf8'), /^area: uno tres$/m);
+});
+
+test('ask refuses a prompt past the reviewer\'s measured input limit', () => {
+  // Qwen refuses over 131072 characters. Discovering that by driving a browser
+  // costs ten minutes; the prompt can be rebuilt smaller in a second.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-ask-'));
+  const prompt = path.join(dir, 'p.txt');
+  fs.writeFileSync(prompt, 'x'.repeat(131073));
+  const r = run('ask.js', ['qwen', prompt, path.join(dir, 'review.md')]);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /refuses anything over 131072/);
+});
+
 test('collect warns when the pull request ref is behind the checkout', () => {
   // The failure this catches is silent: GitHub updates refs/pull/<n>/head a
   // little after the branch push, so collecting straight after pushing yields
