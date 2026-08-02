@@ -60,8 +60,9 @@ which answers 429 on every model.
 ## Running a cycle
 
 ```bash
-# 1. Who does what this cycle
-node scripts/roles.js 1        # -> implementer kimi, reviewers qwen glm codex
+# 1. Who does what. The implementer is fixed for the whole pull request; only
+#    the pull request number decides it, so it can be reconstructed later.
+node scripts/roles.js 197      # -> implementer codex, adjudicator kimi
 
 # 2. Gather the change (free)
 node scripts/collect.js /path/to/repo 197 work/pr197
@@ -83,11 +84,28 @@ node scripts/ask.js codex work/pr197/prompt-adjudicator.txt work/pr197/review-co
 
 # 6. Read only the verdicts
 grep -m1 -h "VEREDICTO" work/pr197/review-*.md
+
+# 7. The gate decides whether the cycle closes. This step is not optional:
+#    "everyone said SIN HALLAZGOS" is not the criterion, the gate is.
+node scripts/gate.js work/pr197/review-codex.md --cycle 1 --max-cycles 5
 ```
 
-Then hand the review files back to the implementer by path and start the next
-cycle. Stop when every reviewer reports `SIN HALLAZGOS`, or when the maintainer
-calls it.
+`gate.js` is the only thing that ends a review, and its exit code is the whole
+contract:
+
+| Exit | Meaning | What to do |
+| --- | --- | --- |
+| 0 | Cleared: verdict `SIN HALLAZGOS` **and** the phrase as the sole final line | Hand the pull request to the final reviewer |
+| 1 | Not cleared | Send the review files back to the implementer by path and run another cycle |
+| 2 | Cycle cap reached, or misuse | Stop and involve the maintainer rather than looping |
+
+Both signals are required because either alone is forgeable. The phrase appears
+in this repository's own diff and in the prior reviews attached to the
+adjudicator's prompt, and these UIs echo prompts back into replies — so it is
+required exactly once in the whole reply and as the last non-empty line.
+Anything else is a quotation, and the gate says so. This is not hypothetical:
+the first real run produced `VEREDICTO: BLOQUEANTE` with the phrase present, and
+a phrase-only gate would have advanced a blocked change.
 
 ## Size is the real constraint
 
@@ -168,6 +186,23 @@ editors differ — Kimi renders plain `<pre>`, Z.ai uses CodeMirror, Qwen uses
 Monaco — and the last two virtualise their rows, which is exactly why the page
 cannot be read for code. Z.ai is the flakiest: roughly one run in two came back
 with nothing copyable, so retry once before concluding anything.
+
+## Verification
+
+The guarantees above are covered by offline tests — no browser, no model:
+
+```bash
+node --test scripts/tests/contract.test.js
+```
+
+They pin the gate's behaviour on each outcome including the quoted-phrase and
+repeated-phrase cases, that the adjudicator is never the implementer and that
+the implementer does not change between cycles, that `apply-files.js` leaves a
+Markdown file's inner fences intact and refuses to write outside the repository,
+that `apply-patch.js` recovers a diff whose blank context lines were rendered
+away and refuses prose, and that `collect.js` refuses when the project contract
+is missing. Three of these were written before the code passed them and found
+real defects.
 
 ## Recording the outcome
 

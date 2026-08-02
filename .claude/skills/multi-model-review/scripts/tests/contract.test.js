@@ -1,0 +1,195 @@
+// Contract tests for the review pipeline.
+//
+//   node --test scripts/tests/
+//
+// These cover the guarantees the pipeline is worth having for: that the gate
+// cannot be talked into clearing a blocked change, that the adjudicator never
+// judges its own implementation, and that nothing writes altered content while
+// reporting success. Everything here runs offline — no browser, no model.
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { execFileSync } = require('child_process');
+
+const SCRIPTS = path.dirname(__dirname);
+const PHRASE = 'REVISION-COMPLETADA-SIN-BLOQUEANTES';
+
+function run(script, args, opts = {}) {
+  try {
+    const stdout = execFileSync('node', [path.join(SCRIPTS, script), ...args], {
+      encoding: 'utf8', ...opts,
+    });
+    return { code: 0, stdout, stderr: '' };
+  } catch (e) {
+    return {
+      code: e.status === undefined ? 1 : e.status,
+      stdout: (e.stdout || '').toString(),
+      stderr: (e.stderr || '').toString(),
+    };
+  }
+}
+
+function tmpFile(name, body) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-test-'));
+  const p = path.join(dir, name);
+  fs.writeFileSync(p, body);
+  return p;
+}
+
+test('gate clears only when both signals agree', () => {
+  const ok = tmpFile('r.md', `VEREDICTO: SIN HALLAZGOS\n\nTodo correcto.\n\n${PHRASE}\n`);
+  const r = run('gate.js', [ok]);
+  assert.strictEqual(r.code, 0);
+  assert.strictEqual(JSON.parse(r.stdout).cleared, true);
+});
+
+test('gate refuses a blocking verdict even when the phrase is present', () => {
+  // This is the real case that occurred: the diff contains the phrase, so the
+  // adjudicator reproduced it while blocking.
+  const f = tmpFile('r.md', `VEREDICTO: BLOQUEANTE\n\nHay problemas.\n\n${PHRASE}\n`);
+  const r = run('gate.js', [f]);
+  assert.strictEqual(r.code, 1);
+  assert.strictEqual(JSON.parse(r.stdout).cleared, false);
+});
+
+test('gate treats a quoted phrase as a quotation, not a declaration', () => {
+  const f = tmpFile('r.md',
+    `VEREDICTO: SIN HALLAZGOS\n\nEl gate exige ${PHRASE} al final.\n\nFin del análisis.\n`);
+  const r = run('gate.js', [f]);
+  assert.strictEqual(r.code, 1);
+  const out = JSON.parse(r.stdout);
+  assert.strictEqual(out.cleared, false);
+  assert.strictEqual(out.phrase_quoted_not_declared, true);
+});
+
+test('gate refuses when the phrase is repeated', () => {
+  const f = tmpFile('r.md',
+    `VEREDICTO: SIN HALLAZGOS\n\nCito ${PHRASE} aquí.\n\n${PHRASE}\n`);
+  assert.strictEqual(run('gate.js', [f]).code, 1);
+});
+
+test('gate reports a missing verdict as a failed review, not a clean one', () => {
+  const f = tmpFile('r.md', 'el revisor se cayó a media respuesta\n');
+  const r = run('gate.js', [f]);
+  assert.strictEqual(r.code, 1);
+  assert.strictEqual(JSON.parse(r.stdout).verdict, null);
+  assert.match(r.stderr, /not the same as a clean review/);
+});
+
+test('gate stops at the cycle cap with a distinct exit code', () => {
+  const f = tmpFile('r.md', 'VEREDICTO: BLOQUEANTE\n');
+  assert.strictEqual(run('gate.js', [f, '--cycle', '5', '--max-cycles', '5']).code, 2);
+});
+
+test('the adjudicator is never the implementer', () => {
+  for (const pr of [1, 2, 197, 198]) {
+    const roles = JSON.parse(run('roles.js', [String(pr)]).stdout);
+    assert.notStrictEqual(roles.adjudicator, roles.implementer);
+    assert.ok(!roles.independent.includes(roles.implementer));
+    assert.ok(roles.reviewers.includes(roles.adjudicator));
+  }
+});
+
+test('the implementer does not change between cycles of one pull request', () => {
+  // Rotating per cycle let a model adjudicate a cumulative diff containing its
+  // own earlier work, which is what the rule forbids.
+  const a = JSON.parse(run('roles.js', ['197']).stdout);
+  const b = JSON.parse(run('roles.js', ['197']).stdout);
+  assert.strictEqual(a.implementer, b.implementer);
+  assert.strictEqual(a.adjudicator, b.adjudicator);
+});
+
+test('roles alternate across pull requests', () => {
+  const odd = JSON.parse(run('roles.js', ['197']).stdout);
+  const even = JSON.parse(run('roles.js', ['198']).stdout);
+  assert.notStrictEqual(odd.implementer, even.implementer);
+});
+
+test('apply-files keeps a markdown file\'s inner fences intact', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-repo-'));
+  const reply = tmpFile('reply.md', [
+    'FICHERO: README.md',
+    '```',
+    '# Título',
+    '',
+    'Ejemplo:',
+    '',
+    '```js',
+    'const a = 1;',
+    '```',
+    '',
+    'Fin.',
+    '```',
+  ].join('\n'));
+  const r = run('apply-files.js', [repo, reply]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const written = fs.readFileSync(path.join(repo, 'README.md'), 'utf8');
+  assert.match(written, /```js/);
+  assert.match(written, /const a = 1;/);
+  assert.match(written, /Fin\./);
+});
+
+test('apply-files refuses to write outside the repository', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-repo-'));
+  const reply = tmpFile('reply.md', 'FICHERO: ../escapado.js\n```\nx\n```\n');
+  const r = run('apply-files.js', [repo, reply]);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /outside the repository/);
+});
+
+test('apply-files reports a reply that ignored the contract', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-repo-'));
+  const reply = tmpFile('reply.md', 'Claro, aquí tienes el cambio explicado en prosa.\n');
+  const r = run('apply-files.js', [repo, reply]);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /did not follow the contract/);
+});
+
+test('apply-patch recovers a diff whose blank context lines were rendered away', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-repo-'));
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  execFileSync('git', ['config', 'user.email', 'a@b.c'], { cwd: repo });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
+  fs.writeFileSync(path.join(repo, 'calc.js'), 'function suma(a, b) {\n  return a + b;\n}\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'init'], { cwd: repo });
+
+  // Note the miscounted @@ header, as models routinely produce.
+  const reply = tmpFile('reply.md', [
+    '--- reply ---',
+    'diff --git a/calc.js b/calc.js',
+    '--- a/calc.js',
+    '+++ b/calc.js',
+    '@@ -1,3 +1,7 @@',
+    ' function suma(a, b) {',
+    '   return a + b;',
+    ' }',
+    '+function resta(a, b) {',
+    '+  return a - b;',
+    '+}',
+    'Ask anything, or task an agent...',
+  ].join('\n'));
+
+  const r = run('apply-patch.js', [repo, reply]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(fs.readFileSync(path.join(repo, 'calc.js'), 'utf8'), /function resta/);
+});
+
+test('apply-patch refuses prose instead of guessing', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-repo-'));
+  const reply = tmpFile('reply.md', 'He añadido la función resta, avísame si quieres tests.\n');
+  const r = run('apply-patch.js', [repo, reply]);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /no unified diff found/);
+});
+
+test('collect refuses when the project contract is absent', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-repo-'));
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-out-'));
+  const r = run('collect.js', [repo, '1', out]);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /AGENTS\.md|required project context|fatal/);
+});

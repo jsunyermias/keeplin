@@ -25,8 +25,13 @@ const [REPO, REPLY] = argv.filter((a) => !a.startsWith('--'));
 const HEADER = /^\s*(?:FICHERO|FILE|ARCHIVO)\s*:\s*(\S+)\s*$/i;
 
 // The reply arrives as rendered text, so fences may or may not survive. Take
-// everything between one header and the next as that file's body, then strip
-// fence lines and the "Copy" affordance the chat UIs inject above code blocks.
+// everything between one header and the next as that file's body.
+//
+// Only the block's own outer fences are removed — the opening one just after
+// the header and its matching close. Stripping every line that starts with a
+// fence would quietly gut a Markdown file's inner code blocks, turning an
+// apparently successful write into altered content, which is worse than a
+// visible failure.
 function parse(text) {
   const lines = text.split('\n');
   const marks = [];
@@ -37,12 +42,27 @@ function parse(text) {
 
   return marks.map((mark, k) => {
     const end = k + 1 < marks.length ? marks[k + 1].at : lines.length;
-    const body = lines.slice(mark.at + 1, end)
-      .filter((l) => !/^\s*```/.test(l))
-      .filter((l, i, arr) => !(i === 0 && /^(Copy|Copiar|diff|js|ts|rust|python)$/i.test(l.trim())))
-      .join('\n')
-      .replace(/^\n+/, '')
-      .replace(/\s+$/, '\n');
+    let seg = lines.slice(mark.at + 1, end);
+
+    // Chat UIs inject a language label and a "Copy" affordance above the block.
+    while (seg.length && /^(Copy|Copiar|[a-z]{1,12})$/i.test(seg[0].trim())) seg = seg.slice(1);
+    while (seg.length && seg[0].trim() === '') seg = seg.slice(1);
+
+    const opens = seg.findIndex((l) => /^\s*```/.test(l));
+    if (opens === 0) {
+      // Drop the opening fence and everything from the matching close onward.
+      // Close on the LAST bare fence, not the first: a Markdown file carries
+      // its own inner blocks, and cutting at the first close would silently
+      // truncate the file while still reporting a successful write.
+      const rest = seg.slice(1);
+      let closes = -1;
+      for (let i = rest.length - 1; i >= 0; i--) {
+        if (/^\s*```\s*$/.test(rest[i])) { closes = i; break; }
+      }
+      seg = closes === -1 ? rest : rest.slice(0, closes);
+    }
+
+    const body = seg.join('\n').replace(/^\n+/, '').replace(/\s+$/, '\n');
     return { file: mark.file, body };
   }).filter((f) => f.body.trim());
 }

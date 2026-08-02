@@ -69,19 +69,28 @@ async function waitForReply(page, {
   maxPolls = 150,
   interval = 2000,
   startTimeoutMs = 120000,
+  stallMs = 90000,
+  stallReloads = 2,
 } = {}) {
   const baseline = await page.locator('body').innerText().catch(() => '');
-  const deadline = Date.now() + startTimeoutMs;
   let started = false;
-  while (Date.now() < deadline) {
-    await page.waitForTimeout(interval);
-    const text = await page.locator('body').innerText().catch(() => '');
-    if (text !== baseline) { started = true; break; }
+  for (let attempt = 0; attempt <= stallReloads && !started; attempt++) {
+    const deadline = Date.now() + startTimeoutMs;
+    while (Date.now() < deadline) {
+      await page.waitForTimeout(interval);
+      const text = await page.locator('body').innerText().catch(() => '');
+      if (text !== baseline) { started = true; break; }
+    }
+    // Nothing arrived in the whole window: assume a stalled stream, not a slow
+    // model, and re-render the conversation from the server.
+    if (!started && attempt < stallReloads) await reloadChat(page);
   }
   if (!started) return { text: baseline, complete: false, started: false };
 
   let last = '';
   let quiet = 0;
+  let lastChange = Date.now();
+  let reloads = 0;
   for (let i = 0; i < maxPolls; i++) {
     await page.waitForTimeout(interval);
     const text = await page.locator('body').innerText().catch(() => '');
@@ -89,8 +98,18 @@ async function waitForReply(page, {
     if (text === last && !busy) {
       if (++quiet >= quietChecks) return { text: last, complete: true, started: true };
     } else {
+      if (text !== last) lastChange = Date.now();
       quiet = 0;
       last = text;
+    }
+    // Busy but frozen: the stream died mid-reply. Waiting never recovers it,
+    // so re-render the conversation and judge what actually landed.
+    if (busy && Date.now() - lastChange > stallMs && reloads < stallReloads) {
+      reloads += 1;
+      await reloadChat(page);
+      last = '';
+      quiet = 0;
+      lastChange = Date.now();
     }
   }
   return { text: last, complete: false, started: true };
@@ -119,7 +138,9 @@ function newLines(before, after) {
 // Generation is in progress exactly while the composer offers a stop control.
 // That is an explicit signal from the page, unlike inferring completion from
 // the text going quiet — which mistakes a pause for thought for an answer.
-async function waitForGeneration(page, { startMs = 15000, maxMs = 360000 } = {}) {
+async function waitForGeneration(page, {
+  startMs = 15000, maxMs = 360000, stallMs = 90000, stallReloads = 2,
+} = {}) {
   const stop = () => page.locator('[class*="stop" i], button:has(svg[class*="stop" i])');
   const startDeadline = Date.now() + startMs;
   while (Date.now() < startDeadline) {
@@ -132,6 +153,17 @@ async function waitForGeneration(page, { startMs = 15000, maxMs = 360000 } = {})
     if (!(await stop().count())) return true;
   }
   return false;
+}
+
+// These UIs stall: the stream stops arriving while the page keeps looking busy,
+// and no amount of waiting recovers it. The conversation itself is server-side,
+// so reloading the chat re-renders whatever the model actually produced. Any
+// wait that can stall therefore reloads instead of waiting forever — but only
+// after the send has been registered, since reloading before that would lose
+// the prompt.
+async function reloadChat(page) {
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+  await page.waitForTimeout(6000);
 }
 
 // Recover code exactly, by clicking each code block's copy icon and reading the

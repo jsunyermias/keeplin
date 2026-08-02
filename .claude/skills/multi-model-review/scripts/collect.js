@@ -61,6 +61,32 @@ const [REPO, PR, OUT] = process.argv.slice(2);
     }
   }
 
+  // Reviewers cannot open the repository, yet the checklist orders them to read
+  // AGENTS.md and the applicable companions. Shipping the diff without the
+  // contract asks for a judgement they have no basis to make, so the required
+  // resources travel with it and their absence is recorded rather than hidden.
+  const REQUIRED = ['AGENTS.md'];
+  const OPTIONAL = ['docs/review-debt.md', '.github/pull_request_template.md'];
+  fs.mkdirSync(path.join(OUT, 'context'), { recursive: true });
+  const carried = [];
+  const missing = [];
+  for (const rel of [...REQUIRED, ...OPTIONAL]) {
+    const from = path.join(REPO, rel);
+    if (fs.existsSync(from)) {
+      const to = path.join(OUT, 'context', rel.replace(/[\\/]/g, '__'));
+      fs.copyFileSync(from, to);
+      carried.push(rel);
+    } else if (REQUIRED.includes(rel)) {
+      missing.push(rel);
+    }
+  }
+  if (missing.length) {
+    throw new Error(
+      `required project context missing from ${REPO}: ${missing.join(', ')}. ` +
+      'A review without it cannot check what the checklist asks for.'
+    );
+  }
+
   const info = [
     `pr: ${PR}`,
     `base: ${base}`,
@@ -69,6 +95,7 @@ const [REPO, PR, OUT] = process.argv.slice(2);
     `changed_files: ${changed.length}`,
     `files_captured: ${written}`,
     `diff_bytes: ${fs.statSync(path.join(OUT, 'diff.patch')).size}`,
+    `context: ${carried.join(', ')}`,
   ].join('\n');
   fs.writeFileSync(path.join(OUT, 'collect.info'), info + '\n');
   console.error(info);

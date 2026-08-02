@@ -37,6 +37,12 @@ const [DIR, CHECKLIST, META] = positional;
 const DIFF_WARN_BYTES = 200 * 1024;
 // Whole-file context is a nicety; drop it rather than blow the budget.
 const FILES_BUDGET_BYTES = 120 * 1024;
+// The project contract comes first, but it must not crowd out the diff either.
+const CONTEXT_BUDGET_BYTES = 60 * 1024;
+
+// The gate demands this exact line as the last one; the adjudicator has to be
+// told to emit it, or a clean review could never close the cycle.
+const PHRASE = process.env.REVIEW_PHRASE || 'REVISION-COMPLETADA-SIN-BLOQUEANTES';
 
 const read = (p) => fs.readFileSync(p, 'utf8');
 
@@ -72,6 +78,35 @@ const read = (p) => fs.readFileSync(p, 'utf8');
 
   if (META && fs.existsSync(META)) {
     parts.push('## Objetivo del cambio', '', read(META).trim(), '', '---', '');
+  }
+
+  // The checklist tells reviewers to read AGENTS.md and companions. They cannot
+  // open the repository, so those travel in the prompt; what could not fit is
+  // named, because a reviewer must know which rules it was unable to apply.
+  const ctxDir = path.join(DIR, 'context');
+  const ctxIncluded = [];
+  const ctxOmitted = [];
+  if (fs.existsSync(ctxDir)) {
+    let ctxUsed = 0;
+    const ctxParts = [];
+    for (const f of fs.readdirSync(ctxDir).sort()) {
+      const body = read(path.join(ctxDir, f));
+      const label = f.replace(/__/g, '/');
+      if (ctxUsed + body.length > CONTEXT_BUDGET_BYTES) { ctxOmitted.push(label); continue; }
+      ctxUsed += body.length;
+      ctxIncluded.push(label);
+      ctxParts.push(`### ${label}`, '', body.trim(), '');
+    }
+    if (ctxParts.length) {
+      parts.push('## Contrato del proyecto', '', ...ctxParts, '---', '');
+    }
+    if (ctxOmitted.length) {
+      parts.push(
+        `Recursos del proyecto omitidos por tamaño: ${ctxOmitted.join(', ')}.`,
+        'No des por verificada ninguna regla que dependa de ellos.',
+        '', '---', ''
+      );
+    }
   }
 
   parts.push('## Diff', '', '```diff', diff.trim(), '```', '');
@@ -117,7 +152,15 @@ const read = (p) => fs.readFileSync(p, 'utf8');
       '- Añade lo que ambos hayan pasado por alto.',
       '',
       'Que un hallazgo venga de otro revisor no lo hace cierto, y que ninguno lo',
-      'mencione no lo hace inexistente. No repitas el diff.'
+      'mencione no lo hace inexistente. No repitas el diff.',
+      '',
+      'CIERRE OBLIGATORIO. Si y solo si tu veredicto es SIN HALLAZGOS, la ULTIMA',
+      'linea de tu respuesta debe ser exactamente, sola y sin nada despues:',
+      '',
+      PHRASE,
+      '',
+      'No escribas esa linea en ningun otro sitio, ni la cites, ni la menciones al',
+      'discutir hallazgos previos. Si tu veredicto no es SIN HALLAZGOS, omitela.'
     );
   } else {
     parts.push(
@@ -133,6 +176,7 @@ const read = (p) => fs.readFileSync(p, 'utf8');
 
   console.error(`wrote ${out}: ${Buffer.byteLength(prompt)} bytes ` +
     `(diff ${Buffer.byteLength(diff)}, ${changed.length} files, ${skipped.length} omitted` +
+    `, context ${ctxIncluded.length} in/${ctxOmitted.length} out` +
     `${PRIOR.length ? `, ${PRIOR.length} prior review(s)` : ''})`);
   if (Buffer.byteLength(diff) > DIFF_WARN_BYTES) {
     console.error('warning: diff is large; consider splitting the review by area');

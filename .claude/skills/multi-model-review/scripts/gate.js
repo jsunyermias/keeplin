@@ -44,13 +44,28 @@ const MAX_CYCLES = flag('max-cycles', 5);
   const verdict = (text.match(/^VEREDICTO:\s*(.+)$/m) || [])[1];
   const normalised = (verdict || '').trim().toUpperCase();
   const clean = normalised === 'SIN HALLAZGOS';
-  const phrased = text.includes(PHRASE);
+
+  // Substring matching is not good enough. The phrase appears in this
+  // repository's own diff and in the prior reviews attached to the
+  // adjudicator's prompt, and these UIs echo the prompt back into the reply —
+  // so `includes` fires on a quotation. Require it as the exact final line,
+  // and refuse if it appears more than once, which means it was discussed
+  // rather than declared.
+  // Count every appearance anywhere in the text, not just whole lines: a
+  // mid-sentence mention alongside a well-formed final line would otherwise
+  // clear, and these replies routinely echo a prompt that spells the phrase out.
+  const total = text.split(PHRASE).length - 1;
+  const lines = text.split('\n').map((l) => l.trim());
+  const last = [...lines].reverse().find((l) => l !== '');
+  const phrased = total === 1 && last === PHRASE;
+  const quoted = total > 0 && !phrased;
 
   console.log(JSON.stringify({
     file: FILE,
     cycle: CYCLE,
     verdict: verdict ? verdict.trim() : null,
     phrase_present: phrased,
+    phrase_quoted_not_declared: quoted,
     cleared: clean && phrased,
   }));
 
@@ -64,6 +79,9 @@ const MAX_CYCLES = flag('max-cycles', 5);
       'this is not the same as a clean review');
   } else if (!clean) {
     console.error(`not cleared: verdict is "${verdict.trim()}"`);
+  } else if (quoted) {
+    console.error(`not cleared: "${PHRASE}" appears but not as the sole final line — ` +
+      'that is a quotation, not a declaration');
   } else {
     console.error(`not cleared: verdict is clean but "${PHRASE}" is absent`);
   }

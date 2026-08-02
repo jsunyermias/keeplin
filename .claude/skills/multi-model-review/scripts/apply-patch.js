@@ -85,7 +85,10 @@ function repair(patch) {
     );
   }
 
-  const tmp = path.join(os.tmpdir(), `impl-${process.pid}.patch`);
+  // A predictable /tmp path that writeFileSync follows through a symlink could
+  // clobber another file owned by this user. Own the directory instead.
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'impl-'));
+  const tmp = path.join(tmpDir, 'change.patch');
   const repaired = repair(patch);
   // Patches that lose their trailing newline are rejected by git apply.
   fs.writeFileSync(tmp, repaired.endsWith('\n') ? repaired : `${repaired}\n`);
@@ -131,7 +134,7 @@ function repair(patch) {
   // common once a review cycle has already changed the branch.
   git(['apply', '--3way', ...mode, tmp]);
   const stat = git(['diff', '--stat']).trim();
-  fs.unlinkSync(tmp);
+  fs.rmSync(tmpDir, { recursive: true, force: true });
 
   console.error(stat || '(patch applied, no net change)');
 })();
