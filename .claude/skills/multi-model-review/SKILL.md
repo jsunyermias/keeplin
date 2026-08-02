@@ -123,31 +123,46 @@ Qwen's extraction is still imperfect: the verdict line comes through, but the
 echoed prompt can trail it. Read the verdict, not the whole file, and open the
 file only when a verdict warrants it.
 
-## Chat models cannot yet act as implementers
+## Chat models as implementers: use the clipboard, never the page
 
-Codex implements natively: it is an agent with file access, so it edits the tree
-and the orchestrator never sees the code. Kimi is a chat, and recovering code
-from it is **not currently reliable**.
+Codex implements natively — it is an agent with file access, so it edits the
+tree and the orchestrator never sees the code. Kimi is a chat, and code has to
+be carried out of it. **Read it from the clipboard, not from the page.**
 
-The blocker is not the prompt. Reading a reply means reading the rendered page,
-and these code blocks do not round-trip through `innerText`:
+Reading the rendered page does not work, and fails in a way that looks like
+success. A unified diff loses blank context lines outright — deleted, not
+blanked — so `git apply` rejects the hunk with nothing left to repair;
+recounting the header and reducing required context both fail. Asking for whole
+files is worse: a reply that should have carried a complete file came back
+missing an entire function and a closing brace. `innerText` simply does not
+contain every line of a long code block.
 
-- A unified diff loses blank context lines outright — deleted, not blanked — so
-  `git apply` rejects the hunk and there is nothing left to repair. Recounting
-  the header and reducing required context to one line both fail.
-- Asking for whole files instead is worse, not better: a reply that should have
-  carried the complete file came back missing an entire function and a closing
-  brace. The page simply does not contain every line of a long code block.
+The copy icon each block renders solves it. `copyCodeBlocks` in `kimi-lib.js`
+clicks it and reads `navigator.clipboard`, recovering the text byte for byte —
+blank lines, braces and all. Two details make it reliable:
 
-`apply-patch.js` and `apply-files.js` are written and do their part correctly —
-they refuse loudly rather than writing damaged code, which is the behaviour that
-matters. What is missing is a faithful way to read the reply.
+- The icon is not a `button` element and carries no accessible name, so it is
+  reached from the card's own geometry, inset from its top-right corner.
+- The clipboard is seeded with a sentinel before each click. An unchanged
+  clipboard means the click missed, and that block is skipped rather than
+  reported with the previous block's contents.
 
-The fix is the **Copy button** every one of these UIs renders above a code
-block: it puts the exact text on the clipboard, bypassing the rendering
-entirely. Driving that with Playwright's clipboard permissions is the next step.
-Until then, run cycles with Codex as the implementer and Kimi as a reviewer,
-where prose survives rendering fine.
+The context must hold `clipboard-read` and `clipboard-write`; `CONTEXT` in
+`kimi-lib.js` already does.
+
+```bash
+node scripts/kimi.js @implement-prompt.txt K3 --code > reply.out
+```
+
+Ask for the complete file in a single code block. Exercised end to end: Kimi
+produced a file, it was written without being read, and the result ran
+correctly.
+
+Completion is detected the same way, from the page rather than by inference:
+generation is in progress exactly while the composer offers a stop control, so
+`waitForGeneration` waits on that instead of on the text going quiet. Only the
+Kimi driver has both so far — GLM and Qwen still infer completion, and their
+code extraction is unverified.
 
 ## Recording the outcome
 

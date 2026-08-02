@@ -50,6 +50,8 @@ async function launch() {
 
 // Fixed viewport keeps the rendered layout predictable between runs.
 const CONTEXT = {
+  // Clipboard access is what makes exact code recovery possible.
+  permissions: ['clipboard-read', 'clipboard-write'],
   userAgent:
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
   viewport: { width: 1280, height: 900 },
@@ -114,6 +116,61 @@ function newLines(before, after) {
   return lines.filter((l) => l.trim() && !before.has(l));
 }
 
+// Generation is in progress exactly while the composer offers a stop control.
+// That is an explicit signal from the page, unlike inferring completion from
+// the text going quiet — which mistakes a pause for thought for an answer.
+async function waitForGeneration(page, { startMs = 15000, maxMs = 360000 } = {}) {
+  const stop = () => page.locator('[class*="stop" i], button:has(svg[class*="stop" i])');
+  const startDeadline = Date.now() + startMs;
+  while (Date.now() < startDeadline) {
+    if (await stop().count()) break;
+    await page.waitForTimeout(1000);
+  }
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(2000);
+    if (!(await stop().count())) return true;
+  }
+  return false;
+}
+
+// Recover code exactly, by clicking each code block's copy icon and reading the
+// clipboard. Reading the rendered page cannot be used for this: innerText drops
+// blank lines and, in long blocks, whole lines of code. The icon is not a
+// button element, so it is reached from the card's own geometry — inset from
+// its top-right corner. Requires the context to hold clipboard permissions.
+const COPY_INSET_X = 29;
+const COPY_INSET_Y = 20;
+
+async function copyCodeBlocks(page) {
+  const blocks = page.locator('pre');
+  const n = await blocks.count();
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const pre = blocks.nth(i);
+    if (!(await pre.isVisible().catch(() => false))) continue;
+    const card = await pre.evaluate((el) => {
+      let node = el;
+      for (let k = 0; k < 4 && node.parentElement; k++) node = node.parentElement;
+      const r = node.getBoundingClientRect();
+      return { x: r.x, y: r.y, w: r.width };
+    }).catch(() => null);
+    if (!card) continue;
+
+    await pre.hover().catch(() => {});
+    await page.waitForTimeout(400);
+    const sentinel = `__SIN_COPIA_${i}__`;
+    await page.evaluate((v) => navigator.clipboard.writeText(v), sentinel);
+    await page.mouse.click(Math.round(card.x + card.w - COPY_INSET_X), Math.round(card.y + COPY_INSET_Y));
+    await page.waitForTimeout(1200);
+    const text = await page.evaluate(() => navigator.clipboard.readText().catch(() => ''));
+    // An unchanged clipboard means the click missed; say so instead of
+    // returning the previous block's contents as if it were this one.
+    if (text && text !== sentinel) out.push(text);
+  }
+  return out;
+}
+
 // A prompt given as "@path" is read from disk. Review prompts carry a whole
 // diff, which is far past what fits comfortably on a command line.
 function readPrompt(arg) {
@@ -137,5 +194,6 @@ async function enterPrompt(page, locator, text) {
 }
 
 module.exports = {
-  launch, resolveChromium, CONTEXT, waitForReply, newLines, readPrompt, enterPrompt, SENTINEL,
+  launch, resolveChromium, CONTEXT, waitForReply, waitForGeneration, newLines,
+  copyCodeBlocks, readPrompt, enterPrompt, SENTINEL,
 };

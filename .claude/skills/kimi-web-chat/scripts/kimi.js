@@ -2,15 +2,22 @@
 //
 //   node kimi.js "your prompt" [model]
 //   node kimi.js @prompt.txt [model]     # long prompts, e.g. a review diff
+//   node kimi.js @prompt.txt K3 --code   # emit code blocks, recovered exactly
 //   model: K3 (default) | Instant | "K3 Swarm"
 //
 // Requires an authenticated kimi-state.json in the working directory; without
 // it the send silently hits the login wall. Run login-sms.js first.
 const fs = require('fs');
-const { launch, CONTEXT, waitForReply, newLines, readPrompt, enterPrompt } = require('./kimi-lib');
+const {
+  launch, CONTEXT, waitForReply, waitForGeneration, newLines, copyCodeBlocks,
+  readPrompt, enterPrompt,
+} = require('./kimi-lib');
 
 const PROMPT = readPrompt(process.argv[2]);
-const MODEL = process.argv[3] || 'K3';
+const MODEL = (process.argv[3] || 'K3').replace(/^--.*/, '') || 'K3';
+// Prose survives the page renderer; code does not, so code is lifted from the
+// clipboard instead. See copyCodeBlocks in kimi-lib.js for why.
+const CODE_MODE = process.argv.includes('--code');
 const STATE = 'kimi-state.json';
 
 // Completion is inferred, not signalled. Deep Research and Swarm runs think far
@@ -96,16 +103,31 @@ const MAX_POLLS = Number(process.env.MAX_POLLS || 150);
   const before = new Set((await page.locator('body').innerText()).split('\n'));
   await page.keyboard.press('Enter');
 
-  const { text, complete, started } = await waitForReply(page, {
-    quietChecks: QUIET_CHECKS,
-    maxPolls: MAX_POLLS,
-  });
-  if (!started) throw new Error('the model never began replying — prompt may exceed what this UI accepts');
-  if (!complete) console.log('note: hit the poll ceiling; reply may be truncated');
+  if (CODE_MODE) {
+    const finished = await waitForGeneration(page);
+    if (!finished) console.log('note: generation did not finish within the ceiling');
+    await page.waitForTimeout(2000);
+    const blocks = await copyCodeBlocks(page);
+    if (!blocks.length) {
+      throw new Error('no code block could be copied — the reply had none, or the copy control moved');
+    }
+    console.log('url:', page.url());
+    for (const [i, b] of blocks.entries()) {
+      console.log(`--- code ${i} ---`);
+      console.log(b);
+    }
+  } else {
+    const { text, complete, started } = await waitForReply(page, {
+      quietChecks: QUIET_CHECKS,
+      maxPolls: MAX_POLLS,
+    });
+    if (!started) throw new Error('the model never began replying — prompt may exceed what this UI accepts');
+    if (!complete) console.log('note: hit the poll ceiling; reply may be truncated');
 
-  console.log('url:', page.url());
-  console.log('--- reply ---');
-  console.log(newLines(before, text).join('\n'));
+    console.log('url:', page.url());
+    console.log('--- reply ---');
+    console.log(newLines(before, text).join('\n'));
+  }
 
   await page.screenshot({ path: 'kimi-chat.png' });
   await ctx.storageState({ path: STATE });
