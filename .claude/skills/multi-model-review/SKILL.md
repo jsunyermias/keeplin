@@ -123,6 +123,32 @@ Qwen's extraction is still imperfect: the verdict line comes through, but the
 echoed prompt can trail it. Read the verdict, not the whole file, and open the
 file only when a verdict warrants it.
 
+## Chat models cannot yet act as implementers
+
+Codex implements natively: it is an agent with file access, so it edits the tree
+and the orchestrator never sees the code. Kimi is a chat, and recovering code
+from it is **not currently reliable**.
+
+The blocker is not the prompt. Reading a reply means reading the rendered page,
+and these code blocks do not round-trip through `innerText`:
+
+- A unified diff loses blank context lines outright — deleted, not blanked — so
+  `git apply` rejects the hunk and there is nothing left to repair. Recounting
+  the header and reducing required context to one line both fail.
+- Asking for whole files instead is worse, not better: a reply that should have
+  carried the complete file came back missing an entire function and a closing
+  brace. The page simply does not contain every line of a long code block.
+
+`apply-patch.js` and `apply-files.js` are written and do their part correctly —
+they refuse loudly rather than writing damaged code, which is the behaviour that
+matters. What is missing is a faithful way to read the reply.
+
+The fix is the **Copy button** every one of these UIs renders above a code
+block: it puts the exact text on the clipboard, bypassing the rendering
+entirely. Driving that with Playwright's clipboard permissions is the next step.
+Until then, run cycles with Codex as the implementer and Kimi as a reviewer,
+where prose survives rendering fine.
+
 ## Recording the outcome
 
 `AGENTS.md` wants the reviewing family recorded on the PR. The rotation is

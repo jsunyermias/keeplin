@@ -7,17 +7,16 @@
 // Requires an authenticated kimi-state.json in the working directory; without
 // it the send silently hits the login wall. Run login-sms.js first.
 const fs = require('fs');
-const { launch, CONTEXT, readPrompt, enterPrompt } = require('./kimi-lib');
+const { launch, CONTEXT, waitForReply, newLines, readPrompt, enterPrompt } = require('./kimi-lib');
 
 const PROMPT = readPrompt(process.argv[2]);
 const MODEL = process.argv[3] || 'K3';
 const STATE = 'kimi-state.json';
 
-// Kimi keeps thinking long after the visible text pauses, so "done" is inferred
-// from the transcript going quiet. Deep Research and Swarm runs pause for much
-// longer than this and will be cut short — raise both values for those.
-const QUIET_CHECKS = 3;
-const MAX_POLLS = 60;
+// Completion is inferred, not signalled. Deep Research and Swarm runs think far
+// longer than the defaults allow and will be cut short — raise these for those.
+const QUIET_CHECKS = Number(process.env.QUIET_CHECKS || 4);
+const MAX_POLLS = Number(process.env.MAX_POLLS || 150);
 
 (async () => {
   if (!PROMPT) throw new Error('usage: node kimi.js "prompt" [model]');
@@ -28,26 +27,64 @@ const MAX_POLLS = 60;
   const page = await ctx.newPage();
 
   await page.goto('https://www.kimi.com', { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForTimeout(5000);
+  // The composer and its model picker render late; 5s was not enough and the
+  // run died claiming the UI had changed.
+  await page.waitForTimeout(9000);
 
   if (/Log in to sync chat history/i.test(await page.locator('body').innerText())) {
     throw new Error('session expired — run login-sms.js again');
   }
 
   // The picker sits at the right edge of the composer and resets to "Instant"
-  // on every fresh context, so K3 has to be chosen each run. It is clicked by
-  // coordinate because the control exposes no stable accessible name; this is
-  // the most brittle line in the skill and depends on the fixed viewport.
-  await page.mouse.click(898, 465);
-  await page.waitForTimeout(2000);
-  await page.getByText(MODEL, { exact: true }).first().click({ timeout: 15000 });
-  await page.waitForTimeout(1500);
+  // on every fresh context, so the wanted model has to be chosen each run. Its
+  // position shifts with the sidebar's state, so the control is located from
+  // the elements' own geometry rather than by fixed coordinate: a hardcoded
+  // point silently misses and the run dies on an unexplained click timeout.
+  const KNOWN = ['K3 Swarm', 'K3', 'Instant'];
+  const names = KNOWN.includes(MODEL) ? KNOWN : [MODEL, ...KNOWN];
 
-  const selector = (await page.locator('body').innerText())
-    .match(/(Instant|K3 Swarm|K3)\s+(High|Medium|Low)/);
-  console.log('model:', selector
-    ? selector[0].replace(/\s+/g, ' ')
-    : 'UNKNOWN — verify before trusting the reply');
+  const labels = async () => {
+    const out = [];
+    for (const n of names) {
+      const found = await page.getByText(n, { exact: true }).evaluateAll((els) =>
+        els.map((e) => {
+          const r = e.getBoundingClientRect();
+          return {
+            cx: Math.round(r.x + r.width / 2),
+            cy: Math.round(r.y + r.height / 2),
+            visible: !!e.offsetParent && r.width > 0,
+          };
+        }).filter((o) => o.visible)
+      );
+      for (const g of found) out.push({ ...g, text: n });
+    }
+    return out;
+  };
+
+  // With the menu closed, the only visible label is the active model.
+  const active = async () => (await labels()).sort((a, b) => a.cy - b.cy)[0] || null;
+
+  let current = await active();
+  if (!current) throw new Error('no model label found on the composer — the UI changed');
+
+  if (current.text !== MODEL) {
+    await page.mouse.click(current.cx, current.cy);
+    await page.waitForTimeout(2500);
+    const option = (await labels())
+      .filter((o) => o.text === MODEL && Math.abs(o.cy - current.cy) > 15)
+      .sort((a, b) => a.cy - b.cy)[0];
+    if (!option) throw new Error(`"${MODEL}" not selectable — renamed, or gated on this account`);
+    await page.mouse.click(option.cx, option.cy);
+    await page.waitForTimeout(2000);
+    current = await active();
+  }
+
+  console.log('model:', current ? current.text : 'UNKNOWN');
+  if (!current || current.text !== MODEL) {
+    throw new Error(
+      `model selection did not take: composer reads "${current && current.text}", wanted "${MODEL}"`
+    );
+  }
 
   const box = page.locator('div[contenteditable="true"], textarea').first();
   await box.waitFor({ state: 'visible', timeout: 30000 });
@@ -59,24 +96,16 @@ const MAX_POLLS = 60;
   const before = new Set((await page.locator('body').innerText()).split('\n'));
   await page.keyboard.press('Enter');
 
-  let last = '';
-  let quiet = 0;
-  for (let i = 0; i < MAX_POLLS; i++) {
-    await page.waitForTimeout(2000);
-    const text = await page.locator('body').innerText().catch(() => '');
-    if (text === last) {
-      if (++quiet >= QUIET_CHECKS) break;
-    } else {
-      quiet = 0;
-      last = text;
-    }
-  }
-  if (quiet < QUIET_CHECKS) console.log('note: hit the poll ceiling; reply may be truncated');
+  const { text, complete, started } = await waitForReply(page, {
+    quietChecks: QUIET_CHECKS,
+    maxPolls: MAX_POLLS,
+  });
+  if (!started) throw new Error('the model never began replying — prompt may exceed what this UI accepts');
+  if (!complete) console.log('note: hit the poll ceiling; reply may be truncated');
 
-  const fresh = last.split('\n').filter((l) => l.trim() && !before.has(l));
   console.log('url:', page.url());
   console.log('--- reply ---');
-  console.log(fresh.join('\n'));
+  console.log(newLines(before, text).join('\n'));
 
   await page.screenshot({ path: 'kimi-chat.png' });
   await ctx.storageState({ path: STATE });

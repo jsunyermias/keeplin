@@ -48,13 +48,71 @@ async function launch() {
   });
 }
 
-// The viewport is fixed because the model picker is clicked by coordinate.
+// Fixed viewport keeps the rendered layout predictable between runs.
 const CONTEXT = {
   userAgent:
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
   viewport: { width: 1280, height: 900 },
   locale: 'es-ES',
 };
+
+// Wait for the transcript to stop growing. Completion is inferred, not
+// signalled, so two phases are needed: first wait for generation to actually
+// begin, then wait for it to settle. Collapsing these into one quiet-window
+// check is the subtle bug — on a large prompt the model can sit silent for
+// longer than the window, and the page looks "settled" before a single token
+// has appeared, so the reply is reported as empty.
+async function waitForReply(page, {
+  quietChecks = 4,
+  maxPolls = 150,
+  interval = 2000,
+  startTimeoutMs = 120000,
+} = {}) {
+  const baseline = await page.locator('body').innerText().catch(() => '');
+  const deadline = Date.now() + startTimeoutMs;
+  let started = false;
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(interval);
+    const text = await page.locator('body').innerText().catch(() => '');
+    if (text !== baseline) { started = true; break; }
+  }
+  if (!started) return { text: baseline, complete: false, started: false };
+
+  let last = '';
+  let quiet = 0;
+  for (let i = 0; i < maxPolls; i++) {
+    await page.waitForTimeout(interval);
+    const text = await page.locator('body').innerText().catch(() => '');
+    const busy = /Thinking\.\.\.|Pensando|Generating|Stop generating|Detener/i.test(text);
+    if (text === last && !busy) {
+      if (++quiet >= quietChecks) return { text: last, complete: true, started: true };
+    } else {
+      quiet = 0;
+      last = text;
+    }
+  }
+  return { text: last, complete: false, started: true };
+}
+
+// Recover just the model's answer. Set subtraction alone is wrong for long
+// prompts: a review legitimately repeats file names and code that also appear
+// in the prompt, and those lines would vanish. The page lays the conversation
+// out as [chrome][echoed prompt][reply], so anchor on the prompt's own last
+// line and take what follows; fall back to subtraction when the UI collapses
+// the message and that anchor is not on the page.
+const SENTINEL = '[[FIN-PROMPT]]';
+
+function newLines(before, after) {
+  const lines = after.split('\n');
+  {
+    const tail = SENTINEL;
+    const at = lines.map((l) => l.trim()).lastIndexOf(tail);
+    if (at !== -1 && at < lines.length - 1) {
+      return lines.slice(at + 1).filter((l) => l.trim() && !before.has(l));
+    }
+  }
+  return lines.filter((l) => l.trim() && !before.has(l));
+}
 
 // A prompt given as "@path" is read from disk. Review prompts carry a whole
 // diff, which is far past what fits comfortably on a command line.
@@ -68,12 +126,16 @@ function readPrompt(arg) {
 // character by character would take twenty minutes for a large diff.
 async function enterPrompt(page, locator, text) {
   await locator.click();
+  // The sentinel marks where the echoed prompt ends and the reply begins.
+  const payload = `${text}\n\n${SENTINEL}`;
   try {
-    await locator.fill(text);
+    await locator.fill(payload);
   } catch {
-    await page.keyboard.type(text, { delay: 0 });
+    await page.keyboard.type(payload, { delay: 0 });
   }
   await page.waitForTimeout(600);
 }
 
-module.exports = { launch, resolveChromium, CONTEXT, readPrompt, enterPrompt };
+module.exports = {
+  launch, resolveChromium, CONTEXT, waitForReply, newLines, readPrompt, enterPrompt, SENTINEL,
+};
