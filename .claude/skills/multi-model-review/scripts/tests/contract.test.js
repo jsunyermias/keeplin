@@ -540,6 +540,9 @@ test('--no-files drops the whole-file section and says so', () => {
   assert.doesNotMatch(prompt, /const secreto/, 'the file body must not travel');
   assert.match(prompt, /se ha omitido a propósito/);
   assert.match(r.stderr, /0\/1 files embedded/);
+  // "omitted by size" would be the same misreporting this pull request keeps
+  // finding: a true number under a false reason.
+  assert.match(r.stderr, /omitted by --no-files/);
 });
 
 test('apply-patch cleans up its temporary directory when the patch fails', () => {

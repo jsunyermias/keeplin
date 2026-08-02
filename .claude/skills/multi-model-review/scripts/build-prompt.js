@@ -260,7 +260,7 @@ const read = (p) => fs.readFileSync(p, 'utf8');
   // the operator read that as confirmation the context had travelled.
   console.error(`wrote ${out}: ${Buffer.byteLength(prompt)} bytes ` +
     `(diff ${Buffer.byteLength(diff)}, ${embedded}/${changed.length} files embedded, ` +
-    `${skipped.length} omitted by size` +
+    `${skipped.length} omitted ${NO_FILES ? 'by --no-files' : 'by size'}` +
     `, context ${ctxIncluded.length} in/${ctxOmitted.length} out` +
     `${PRIOR.length ? `, ${PRIOR.length} prior review(s)` : ''})`);
   if (Buffer.byteLength(diff) > DIFF_WARN_BYTES) {
