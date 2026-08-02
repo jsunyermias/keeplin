@@ -84,26 +84,77 @@ test('gate stops at the cycle cap with a distinct exit code', () => {
 });
 
 test('the adjudicator is never the implementer', () => {
+  // Each case gets its own directory: roles.js now persists its assignment, so
+  // sharing one would carry a decision from a previous case into the next.
   for (const pr of [1, 2, 197, 198]) {
-    const roles = JSON.parse(run('roles.js', [String(pr)]).stdout);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-roles-'));
+    const roles = JSON.parse(run('roles.js', [String(pr), '--dir', dir]).stdout);
     assert.notStrictEqual(roles.adjudicator, roles.implementer);
     assert.ok(!roles.independent.includes(roles.implementer));
     assert.ok(roles.reviewers.includes(roles.adjudicator));
   }
 });
 
-test('the implementer does not change between cycles of one pull request', () => {
-  // Rotating per cycle let a model adjudicate a cumulative diff containing its
-  // own earlier work, which is what the rule forbids.
-  const a = JSON.parse(run('roles.js', ['197']).stdout);
-  const b = JSON.parse(run('roles.js', ['197']).stdout);
-  assert.strictEqual(a.implementer, b.implementer);
-  assert.strictEqual(a.adjudicator, b.adjudicator);
+test('the implementer cannot be reassigned once the review has started', () => {
+  // Running the same command twice only proves determinism. The rule is that a
+  // later cycle cannot name a different implementer — which would promote the
+  // previous one to adjudicator over a diff containing its own work.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-roles-'));
+  const first = JSON.parse(run('roles.js', ['197', '--dir', dir]).stdout);
+  const other = first.implementer === 'kimi' ? 'codex' : 'kimi';
+
+  const retry = run('roles.js', ['197', other, '--dir', dir]);
+  assert.strictEqual(retry.code, 1, 'reassignment must fail');
+  assert.match(retry.stderr, /refusing to reassign/);
+
+  // And the stored assignment is unchanged.
+  const again = JSON.parse(run('roles.js', ['197', '--dir', dir]).stdout);
+  assert.strictEqual(again.implementer, first.implementer);
+  assert.strictEqual(again.adjudicator, first.adjudicator);
+});
+
+test('gate refuses a clean review that came from the implementer', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-roles-'));
+  const roles = JSON.parse(run('roles.js', ['197', '--dir', dir]).stdout);
+  const review = path.join(dir, 'review.md');
+  fs.writeFileSync(review, `VEREDICTO: SIN HALLAZGOS\n\nTodo bien.\n\n${PHRASE}\n`);
+  // Attributed to the implementer rather than the adjudicator.
+  fs.writeFileSync(`${review}.meta.json`, JSON.stringify({ reviewer: roles.implementer }));
+
+  const r = run('gate.js', [review, '--roles', path.join(dir, 'roles-pr197.json')]);
+  assert.strictEqual(r.code, 2);
+  assert.match(r.stderr, /that is the implementer/);
+});
+
+test('gate refuses a review with no recorded reviewer', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-roles-'));
+  run('roles.js', ['197', '--dir', dir]);
+  const review = path.join(dir, 'review.md');
+  fs.writeFileSync(review, `VEREDICTO: SIN HALLAZGOS\n\n${PHRASE}\n`);
+
+  const r = run('gate.js', [review, '--roles', path.join(dir, 'roles-pr197.json')]);
+  assert.strictEqual(r.code, 2);
+  assert.match(r.stderr, /cannot be established/);
+});
+
+test('apply-files refuses to write through a symlink leaving the repository', () => {
+  // path.resolve is textual: a link inside the repository pointing outside
+  // passes it, and writeFileSync follows the link.
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-outside-'));
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-repo-'));
+  fs.symlinkSync(outside, path.join(repo, 'enlace'));
+  const reply = tmpFile('reply.md', 'FICHERO: enlace/robado.js\n```\nx\n```\n');
+
+  const r = run('apply-files.js', [repo, reply]);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /symlink that leaves the repository/);
+  assert.ok(!fs.existsSync(path.join(outside, 'robado.js')), 'nothing written outside');
 });
 
 test('roles alternate across pull requests', () => {
-  const odd = JSON.parse(run('roles.js', ['197']).stdout);
-  const even = JSON.parse(run('roles.js', ['198']).stdout);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-roles-'));
+  const odd = JSON.parse(run('roles.js', ['197', '--dir', dir]).stdout);
+  const even = JSON.parse(run('roles.js', ['198', '--dir', dir]).stdout);
   assert.notStrictEqual(odd.implementer, even.implementer);
 });
 
@@ -303,7 +354,6 @@ function repoWithPullRef(files) {
   execFileSync('git', ['add', '-A'], { cwd: work });
   execFileSync('git', ['commit', '-qm', 'change'], { cwd: work });
   execFileSync('git', ['push', '-q', 'origin', 'HEAD:refs/pull/1/head'], { cwd: work });
-  execFileSync('git', ['fetch', '-q', 'origin'], { cwd: work });
   return work;
 }
 
@@ -314,6 +364,48 @@ test('collect refuses when the project contract is absent', () => {
   assert.strictEqual(r.code, 1);
   // Specifically the contract check, not git failing for some other reason.
   assert.match(r.stderr, /required project context missing/);
+});
+
+test('collect refreshes the base before computing the merge base', () => {
+  // The base advances behind this clone's back, so a run that failed to
+  // refresh it would compute the merge base against a stale commit. Note this
+  // passes with either fetch form: the claim that a bare branch name leaves
+  // the tracking ref stale did not survive measurement. It is kept as a
+  // regression guard on the outcome, not as evidence for that claim.
+  const repo = repoWithPullRef({
+    'src.js': 'const a = 1;\n',
+    'AGENTS.md': '# contrato\n',
+  });
+  const origin = execFileSync('git', ['remote', 'get-url', 'origin'],
+    { cwd: repo, encoding: 'utf8' }).trim();
+
+  // Advance main in the origin, behind this clone's back.
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-other-'));
+  execFileSync('git', ['clone', '-q', origin, other]);
+  // The bare origin also carries refs/pull/1/head, so the clone's HEAD is not
+  // necessarily main; land on it explicitly before advancing it.
+  execFileSync('git', ['checkout', '-q', '-B', 'main', 'origin/main'], { cwd: other });
+  execFileSync('git', ['config', 'user.email', 'a@b.c'], { cwd: other });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: other });
+  fs.writeFileSync(path.join(other, 'avance.txt'), 'nuevo\n');
+  execFileSync('git', ['add', '-A'], { cwd: other });
+  execFileSync('git', ['commit', '-qm', 'advance main'], { cwd: other });
+  execFileSync('git', ['push', '-q', 'origin', 'HEAD:refs/heads/main'], { cwd: other });
+
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-out-'));
+  const r = run('collect.js', [repo, '1', out]);
+  assert.strictEqual(r.code, 0, r.stderr);
+
+  const info = fs.readFileSync(path.join(out, 'collect.info'), 'utf8');
+  const mergeBase = (info.match(/^merge_base: (\w+)$/m) || [])[1];
+  const originMain = execFileSync('git', ['rev-parse', 'refs/remotes/origin/main'],
+    { cwd: repo, encoding: 'utf8' }).trim();
+  const advanced = execFileSync('git', ['rev-parse', 'HEAD'],
+    { cwd: other, encoding: 'utf8' }).trim();
+
+  // The tracking ref must have caught up with the advanced base.
+  assert.strictEqual(originMain, advanced, 'origin/main was not refreshed');
+  assert.ok(mergeBase, 'a merge base was computed');
 });
 
 test('collect carries the project contract when it is present', () => {

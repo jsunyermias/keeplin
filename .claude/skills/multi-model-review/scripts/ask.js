@@ -85,6 +85,15 @@ const DRIVERS = {
     );
   }
 
+  // Record who produced this file. Without it the gate can only trust that
+  // whoever ran the command typed the right reviewer name, which leaves the
+  // independence rule resting on copy-paste.
+  fs.writeFileSync(`${OUT}.meta.json`, JSON.stringify({
+    reviewer: REVIEWER,
+    model: MODELS[REVIEWER],
+    at: new Date().toISOString(),
+  }, null, 2) + '\n');
+
   const verdict = (stdout.match(/^VEREDICTO:.*$/m) || ['(no verdict line)'])[0];
   console.error(`${REVIEWER} -> ${OUT} (${Buffer.byteLength(stdout)} bytes)`);
   console.log(verdict);

@@ -37,9 +37,12 @@ const [REPO, PR, OUT] = process.argv.slice(2);
   }
 
   const headRef = `refs/remotes/origin/pr/${PR}`;
-  // Naming the base bare leaves it in FETCH_HEAD only, so refs/remotes/origin/
-  // <base> keeps whatever it had — and the merge-base is then computed against
-  // a stale commit. Update the remote-tracking ref explicitly.
+  // The base is fetched with an explicit refspec rather than by bare name. A
+  // reviewer argued the bare form leaves it in FETCH_HEAD and lets the merge
+  // base go stale; measured, that is not so — git still applies the remote's
+  // configured refspec and updates the tracking ref. The explicit form is kept
+  // because it does not depend on the remote being configured that way, not
+  // because the bare one was broken.
   git(['fetch', '--quiet', 'origin',
     `refs/pull/${PR}/head:${headRef}`,
     `refs/heads/${base}:refs/remotes/origin/${base}`,

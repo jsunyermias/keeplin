@@ -80,11 +80,25 @@ function parse(text) {
     );
   }
 
+  // path.resolve alone is a textual check: a symlink inside the repository that
+  // points elsewhere passes it, and writeFileSync then follows the link out.
+  // Resolve the real path of the repository and of the deepest ancestor that
+  // actually exists, and require containment of both.
+  const repoReal = fs.realpathSync(path.resolve(REPO));
   for (const { file } of files) {
-    // Keep a stray absolute or parent path from writing outside the repository.
     const target = path.resolve(REPO, file);
-    if (!target.startsWith(path.resolve(REPO) + path.sep)) {
+    if (target !== repoReal && !target.startsWith(repoReal + path.sep)) {
       throw new Error(`refusing to write outside the repository: ${file}`);
+    }
+    let ancestor = path.dirname(target);
+    while (!fs.existsSync(ancestor) && ancestor !== path.dirname(ancestor)) {
+      ancestor = path.dirname(ancestor);
+    }
+    const ancestorReal = fs.realpathSync(ancestor);
+    if (ancestorReal !== repoReal && !ancestorReal.startsWith(repoReal + path.sep)) {
+      throw new Error(
+        `refusing to write through a symlink that leaves the repository: ${file}`
+      );
     }
   }
 

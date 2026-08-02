@@ -124,9 +124,19 @@ const MAX_POLLS = Number(process.env.MAX_POLLS || 150);
     if (!started) throw new Error('the model never began replying — prompt may exceed what this UI accepts');
     if (!complete) console.log('note: hit the poll ceiling; reply may be truncated');
 
+    const reply = newLines(before, text).join('\n').trim();
+    // An empty reply is a failure, not a review with nothing to say. Left
+    // alone it exits 0 and the caller records a successful run that carries
+    // no verdict — silence dressed as success is the worst outcome here.
+    if (!reply) {
+      throw new Error(
+        'the reply came back empty — the send did not take, or the page stalled. Rerun; ' +
+        `the conversation was ${page.url()}`
+      );
+    }
     console.log('url:', page.url());
     console.log('--- reply ---');
-    console.log(newLines(before, text).join('\n'));
+    console.log(reply);
   }
 
   await page.screenshot({ path: 'kimi-chat.png' });

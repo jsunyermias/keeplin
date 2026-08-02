@@ -15,6 +15,7 @@
 // Nothing here reads the review into the orchestrator's context: it reports a
 // decision and a reason, never the findings.
 const fs = require('fs');
+const path = require('path');
 
 const PHRASE = process.env.REVIEW_PHRASE || 'REVISION-COMPLETADA-SIN-BLOQUEANTES';
 
@@ -26,6 +27,8 @@ const flag = (name, dflt) => {
 };
 const CYCLE = flag('cycle', 1);
 const MAX_CYCLES = flag('max-cycles', 5);
+const rolesAt = argv.indexOf('--roles');
+const ROLES = rolesAt === -1 ? null : argv[rolesAt + 1];
 
 (() => {
   if (!FILE) {
@@ -35,6 +38,33 @@ const MAX_CYCLES = flag('max-cycles', 5);
   if (!fs.existsSync(FILE)) {
     console.error(`no such review: ${FILE}`);
     process.exit(2);
+  }
+
+  // Whose review is this? A clean verdict from the implementer would otherwise
+  // close a cycle, and the documentation admitted the gate did not check.
+  if (ROLES) {
+    if (!fs.existsSync(ROLES)) {
+      console.error(`no such roles file: ${ROLES}`);
+      process.exit(2);
+    }
+    const roles = JSON.parse(fs.readFileSync(ROLES, 'utf8'));
+    const metaPath = `${FILE}.meta.json`;
+    if (!fs.existsSync(metaPath)) {
+      console.error(
+        `${FILE} has no companion .meta.json, so the reviewer cannot be established. ` +
+        'Rerun it through ask.js rather than accepting an unattributed review.'
+      );
+      process.exit(2);
+    }
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    if (meta.reviewer !== roles.adjudicator) {
+      console.error(
+        `refusing: this review is from "${meta.reviewer}" but pull request ${roles.pr} assigns ` +
+        `adjudication to "${roles.adjudicator}"` +
+        (meta.reviewer === roles.implementer ? ' — that is the implementer' : '')
+      );
+      process.exit(2);
+    }
   }
 
   const text = fs.readFileSync(FILE, 'utf8');
