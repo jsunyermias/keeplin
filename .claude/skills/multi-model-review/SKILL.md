@@ -84,14 +84,17 @@ node scripts/ask.js glm  work/pr197/prompt.txt work/pr197/review-glm.md
 node scripts/build-prompt.js work/pr197 docs/prompts/0.C-prompt-revision-seguridad.md \
   work/pr197/meta.md --prior work/pr197/review-qwen.md work/pr197/review-glm.md \
   --out prompt-adjudicator.txt
-node scripts/ask.js codex work/pr197/prompt-adjudicator.txt work/pr197/review-codex.md
+# roles.js said adjudicator: kimi for this pull request. Use what it returned,
+# never a name copied from an example — sending this to the implementer would
+# hand it its own work to judge, and gate.js does not check who replied.
+node scripts/ask.js kimi work/pr197/prompt-adjudicator.txt work/pr197/review-kimi.md
 
 # 6. Read only the verdicts
 grep -m1 -h "VEREDICTO" work/pr197/review-*.md
 
 # 7. The gate decides whether the cycle closes. This step is not optional:
 #    "everyone said SIN HALLAZGOS" is not the criterion, the gate is.
-node scripts/gate.js work/pr197/review-codex.md --cycle 1 --max-cycles 5
+node scripts/gate.js work/pr197/review-kimi.md --cycle 1 --max-cycles 5
 ```
 
 `gate.js` is the only thing that ends a review, and its exit code is the whole
@@ -121,7 +124,8 @@ over the API, handled the full 104 KB.
 So keep the browser prompts small: prefer the diff alone, drop the whole-file
 section (`build-prompt.js` already caps it), and split a large PR by area,
 running the rotation per area. Give the oversized whole to Codex if you want one
-reviewer with the complete picture.
+reviewer with the complete picture — unless Codex is this pull request's
+implementer, in which case that would be self-review.
 
 ## Reading a reply is the fragile part
 

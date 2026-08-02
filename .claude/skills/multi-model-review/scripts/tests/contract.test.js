@@ -147,34 +147,75 @@ test('apply-files reports a reply that ignored the contract', () => {
   assert.match(r.stderr, /did not follow the contract/);
 });
 
-test('apply-patch recovers a diff whose blank context lines were rendered away', () => {
+function gitRepo(files) {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-repo-'));
   execFileSync('git', ['init', '-q'], { cwd: repo });
   execFileSync('git', ['config', 'user.email', 'a@b.c'], { cwd: repo });
   execFileSync('git', ['config', 'user.name', 't'], { cwd: repo });
-  fs.writeFileSync(path.join(repo, 'calc.js'), 'function suma(a, b) {\n  return a + b;\n}\n');
+  for (const [name, body] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(repo, name)), { recursive: true });
+    fs.writeFileSync(path.join(repo, name), body);
+  }
   execFileSync('git', ['add', '-A'], { cwd: repo });
   execFileSync('git', ['commit', '-qm', 'init'], { cwd: repo });
+  return repo;
+}
 
-  // Note the miscounted @@ header, as models routinely produce.
+test('apply-patch applies a diff whose @@ header the model miscounted', () => {
+  const repo = gitRepo({
+    'calc.js': 'function suma(a, b) {\n  return a + b;\n}\n\nmodule.exports = { suma };\n',
+  });
   const reply = tmpFile('reply.md', [
     '--- reply ---',
     'diff --git a/calc.js b/calc.js',
     '--- a/calc.js',
     '+++ b/calc.js',
-    '@@ -1,3 +1,7 @@',
+    '@@ -1,99 +1,99 @@',                 // deliberately wrong counts
     ' function suma(a, b) {',
     '   return a + b;',
     ' }',
+    '',
+    '-module.exports = { suma };',
     '+function resta(a, b) {',
     '+  return a - b;',
     '+}',
-    'Ask anything, or task an agent...',
+    '+',
+    '+module.exports = { suma, resta };',
+    'Ask anything, or task an agent...',       // UI chrome that must be trimmed
   ].join('\n'));
 
   const r = run('apply-patch.js', [repo, reply]);
   assert.strictEqual(r.code, 0, r.stderr);
-  assert.match(fs.readFileSync(path.join(repo, 'calc.js'), 'utf8'), /function resta/);
+  const out = fs.readFileSync(path.join(repo, 'calc.js'), 'utf8');
+  assert.match(out, /function resta/);
+  assert.match(out, /\}\n\nfunction resta/);   // the blank line survives
+});
+
+test('apply-patch refuses, and writes nothing, when a context line was lost', () => {
+  // The real damage a rendered chat does: the context line is deleted, not
+  // blanked. No flag recovers that, so the only safe outcome is a loud refusal
+  // rather than a partly-applied file.
+  const repo = gitRepo({
+    'calc.js': 'function suma(a, b) {\n  return a + b;\n}\n\nmodule.exports = { suma };\n',
+  });
+  const before = fs.readFileSync(path.join(repo, 'calc.js'), 'utf8');
+  const reply = tmpFile('reply.md', [
+    'diff --git a/calc.js b/calc.js',
+    '--- a/calc.js',
+    '+++ b/calc.js',
+    '@@ -1,5 +1,7 @@',
+    ' function suma(a, b) {',
+    '   return a + b;',
+    ' }',
+    // the blank context line belongs here and the renderer removed it
+    '-module.exports = { suma };',
+    '+module.exports = { suma, resta };',
+  ].join('\n'));
+
+  const r = run('apply-patch.js', [repo, reply]);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /does not apply cleanly/);
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'calc.js'), 'utf8'), before);
 });
 
 test('apply-patch refuses prose instead of guessing', () => {
@@ -185,11 +226,43 @@ test('apply-patch refuses prose instead of guessing', () => {
   assert.match(r.stderr, /no unified diff found/);
 });
 
+// A repository whose fetch of refs/pull/<n>/head actually succeeds, so the
+// AGENTS.md check is reached. The previous version of this test used a repo
+// with no remote: git failed first with "fatal", the assertion matched that,
+// and the test would have kept passing with the check deleted.
+function repoWithPullRef(files) {
+  const origin = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-origin-'));
+  execFileSync('git', ['init', '-q', '--bare'], { cwd: origin });
+
+  const work = gitRepo(files);
+  execFileSync('git', ['remote', 'add', 'origin', origin], { cwd: work });
+  execFileSync('git', ['push', '-q', 'origin', 'HEAD:refs/heads/main'], { cwd: work });
+  // Give the base a second commit so merge-base has something to resolve to.
+  fs.writeFileSync(path.join(work, 'later.txt'), 'x\n');
+  execFileSync('git', ['add', '-A'], { cwd: work });
+  execFileSync('git', ['commit', '-qm', 'change'], { cwd: work });
+  execFileSync('git', ['push', '-q', 'origin', 'HEAD:refs/pull/1/head'], { cwd: work });
+  execFileSync('git', ['fetch', '-q', 'origin'], { cwd: work });
+  return work;
+}
+
 test('collect refuses when the project contract is absent', () => {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-repo-'));
-  execFileSync('git', ['init', '-q'], { cwd: repo });
+  const repo = repoWithPullRef({ 'src.js': 'const a = 1;\n' });
   const out = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-out-'));
   const r = run('collect.js', [repo, '1', out]);
   assert.strictEqual(r.code, 1);
-  assert.match(r.stderr, /AGENTS\.md|required project context|fatal/);
+  // Specifically the contract check, not git failing for some other reason.
+  assert.match(r.stderr, /required project context missing/);
+});
+
+test('collect carries the project contract when it is present', () => {
+  const repo = repoWithPullRef({
+    'src.js': 'const a = 1;\n',
+    'AGENTS.md': '# contrato del proyecto\n',
+  });
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-out-'));
+  const r = run('collect.js', [repo, '1', out]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.ok(fs.existsSync(path.join(out, 'context', 'AGENTS.md')));
+  assert.match(fs.readFileSync(path.join(out, 'collect.info'), 'utf8'), /context: AGENTS\.md/);
 });

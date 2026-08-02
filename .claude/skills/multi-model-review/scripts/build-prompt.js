@@ -94,7 +94,13 @@ const read = (p) => fs.readFileSync(p, 'utf8');
   if (fs.existsSync(ctxDir)) {
     let ctxUsed = 0;
     const ctxParts = [];
-    for (const f of fs.readdirSync(ctxDir).sort()) {
+    // AGENTS.md is required, the rest optional, and alphabetical order would
+    // let a big optional file evict it under the budget. Required first.
+    const REQUIRED_CTX = ['AGENTS.md'];
+    const rank = (f) => (REQUIRED_CTX.includes(f.replace(/__/g, '/')) ? 0 : 1);
+    const ctxFiles = fs.readdirSync(ctxDir)
+      .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+    for (const f of ctxFiles) {
       const body = read(path.join(ctxDir, f));
       const label = f.replace(/__/g, '/');
       if (ctxUsed + body.length > CONTEXT_BUDGET_BYTES) { ctxOmitted.push(label); continue; }

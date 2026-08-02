@@ -53,24 +53,6 @@ function trimToPatch(block) {
 }
 
 
-// Repair the two things a rendered chat reliably destroys in a unified diff.
-//
-// A blank context line is a single space in the patch format, and innerText
-// strips it to an empty line — git then rejects the whole patch as corrupt.
-// And models routinely miscount the @@ header, which `git apply --recount`
-// exists to forgive. Both are mechanical; neither requires reading the change.
-function repair(patch) {
-  const lines = patch.split('\n');
-  let inHunk = false;
-  const out = lines.map((line, idx) => {
-    if (line.startsWith('@@')) { inHunk = true; return line; }
-    if (/^(diff --git|index |--- |\+\+\+ )/.test(line)) { inHunk = false; return line; }
-    // Only inside a hunk, and never the trailing newline at the very end.
-    if (inHunk && line === '' && idx !== lines.length - 1) return ' ';
-    return line;
-  });
-  return out.join('\n');
-}
 
 (() => {
   if (!REPO || !REPLY) {
@@ -89,17 +71,21 @@ function repair(patch) {
   // clobber another file owned by this user. Own the directory instead.
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'impl-'));
   const tmp = path.join(tmpDir, 'change.patch');
-  const repaired = repair(patch);
   // Patches that lose their trailing newline are rejected by git apply.
-  fs.writeFileSync(tmp, repaired.endsWith('\n') ? repaired : `${repaired}\n`);
+  fs.writeFileSync(tmp, patch.endsWith('\n') ? patch : `${patch}\n`);
 
   const git = (args) =>
     execFileSync('git', args, { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 
-  // Rendering can delete a blank context line outright rather than blanking it,
-  // and then there is nothing left to repair — the hunk simply has fewer
-  // context lines than the file. Falling back to a single line of required
-  // context recovers those without loosening what the patch actually changes.
+  // --recount forgives the miscounted @@ headers models routinely emit; -C1
+  // helps when a hunk is short of context at its edges.
+  //
+  // Neither rescues the failure that actually occurs here. A renderer does not
+  // blank a context line, it deletes it, and a hunk missing an interior context
+  // line is rejected by git whatever the flags — measured, not assumed. There
+  // was a repair() here that converted empty lines back to spaces; it was built
+  // on the wrong theory, git accepts such a patch unaided, and removing it
+  // changed no behaviour. When this refuses, re-ask the implementer.
   const attempts = [
     ['--recount'],
     ['--recount', '-C1'],
