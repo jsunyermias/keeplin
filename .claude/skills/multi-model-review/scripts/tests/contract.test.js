@@ -662,6 +662,33 @@ test('collect can scope a large pull request to one area', () => {
   assert.match(fs.readFileSync(path.join(out, 'collect.info'), 'utf8'), /^area: dentro$/m);
 });
 
+test('collect warns when the pull request ref is behind the checkout', () => {
+  // The failure this catches is silent: GitHub updates refs/pull/<n>/head a
+  // little after the branch push, so collecting straight after pushing yields
+  // an internally consistent package describing the previous commit, and every
+  // reviewer downstream judges code that is not what was written.
+  const repo = repoWithPullRef({ 'AGENTS.md': '# contrato\n' }, { 'a.js': 'const a = 1;\n' });
+  // Advance the checkout past what was pushed to refs/pull/1/head.
+  fs.writeFileSync(path.join(repo, 'a.js'), 'const a = 2;\n');
+  execFileSync('git', ['add', '-A'], { cwd: repo });
+  execFileSync('git', ['commit', '-qm', 'later work'], { cwd: repo });
+
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-out-'));
+  const r = run('collect.js', [repo, '1', out]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stderr, /is behind this checkout/);
+});
+
+test('collect stays quiet when the pull request ref is current', () => {
+  // Otherwise the warning above would fire on every ordinary run and be
+  // learned as noise, which is the same as not having it.
+  const repo = repoWithPullRef({ 'AGENTS.md': '# contrato\n' }, { 'a.js': 'const a = 1;\n' });
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-out-'));
+  const r = run('collect.js', [repo, '1', out]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /is behind this checkout/);
+});
+
 test('collect refuses an area that nothing in the pull request touches', () => {
   // Silence would produce an empty prompt and a reviewer reporting no findings,
   // which reads exactly like a clean review.

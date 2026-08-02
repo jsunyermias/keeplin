@@ -55,6 +55,23 @@ const [REPO, PR, OUT] =
     `refs/heads/${base}:refs/remotes/origin/${base}`,
   ]);
 
+  // GitHub updates refs/pull/<n>/head a little after the branch push, so a
+  // collect run straight after pushing fetches the previous head and every
+  // reviewer downstream judges code that is not what was just written. Nothing
+  // fails; the package is internally consistent and simply describes an older
+  // commit. Say so, loudly, rather than leaving it to whoever thinks to read
+  // the hash in collect.info.
+  const prHead = gitText(['rev-parse', headRef]).trim();
+  let behind = false;
+  try {
+    const local = gitText(['rev-parse', 'HEAD']).trim();
+    behind = local !== prHead
+      && execFileSync('git', ['merge-base', '--is-ancestor', prHead, local],
+        { cwd: REPO }) !== null;
+  } catch {
+    /* the checkout is on some unrelated commit; nothing useful to compare */
+  }
+
   const mergeBase = gitText(['merge-base', `origin/${base}`, headRef]).trim();
   const range = `${mergeBase}..${headRef}`;
 
@@ -145,4 +162,11 @@ const [REPO, PR, OUT] =
   ].join('\n');
   fs.writeFileSync(path.join(OUT, 'collect.info'), info + '\n');
   console.error(info);
+  if (behind) {
+    console.error(
+      `\nwarning: refs/pull/${PR}/head is behind this checkout — the pull request ref has not ` +
+      'caught up with the branch yet. This package describes the older commit, so the review ' +
+      'would be of code that is not what you just pushed. Wait and rerun.'
+    );
+  }
 })();
