@@ -15,6 +15,13 @@ that implemented it. This skill makes that mechanical: two reviewers are fixed
 (Qwen, GLM) and the third alternates with the implementer, so whoever wrote the
 change never sits in judgement of it.
 
+The order matters. Qwen and GLM run in parallel and blind to each other — two
+independent readings, not one plus an echo. The rotating third runs afterwards
+with both reviews attached and adjudicates: it confirms, refutes or declines
+each prior finding against the diff, resolves contradictions, and adds what
+both missed. Prior findings are input to it, never authority — the same rule
+AGENTS.md applies to the author's own explanation.
+
 The second constraint is cost. A review moves a whole diff and several long
 replies; if those pass through the orchestrating agent they dominate its
 context. So every hop is file-to-file, and the only thing ever read back is one
@@ -63,12 +70,18 @@ node scripts/collect.js /path/to/repo 197 work/pr197
 #    then assemble the prompt
 node scripts/build-prompt.js work/pr197 docs/prompts/0.C-prompt-revision-seguridad.md work/pr197/meta.md
 
-# 4. Ask each reviewer (nothing passes through your context)
-node scripts/ask.js qwen  work/pr197/prompt.txt work/pr197/review-qwen.md
-node scripts/ask.js glm   work/pr197/prompt.txt work/pr197/review-glm.md
-node scripts/ask.js codex work/pr197/prompt.txt work/pr197/review-codex.md
+# 4. The two blind reviewers. Run them on the same prompt; neither sees the
+#    other, so their findings are two readings rather than one and an echo.
+node scripts/ask.js qwen work/pr197/prompt.txt work/pr197/review-qwen.md
+node scripts/ask.js glm  work/pr197/prompt.txt work/pr197/review-glm.md
 
-# 5. Read only the verdicts
+# 5. The adjudicator, with both prior reviews attached
+node scripts/build-prompt.js work/pr197 docs/prompts/0.C-prompt-revision-seguridad.md \
+  work/pr197/meta.md --prior work/pr197/review-qwen.md work/pr197/review-glm.md \
+  --out prompt-adjudicator.txt
+node scripts/ask.js codex work/pr197/prompt-adjudicator.txt work/pr197/review-codex.md
+
+# 6. Read only the verdicts
 grep -m1 -h "VEREDICTO" work/pr197/review-*.md
 ```
 

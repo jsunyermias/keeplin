@@ -1,15 +1,36 @@
 // Assemble the prompt every reviewer receives for one cycle.
 //
 //   node build-prompt.js <collect-dir> <checklist.md> [meta.md]
+//                        [--prior <review.md> ...] [--out <name>]
 //
-// Writes <collect-dir>/prompt.txt. The prompt carries the project's own review
-// checklist, the objective, the diff, and the post-change text of the touched
-// files — deliberately not the whole tree. Reviewers judge a change against its
-// stated objective, and extra context mostly buys drift.
+// Writes <collect-dir>/prompt.txt, or <collect-dir>/<name> with --out.
+//
+// With --prior it builds the adjudicator's prompt instead: the same change plus
+// the reviews Qwen and GLM produced blind to each other. Those two run first
+// and unaware of each other so their findings are two readings rather than one
+// and an echo; the third arrives afterwards to say which reading survives.
+//
+// Either way the prompt carries the project's own review checklist, the
+// objective, the diff, and the post-change text of the touched files —
+// deliberately not the whole tree. Reviewers judge a change against its stated
+// objective, and extra context mostly buys drift.
 const fs = require('fs');
 const path = require('path');
 
-const [DIR, CHECKLIST, META] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+const PRIOR = [];
+let OUT_NAME = 'prompt.txt';
+const positional = [];
+for (let i = 0; i < argv.length; i++) {
+  if (argv[i] === '--prior') {
+    while (argv[i + 1] && !argv[i + 1].startsWith('--')) PRIOR.push(argv[++i]);
+  } else if (argv[i] === '--out') {
+    OUT_NAME = argv[++i];
+  } else {
+    positional.push(argv[i]);
+  }
+}
+const [DIR, CHECKLIST, META] = positional;
 
 // Past this the diff starts crowding out the checklist in the model's
 // attention, and a reviewer that skims is worse than one that declines.
@@ -65,24 +86,54 @@ const read = (p) => fs.readFileSync(p, 'utf8');
     }
   }
 
+  if (PRIOR.length) {
+    parts.push('', '---', '', '## Revisiones previas, hechas por separado', '');
+    for (const p of PRIOR) {
+      const name = path.basename(p).replace(/^review-|\.md$/g, '');
+      parts.push(`### ${name}`, '', fs.readFileSync(p, 'utf8').trim(), '');
+    }
+  }
+
   parts.push(
     '',
     '---',
     '',
     'Responde en español. La primera línea debe ser exactamente uno de:',
     'VEREDICTO: BLOQUEANTE | VEREDICTO: OBSERVACIONES | VEREDICTO: SIN HALLAZGOS',
-    '',
-    'Después, un hallazgo por bloque: fichero y línea, qué garantía rompe, y qué',
-    'lo demostraría. No repitas el diff. Si algo no puedes verificar desde lo que',
-    'te he dado, dilo explícitamente en lugar de suponerlo.'
+    ''
   );
 
+  if (PRIOR.length) {
+    // The adjudicator's job is to resolve, not to re-review from scratch and
+    // not to defer. Prior findings are input, never authority — the same rule
+    // AGENTS.md applies to the author's own explanation.
+    parts.push(
+      'Eres el tercer revisor y llegas después de los dos anteriores, que',
+      'trabajaron por separado y sin verse. Tu trabajo es arbitrar:',
+      '',
+      '- Para cada hallazgo previo, di si lo confirmas, lo refutas o no puedes',
+      '  decidirlo, y por qué, mirando el diff y no su argumentación.',
+      '- Donde se contradigan, resuelve explícitamente cuál se sostiene.',
+      '- Añade lo que ambos hayan pasado por alto.',
+      '',
+      'Que un hallazgo venga de otro revisor no lo hace cierto, y que ninguno lo',
+      'mencione no lo hace inexistente. No repitas el diff.'
+    );
+  } else {
+    parts.push(
+      'Después, un hallazgo por bloque: fichero y línea, qué garantía rompe, y qué',
+      'lo demostraría. No repitas el diff. Si algo no puedes verificar desde lo que',
+      'te he dado, dilo explícitamente en lugar de suponerlo.'
+    );
+  }
+
   const prompt = parts.join('\n');
-  const out = path.join(DIR, 'prompt.txt');
+  const out = path.join(DIR, OUT_NAME);
   fs.writeFileSync(out, prompt);
 
   console.error(`wrote ${out}: ${Buffer.byteLength(prompt)} bytes ` +
-    `(diff ${Buffer.byteLength(diff)}, ${changed.length} files, ${skipped.length} omitted)`);
+    `(diff ${Buffer.byteLength(diff)}, ${changed.length} files, ${skipped.length} omitted` +
+    `${PRIOR.length ? `, ${PRIOR.length} prior review(s)` : ''})`);
   if (Buffer.byteLength(diff) > DIFF_WARN_BYTES) {
     console.error('warning: diff is large; consider splitting the review by area');
   }

@@ -5,9 +5,10 @@
 //   model: GLM-5.2 (default) | GLM-5.1 | GLM-5-Turbo | GLM-5V-Turbo | GLM-4.7
 //
 // Anonymous visitors can chat, but only on GLM-4.7 — every GLM-5 entry in the
-// picker is disabled until a session is loaded. A missing or stale
-// zai-state.json therefore does not error, it silently downgrades the model,
-// which is why the active model is read back rather than assumed.
+// picker is disabled until a session is loaded. Left alone the site would
+// quietly answer as GLM-4.7 instead, so a missing or stale zai-state.json is
+// refused outright for any gated model, and the active model is read back from
+// the page afterwards rather than assumed.
 const fs = require('fs');
 const { launch, CONTEXT, waitForReply, newLines, readPrompt, enterPrompt } = require('./browser');
 
@@ -15,8 +16,10 @@ const PROMPT = readPrompt(process.argv[2]);
 const MODEL = process.argv[3] || 'GLM-5.2';
 const STATE = 'zai-state.json';
 
-// Signing in adds a sidebar that shifts everything right, so nothing is located
-// by fixed coordinate — geometry is read from the elements themselves.
+// Signing in adds a sidebar that shifts everything right, so the model picker
+// is located from the elements' own geometry rather than by fixed coordinate.
+// The one exception is the signed-out composer, which exposes no element to
+// measure; see the fallback further down.
 const geometry = (locator) =>
   locator.evaluateAll((els) =>
     els.map((e) => {

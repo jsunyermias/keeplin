@@ -8,6 +8,11 @@
 // whole point of the rotation, and it is what AGENTS.md means by the
 // implementer not being the only reviewer.
 //
+// Qwen and GLM run blind to each other, so their findings are genuinely two
+// readings rather than one plus an echo. The third reviewer runs afterwards
+// with both in hand and adjudicates: where they disagree, someone has to say
+// which reading survives contact with the diff.
+//
 // The assignment is derived from the cycle number rather than randomised so a
 // reader can reconstruct, months later, which family judged which change.
 const CYCLE = Number(process.argv[2]);
@@ -27,6 +32,10 @@ const ROTATING = ['kimi', 'codex'];
   console.log(JSON.stringify({
     cycle: CYCLE,
     implementer,
+    // Run these two first, in parallel, neither seeing the other.
+    independent: FIXED_REVIEWERS,
+    // Then this one, with both prior reviews attached.
+    adjudicator: counterpart,
     reviewers: [...FIXED_REVIEWERS, counterpart],
   }, null, 2));
 })();
