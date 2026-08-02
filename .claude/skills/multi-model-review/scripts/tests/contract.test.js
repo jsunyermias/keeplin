@@ -527,6 +527,19 @@ test('build-prompt says outright when no whole-file context travels', () => {
   assert.strictEqual(r.code, 0, r.stderr);
   const prompt = fs.readFileSync(path.join(dir, 'prompt.txt'), 'utf8');
   assert.match(prompt, /No se adjunta el texto completo/);
+  assert.match(prompt, /solo borra ficheros/);
+});
+
+test('--no-files drops the whole-file section and says so', () => {
+  // SKILL.md told operators to drop this section for a browser reviewer and
+  // pointed at a byte cap that does not do it.
+  const dir = collected({ changed: ['a.js'], files: { 'a.js': 'const secreto = 1;\n' } });
+  const r = run('build-prompt.js', [dir, tmpFile('c.md', '# checklist\n'), '--no-files']);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const prompt = fs.readFileSync(path.join(dir, 'prompt.txt'), 'utf8');
+  assert.doesNotMatch(prompt, /const secreto/, 'the file body must not travel');
+  assert.match(prompt, /se ha omitido a propósito/);
+  assert.match(r.stderr, /0\/1 files embedded/);
 });
 
 test('apply-patch cleans up its temporary directory when the patch fails', () => {

@@ -158,9 +158,16 @@ whether that reviewer can, and the two have to agree before the cycle starts.
 The gate catches this either way: a truncated reply has no verdict line and is
 reported as a failed reviewer, never as a clean review.
 
-So keep the browser prompts small: prefer the diff alone, drop the whole-file
-section (`build-prompt.js` already caps it), and split a large PR by area,
-running the rotation per area:
+So keep the browser prompts small. Drop the whole-file section with
+`--no-files` — the byte cap alone will not do it, and when a change rewrites
+what it touches the diff and the post-change text are nearly the same bytes
+twice:
+
+```bash
+node scripts/build-prompt.js work/pr197 <checklist> work/pr197/meta.md --no-files
+```
+
+And split a large PR by area, running the rotation per area:
 
 ```bash
 node scripts/collect.js /path/to/repo 197 work/pr197-mmr \

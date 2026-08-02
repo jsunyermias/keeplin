@@ -19,6 +19,11 @@ const path = require('path');
 
 const argv = process.argv.slice(2);
 const PRIOR = [];
+// The documentation told operators to "drop the whole-file section" for a
+// browser reviewer and pointed at a byte cap that does no such thing. When the
+// change rewrites the files it touches, the diff and the post-change text are
+// nearly the same bytes twice, and the pair overflows the chat.
+const NO_FILES = argv.includes('--no-files');
 let OUT_NAME = 'prompt.txt';
 const positional = [];
 for (let i = 0; i < argv.length; i++) {
@@ -87,7 +92,7 @@ const read = (p) => fs.readFileSync(p, 'utf8');
     const p = path.join(DIR, 'files', f);
     if (!fs.existsSync(p)) continue;                 // deleted by the PR
     const body = read(p);
-    if (used + body.length > FILES_BUDGET_BYTES) {
+    if (NO_FILES || used + body.length > FILES_BUDGET_BYTES) {
       skipped.push(f);
       continue;
     }
@@ -180,13 +185,19 @@ const read = (p) => fs.readFileSync(p, 'utf8');
     }
   } else if (changed.length) {
     // Silence here reads as "there was nothing to add". Say it outright, so a
-    // reviewer knows which of its conclusions rest on the diff alone.
+    // reviewer knows which of its conclusions rest on the diff alone — and say
+    // which of the two reasons applies, because "deliberately omitted to fit"
+    // and "the package never had them" call for different suspicion.
     parts.push(
       '---',
       '',
-      'No se adjunta el texto completo de ningún fichero: este cambio solo borra ficheros,',
-      'o el paquete se recolectó sin ellos. Juzga únicamente por el diff y di explícitamente',
-      'qué no has podido verificar por esa razón.',
+      NO_FILES
+        ? 'No se adjunta el texto completo de los ficheros: se ha omitido a propósito para que ' +
+          'el prompt quepa. El diff de este cambio reescribe casi por completo lo que toca, así ' +
+          'que tienes el estado resultante a la vista.'
+        : 'No se adjunta el texto completo de ningún fichero: este cambio solo borra ficheros. ' +
+          'Juzga únicamente por el diff.',
+      'Di explícitamente qué no has podido verificar por esta razón.',
       ''
     );
   }
