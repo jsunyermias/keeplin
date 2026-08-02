@@ -160,9 +160,14 @@ correctly.
 
 Completion is detected the same way, from the page rather than by inference:
 generation is in progress exactly while the composer offers a stop control, so
-`waitForGeneration` waits on that instead of on the text going quiet. Only the
-Kimi driver has both so far — GLM and Qwen still infer completion, and their
-code extraction is unverified.
+`waitForGeneration` waits on that instead of on the text going quiet.
+
+All three browser drivers now carry both, and each was verified end to end by
+having it produce a file that was written without being read and then run. The
+editors differ — Kimi renders plain `<pre>`, Z.ai uses CodeMirror, Qwen uses
+Monaco — and the last two virtualise their rows, which is exactly why the page
+cannot be read for code. Z.ai is the flakiest: roughly one run in two came back
+with nothing copyable, so retry once before concluding anything.
 
 ## Recording the outcome
 

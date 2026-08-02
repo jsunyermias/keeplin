@@ -136,37 +136,66 @@ async function waitForGeneration(page, { startMs = 15000, maxMs = 360000 } = {})
 
 // Recover code exactly, by clicking each code block's copy icon and reading the
 // clipboard. Reading the rendered page cannot be used for this: innerText drops
-// blank lines and, in long blocks, whole lines of code. The icon is not a
-// button element, so it is reached from the card's own geometry — inset from
-// its top-right corner. Requires the context to hold clipboard permissions.
-const COPY_INSET_X = 29;
-const COPY_INSET_Y = 20;
+// blank lines and, in long blocks, whole lines — Z.ai renders code in
+// CodeMirror, which virtualises rows, so the page never holds them all.
+//
+// Every one of these sites mounts a virtualising editor rather than a plain
+// <pre>: Z.ai uses CodeMirror, Qwen uses Monaco. Both keep only the visible
+// rows in the DOM, which is precisely why the page cannot be read for code.
+//
+// The icon is neither a button nor accessibly named, and each site places it
+// differently, so candidates are found by proximity to the block's top-right
+// corner and tried in turn — the clipboard changing is the only reliable way
+// to tell the copy control from the download button beside it.
+const CODE_ROOTS = [
+  'pre',                    // Kimi and anything rendering plain markdown
+  '.cm-scroller',           // CodeMirror (Z.ai)
+  '.monaco-editor',         // Monaco (Qwen)
+  '[class*="code-block" i]',
+].join(', ');
 
-async function copyCodeBlocks(page) {
-  const blocks = page.locator('pre');
-  const n = await blocks.count();
+async function copyCodeBlocks(page, { rootSelector = CODE_ROOTS } = {}) {
+  const roots = page.locator(rootSelector);
+  const n = await roots.count();
   const out = [];
   for (let i = 0; i < n; i++) {
-    const pre = blocks.nth(i);
-    if (!(await pre.isVisible().catch(() => false))) continue;
-    const card = await pre.evaluate((el) => {
-      let node = el;
-      for (let k = 0; k < 4 && node.parentElement; k++) node = node.parentElement;
-      const r = node.getBoundingClientRect();
-      return { x: r.x, y: r.y, w: r.width };
-    }).catch(() => null);
-    if (!card) continue;
+    const root = roots.nth(i);
+    if (!(await root.isVisible().catch(() => false))) continue;
 
-    await pre.hover().catch(() => {});
+    // Several icons can sit together — Qwen puts copy beside download — so
+    // gather the candidates rather than guessing which is which, and try them
+    // until the clipboard actually changes.
+    const spots = await root.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      if (r.width < 80 || r.height < 20) return [];
+      return [...document.querySelectorAll('*')]
+        .map((e) => e.getBoundingClientRect())
+        .filter((b) =>
+          b.width > 8 && b.width < 44 && b.height > 8 && b.height < 44 &&
+          b.left > r.right - 90 && b.right < r.right + 30 &&
+          b.bottom > r.top - 70 && b.top < r.top + 24
+        )
+        .sort((a, z) => z.top - a.top || z.left - a.left)
+        .slice(0, 6)
+        .map((b) => ({ x: Math.round(b.left + b.width / 2), y: Math.round(b.top + b.height / 2) }));
+    }).catch(() => []);
+    if (!spots.length) continue;
+
+    await root.hover().catch(() => {});
     await page.waitForTimeout(400);
-    const sentinel = `__SIN_COPIA_${i}__`;
-    await page.evaluate((v) => navigator.clipboard.writeText(v), sentinel);
-    await page.mouse.click(Math.round(card.x + card.w - COPY_INSET_X), Math.round(card.y + COPY_INSET_Y));
-    await page.waitForTimeout(1200);
-    const text = await page.evaluate(() => navigator.clipboard.readText().catch(() => ''));
-    // An unchanged clipboard means the click missed; say so instead of
-    // returning the previous block's contents as if it were this one.
-    if (text && text !== sentinel) out.push(text);
+
+    for (const spot of spots) {
+      const sentinel = `__SIN_COPIA_${i}_${spot.x}_${spot.y}__`;
+      await page.evaluate((v) => navigator.clipboard.writeText(v), sentinel);
+      await page.mouse.click(spot.x, spot.y);
+      await page.waitForTimeout(1000);
+      const text = await page.evaluate(() => navigator.clipboard.readText().catch(() => ''));
+      // An unchanged clipboard means that icon was not the copy control.
+      if (text && text !== sentinel) {
+        if (!out.includes(text)) out.push(text);
+        break;
+      }
+    }
   }
   return out;
 }

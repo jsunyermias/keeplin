@@ -83,13 +83,39 @@ includes a **`Thought Process`** block ahead of the answer — separate it when
 quoting GLM to the user, since presenting reasoning as the answer misrepresents
 it.
 
+## Recovering code: use the clipboard, never the page
+
+Prose survives the page renderer. Code does not, and it fails in a way that
+looks like success. This site mounts a virtualising editor — CodeMirror — which
+keeps only the visible rows in the DOM, so `innerText` silently returns a
+partial file. A unified diff also loses its blank context lines, leaving a hunk
+`git apply` rejects with nothing to repair.
+
+Ask for the complete file in one code block and take it from the clipboard:
+
+```bash
+node scripts/glm.js @implement-prompt.txt GLM-5.2 --code
+```
+
+`copyCodeBlocks` clicks the block's copy icon and reads `navigator.clipboard`,
+recovering the text byte for byte. The icon is neither a button nor accessibly
+named, so candidates near the block's top-right corner are tried in turn; the
+clipboard changing is the only reliable way to tell copy from the download
+button beside it. The clipboard is seeded with a sentinel first, so a missed
+click is skipped rather than reported with the previous block's contents.
+
+Verified end to end: the model produced a file, it was written without being
+read, and the result ran correctly. One run in two came back with nothing copyable, so treat a failure as worth
+one retry — the driver refuses loudly rather than writing damaged code.
+
 ## Constraints worth stating up front
 
 - **Each run starts a new chat.** No multi-turn continuity between invocations.
-- **Completion is inferred, not signalled.** The driver stops when the page text
-  holds still for ~6 seconds. Long agentic or coding runs will be cut short —
-  pass a larger `quietChecks`/`maxPolls` to `waitForReply` and warn the user the
-  wait will be minutes.
+- **Completion is signalled for code, inferred for prose.** `--code` waits on
+  the composer's stop control, which is explicit and reliable. A plain reply
+  still stops when the page text holds still for ~6 seconds, so long agentic or
+  coding runs get cut short — raise `quietChecks`/`maxPolls` for those and warn
+  the user the wait will be minutes.
 - **The session is not durable.** `zai-state.json` holds live cookies in an
   ephemeral container; expect to re-import in a new session.
 - **Signed-in and signed-out are different pages.** Signing in adds a sidebar

@@ -10,10 +10,16 @@
 // refused outright for any gated model, and the active model is read back from
 // the page afterwards rather than assumed.
 const fs = require('fs');
-const { launch, CONTEXT, waitForReply, newLines, readPrompt, enterPrompt } = require('./browser');
+const {
+  launch, CONTEXT, waitForReply, waitForGeneration, newLines, copyCodeBlocks,
+  readPrompt, enterPrompt,
+} = require('./browser');
 
 const PROMPT = readPrompt(process.argv[2]);
-const MODEL = process.argv[3] || 'GLM-5.2';
+const MODEL = (process.argv[3] || '').replace(/^--.*/, '') || 'GLM-5.2';
+// Prose survives the page renderer; code does not, so code is lifted from the
+// clipboard instead. See copyCodeBlocks in browser.js for why.
+const CODE_MODE = process.argv.includes('--code');
 const STATE = 'zai-state.json';
 
 // Signing in adds a sidebar that shifts everything right, so the model picker
@@ -130,16 +136,35 @@ async function dismissOverlays(page) {
   }
   await page.keyboard.press('Enter');
 
-  const { text, complete, started } = await waitForReply(page, {
-    quietChecks: Number(process.env.QUIET_CHECKS || 4),
-    maxPolls: Number(process.env.MAX_POLLS || 150),
-  });
-  if (!started) throw new Error('the model never began replying — prompt may exceed what this UI accepts');
-  if (!complete) console.log('note: hit the poll ceiling; reply may be truncated');
+  if (CODE_MODE) {
+    const finished = await waitForGeneration(page);
+    if (finished === false) console.log('note: generation did not finish within the ceiling');
+    if (finished === null) {
+      // No stop control on this site; fall back to the quiet heuristic.
+      await waitForReply(page, { quietChecks: 4, maxPolls: 150 });
+    }
+    await page.waitForTimeout(2500);
+    const blocks = await copyCodeBlocks(page);
+    if (!blocks.length) {
+      throw new Error('no code block could be copied — the reply had none, or the copy control moved');
+    }
+    console.log('url:', page.url());
+    for (const [i, b] of blocks.entries()) {
+      console.log(`--- code ${i} ---`);
+      console.log(b);
+    }
+  } else {
+    const { text, complete, started } = await waitForReply(page, {
+      quietChecks: Number(process.env.QUIET_CHECKS || 4),
+      maxPolls: Number(process.env.MAX_POLLS || 150),
+    });
+    if (!started) throw new Error('the model never began replying — prompt may exceed what this UI accepts');
+    if (!complete) console.log('note: hit the poll ceiling; reply may be truncated');
 
-  console.log('url:', page.url());
-  console.log('--- reply ---');
-  console.log(newLines(before, text).join('\n'));
+    console.log('url:', page.url());
+    console.log('--- reply ---');
+    console.log(newLines(before, text).join('\n'));
+  }
 
   await page.screenshot({ path: 'zai-chat.png' });
   if (fs.existsSync(STATE)) await ctx.storageState({ path: STATE });
