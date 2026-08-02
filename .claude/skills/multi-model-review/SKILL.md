@@ -122,10 +122,23 @@ milliseconds — but they do not necessarily *answer* one. A 104 KB prompt
 produced no reply at all from GLM; the same review at 24 KB worked. Codex, going
 over the API, handled the full 104 KB.
 
-The adjudicator's prompt is the largest of all — the change plus both blind
-reviews — and a 95 KB one was cut off at the default poll ceiling mid-answer.
-Raise it for that step (`MAX_POLLS=300 node scripts/ask.js …`) and check the
-driver's `hit the poll ceiling` note before trusting the result.
+### The adjudicator needs the model with the most headroom
+
+Its prompt is the largest of all — the change, the project contract and both
+blind reviews. Kimi was asked to adjudicate at 95 KB and again at 99 KB with the
+poll ceiling raised to 300, and both replies were cut off before the verdict
+line. That is a capacity limit, not a flake: the reasoning it emits ahead of the
+answer grows with the prompt until the answer never arrives. Codex, going over
+the API, adjudicated 117 KB without trouble.
+
+So give adjudication to Codex whenever the assembled prompt is over roughly
+70 KB, and use a browser family for the blind reviews, which are smaller. When
+the pull request's implementer *is* Codex, split the review by area instead —
+never hand it its own work. `roles.js` decides who may review; the size decides
+whether that reviewer can, and the two have to agree before the cycle starts.
+
+The gate catches this either way: a truncated reply has no verdict line and is
+reported as a failed reviewer, never as a clean review.
 
 So keep the browser prompts small: prefer the diff alone, drop the whole-file
 section (`build-prompt.js` already caps it), and split a large PR by area,

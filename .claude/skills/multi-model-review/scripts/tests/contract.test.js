@@ -218,6 +218,67 @@ test('apply-patch refuses, and writes nothing, when a context line was lost', ()
   assert.strictEqual(fs.readFileSync(path.join(repo, 'calc.js'), 'utf8'), before);
 });
 
+test('apply-patch applies a patch that creates a file', () => {
+  // The extended header on line two used to cut the patch off right there, and
+  // git blamed the implementer for a patch that was correct.
+  const repo = gitRepo({ 'existente.txt': 'x\n' });
+  const reply = tmpFile('reply.md', [
+    '--- reply ---',
+    'diff --git a/nuevo.js b/nuevo.js',
+    'new file mode 100644',
+    'index 0000000..a1b2c3d',
+    '--- /dev/null',
+    '+++ b/nuevo.js',
+    '@@ -0,0 +1,3 @@',
+    '+function resta(a, b) {',
+    '+  return a - b;',
+    '+}',
+    'Ask anything, or task an agent...',
+  ].join('\n'));
+
+  const r = run('apply-patch.js', [repo, reply]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(fs.readFileSync(path.join(repo, 'nuevo.js'), 'utf8'), /function resta/);
+});
+
+test('apply-patch applies a patch that deletes and renames', () => {
+  const repo = gitRepo({ 'viejo.txt': 'contenido\n', 'sobra.txt': 'basura\n' });
+  const reply = tmpFile('reply.md', [
+    'diff --git a/sobra.txt b/sobra.txt',
+    'deleted file mode 100644',
+    'index 1111111..0000000',
+    '--- a/sobra.txt',
+    '+++ /dev/null',
+    '@@ -1 +0,0 @@',
+    '-basura',
+    'diff --git a/viejo.txt b/nuevo.txt',
+    'similarity index 100%',
+    'rename from viejo.txt',
+    'rename to nuevo.txt',
+  ].join('\n'));
+
+  const r = run('apply-patch.js', [repo, reply]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.ok(!fs.existsSync(path.join(repo, 'sobra.txt')), 'deletion applied');
+  assert.ok(fs.existsSync(path.join(repo, 'nuevo.txt')), 'rename applied');
+});
+
+test('build-prompt keeps the required contract whatever the budget', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-bp-'));
+  fs.mkdirSync(path.join(dir, 'context'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'diff.patch'), 'diff --git a/x b/x\n');
+  fs.writeFileSync(path.join(dir, 'changed-files.txt'), '');
+  // Deliberately larger than CONTEXT_BUDGET_BYTES: it must still be carried.
+  fs.writeFileSync(path.join(dir, 'context', 'AGENTS.md'),
+    '# contrato\n' + 'x'.repeat(70 * 1024));
+  const checklist = tmpFile('c.md', '# checklist\n');
+
+  const r = run('build-prompt.js', [dir, checklist]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const prompt = fs.readFileSync(path.join(dir, 'prompt.txt'), 'utf8');
+  assert.match(prompt, /# contrato/);
+});
+
 test('apply-patch refuses prose instead of guessing', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-repo-'));
   const reply = tmpFile('reply.md', 'He añadido la función resta, avísame si quieres tests.\n');

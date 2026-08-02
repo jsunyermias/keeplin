@@ -103,7 +103,13 @@ const read = (p) => fs.readFileSync(p, 'utf8');
     for (const f of ctxFiles) {
       const body = read(path.join(ctxDir, f));
       const label = f.replace(/__/g, '/');
-      if (ctxUsed + body.length > CONTEXT_BUDGET_BYTES) { ctxOmitted.push(label); continue; }
+      // Required resources are exempt from the budget. Dropping the contract a
+      // reviewer is told to apply does not save a review, it invalidates it.
+      const required = rank(f) === 0;
+      if (!required && ctxUsed + body.length > CONTEXT_BUDGET_BYTES) {
+        ctxOmitted.push(label);
+        continue;
+      }
       ctxUsed += body.length;
       ctxIncluded.push(label);
       ctxParts.push(`### ${label}`, '', body.trim(), '');

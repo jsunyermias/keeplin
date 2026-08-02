@@ -37,7 +37,13 @@ const [REPO, PR, OUT] = process.argv.slice(2);
   }
 
   const headRef = `refs/remotes/origin/pr/${PR}`;
-  git(['fetch', '--quiet', 'origin', `refs/pull/${PR}/head:${headRef}`, base]);
+  // Naming the base bare leaves it in FETCH_HEAD only, so refs/remotes/origin/
+  // <base> keeps whatever it had — and the merge-base is then computed against
+  // a stale commit. Update the remote-tracking ref explicitly.
+  git(['fetch', '--quiet', 'origin',
+    `refs/pull/${PR}/head:${headRef}`,
+    `refs/heads/${base}:refs/remotes/origin/${base}`,
+  ]);
 
   const mergeBase = gitText(['merge-base', `origin/${base}`, headRef]).trim();
   const range = `${mergeBase}..${headRef}`;

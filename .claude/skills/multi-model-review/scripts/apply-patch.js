@@ -36,7 +36,20 @@ function extractPatch(text) {
 // Must not match the driver's own '--- reply ---' banner, so the file-header
 // form is required rather than a bare '--- '.
 const PATCH_START = /^(diff --git |--- [ab]\/)/;
-const PATCH_LINE = /^(diff --git |index |--- |\+\+\+ |@@ |[ +\-\\])/;
+// git's extended headers appear on the second line of any patch that creates,
+// deletes, renames, copies or changes the mode of a file. Omitting them cut the
+// patch off right after `diff --git`, and git then reported "No valid patches
+// in input" — blaming the implementer for a patch that was correct, which sends
+// the cycle into re-asking for something already right.
+const PATCH_LINE = new RegExp('^(' + [
+  'diff --git ', 'index ',
+  'new file mode ', 'deleted file mode ', 'old mode ', 'new mode ',
+  'copy from ', 'copy to ', 'rename from ', 'rename to ',
+  'similarity index ', 'dissimilarity index ',
+  'Binary files ', 'GIT binary patch',
+  '--- ', '\\+\\+\\+ ', '@@ ',
+  '[ +\\-\\\\]',
+].join('|') + ')');
 
 function trimToPatch(block) {
   const lines = block.split('\n');
