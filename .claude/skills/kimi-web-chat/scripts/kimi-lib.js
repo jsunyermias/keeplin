@@ -56,4 +56,24 @@ const CONTEXT = {
   locale: 'es-ES',
 };
 
-module.exports = { launch, resolveChromium, CONTEXT };
+// A prompt given as "@path" is read from disk. Review prompts carry a whole
+// diff, which is far past what fits comfortably on a command line.
+function readPrompt(arg) {
+  if (!arg) return null;
+  return arg.startsWith('@') ? fs.readFileSync(arg.slice(1), 'utf8') : arg;
+}
+
+// fill() sets the value in one shot and still fires the events this editor
+// listens for — verified against Kimi's contenteditable composer. Typing
+// character by character would take twenty minutes for a large diff.
+async function enterPrompt(page, locator, text) {
+  await locator.click();
+  try {
+    await locator.fill(text);
+  } catch {
+    await page.keyboard.type(text, { delay: 0 });
+  }
+  await page.waitForTimeout(600);
+}
+
+module.exports = { launch, resolveChromium, CONTEXT, readPrompt, enterPrompt };

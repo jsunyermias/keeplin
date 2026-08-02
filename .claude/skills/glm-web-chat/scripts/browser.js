@@ -51,27 +51,86 @@ const CONTEXT = {
 };
 
 // Wait for the transcript to stop growing. Completion is inferred, not
-// signalled, so slow modes need a longer quiet window and ceiling.
-async function waitForReply(page, { quietChecks = 3, maxPolls = 60, interval = 2000 } = {}) {
+// signalled, so two phases are needed: first wait for generation to actually
+// begin, then wait for it to settle. Collapsing these into one quiet-window
+// check is the subtle bug — on a large prompt the model can sit silent for
+// longer than the window, and the page looks "settled" before a single token
+// has appeared, so the reply is reported as empty.
+async function waitForReply(page, {
+  quietChecks = 4,
+  maxPolls = 150,
+  interval = 2000,
+  startTimeoutMs = 120000,
+} = {}) {
+  const baseline = await page.locator('body').innerText().catch(() => '');
+  const deadline = Date.now() + startTimeoutMs;
+  let started = false;
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(interval);
+    const text = await page.locator('body').innerText().catch(() => '');
+    if (text !== baseline) { started = true; break; }
+  }
+  if (!started) return { text: baseline, complete: false, started: false };
+
   let last = '';
   let quiet = 0;
   for (let i = 0; i < maxPolls; i++) {
     await page.waitForTimeout(interval);
     const text = await page.locator('body').innerText().catch(() => '');
-    if (text === last) {
-      if (++quiet >= quietChecks) return { text: last, complete: true };
+    const busy = /Thinking\.\.\.|Pensando|Generating|Stop generating|Detener/i.test(text);
+    if (text === last && !busy) {
+      if (++quiet >= quietChecks) return { text: last, complete: true, started: true };
     } else {
       quiet = 0;
       last = text;
     }
   }
-  return { text: last, complete: false };
+  return { text: last, complete: false, started: true };
 }
 
-// Subtract the page chrome captured before sending, so the account's sidebar
-// and chat history stay out of the output.
+// Recover just the model's answer. Set subtraction alone is wrong for long
+// prompts: a review legitimately repeats file names and code that also appear
+// in the prompt, and those lines would vanish. The page lays the conversation
+// out as [chrome][echoed prompt][reply], so anchor on the prompt's own last
+// line and take what follows; fall back to subtraction when the UI collapses
+// the message and that anchor is not on the page.
+const SENTINEL = '[[FIN-PROMPT]]';
+
 function newLines(before, after) {
-  return after.split('\n').filter((l) => l.trim() && !before.has(l));
+  const lines = after.split('\n');
+  {
+    const tail = SENTINEL;
+    const at = lines.map((l) => l.trim()).lastIndexOf(tail);
+    if (at !== -1 && at < lines.length - 1) {
+      return lines.slice(at + 1).filter((l) => l.trim() && !before.has(l));
+    }
+  }
+  return lines.filter((l) => l.trim() && !before.has(l));
 }
 
-module.exports = { launch, resolveChromium, CONTEXT, waitForReply, newLines };
+// A prompt given as "@path" is read from disk. Review prompts carry a whole
+// diff, which is far past what fits comfortably on a command line.
+function readPrompt(arg) {
+  if (!arg) return null;
+  return arg.startsWith('@') ? fs.readFileSync(arg.slice(1), 'utf8') : arg;
+}
+
+// fill() sets the value in one shot and still fires the events these editors
+// listen for — verified on both a real textarea and a contenteditable. Typing
+// character by character would take twenty minutes for a large diff.
+async function enterPrompt(page, locator, text) {
+  await locator.click();
+  // The sentinel marks where the echoed prompt ends and the reply begins.
+  const payload = `${text}\n\n${SENTINEL}`;
+  try {
+    await locator.fill(payload);
+  } catch {
+    // Custom editors occasionally reject fill(); typing always works.
+    await page.keyboard.type(payload, { delay: 0 });
+  }
+  await page.waitForTimeout(600);
+}
+
+module.exports = {
+  launch, resolveChromium, CONTEXT, waitForReply, newLines, readPrompt, enterPrompt, SENTINEL,
+};

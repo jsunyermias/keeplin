@@ -1,14 +1,15 @@
 // Send one prompt to the Kimi web chat and print the reply.
 //
 //   node kimi.js "your prompt" [model]
+//   node kimi.js @prompt.txt [model]     # long prompts, e.g. a review diff
 //   model: K3 (default) | Instant | "K3 Swarm"
 //
 // Requires an authenticated kimi-state.json in the working directory; without
 // it the send silently hits the login wall. Run login-sms.js first.
 const fs = require('fs');
-const { launch, CONTEXT } = require('./kimi-lib');
+const { launch, CONTEXT, readPrompt, enterPrompt } = require('./kimi-lib');
 
-const PROMPT = process.argv[2];
+const PROMPT = readPrompt(process.argv[2]);
 const MODEL = process.argv[3] || 'K3';
 const STATE = 'kimi-state.json';
 
@@ -50,9 +51,7 @@ const MAX_POLLS = 60;
 
   const box = page.locator('div[contenteditable="true"], textarea').first();
   await box.waitFor({ state: 'visible', timeout: 30000 });
-  await box.click();
-  await box.type(PROMPT, { delay: 25 });
-  await page.waitForTimeout(500);
+  await enterPrompt(page, box, PROMPT);
 
   // Snapshot the chrome (sidebar, nav, chat list) so it can be subtracted from
   // the result — reading document.body wholesale otherwise dumps the account's

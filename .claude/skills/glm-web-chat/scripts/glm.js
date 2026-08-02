@@ -1,6 +1,7 @@
 // Send one prompt to the Z.ai web chat and print the reply.
 //
 //   node glm.js "your prompt" [model]
+//   node glm.js @prompt.txt [model]      # long prompts, e.g. a review diff
 //   model: GLM-5.2 (default) | GLM-5.1 | GLM-5-Turbo | GLM-5V-Turbo | GLM-4.7
 //
 // Anonymous visitors can chat, but only on GLM-4.7 — every GLM-5 entry in the
@@ -8,9 +9,9 @@
 // zai-state.json therefore does not error, it silently downgrades the model,
 // which is why the active model is read back rather than assumed.
 const fs = require('fs');
-const { launch, CONTEXT, waitForReply, newLines } = require('./browser');
+const { launch, CONTEXT, waitForReply, newLines, readPrompt, enterPrompt } = require('./browser');
 
-const PROMPT = process.argv[2];
+const PROMPT = readPrompt(process.argv[2]);
 const MODEL = process.argv[3] || 'GLM-5.2';
 const STATE = 'zai-state.json';
 
@@ -116,16 +117,21 @@ async function dismissOverlays(page) {
   // editor that exposes none, so fall back to clicking where it renders.
   const box = page.locator('textarea').first();
   if (await box.count() && await box.isVisible().catch(() => false)) {
-    await box.click();
+    await enterPrompt(page, box, PROMPT);
   } else {
+    // Signed out the composer is a custom editor exposing no textarea.
     await page.mouse.click(668, 385);
+    await page.waitForTimeout(800);
+    await page.keyboard.type(PROMPT, { delay: 0 });
+    await page.waitForTimeout(600);
   }
-  await page.waitForTimeout(800);
-  await page.keyboard.type(PROMPT, { delay: 25 });
-  await page.waitForTimeout(500);
   await page.keyboard.press('Enter');
 
-  const { text, complete } = await waitForReply(page);
+  const { text, complete, started } = await waitForReply(page, {
+    quietChecks: Number(process.env.QUIET_CHECKS || 4),
+    maxPolls: Number(process.env.MAX_POLLS || 150),
+  });
+  if (!started) throw new Error('the model never began replying — prompt may exceed what this UI accepts');
   if (!complete) console.log('note: hit the poll ceiling; reply may be truncated');
 
   console.log('url:', page.url());

@@ -1,14 +1,15 @@
 // Send one prompt to Qwen Studio (chat.qwen.ai) and print the reply.
 //
 //   node qwen.js "your prompt" [model]
+//   node qwen.js @prompt.txt [model]     # long prompts, e.g. a review diff
 //   model: Qwen3.8-Max-Preview (default) | Qwen3.7-Max | Qwen3.7-Plus
 //
 // Unlike Z.ai there is no anonymous mode — the site requires a session for any
 // send, so a missing qwen-state.json fails fast rather than degrading.
 const fs = require('fs');
-const { launch, CONTEXT, waitForReply, newLines } = require('./browser');
+const { launch, CONTEXT, waitForReply, newLines, readPrompt, enterPrompt } = require('./browser');
 
-const PROMPT = process.argv[2];
+const PROMPT = readPrompt(process.argv[2]);
 const MODEL = process.argv[3] || 'Qwen3.8-Max-Preview';
 const STATE = 'qwen-state.json';
 
@@ -48,12 +49,14 @@ const STATE = 'qwen-state.json';
   const before = new Set((await page.locator('body').innerText()).split('\n'));
   const box = page.locator('textarea').first();
   await box.waitFor({ state: 'visible', timeout: 30000 });
-  await box.click();
-  await box.type(PROMPT, { delay: 25 });
-  await page.waitForTimeout(500);
+  await enterPrompt(page, box, PROMPT);
   await page.keyboard.press('Enter');
 
-  const { text, complete } = await waitForReply(page);
+  const { text, complete, started } = await waitForReply(page, {
+    quietChecks: Number(process.env.QUIET_CHECKS || 4),
+    maxPolls: Number(process.env.MAX_POLLS || 150),
+  });
+  if (!started) throw new Error('the model never began replying — prompt may exceed what this UI accepts');
   if (!complete) console.log('note: hit the poll ceiling; reply may be truncated');
 
   console.log('url:', page.url());
