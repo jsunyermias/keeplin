@@ -14,11 +14,18 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const [REPO, PR, OUT] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+const areaAt = argv.indexOf('--area');
+const AREA = areaAt === -1 ? null : argv[areaAt + 1];
+const [REPO, PR, OUT] =
+  argv.filter((a, i) => !a.startsWith('--') && (areaAt === -1 || i !== areaAt + 1));
 
 (() => {
   if (!REPO || !PR || !OUT) {
-    throw new Error('usage: node collect.js <repo-path> <pr-number> <out-dir>');
+    throw new Error('usage: node collect.js <repo-path> <pr-number> <out-dir> [--area <path>]');
+  }
+  if (areaAt !== -1 && (!AREA || AREA.startsWith('--'))) {
+    throw new Error('--area needs a path');
   }
   if (!/^\d+$/.test(PR)) throw new Error(`pull request number must be numeric, got "${PR}"`);
 
@@ -51,8 +58,25 @@ const [REPO, PR, OUT] = process.argv.slice(2);
   const mergeBase = gitText(['merge-base', `origin/${base}`, headRef]).trim();
   const range = `${mergeBase}..${headRef}`;
 
-  fs.writeFileSync(path.join(OUT, 'diff.patch'), git(['diff', range]));
-  const changed = gitText(['diff', '--name-only', range]).split('\n').filter(Boolean);
+  // A pull request can outgrow what a browser chat will take — 400 KB of diff
+  // does not get reviewed, it gets skimmed. The documentation already said to
+  // split such a change by area and run the rotation per area, but there was no
+  // way to do it, so the split happened by hand and one such hand-made package
+  // reached the reviewers with no whole-file context at all. --area is that
+  // missing mechanism: everything downstream still sees an ordinary package,
+  // and the scope is recorded in collect.info so a reader knows what was and
+  // was not looked at.
+  const scope = AREA ? ['--', AREA] : [];
+
+  fs.writeFileSync(path.join(OUT, 'diff.patch'), git(['diff', range, ...scope]));
+  const changed = gitText(['diff', '--name-only', range, ...scope]).split('\n').filter(Boolean);
+  if (!changed.length) {
+    throw new Error(
+      AREA
+        ? `no files under "${AREA}" changed between ${mergeBase} and the pull request head`
+        : `no files changed between ${mergeBase} and the pull request head`
+    );
+  }
   fs.writeFileSync(path.join(OUT, 'changed-files.txt'), changed.join('\n') + '\n');
 
   // Reviewers reason better with the whole post-change file than with hunks
@@ -62,7 +86,7 @@ const [REPO, PR, OUT] = process.argv.slice(2);
   // noise that costs tokens and tells a reviewer nothing. git reports them as
   // "-\t-" in numstat, so leave them to the diff alone.
   const binary = new Set(
-    gitText(['diff', '--numstat', range]).split('\n')
+    gitText(['diff', '--numstat', range, ...scope]).split('\n')
       .filter((l) => l.startsWith('-\t-\t'))
       .map((l) => l.split('\t')[2])
       .filter(Boolean)
@@ -109,6 +133,7 @@ const [REPO, PR, OUT] = process.argv.slice(2);
 
   const info = [
     `pr: ${PR}`,
+    `area: ${AREA || '(whole pull request)'}`,
     `base: ${base}`,
     `merge_base: ${mergeBase}`,
     `head: ${gitText(['rev-parse', headRef]).trim()}`,

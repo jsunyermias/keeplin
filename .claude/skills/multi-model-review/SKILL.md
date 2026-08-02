@@ -160,9 +160,24 @@ reported as a failed reviewer, never as a clean review.
 
 So keep the browser prompts small: prefer the diff alone, drop the whole-file
 section (`build-prompt.js` already caps it), and split a large PR by area,
-running the rotation per area. Give the oversized whole to Codex if you want one
-reviewer with the complete picture — unless Codex is this pull request's
-implementer, in which case that would be self-review.
+running the rotation per area:
+
+```bash
+node scripts/collect.js /path/to/repo 197 work/pr197-mmr \
+  --area .claude/skills/multi-model-review
+```
+
+Everything downstream treats that like any other package, and the prompt tells
+the reviewer its view is partial so it does not report the rest of the pull
+request as missing. Do the split with `--area` rather than by hand: a hand-made
+package once reached three reviewers with an empty `files/`, and nothing in the
+pipeline noticed. `collect.info` records the scope, so a later reader can see
+what each round did and did not look at — and a pull request is only reviewed
+once every area has been.
+
+Give the oversized whole to Codex if you want one reviewer with the complete
+picture — unless Codex is this pull request's implementer, in which case that
+would be self-review.
 
 ## Reading a reply is the fragile part
 

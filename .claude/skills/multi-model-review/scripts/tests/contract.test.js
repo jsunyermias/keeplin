@@ -557,7 +557,10 @@ test('apply-patch refuses prose instead of guessing', () => {
 // AGENTS.md check is reached. The previous version of this test used a repo
 // with no remote: git failed first with "fatal", the assertion matched that,
 // and the test would have kept passing with the check deleted.
-function repoWithPullRef(files) {
+// `files` land on the base; `prFiles` are what the pull request itself changes.
+// Keeping them apart matters for anything that reasons about the diff rather
+// than the tree — an area test whose files sat in the base saw an empty diff.
+function repoWithPullRef(files, prFiles = { 'later.txt': 'x\n' }) {
   const origin = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-origin-'));
   execFileSync('git', ['init', '-q', '--bare'], { cwd: origin });
 
@@ -565,7 +568,10 @@ function repoWithPullRef(files) {
   execFileSync('git', ['remote', 'add', 'origin', origin], { cwd: work });
   execFileSync('git', ['push', '-q', 'origin', 'HEAD:refs/heads/main'], { cwd: work });
   // Give the base a second commit so merge-base has something to resolve to.
-  fs.writeFileSync(path.join(work, 'later.txt'), 'x\n');
+  for (const [f, body] of Object.entries(prFiles)) {
+    fs.mkdirSync(path.join(work, path.dirname(f)), { recursive: true });
+    fs.writeFileSync(path.join(work, f), body);
+  }
   execFileSync('git', ['add', '-A'], { cwd: work });
   execFileSync('git', ['commit', '-qm', 'change'], { cwd: work });
   execFileSync('git', ['push', '-q', 'origin', 'HEAD:refs/pull/1/head'], { cwd: work });
@@ -621,6 +627,46 @@ test('collect refreshes the base before computing the merge base', () => {
   // The tracking ref must have caught up with the advanced base.
   assert.strictEqual(originMain, advanced, 'origin/main was not refreshed');
   assert.ok(mergeBase, 'a merge base was computed');
+});
+
+test('collect can scope a large pull request to one area', () => {
+  // SKILL.md told operators to split an oversized pull request by area and gave
+  // them no mechanism, so the split was done by hand — and one hand-made
+  // package reached three reviewers with no whole-file context at all.
+  const repo = repoWithPullRef(
+    { 'AGENTS.md': '# contrato\n' },
+    { 'dentro/a.js': 'const a = 1;\n', 'fuera/b.js': 'const b = 2;\n' }
+  );
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-out-'));
+  const r = run('collect.js', [repo, '1', out, '--area', 'dentro']);
+  assert.strictEqual(r.code, 0, r.stderr);
+
+  const changed = fs.readFileSync(path.join(out, 'changed-files.txt'), 'utf8');
+  assert.match(changed, /dentro\/a\.js/);
+  assert.doesNotMatch(changed, /fuera\/b\.js/, 'the area outside the scope must not travel');
+  assert.ok(fs.existsSync(path.join(out, 'files', 'dentro', 'a.js')));
+  assert.ok(!fs.existsSync(path.join(out, 'files', 'fuera', 'b.js')));
+  assert.match(fs.readFileSync(path.join(out, 'collect.info'), 'utf8'), /^area: dentro$/m);
+});
+
+test('collect refuses an area that nothing in the pull request touches', () => {
+  // Silence would produce an empty prompt and a reviewer reporting no findings,
+  // which reads exactly like a clean review.
+  const repo = repoWithPullRef({ 'AGENTS.md': '# contrato\n', 'a.js': 'const a = 1;\n' });
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-out-'));
+  const r = run('collect.js', [repo, '1', out, '--area', 'inexistente']);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /no files under "inexistente" changed/);
+});
+
+test('build-prompt tells a reviewer when its view is only one area', () => {
+  const dir = collected({ changed: ['a.js'], files: { 'a.js': 'x\n' } });
+  fs.writeFileSync(path.join(dir, 'collect.info'),
+    'pr: 1\narea: dentro\nfiles_captured: 1\n');
+  const r = run('build-prompt.js', [dir, tmpFile('c.md', '# checklist\n')]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const prompt = fs.readFileSync(path.join(dir, 'prompt.txt'), 'utf8');
+  assert.match(prompt, /cubre solo `dentro`/);
 });
 
 test('collect carries the project contract when it is present', () => {

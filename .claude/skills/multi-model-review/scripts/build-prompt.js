@@ -74,7 +74,10 @@ const read = (p) => fs.readFileSync(p, 'utf8');
       'from files/ cannot be distinguished from what the pull request deleted. Rerun collect.js.'
     );
   }
-  const captured = Number((read(infoPath).match(/^files_captured:\s*(\d+)$/m) || [])[1]);
+  const info = read(infoPath);
+  const captured = Number((info.match(/^files_captured:\s*(\d+)$/m) || [])[1]);
+  const area = (info.match(/^area:\s*(.+)$/m) || [])[1];
+  const partial = area && area !== '(whole pull request)' ? area.trim() : null;
 
   let filesSection = '';
   let used = 0;
@@ -151,6 +154,18 @@ const read = (p) => fs.readFileSync(p, 'utf8');
         '', '---', ''
       );
     }
+  }
+
+  // A reviewer that does not know its view is partial will report the absence
+  // of things that are present just outside the slice, and the operator has no
+  // way to tell that from a real finding.
+  if (partial) {
+    parts.push(
+      `Esta revisión cubre solo \`${partial}\` del pull request, no el cambio entero.`,
+      'Lo que quede fuera de esa ruta no está aquí y no es un hallazgo: no lo trates',
+      'como ausente ni como incompleto. Otra vuelta cubre el resto.',
+      '', '---', ''
+    );
   }
 
   parts.push('## Diff', '', '```diff', diff.trim(), '```', '');
