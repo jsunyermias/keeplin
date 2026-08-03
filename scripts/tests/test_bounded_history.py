@@ -51,6 +51,22 @@ class BoundedHistoryCheck(unittest.TestCase):
         self.write("AGENTS.md", f"# wrapped\n\n{wrapped}\n")
         self.assertEqual(run(self.root).returncode, 0, run(self.root).stdout)
 
+    def test_an_html_comment_does_not_satisfy_the_check(self):
+        self.write("AGENTS.md", f"# agents\n\n<!-- {CANONICAL} -->\n")
+        self.assertEqual(run(self.root).returncode, 1)
+
+    def test_a_fenced_code_block_does_not_satisfy_the_check(self):
+        self.write("AGENTS.md", f"# agents\n\n```text\n{CANONICAL}\n```\n")
+        self.assertEqual(run(self.root).returncode, 1)
+
+    def test_an_indented_code_block_does_not_satisfy_the_check(self):
+        self.write("AGENTS.md", f"# agents\n\n    {CANONICAL}\n")
+        self.assertEqual(run(self.root).returncode, 1)
+
+    def test_normal_prose_still_satisfies_the_check(self):
+        self.write("AGENTS.md", f"# agents\n\n{CANONICAL}\n")
+        self.assertEqual(run(self.root).returncode, 0, run(self.root).stdout)
+
     def test_a_glossary_of_the_words_does_not_satisfy_the_check(self):
         # The exact defect the previous substring implementation allowed: the bounded-history
         # prose is deleted, the vocabulary survives somewhere else in the file, check passes.
