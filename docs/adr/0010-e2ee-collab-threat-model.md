@@ -1,4 +1,4 @@
-# 0004 — End-to-end encrypted collaborative editing: threat model and v1 ambition
+# 0010 — End-to-end encrypted collaborative editing: threat model and v1 ambition
 
 - Status: proposed
 - Date: 2026-07-27
