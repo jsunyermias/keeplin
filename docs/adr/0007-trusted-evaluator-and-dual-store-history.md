@@ -1,6 +1,6 @@
 # 0007 — Trusted evaluator, verified disposal, and dual-store loop history
 
-- Status: proposed
+- Status: rejected
 - Date: 2026-08-03
 - Decision owners: maintainer of `jsunyermias/keeplin` and `jsunyermias/keeplin-srv`
 - Scope: cross-repo
@@ -9,7 +9,15 @@
   [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198)
 - Acceptance PR: link once the ADR is accepted
 - Supersedes: [0006](0006-trusted-review-loop-history.md)
-- Superseded by: none
+- Superseded by: [0008](0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md)
+
+Rejected on 2026-08-03 by two independent reviews, before acceptance — the ordering this ADR
+itself asked for. Its load-bearing claim, that check runs cannot be deleted through the API, is
+false in effect: `PATCH` rewrites output for any token with `checks: write`, check data is
+archived at 400 days, same-name runs past 1,000 per suite are auto-deleted, and deleting a
+workflow run removes its job check runs. The second review additionally found the counter's
+source unspecified, so a naive implementation would recompute it from a truncated journal and
+reproduce 0006's hole while the specified test still passed. ADR 0008 carries the replacement.
 
 ## Context and problem
 
