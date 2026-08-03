@@ -96,6 +96,8 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
   if (pull.headRepositoryId !== pull.baseRepositoryId) return { ok: false, state: "fork-refused", message: "Fork pull requests deliberately fail closed: partial evidence is not evaluated." };
   const unreifiedOpen = findings.find((finding) => finding.state === "open" && !finding.reified);
   if (unreifiedOpen) return { ok: false, state: "history-unverifiable", message: `Review ledger: finding ${unreifiedOpen.id} is open but names no failing check.` };
+  const reifiedAdvisory = findings.find((finding) => finding.state === ADVISORY && finding.reified);
+  if (reifiedAdvisory) return { ok: false, state: "history-unverifiable", message: `Review ledger: finding ${reifiedAdvisory.id} is reified but has advisory state.` };
   const journal = verifyJournal(journalComments, config);
   if (!journal.ok) return journal;
   const priorRecord = journal.records[journal.records.length - 1];
@@ -117,6 +119,9 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
     return matches.length !== 1 || matches[0].status !== "completed" || matches[0].conclusion !== "success";
   });
   const projected = findings.map((finding) => {
+    // Declassification is protected only relative to the newest surviving record. ADR 0008
+    // deliberately does not detect terminal truncation, so an older authentic prefix can erase
+    // the record that established reification and allow an advisory classification to converge.
     const priorFinding = priorRecord && Array.isArray(priorRecord.findings) ? priorRecord.findings.find((item) => item.id === finding.id) : undefined;
     const declassified = priorFinding && priorFinding.reified && (!finding.reified || finding.state === ADVISORY);
     if (!["resolved", "dismissed"].includes(finding.state) && !declassified) return finding;

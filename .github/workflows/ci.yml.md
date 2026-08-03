@@ -14,9 +14,12 @@ start with `claude/`.
 | `push` | `main`, `claude/**` |
 | `pull_request` | target branch: `main`; events `opened`, `synchronize`, `reopened`, `edited`, `ready_for_review` |
 
-The workflow explicitly has read-only access to repository contents and pull-request metadata.
-Its adversarial permission canary attempts to patch its own check run and fails unless GitHub
-returns 403. The separate default-branch `review-loop-evaluator.yml` consumes completed runs.
+The workflow explicitly has read-only access to checks, repository contents and pull-request
+metadata. `checks: read` lets the canary locate its own check run but grants no mutation ability.
+The canary separately requires a successful GET and a non-empty check ID, then attempts to patch
+that run and requires exactly HTTP 403; a failed lookup cannot masquerade as a passing denial, and
+any successful PATCH fails CI. The separate default-branch `review-loop-evaluator.yml` consumes
+completed runs.
 
 ## Environment variables
 
@@ -34,7 +37,7 @@ Runs on `ubuntu-latest`.
 | Step | Action / Command | Purpose |
 |------|-----------------|---------|
 | Checkout | `actions/checkout@v4` | Clones the repository at the triggering commit |
-| Prove pull-request token cannot rewrite check runs | API `PATCH` canary (pull requests only) | Requires HTTP 403; any successful mutation fails CI |
+| Prove pull-request token cannot rewrite check runs | API `GET` plus `PATCH` canary (pull requests only) | Requires a successful check-run lookup and HTTP 403 from the mutation attempt; lookup failure, missing ID, or successful mutation fails CI |
 | Check pull-request review governance | `actions/github-script@v7` (non-draft pull requests only) | Requires either an independent review with evidence, or a complete maintainer waiver whose exact PR is recorded in the changed `docs/review-debt.md` |
 | Install Python | `actions/setup-python@v5` (`3.12`) | Provides the standard-library runtime used by the deterministic companion checks |
 | Check companion docs | `./scripts/check-docs.sh` | Enforces structure, exact source↔fence fidelity and the generated context manifest (the two-layer navigation model) |

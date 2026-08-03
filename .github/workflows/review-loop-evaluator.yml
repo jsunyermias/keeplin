@@ -52,7 +52,7 @@ jobs:
             const comments = await github.paginate(github.rest.issues.listComments, { owner: context.repo.owner, repo: context.repo.repo, issue_number: pull.number, per_page: 100 });
             const reviews = await github.paginate(github.rest.pulls.listReviews, { owner: context.repo.owner, repo: context.repo.repo, pull_number: pull.number, per_page: 100 });
             const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, { owner: context.repo.owner, repo: context.repo.repo, run_id: run.id, per_page: 100 });
-            const checks = (await github.rest.checks.listForRef({ owner: context.repo.owner, repo: context.repo.repo, ref: run.head_sha, per_page: 100 })).data.check_runs;
+            const checks = await github.paginate(github.rest.checks.listForRef, { owner: context.repo.owner, repo: context.repo.repo, ref: run.head_sha, per_page: 100 }, response => response.data.check_runs);
             const files = await github.paginate(github.rest.pulls.listFiles, { owner: context.repo.owner, repo: context.repo.repo, pull_number: pull.number, per_page: 100 });
             let stallsContent = '';
             try {
@@ -70,7 +70,10 @@ jobs:
             });
             const metadata = (pull.body || '').match(/<!-- keeplin-review-loop-metadata ([\s\S]*?) -->/);
             let trustedMetadata = {};
-            try { trustedMetadata = metadata ? JSON.parse(metadata[1]) : {}; } catch { trustedMetadata = {}; }
+            try { trustedMetadata = metadata ? JSON.parse(metadata[1]) : {}; } catch {
+              core.setFailed('Malformed trusted review-loop metadata.');
+              return;
+            }
             const references = [
               ...comments.map((item) => ({ ...item, kind: 'comment', repositoryId: repository.id, pullNumber: pull.number })),
               ...reviews.map((item) => ({ ...item, kind: 'review', repositoryId: repository.id, pullNumber: pull.number })),
@@ -78,10 +81,18 @@ jobs:
             const mappedChecks = await Promise.all(checks.map(async (item) => {
               const workflowRunId = Number((item.details_url || '').match(/\/actions\/runs\/(\d+)/)?.[1]);
               if (!Number.isSafeInteger(workflowRunId)) return { ...item, app_slug: item.app && item.app.slug, app_id: item.app && item.app.id, workflow_id: null, workflow_run_id: null };
-              const checkRun = (await github.rest.actions.getWorkflowRun({ owner: context.repo.owner, repo: context.repo.repo, run_id: workflowRunId })).data;
-              return { ...item, app_slug: item.app && item.app.slug, app_id: item.app && item.app.id, workflow_id: checkRun.workflow_id, workflow_run_id: workflowRunId };
+              try {
+                const checkRun = (await github.rest.actions.getWorkflowRun({ owner: context.repo.owner, repo: context.repo.repo, run_id: workflowRunId })).data;
+                return { ...item, app_slug: item.app && item.app.slug, app_id: item.app && item.app.id, workflow_id: checkRun.workflow_id, workflow_run_id: workflowRunId };
+              } catch {
+                return { ...item, app_slug: item.app && item.app.slug, app_id: item.app && item.app.id, workflow_id: null, workflow_run_id: workflowRunId, workflow_lookup_failed: true };
+              }
             }));
             const referencedCheckIds = new Set(findings.filter((finding) => finding.state === 'resolved').map((finding) => String(finding.evidence && finding.evidence.checkRunId)));
+            if (mappedChecks.some((checkRun) => referencedCheckIds.has(String(checkRun.id)) && checkRun.workflow_lookup_failed)) {
+              core.setFailed('Unable to verify workflow identity for check run referenced as resolution evidence.');
+              return;
+            }
             if (mappedChecks.some((checkRun) => referencedCheckIds.has(String(checkRun.id)) && checkRun.workflow_id !== configuredCiWorkflowId)) {
               core.setFailed('A referenced resolution check does not match the configured CI_WORKFLOW_ID repository variable.');
               return;

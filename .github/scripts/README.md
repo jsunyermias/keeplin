@@ -52,12 +52,17 @@ and body digests; and,
 for `resolved`, a successful named check bound to the evaluated head, workflow and App. Missing,
 changed, dismissed or unreachable evidence reopens the finding. Genesis and tombstones use the
 same authorization path. A previously reified finding also cannot become advisory without that
-verified authorization. Forks deliberately fail closed.
+verified authorization when the record establishing reification remains in the surviving
+journal. A finding that names a mechanical check cannot simultaneously use `advisory` state.
+Forks deliberately fail closed.
 
 The App comment journal's guarantees are bounded: editing any record is detected, while deletion
 is detected only if a surviving descendant commits to the missing record. Terminal truncation is
 not detected; a repository writer can delete the newest records and the shorter prefix evaluates
-as if those rounds never happened. The limitation test shares the positive journal fixture.
+as if those rounds never happened. That can erase the record establishing that a finding was
+reified, after which an advisory reclassification can converge. The limitation tests pin both
+this consequence and the positive journal fixture rather than claiming resistance ADR 0008
+deliberately does not provide.
 
 Neither script discharges independent review, and `check-review-loop.js` does not weaken
 `check-review-governance.js`: the two gates are conjunctive.

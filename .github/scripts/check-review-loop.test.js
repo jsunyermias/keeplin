@@ -482,6 +482,16 @@ test("limitation_F002_terminal_truncation_undetected", () => {
   assert.doesNotMatch(JSON.stringify(truncated.records), /three/);
 });
 
+test("terminal_truncation_cannot_erase_reification_before_advisory_reclassification", () => {
+  const comments = journalFixture();
+  const prior = { id: "F-014", reified: true, state: "open" };
+  const record = makeJournalRecord({ ...TRUST, observation: 3, headSha: "ccc", stateHash: "three", blocking: 1, priorDigest: journalRecord(comments[1]).digest, findingIds: ["F-014"], findings: [prior] });
+  comments[2] = journalComment(record, TRUST);
+  const truncated = trusted({ journalComments: comments.slice(0, 2), findings: [{ id: "F-014", reified: false, state: "advisory" }] });
+  assert.equal(truncated.state, "converged");
+  assert.equal(truncated.projectedFindings[0].state, "advisory");
+});
+
 test("trusted_evaluator_rejects_parseFindings_error_instead_of_converging", () => {
   assert.throws(
     () => requireParsedFindings({ error: "Review ledger: duplicate F-001." }),
@@ -494,6 +504,12 @@ test("trusted_evaluator_rejects_open_finding_that_names_no_failing_check", () =>
   const result = trusted({ findings: [{ id: "F-015", state: "open", reified: false }] });
   assert.equal(result.state, "history-unverifiable");
   assert.match(result.message, /open.*names no failing check/i);
+});
+
+test("trusted_evaluator_rejects_reified_advisory_state", () => {
+  const result = trusted({ findings: [{ id: "F-016", state: "advisory", reified: true }] });
+  assert.equal(result.state, "history-unverifiable");
+  assert.match(result.message, /reified.*advisory/i);
 });
 
 test("verified disposal requires exact directive, independent authorized author and body digest", () => {
@@ -552,6 +568,13 @@ test("trusted_adapter_rejects_triggering_or_check_workflow_id_not_equal_to_confi
   assert.doesNotMatch(workflow, /workflow_id:\s*run\.workflow_id/);
 });
 
+test("trusted_adapter_paginates_checks_and_fails_closed_on_malformed_metadata_or_check_lookup", () => {
+  const workflow = fs.readFileSync(".github/workflows/review-loop-evaluator.yml", "utf8");
+  assert.match(workflow, /github\.paginate\(github\.rest\.checks\.listForRef/);
+  assert.match(workflow, /Malformed trusted review-loop metadata/);
+  assert.match(workflow, /Unable to verify workflow identity for check run/);
+});
+
 test("only named required jobs with positive success converge; forks fail closed", () => {
   for (const conclusion of ["skipped", "neutral", undefined, "failure"]) {
     const jobs = [{ name: "Check, Test & Lint", status: "completed", conclusion }, { name: "Knowledge graph up to date", status: "completed", conclusion: "success" }];
@@ -595,6 +618,9 @@ test("every pull-request workflow is explicitly read-only and carries the 403 ca
     assert.doesNotMatch(permissions[1], /:\s*write\s*$/m);
   }
   const ci = fs.readFileSync(".github/workflows/ci.yml", "utf8");
+  assert.match(ci, /^  checks: read$/m);
+  assert.match(ci, /get_status=.*--write-out '%\{http_code\}'/);
+  assert.match(ci, /test "\$\{get_status\}" = 200/);
   assert.match(ci, /PATCH[\s\S]*check-runs\/\$\{check_id\}/);
   assert.match(ci, /test "\$\{status\}" = 403/);
 });

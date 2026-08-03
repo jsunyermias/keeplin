@@ -11,6 +11,7 @@ on:
     types: [opened, synchronize, reopened, edited, ready_for_review]
 
 permissions:
+  checks: read
   contents: read
   pull-requests: read
 
@@ -32,10 +33,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CHECKS_URL: ${{ github.api_url }}/repos/${{ github.repository }}/commits/${{ github.event.pull_request.head.sha }}/check-runs
         run: |
-          check_id=$(curl --fail-with-body --silent --show-error \
+          get_status=$(curl --silent --show-error --output /tmp/check-runs-response --write-out '%{http_code}' \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
-            "${CHECKS_URL}" | jq -r '.check_runs[] | select(.name == "Check, Test & Lint") | .id' | head -n1)
+            "${CHECKS_URL}")
+          test "${get_status}" = 200
+          check_id=$(jq -r '.check_runs[] | select(.name == "Check, Test & Lint") | .id' /tmp/check-runs-response | head -n1)
           test -n "${check_id}"
           status=$(curl --silent --output /tmp/check-patch-response --write-out '%{http_code}' \
             -X PATCH \
