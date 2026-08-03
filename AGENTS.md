@@ -229,10 +229,13 @@ success evidence when resolved. Fork pull requests deliberately fail closed.
   finding or check that is stuck, and the stall is recorded in
   [`docs/review-stalls.md`](docs/review-stalls.md) the way review debt is recorded. Continuing
   to iterate after a stall without that record is prohibited.
-- The App-authored digest chain detects editing of every record. It detects deletion only when
-  a surviving descendant commits to the deleted record. An actor with repository write access
-  can truncate the newest record and the evaluator will read the shorter prefix as though those
-  rounds never happened; terminal truncation is not detected.
+- The App-authored digest chain detects accidental corruption and casual editing that does not
+  also rebuild its unkeyed digests. It does not authenticate history against an actor able to
+  add or modify a repository workflow: that workflow can use the same App identity, recompute
+  the chain, and manufacture convergence on a history in which no finding was ever reified.
+  Deletion is detected only when a surviving descendant commits to the deleted record. An actor
+  with repository write access can truncate the newest record and the evaluator will read the
+  shorter prefix as though those rounds never happened; terminal truncation is not detected.
 
 This is a floor beneath independent review, never a substitute for it. A converged pull request
 with no independent reviewer is still unmergeable, and convergence never ticks the review boxes

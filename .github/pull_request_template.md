@@ -80,8 +80,9 @@ strictly each round. A repeated loop-state hash, or no shrink for 3 rounds, esca
 maintainer and is recorded in
 [`docs/review-stalls.md`](../docs/review-stalls.md). CI prints the hash to record.
 Required jobs must explicitly report `success`; skipped, neutral, missing and unknown are not
-green. The App comment journal detects editing unconditionally and deletion only while a
-descendant survives. Terminal truncation is not detected.
+green. The App comment journal's unkeyed chain detects accidental corruption and casual edits,
+not forgery by another repository workflow with the same App identity. Deletion is detected only
+while a descendant survives. Terminal truncation is not detected.
 
 | Round | Loop-state hash | Blocking |
 |---|---|---|

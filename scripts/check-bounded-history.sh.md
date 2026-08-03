@@ -102,10 +102,12 @@ echo "bounded-history check OK: ${#SURFACES[@]} surfaces carry the canonical sen
 
 ## Purpose
 
-The review journal's guarantee is easy to state as more than it is. It detects editing of any
-record, and detects deletion only when a surviving descendant commits to the missing record.
-It does **not** detect terminal truncation: an actor with repository write access can delete
-the newest records, and the shorter prefix evaluates as though those rounds never happened.
+The review journal's guarantee is easy to state as more than it is. Its unkeyed chain detects
+accidental corruption and casual editing that does not rebuild the digests; it does not
+authenticate records against another repository workflow carrying the same App identity.
+Deletion is detected only when a surviving descendant commits to the missing record. It does
+**not** detect terminal truncation: an actor with repository write access can delete the newest
+records, and the shorter prefix evaluates as though those rounds never happened.
 
 That matters beyond history-keeping. The deleted records can be the ones establishing that a
 finding was reified, and once that evidence is gone the finding can be filed `advisory` and

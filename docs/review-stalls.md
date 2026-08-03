@@ -48,12 +48,14 @@ mention of the pull request elsewhere in
 this file, or a row under `Cleared`, does not satisfy it. Naming the pull request without
 naming what stuck it would have told the maintainer nothing.
 
-The journal verifies tampering, not terminal truncation. Editing any record is detected, and a
-deleted record is detected when a surviving descendant names it. An actor with repository write
-access can delete the newest record and the evaluator reads the shorter prefix as though the
-missing round never happened. Terminal truncation is not detected: it can erase the record that
-established reification, after which the shorter authentic prefix may converge with that finding
-advisory. This dismissed F-002 limitation remains tracked by
+The journal's unkeyed digest chain detects accidental corruption and casual editing that does not
+rebuild the chain. It does not authenticate records against another repository workflow, which
+can use the same App identity, recompute the digests, and manufacture convergence on a history in
+which no finding was ever reified. A deleted record is detected when a surviving descendant names
+it. An actor with repository write access can delete the newest record and the evaluator reads the
+shorter prefix as though the missing round never happened. Terminal truncation is not detected:
+it can erase the record that established reification, after which the shorter authentic prefix
+may converge with that finding advisory. This dismissed F-002 limitation remains tracked by
 [`docs/review-loop-spike.md`](review-loop-spike.md).
 
 ## How an entry is cleared

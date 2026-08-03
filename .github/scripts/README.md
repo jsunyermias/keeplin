@@ -57,8 +57,11 @@ only the newest one, so retiring an ID with an authorized tombstone does not let
 unreified. A finding that names a mechanical check cannot simultaneously use `advisory` state.
 Forks deliberately fail closed.
 
-The App comment journal's guarantees are bounded: editing any record is detected, while deletion
-is detected only if a surviving descendant commits to the missing record. A repository writer can
+The App comment journal's guarantees are bounded: its unkeyed digest chain detects accidental
+corruption and casual editing that does not rebuild the chain. It does not authenticate records
+against another repository workflow, which can use the same App identity, recompute the digests,
+and manufacture convergence on a history in which no finding was ever reified. Deletion is
+detected only if a surviving descendant commits to the missing record. A repository writer can
 delete the newest records and the shorter prefix evaluates as if those rounds never happened.
 Terminal truncation is not detected: it can erase the record that established reification, after
 which the shorter authentic prefix may converge with that finding advisory. The limitation tests pin both

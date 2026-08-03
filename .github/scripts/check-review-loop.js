@@ -112,8 +112,9 @@ function verifyJournal(comments, config) {
     if (record.schema !== JOURNAL_SCHEMA || record.repositoryId !== config.repositoryId || record.workflowId !== config.workflowId || record.appSlug !== config.appSlug || record.appId !== config.appId || comment.app_slug !== config.appSlug || comment.app_id !== config.appId) return { ok: false, state: "history-unverifiable", message: "Journal producer, repository, workflow or schema does not match configuration." };
     const digest = sha256(canonicalJson({ ...record, digest: undefined }));
     if (record.digest !== digest) return { ok: false, state: "history-unverifiable", message: "Journal record was edited: its digest no longer matches." };
-    // An authentic digest proves nobody edited the record; it does not prove the record says
-    // anything. A payload the evaluator cannot read is not evidence of an empty round, so a
+    // A matching unkeyed digest catches accidental corruption but is not provenance against a
+    // workflow that shares the App identity and can rebuild the chain. A payload the evaluator
+    // cannot read is not evidence of an empty round, so a
     // malformed one fails closed here rather than being skipped downstream — skipping it would
     // silently discard the reification history that authorized disposal depends on.
     const shape = journalPayloadError(record);
@@ -187,9 +188,9 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
   const rounds = [...journal.records.map((record) => ({ round: record.observation, hash: record.stateHash, blocking: record.blocking })), { round: journal.records.length + 1, hash: currentHash, blocking }];
   const stalled = journal.records.length > 0 && blocking > 0 ? stagnationReason(rounds, currentHash, stagnationLimit) : "";
   if (stalled) {
-    if (!changedFiles.includes(STALLS_PATH)) return { ok: false, state: "escalated", projectedFindings: projected, records: journal.records, currentHash, blocking, message: `Review loop stalled: ${stalled}. Record every blocker in ${STALLS_PATH}. History is verified only against tampering; an actor with repository write access can truncate it.` };
+    if (!changedFiles.includes(STALLS_PATH)) return { ok: false, state: "escalated", projectedFindings: projected, records: journal.records, currentHash, blocking, message: `Review loop stalled: ${stalled}. Record every blocker in ${STALLS_PATH}. The unkeyed chain detects accidental corruption and casual edits, not a repository workflow that rebuilds it with the same App identity; such a workflow can manufacture convergence.` };
     const record = stallRecordsBlockers(stallsContent, config.repository, pull.number, blockingNames);
-    if (!record.ok) return { ok: false, state: "escalated", projectedFindings: projected, records: journal.records, currentHash, blocking, message: `Review loop stalled: ${record.reason}. History is verified only against tampering; an actor with repository write access can truncate it.` };
+    if (!record.ok) return { ok: false, state: "escalated", projectedFindings: projected, records: journal.records, currentHash, blocking, message: `Review loop stalled: ${record.reason}. The unkeyed chain detects accidental corruption and casual edits, not a repository workflow that rebuilds it with the same App identity; such a workflow can manufacture convergence.` };
   }
   const ok = blocking === 0;
   return {
@@ -199,7 +200,7 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
     records: journal.records,
     currentHash,
     blocking,
-    message: `${ok ? "Review loop converged" : "Review loop has not converged"}. History is verified only against tampering; an actor with repository write access can truncate it, and terminal truncation is not detected.`,
+    message: `${ok ? "Review loop converged" : "Review loop has not converged"}. The unkeyed chain detects accidental corruption and casual edits, not a repository workflow that rebuilds it with the same App identity; such a workflow can manufacture convergence. An actor with repository write access can also truncate the journal, and terminal truncation is not detected.`,
   };
 }
 

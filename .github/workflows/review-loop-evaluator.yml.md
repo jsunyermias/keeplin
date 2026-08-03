@@ -33,13 +33,16 @@ are read-only. Forks deliberately fail closed because the policy refuses partial
 
 ## Bounded journal claim
 
-Editing a record is detected by its digest. Deletion is detected only when a surviving
-descendant names the missing predecessor. Terminal truncation is not detected: an actor with
-repository write access can delete the newest record and the evaluator reads the shorter
-authentic prefix as though the missing round never happened. Consequently, protection against
-reclassifying a previously reified finding as advisory applies only while the newest surviving
-record still establishes that reification; truncating behind it can make the advisory state
-converge. This is ADR 0008's pinned limitation, not a durable-provenance claim.
+The unkeyed digest chain detects accidental corruption and casual editing that does not rebuild
+the chain. It does not authenticate a record against another repository workflow: that workflow
+can use the same App identity, recompute the digests, and manufacture convergence on a history in
+which no finding was ever reified. Deletion is detected only when a surviving descendant names
+the missing predecessor. Terminal truncation is not detected: an actor with repository write
+access can delete the newest record and the evaluator reads the shorter authentic prefix as
+though the missing round never happened. Consequently, protection against reclassifying a
+previously reified finding as advisory applies only while the newest surviving record still
+establishes that reification; truncating behind it can make the advisory state converge. This is
+ADR 0008's pinned limitation, not a durable-provenance claim.
 
 ## Repository mirror
 

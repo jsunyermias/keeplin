@@ -9,7 +9,8 @@
 - Acceptance PR: [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198), with [keeplin-srv#104](https://github.com/jsunyermias/keeplin-srv/pull/104) as its companion
 - Supersedes: [0006](0006-trusted-review-loop-history.md) (accepted, unimplementable) and
   [0007](0007-trusted-evaluator-and-dual-store-history.md) (rejected)
-- Superseded by: none
+- Superseded by: [0011](0011-bounded-journal-authenticity.md) on the journal-authenticity claim
+  only; every other decision and the terminal-truncation bound remain standing
 
 ## Context and problem
 
