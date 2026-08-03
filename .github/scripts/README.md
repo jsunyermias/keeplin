@@ -57,6 +57,15 @@ only the newest one, so retiring an ID with an authorized tombstone does not let
 unreified. A finding that names a mechanical check cannot simultaneously use `advisory` state.
 Forks deliberately fail closed.
 
+Only `pull_request` runs of the configured CI workflow count as review rounds; its parallel
+`push` run is ignored. Evaluations are serialized by pull-request number, and journal append is
+idempotent for each workflow run ID and attempt, so concurrent completions and delivery retries
+cannot create sibling records. A configured-App comment carrying the journal marker but malformed
+JSON fails closed instead of disappearing. Every ID observed in surviving history remains
+reserved after retirement, including IDs first recorded as advisory. Once authorization evidence
+has been written to the journal, later evaluations bind to that recorded identity, author and body
+digest rather than an author-editable replacement in the current ledger.
+
 The App comment journal's guarantees are bounded: its unkeyed digest chain detects accidental
 corruption and casual editing that does not rebuild the chain. It does not authenticate records
 against another repository workflow, which can use the same App identity, recompute the digests,

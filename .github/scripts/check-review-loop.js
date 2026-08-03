@@ -46,7 +46,7 @@ function markedJson(body, marker) {
   try { return JSON.parse(String(body).slice(start + marker.length, end)); } catch { return null; }
 }
 
-function verifyAuthorization({ finding, reference, pullAuthor, targetState, repositoryId, pullNumber }) {
+function verifyAuthorization({ finding, reference, pullAuthor, targetState, repositoryId, pullNumber, evidence = finding.evidence || {} }) {
   if (!reference) return { ok: false, reason: "authorization reference is unreachable" };
   if (reference.repositoryId !== repositoryId || reference.pullNumber !== pullNumber) return { ok: false, reason: "authorization reference is not bound to this repository and pull request" };
   const login = reference.user && reference.user.login;
@@ -59,7 +59,6 @@ function verifyAuthorization({ finding, reference, pullAuthor, targetState, repo
     return { ok: false, reason: "reference has no matching machine-readable directive" };
   }
   const digest = sha256(reference.body || "");
-  const evidence = finding.evidence || {};
   if (String(evidence.referenceId) !== String(reference.id) || evidence.author !== login || evidence.bodyDigest !== digest) {
     return { ok: false, reason: "recorded reference identity, author or body digest does not match" };
   }
@@ -107,11 +106,17 @@ function journalPayloadError(record) {
 function verifyJournal(comments, config) {
   const records = [];
   for (const comment of comments || []) {
+    const body = String(comment.body || "");
+    const hasMarker = body.includes(JOURNAL_MARKER);
+    const configuredApp = comment.app_slug === config.appSlug && comment.app_id === config.appId;
     const record = markedJson(comment.body, JOURNAL_MARKER);
-    if (!record) continue;
+    if (!record) {
+      if (hasMarker && configuredApp) return { ok: false, state: "history-unverifiable", message: "Configured App journal comment carries a malformed marker or JSON payload." };
+      continue;
+    }
     if (record.schema !== JOURNAL_SCHEMA || record.repositoryId !== config.repositoryId || record.workflowId !== config.workflowId || record.appSlug !== config.appSlug || record.appId !== config.appId || comment.app_slug !== config.appSlug || comment.app_id !== config.appId) return { ok: false, state: "history-unverifiable", message: "Journal producer, repository, workflow or schema does not match configuration." };
     const digest = sha256(canonicalJson({ ...record, digest: undefined }));
-    if (record.digest !== digest) return { ok: false, state: "history-unverifiable", message: "Journal record was edited: its digest no longer matches." };
+    if (record.digest !== digest) return { ok: false, state: "history-unverifiable", message: "Journal record content does not match its carried digest." };
     // A matching unkeyed digest catches accidental corruption but is not provenance against a
     // workflow that shares the App identity and can rebuild the chain. A payload the evaluator
     // cannot read is not evidence of an empty round, so a
@@ -129,6 +134,16 @@ function verifyJournal(comments, config) {
   return { ok: true, records };
 }
 
+function recordedFindingEvidence(records, findingId) {
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    const findings = records[index].findings;
+    if (!Array.isArray(findings)) continue;
+    const finding = findings.find((item) => item && item.id === findingId);
+    if (finding && finding.evidence && typeof finding.evidence === "object" && !Array.isArray(finding.evidence)) return finding.evidence;
+  }
+  return null;
+}
+
 function evaluateTrustedReviewLoop({ pull, findings = [], references = [], checks = [], journalComments = [], jobs = [], tombstones = [], genesisEvidence, changedFiles = [], stallsContent = "", diffSignature = "", stagnationLimit = DEFAULT_STAGNATION_LIMIT, config }) {
   if (pull.headRepositoryId !== pull.baseRepositoryId) return { ok: false, state: "fork-refused", message: "Fork pull requests deliberately fail closed: partial evidence is not evaluated." };
   const unreifiedOpen = findings.find((finding) => finding.state === "open" && !finding.reified);
@@ -142,6 +157,10 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
   const tombstonedIds = new Set(tombstones.map((entry) => entry.id));
   const vanished = ((priorRecord && priorRecord.findingIds) || []).filter((id) => !currentIds.has(id) && !tombstonedIds.has(id));
   if (vanished.length > 0) return { ok: false, state: "history-unverifiable", message: `Finding IDs vanished without authorized tombstones: ${vanished.join(", ")}.` };
+  const observedIds = new Set(journal.records.flatMap((record) => record.findingIds || []));
+  const priorIds = new Set((priorRecord && priorRecord.findingIds) || []);
+  const reused = findings.filter((finding) => observedIds.has(finding.id) && !priorIds.has(finding.id)).map((finding) => finding.id);
+  if (reused.length > 0) return { ok: false, state: "history-unverifiable", message: `Retired finding IDs cannot be reused: ${reused.join(", ")}.` };
   const specialAuthorizations = [
     ...(journal.records.length === 0 ? [{ id: "GENESIS", state: "genesis", evidence: genesisEvidence }] : []),
     ...tombstones.map((entry) => ({ ...entry, state: "tombstone" })),
@@ -155,10 +174,9 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
     const matches = jobs.filter((job) => job.name === name);
     return matches.length !== 1 || matches[0].status !== "completed" || matches[0].conclusion !== "success";
   });
-  // Reification is remembered across every surviving record, not just the newest one. Reading
-  // only the newest record left a hole: an authorized tombstone retires an ID without reserving
-  // it, and once a later record had been written without that finding, the ID could return as
-  // advisory with no prior state to contradict it and converge unauthorized.
+  // Reification is remembered across every surviving record, not just the newest one. The
+  // reservation check above rejects IDs that disappear and later return; this separate union
+  // ensures a continuously present finding cannot shed its reified classification either.
   const everReified = new Set();
   for (const record of journal.records) {
     if (!Array.isArray(record.findings)) continue;
@@ -172,8 +190,9 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
     // reifying record still allows an advisory classification to converge.
     const declassified = everReified.has(finding.id) && (!finding.reified || finding.state === ADVISORY);
     if (!["resolved", "dismissed"].includes(finding.state) && !declassified) return finding;
-    const reference = references.find((item) => String(item.id) === String(finding.evidence && finding.evidence.referenceId));
-    const authorization = verifyAuthorization({ finding, reference, pullAuthor: pull.author, targetState: finding.state, repositoryId: config.repositoryId, pullNumber: pull.number });
+    const evidence = recordedFindingEvidence(journal.records, finding.id) || finding.evidence || {};
+    const reference = references.find((item) => String(item.id) === String(evidence.referenceId));
+    const authorization = verifyAuthorization({ finding, reference, pullAuthor: pull.author, targetState: finding.state, repositoryId: config.repositoryId, pullNumber: pull.number, evidence });
     if (!authorization.ok) return { ...finding, reified: true, state: "open", disposalError: authorization.reason };
     if (finding.state === "resolved") {
       const proof = verifyResolvedCheck({ finding, checks, headSha: pull.headSha, config });

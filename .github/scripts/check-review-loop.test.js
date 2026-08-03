@@ -15,6 +15,7 @@ const {
   splitTableRow,
   stallRecordsBlockers,
   DIRECTIVE_MARKER,
+  JOURNAL_MARKER,
   evaluateTrustedReviewLoop,
   journalComment,
   makeJournalRecord,
@@ -471,6 +472,20 @@ test("middle-deleted journal record is history-unverifiable", () => {
   assert.equal(trusted({ journalComments: comments }).state, "history-unverifiable");
 });
 
+test("malformed_app_journal_marker_is_history_unverifiable", () => {
+  const malformed = {
+    id: 999,
+    app_slug: TRUST.appSlug,
+    app_id: TRUST.appId,
+    body: `${JOURNAL_MARKER}{not-json} -->`,
+  };
+  const result = trusted({ journalComments: [...journalFixture(), malformed] });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.state, "history-unverifiable");
+  assert.match(result.message, /malformed marker or JSON/i);
+});
+
 test("limitation_F002_terminal_truncation_undetected", () => {
   const extendedJournal = journalFixture();
   const genuinelyTwoRecordJournal = journalFixture(2);
@@ -492,12 +507,9 @@ test("terminal_truncation_cannot_erase_reification_before_advisory_reclassificat
   assert.equal(truncated.projectedFindings[0].state, "advisory");
 });
 
-// F-023. An authorized tombstone retires an ID; nothing reserved it. The evaluator used to
-// look for the finding's earlier state only in the newest record, so once a post-tombstone
-// record had been written the ID could return as advisory with no prior state to contradict
-// it, no authorization requested, and the pull request converged. Declassification is now
-// judged against every surviving record, not just the last one.
-test("tombstoned_finding_id_cannot_return_as_advisory_without_authorization", () => {
+// F-023. An authorized tombstone retires an ID permanently. Once a later record omits it, the ID
+// cannot return as advisory or in any other classification.
+test("tombstoned_reified_finding_id_cannot_be_reused", () => {
   const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 1, findingIds: ["F-900"], findings: [{ id: "F-900", reified: true, state: "open" }] });
   const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 0, priorDigest: first.digest });
   const third = makeJournalRecord({ ...TRUST, observation: 3, headSha: "ccc", stateHash: "three", blocking: 0, priorDigest: second.digest });
@@ -505,13 +517,39 @@ test("tombstoned_finding_id_cannot_return_as_advisory_without_authorization", ()
   const result = trusted({ journalComments: comments, findings: [{ id: "F-900", reified: false, state: "advisory" }] });
 
   assert.equal(result.ok, false);
-  assert.equal(result.projectedFindings[0].state, "open");
-  assert.equal(result.projectedFindings[0].reified, true);
-  assert.equal(result.projectedFindings[0].disposalError, "authorization reference is unreachable");
+  assert.equal(result.state, "history-unverifiable");
+  assert.match(result.message, /retired finding IDs cannot be reused/i);
 });
 
-// F-027. The digest proves nobody edited the record; it does not prove the record is readable.
-// A record whose findings payload is authentic but malformed used to be skipped, which silently
+test("an_active_advisory_id_is_not_mistaken_for_retired_reuse", () => {
+  const advisory = { id: "F-904", reified: false, state: "advisory" };
+  const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: ["F-904"], findings: [advisory] });
+  const result = trusted({ journalComments: [journalComment(record, TRUST)], findings: [advisory] });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "converged");
+});
+
+test("tombstoned_advisory_id_cannot_be_reused", () => {
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: ["F-902"], findings: [{ id: "F-902", reified: false, state: "advisory" }] });
+  const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 0, priorDigest: first.digest, findingIds: [], findings: [] });
+  const tombstoneBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-902", state: "tombstone", reason: "retire advisory ID" })} -->`;
+  const tombstoneReference = { id: 902, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", body: tombstoneBody };
+  const tombstone = { id: "F-902", evidence: { referenceId: 902, author: "maintainer", bodyDigest: sha256(tombstoneBody) } };
+  const result = trusted({
+    journalComments: [first, second].map((record) => journalComment(record, TRUST)),
+    findings: [{ id: "F-902", reified: false, state: "advisory" }],
+    tombstones: [tombstone],
+    references: [tombstoneReference],
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.state, "history-unverifiable");
+  assert.match(result.message, /retired finding IDs cannot be reused/i);
+});
+
+// F-027. A matching unkeyed digest catches incidental byte edits; it does not prove the record is
+// readable. A record whose findings payload is digest-consistent but malformed used to be skipped, which silently
 // discarded the reification history and reopened the F-023 path underneath the fix for it.
 test("malformed_surviving_findings_record_is_history_unverifiable", () => {
   for (const malformed of ["malformed", {}, 42, undefined]) {
@@ -577,6 +615,25 @@ test("verified disposal requires exact directive, independent authorized author 
   ]) assert.equal(trusted({ findings: [finding], ...changed }).projectedFindings[0].state, "open");
 });
 
+test("edited_authorization_cannot_regain_force_by_updating_head_digest", () => {
+  const originalBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-903", state: "dismissed", reason: "original decision" })} -->`;
+  const originalEvidence = { referenceId: 903, author: "maintainer", bodyDigest: sha256(originalBody) };
+  const recordedFinding = { id: "F-903", reified: true, state: "dismissed", evidence: originalEvidence };
+  const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: ["F-903"], findings: [recordedFinding] });
+  const editedBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-903", state: "dismissed", reason: "edited decision" })} -->`;
+  const editedEvidence = { ...originalEvidence, bodyDigest: sha256(editedBody) };
+  const reference = { id: 903, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", body: editedBody };
+  const result = trusted({
+    journalComments: [journalComment(record, TRUST)],
+    findings: [{ ...recordedFinding, evidence: editedEvidence }],
+    references: [reference],
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.projectedFindings[0].state, "open");
+  assert.match(result.projectedFindings[0].disposalError, /body digest does not match/i);
+});
+
 test("disposal_reference_from_another_pull_request_or_repository_is_refused", () => {
   const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-013", state: "dismissed", reason: "authorized" })} -->`;
   const finding = { id: "F-013", reified: true, state: "dismissed", evidence: { referenceId: 91, author: "maintainer", bodyDigest: sha256(body) } };
@@ -623,6 +680,20 @@ test("trusted_adapter_paginates_checks_and_fails_closed_on_malformed_metadata_or
   assert.match(workflow, /github\.paginate\(github\.rest\.checks\.listForRef/);
   assert.match(workflow, /Malformed trusted review-loop metadata/);
   assert.match(workflow, /Unable to verify workflow identity for check run/);
+});
+
+test("trusted_workflow_ignores_push_runs", () => {
+  const workflow = fs.readFileSync(".github/workflows/review-loop-evaluator.yml", "utf8");
+  assert.match(workflow, /run\.event !== 'pull_request'/);
+  assert.match(workflow, /Only pull_request workflow runs are review rounds/);
+});
+
+test("trusted_workflow_serializes_each_pull_and_appends_once_per_run_attempt", () => {
+  const workflow = fs.readFileSync(".github/workflows/review-loop-evaluator.yml", "utf8");
+  assert.match(workflow, /^concurrency:\n  group: review-loop-\$\{\{ github\.event\.workflow_run\.pull_requests\[0\]\.number \}\}\n  cancel-in-progress: false$/m);
+  assert.match(workflow, /runAttempt: run\.run_attempt/);
+  assert.match(workflow, /record\.runId === run\.id && record\.runAttempt === run\.run_attempt/);
+  assert.match(workflow, /Journal observation already exists for this workflow run attempt/);
 });
 
 test("only named required jobs with positive success converge; forks fail closed", () => {

@@ -5,6 +5,10 @@ on:
     workflows: [CI]
     types: [completed]
 
+concurrency:
+  group: review-loop-${{ github.event.workflow_run.pull_requests[0].number }}
+  cancel-in-progress: false
+
 permissions:
   actions: read
   checks: write
@@ -38,6 +42,7 @@ jobs:
             }, { filename: 'default-branch/check-review-loop.js' });
             const evaluator = module.exports;
             const run = context.payload.workflow_run;
+            if (run.event !== 'pull_request') return core.info('Only pull_request workflow runs are review rounds; this run was ignored.');
             const configuredCiWorkflowId = Number(process.env.CI_WORKFLOW_ID);
             if (!Number.isSafeInteger(configuredCiWorkflowId) || run.workflow_id !== configuredCiWorkflowId) {
               core.setFailed('Triggering workflow does not match the configured CI_WORKFLOW_ID repository variable.');
@@ -97,7 +102,7 @@ jobs:
               core.setFailed('A referenced resolution check does not match the configured CI_WORKFLOW_ID repository variable.');
               return;
             }
-            const config = { repositoryId: repository.id, repository: repository.full_name, pullNumber: pull.number, workflowId: configuredCiWorkflowId, runId: run.id, appSlug: 'github-actions', appId: 15368 };
+            const config = { repositoryId: repository.id, repository: repository.full_name, pullNumber: pull.number, workflowId: configuredCiWorkflowId, runId: run.id, runAttempt: run.run_attempt, appSlug: 'github-actions', appId: 15368 };
             const result = evaluator.evaluateTrustedReviewLoop({
               pull: { number: pull.number, author: pull.user.login, headSha: pull.head.sha, headRepositoryId: pull.head.repo.id, baseRepositoryId: pull.base.repo.id },
               findings, references, checks: mappedChecks,
@@ -109,6 +114,9 @@ jobs:
             if (['history-unverifiable', 'fork-refused'].includes(result.state)) {
               core.setFailed(result.message);
               return;
+            }
+            if ((result.records || []).some((record) => record.runId === run.id && record.runAttempt === run.run_attempt)) {
+              return core.info('Journal observation already exists for this workflow run attempt; no duplicate was appended.');
             }
             const prior = result.records && result.records[result.records.length - 1];
             const record = evaluator.makeJournalRecord({ ...config, observation: prior ? prior.observation + 1 : 1, priorDigest: prior ? prior.digest : null, headSha: pull.head.sha, findingIds: (result.projectedFindings || []).map((finding) => finding.id), findings: result.projectedFindings || [], stateHash: result.currentHash, blocking: result.blocking });

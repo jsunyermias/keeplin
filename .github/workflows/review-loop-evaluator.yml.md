@@ -5,7 +5,8 @@
 This default-branch `workflow_run` workflow is the authoritative evaluator required by
 [ADR 0008](../../docs/adr/0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md).
 It correlates the completed unprivileged CI run to exactly one open pull request and reads all
-pull-request content and evidence through GitHub APIs.
+pull-request content and evidence through GitHub APIs. Only a completed run whose event is
+`pull_request` counts as a review round; the same CI workflow's `push` runs are ignored.
 
 The repository variable `CI_WORKFLOW_ID` must contain the numeric database ID of this
 repository's `CI` workflow. The evaluator rejects a triggering run or referenced resolution
@@ -30,6 +31,12 @@ marker also fails explicitly; absence alone retains the empty-metadata default.
 The job alone receives `issues: write` and `checks: write`, used to append one digest-chained
 journal comment and create the current result check. Contents, actions and pull-request access
 are read-only. Forks deliberately fail closed because the policy refuses partial evidence.
+
+Workflow concurrency is grouped by pull-request number with cancellation disabled, so two
+completed runs for one pull request cannot append sibling observations from the same predecessor.
+Each record also carries the originating workflow run ID and attempt. Before appending, the
+evaluator refuses to write a second observation for a run/attempt pair already present in the
+verified journal, making delivery retries idempotent.
 
 ## Bounded journal claim
 

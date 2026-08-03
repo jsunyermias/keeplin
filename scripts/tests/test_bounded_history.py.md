@@ -4,14 +4,19 @@
 
 `scripts/check-bounded-history.sh` enforces that three surfaces carry one canonical sentence
 verbatim. A check of that kind is only worth its exit status if it fails on the defect it
-names, so these tests gut fixture copies in the ways a careless edit or a deliberate weakening
-would, and require a non-zero exit for each.
+names. The negative tests gut fixture copies in the ways a careless edit or a deliberate
+weakening would and require a non-zero exit; the positive tests prove that the checked-in
+repository, intact fixtures, ordinary visible prose and harmless line wrapping still pass.
 
 | Test | What it pins |
 |------|--------------|
 | `test_the_real_repository_passes` | the checked-in surfaces satisfy the rule right now |
 | `test_intact_fixtures_pass` | the fixtures are a valid baseline, so a failure below is the mutation and not the harness |
 | `test_line_wrapping_does_not_matter` | the sentence may wrap across lines; formatting is not the contract |
+| `test_an_html_comment_does_not_satisfy_the_check` | hiding the sentence in an HTML comment is not a visible policy statement and fails |
+| `test_a_fenced_code_block_does_not_satisfy_the_check` | a fenced example does not satisfy the visible-prose requirement |
+| `test_an_indented_code_block_does_not_satisfy_the_check` | an indented code example does not satisfy the visible-prose requirement |
+| `test_normal_prose_still_satisfies_the_check` | the same sentence in ordinary prose remains a valid positive fixture |
 | `test_a_glossary_of_the_words_does_not_satisfy_the_check` | the exact hole round 10 found in the previous substring implementation: delete the bounded-history prose, leave `Glossary: truncation, reification, advisory.`, and the old check stayed green |
 | `test_a_weakened_sentence_does_not_satisfy_the_check` | hedging `is not detected` into `may not always be detected` turns a stated limit back into a promise |
 | `test_dropping_the_consequence_does_not_satisfy_the_check` | stating the limit without what it costs is the same defect in shorter form |
@@ -21,9 +26,9 @@ would, and require a non-zero exit for each.
 ## Fixtures
 
 Built in a temporary directory per test, not checked in: three files, each containing the
-canonical sentence surrounded by filler prose. The tests mutate copies only. The suite runs the
-real script through `subprocess` against those roots, which is why the script takes a root
-argument at all.
+canonical sentence surrounded by filler prose. Negative tests mutate copies; positive tests read
+an intact fixture or the real repository without changing it. The suite runs the real script
+through `subprocess` against those roots, which is why the script takes a root argument at all.
 
 ## Run
 

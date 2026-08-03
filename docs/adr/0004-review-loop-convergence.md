@@ -18,6 +18,12 @@ it constrains can edit, and no later design has closed truncation either. Read t
 "is detected when the loop's own record is intact". The bounded claim is stated in
 [0008](0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md).
 
+**Correction, 2026-08-03** (metadata only; the cross-repository decision is unchanged). Read the
+Equivalent-decision claim that “the prompts” are byte-identical with one repository-specific
+exception: instruction 5 of `docs/prompts/0.A-prompt-comun.md`. `keeplin` owns and names its local
+`docs/adr/0000-template.md`; `keeplin-srv` correctly directs readers through its ADR registry to
+that canonical template. The remaining bytes of 0.A and every other shared prompt are identical.
+
 ## Context and problem
 
 The implementation↔review loop defined in `AGENTS.md` ("Workflow and review independence")
