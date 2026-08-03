@@ -17,30 +17,28 @@
 const fs = require('fs');
 const path = require('path');
 
-const argv = process.argv.slice(2);
-const PRIOR = [];
 // The documentation told operators to "drop the whole-file section" for a
 // browser reviewer and pointed at a byte cap that does no such thing. When the
 // change rewrites the files it touches, the diff and the post-change text are
 // nearly the same bytes twice, and the pair overflows the chat.
-const NO_FILES = argv.includes('--no-files');
-let OUT_NAME = 'prompt.txt';
-const positional = [];
-for (let i = 0; i < argv.length; i++) {
-  if (argv[i] === '--prior') {
-    // Bounded to the two blind reviews. Consuming greedily swallowed the
-    // positional meta.md when it followed the flag, and it was then attached
-    // as a third "prior review" instead of the objective.
-    while (PRIOR.length < 2 && argv[i + 1] && !argv[i + 1].startsWith('--')) {
-      PRIOR.push(argv[++i]);
-    }
-  } else if (argv[i] === '--out') {
-    OUT_NAME = argv[++i];
-  } else {
-    positional.push(argv[i]);
-  }
-}
-const [DIR, CHECKLIST, META] = positional;
+const { parse } = require('./args');
+
+const ARGS = parse(process.argv.slice(2), {
+  name: 'build-prompt.js',
+  positionals: ['collect-dir', 'checklist.md'],
+  optionalPositionals: ['meta.md'],
+  flags: { 'no-files': {} },
+  options: { prior: { repeat: true }, out: {} },
+  usage: 'build-prompt.js <collect-dir> <checklist.md> [meta.md] '
+    + '[--prior <review.md>]... [--out <name>] [--no-files]',
+});
+const NO_FILES = ARGS.noFiles;
+// Bounded to the two blind reviews, and now stated rather than achieved by a
+// loop that stopped consuming: the old form swallowed the positional meta.md
+// when it followed the flag and attached it as a third "prior review".
+const PRIOR = ARGS.prior;
+const OUT_NAME = ARGS.out || 'prompt.txt';
+const [DIR, CHECKLIST, META] = ARGS.positional;
 
 // Past this the diff starts crowding out the checklist in the model's
 // attention, and a reviewer that skims is worse than one that declines.
@@ -57,8 +55,23 @@ const PHRASE = process.env.REVIEW_PHRASE || 'REVISION-COMPLETADA-SIN-BLOQUEANTES
 const read = (p) => fs.readFileSync(p, 'utf8');
 
 (() => {
-  if (!DIR || !CHECKLIST) {
-    throw new Error('usage: node build-prompt.js <collect-dir> <checklist.md> [meta.md]');
+  if (PRIOR.length > 2) {
+    throw new Error(
+      `--prior takes at most the two blind reviews, got ${PRIOR.length}. The adjudicator's ` +
+      'job is to resolve those two, not to read an unbounded pile.'
+    );
+  }
+  for (const p of [CHECKLIST, ...PRIOR]) {
+    if (!fs.existsSync(p)) throw new Error(`no such file: ${p}`);
+  }
+  // A mistyped meta.md used to be indistinguishable from "no objective was
+  // asked for": the prompt was built without it, silently, contradicting the
+  // contract that says the objective always travels.
+  if (META && !fs.existsSync(META)) {
+    throw new Error(
+      `no such objective file: ${META}. It was asked for, so it must be readable — building ` +
+      'the prompt without it would send reviewers a change with no stated purpose.'
+    );
   }
 
   const diff = read(path.join(DIR, 'diff.patch'));
@@ -80,7 +93,17 @@ const read = (p) => fs.readFileSync(p, 'utf8');
     );
   }
   const info = read(infoPath);
-  const captured = Number((info.match(/^files_captured:\s*(\d+)$/m) || [])[1]);
+  // A malformed collect.info used to disable its own check: no files_captured
+  // line meant NaN, Number.isInteger(NaN) is false, and the comparison below
+  // was skipped entirely. The presence of the file then proved nothing.
+  const capturedLines = info.split('\n').filter((l) => /^files_captured:/.test(l));
+  if (capturedLines.length !== 1 || !/^files_captured:\s*\d+$/.test(capturedLines[0])) {
+    throw new Error(
+      `${infoPath} has no single valid "files_captured: <n>" line, so it cannot vouch for the ` +
+      'package. Rerun collect.js rather than trusting a manifest that does not parse.'
+    );
+  }
+  const captured = Number(capturedLines[0].match(/^files_captured:\s*(\d+)$/)[1]);
   const area = (info.match(/^area:\s*(.+)$/m) || [])[1];
   const partial = area && area !== '(whole pull request)' ? area.trim() : null;
 
@@ -101,7 +124,7 @@ const read = (p) => fs.readFileSync(p, 'utf8');
     filesSection += `\n### ${f}\n\n\`\`\`\n${body}\n\`\`\`\n`;
   }
 
-  if (Number.isInteger(captured) && embedded + skipped.length !== captured) {
+  if (embedded + skipped.length !== captured) {
     throw new Error(
       `collect.info records ${captured} captured file(s) but only ${embedded + skipped.length} ` +
       'could be read back. The package is incomplete; rerun collect.js rather than sending a ' +
@@ -186,17 +209,23 @@ const read = (p) => fs.readFileSync(p, 'utf8');
   } else if (changed.length) {
     // Silence here reads as "there was nothing to add". Say it outright, so a
     // reviewer knows which of its conclusions rest on the diff alone — and say
-    // which of the two reasons applies, because "deliberately omitted to fit"
-    // and "the package never had them" call for different suspicion.
+    // which reason applies, because they call for different suspicion. There
+    // are three, and collapsing them told reviewers a change "only deletes
+    // files" when in fact every file had been dropped for size.
+    let why;
+    if (NO_FILES) {
+      why = 'No se adjunta el texto completo de los ficheros: se ha omitido a propósito para '
+        + 'que el prompt quepa. El diff de este cambio reescribe casi por completo lo que toca, '
+        + 'así que tienes el estado resultante a la vista.';
+    } else if (skipped.length) {
+      why = 'No se adjunta el texto completo de ningún fichero: todos superaban el presupuesto '
+        + `de tamaño. Son: ${skipped.join(', ')}. Júzgalos solo por el diff.`;
+    } else {
+      why = 'No se adjunta el texto completo de ningún fichero: este cambio solo borra '
+        + 'ficheros. Juzga únicamente por el diff.';
+    }
     parts.push(
-      '---',
-      '',
-      NO_FILES
-        ? 'No se adjunta el texto completo de los ficheros: se ha omitido a propósito para que ' +
-          'el prompt quepa. El diff de este cambio reescribe casi por completo lo que toca, así ' +
-          'que tienes el estado resultante a la vista.'
-        : 'No se adjunta el texto completo de ningún fichero: este cambio solo borra ficheros. ' +
-          'Juzga únicamente por el diff.',
+      '---', '', why,
       'Di explícitamente qué no has podido verificar por esta razón.',
       ''
     );

@@ -31,25 +31,35 @@ const path = require('path');
 const ROTATING = ['kimi', 'codex'];
 const FIXED_REVIEWERS = ['qwen', 'glm'];
 
-const argv = process.argv.slice(2);
-const dirAt = argv.indexOf('--dir');
-const DIR = dirAt === -1 ? null : argv[dirAt + 1];
-// The guard on dirAt matters: with --dir absent, dirAt is -1 and `i !== dirAt+1`
-// silently discards argv[0], so `roles.js 197` reported the pull request number
-// as missing. The documented one-liner had never worked.
-const positional = argv.filter((a, i) => !a.startsWith('--') && (dirAt === -1 || i !== dirAt + 1));
-const PR = Number(positional[0]);
-const OVERRIDE = positional[1];
+const { parse } = require('./args');
+
+const ARGS = parse(process.argv.slice(2), {
+  name: 'roles.js',
+  positionals: ['pr-number'],
+  optionalPositionals: ['implementer'],
+  options: { dir: {} },
+  usage: 'roles.js <pr-number> --dir <review-package> [implementer]',
+});
+// The implementer is optional, so it is accepted as a trailing positional the
+// spec does not require; parse() would reject an extra one, hence the explicit
+// second slot below.
+const PR = Number(ARGS.positional[0]);
+const DIR = ARGS.dir;
+// Names are compared, so they are normalised first. Without this, `Codex` was
+// not equal to `codex`: it was recorded as an implementer from outside the
+// rotation, and parity then handed adjudication to codex — the same family
+// judging its own work, which is the one thing the assignment exists to stop.
+const OVERRIDE = ARGS.positional[1] ? ARGS.positional[1].trim().toLowerCase() : undefined;
 
 (() => {
   if (!Number.isInteger(PR) || PR < 1) {
     throw new Error(`pull request number must be an integer >= 1, got "${positional[0]}"`);
   }
-  if (!DIR || DIR.startsWith('--')) {
+  if (!DIR) {
     throw new Error(
-      'usage: node roles.js <pr-number> --dir <review-package> [implementer]. ' +
       '--dir is required: it is what makes the assignment stick to this review rather ' +
-      'than to whichever directory the command was run from.'
+      'than to whichever directory the command was run from.\n' +
+      'usage: node roles.js <pr-number> --dir <review-package> [implementer]'
     );
   }
   if (!fs.existsSync(DIR)) {

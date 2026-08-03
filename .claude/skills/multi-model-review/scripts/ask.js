@@ -13,13 +13,16 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const argv = process.argv.slice(2);
-const prAt = argv.indexOf('--pr');
-const PR = prAt === -1 ? undefined : argv[prAt + 1];
-// The prAt guard is not cosmetic: with --pr absent, prAt is -1 and `i !== prAt+1`
-// would drop argv[0], the reviewer name.
-const [REVIEWER, PROMPT, OUT] =
-  argv.filter((a, i) => !a.startsWith('--') && (prAt === -1 || i !== prAt + 1));
+const { parse } = require('./args');
+
+const ARGS = parse(process.argv.slice(2), {
+  name: 'ask.js',
+  positionals: ['reviewer', 'prompt-file', 'out-file'],
+  options: { pr: { integer: true } },
+  usage: 'ask.js <qwen|glm|kimi|codex> <prompt-file> <out-file> [--pr N]',
+});
+const [REVIEWER, PROMPT, OUT] = ARGS.positional;
+const PR = ARGS.pr;
 
 // A driver that hangs would hang the pipeline with it: spawnSync blocks and
 // there is nothing to report. Bound it, and say plainly that a timeout is not
@@ -52,15 +55,17 @@ const DRIVERS = {
 };
 
 (() => {
-  if (!REVIEWER || !PROMPT || !OUT) {
-    throw new Error(
-      'usage: node ask.js <qwen|glm|kimi|codex> <prompt-file> <out-file> [--pr N]'
-    );
-  }
   if (!fs.existsSync(PROMPT)) throw new Error(`no such prompt file: ${PROMPT}`);
   if (!MODELS[REVIEWER]) throw new Error(`unknown reviewer: ${REVIEWER}`);
-  if (PR !== undefined && !/^\d+$/.test(PR)) {
-    throw new Error(`--pr must be a number, got "${PR}"`);
+
+  // Clear any previous review at this path before running. Otherwise a rerun
+  // that fails leaves the earlier run's file and .meta.json in place, and both
+  // still look valid: a clean review of an older state of the same pull
+  // request, ready for the gate to close a cycle on code that has since
+  // changed. Removing them first means a failed run leaves no review at all,
+  // which is the truth.
+  for (const stale of [OUT, `${OUT}.meta.json`, `${OUT}.err`]) {
+    if (fs.existsSync(stale)) fs.rmSync(stale);
   }
 
   // Fail in a second rather than after ten minutes of driving a browser to a
@@ -130,11 +135,25 @@ const DRIVERS = {
   // verdict in it. Both mean the run failed — a stall, a truncation, a driver
   // that returned its own banner — and the worst outcome for a review gate is a
   // failure that reads like "looked, found nothing".
-  const verdictLine = (stdout.match(/^VEREDICTO:.*$/m) || [])[0];
-  if (!stdout.trim() || !verdictLine) {
+  // The prompt asks for one of exactly three verdicts, as the first line. Any
+  // line beginning "VEREDICTO:" used to satisfy this — including the prompt's
+  // own line listing the options, which these UIs echo back, and including
+  // "VEREDICTO: cualquier cosa". A reply that echoes the instructions is not a
+  // review, and publishing it would put it in front of the adjudicator as one.
+  const VERDICTS = ['BLOQUEANTE', 'OBSERVACIONES', 'SIN HALLAZGOS'];
+  const body = stdout.replace(/\r\n?/g, '\n');
+  const first = body.split('\n').find((l) => l.trim() !== '') || '';
+  const declared = (first.match(/^\s*VEREDICTO:\s*(.+?)\s*$/) || [])[1];
+  const verdictLine = declared && VERDICTS.includes(declared.toUpperCase())
+    ? `VEREDICTO: ${declared.toUpperCase()}`
+    : null;
+
+  if (!verdictLine) {
     throw new Error(
-      `${REVIEWER} produced no verdict line (${Buffer.byteLength(stdout)} bytes). That is a ` +
-      `failed run, not a clean review — the reply is in ${OUT}.raw. Rerun it, or split the prompt.`
+      `${REVIEWER} did not open with one of ${VERDICTS.join(' | ')} ` +
+      `(${Buffer.byteLength(stdout)} bytes, first line: ${JSON.stringify(first.slice(0, 80))}). ` +
+      `That is a failed run, not a clean review — the reply is in ${OUT}.raw. ` +
+      'Rerun it, or split the prompt.'
     );
   }
 

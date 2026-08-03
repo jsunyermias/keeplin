@@ -18,31 +18,34 @@ const { execFileSync } = require('child_process');
 // should be split along: this skill's own tests live in a single file beside
 // the scripts they cover, so "the write path and its tests" is a set of paths,
 // not a directory.
-const argv = process.argv.slice(2);
-const AREAS = [];
-const consumed = new Set();
-argv.forEach((a, i) => {
-  if (a === '--area') {
-    consumed.add(i);
-    if (argv[i + 1] && !argv[i + 1].startsWith('--')) {
-      AREAS.push(argv[i + 1]);
-      consumed.add(i + 1);
-    }
-  }
+const { parse } = require('./args');
+
+const ARGS = parse(process.argv.slice(2), {
+  name: 'collect.js',
+  positionals: ['repo-path', 'pr-number', 'out-dir'],
+  options: { area: { repeat: true } },
+  usage: 'collect.js <repo-path> <pr-number> <out-dir> [--area <path>]...',
 });
-const [REPO, PR, OUT] = argv.filter((a, i) => !a.startsWith('--') && !consumed.has(i));
+const AREAS = ARGS.area;
+const [REPO, PR, OUT] = ARGS.positional;
 
 (() => {
-  if (!REPO || !PR || !OUT) {
-    throw new Error(
-      'usage: node collect.js <repo-path> <pr-number> <out-dir> [--area <path>]...'
-    );
-  }
-  if (argv.includes('--area') && AREAS.length !== argv.filter((a) => a === '--area').length) {
-    throw new Error('--area needs a path');
-  }
   const AREA = AREAS.length ? AREAS.join(' ') : null;
   if (!/^\d+$/.test(PR)) throw new Error(`pull request number must be numeric, got "${PR}"`);
+
+  // A package is assembled fresh or not at all. Reusing a directory left
+  // files/ and context/ from a previous run in place, so a capture from another
+  // area, another commit or another pull request survived into this one while
+  // files_captured counted only the new writes — a package whose own manifest
+  // contradicted its contents, and a way for out-of-scope material to reach a
+  // reviewer.
+  if (fs.existsSync(OUT) && fs.readdirSync(OUT).length) {
+    throw new Error(
+      `${OUT} is not empty. A review package is assembled fresh: leftovers from an earlier run ` +
+      'would travel alongside this change as though they were part of it. Remove it or name a ' +
+      'new directory.'
+    );
+  }
 
   const git = (args, opts = {}) =>
     execFileSync('git', args, { cwd: REPO, maxBuffer: 256 * 1024 * 1024, ...opts });

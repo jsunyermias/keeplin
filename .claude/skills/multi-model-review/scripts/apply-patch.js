@@ -14,16 +14,45 @@ const path = require('path');
 const os = require('os');
 const { execFileSync } = require('child_process');
 
-const argv = process.argv.slice(2);
-const CHECK = argv.includes('--check');
-const [REPO, REPLY] = argv.filter((a) => !a.startsWith('--'));
+const { parse } = require('./args');
+
+const ARGS = parse(process.argv.slice(2), {
+  name: 'apply-patch.js',
+  positionals: ['repo-path', 'reply-file'],
+  flags: { check: {} },
+  usage: 'apply-patch.js <repo-path> <reply-file> [--check]',
+});
+const CHECK = ARGS.check;
+const [REPO, REPLY] = ARGS.positional;
 
 // A chat reply wraps the patch in a fence and pads it with prose. Take the
 // largest fenced block that looks like a diff; if there is no fence, assume the
 // whole reply is the patch.
+// Fences are matched as whole lines, never as a substring. The old expression
+// closed on the first ``` anywhere in the text, and a patch that adds a
+// Markdown code block contains lines like "+```" — so the capture ended inside
+// the diff. What came out was a shorter patch that --recount could still turn
+// into something git would apply: a silent, partial write reported as success.
+// That is worse than a refusal, so the close must be a line of its own.
+function fencedBlocks(text) {
+  const lines = text.split('\n');
+  const blocks = [];
+  let open = null;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (open === null) {
+      if (/^\s*```(diff|patch)?\s*$/.test(line)) open = i;
+    } else if (/^\s*```\s*$/.test(line)) {
+      blocks.push(lines.slice(open + 1, i).join('\n'));
+      open = null;
+    }
+  }
+  return blocks;
+}
+
 function extractPatch(text) {
-  const fences = [...text.matchAll(/```(?:diff|patch)?\n([\s\S]*?)```/g)].map((m) => m[1]);
-  const candidates = fences.filter((f) => /^(diff --git|--- |\+\+\+ |@@ )/m.test(f));
+  const candidates = fencedBlocks(text)
+    .filter((f) => /^(diff --git|--- |\+\+\+ |@@ )/m.test(f));
   if (candidates.length) return trimToPatch(candidates.sort((a, b) => b.length - a.length)[0]);
   if (/^(diff --git|@@ )/m.test(text)) return trimToPatch(text);
   return null;
@@ -68,10 +97,6 @@ function trimToPatch(block) {
 
 
 (() => {
-  if (!REPO || !REPLY) {
-    throw new Error('usage: node apply-patch.js <repo-path> <reply-file> [--check]');
-  }
-
   const patch = extractPatch(fs.readFileSync(REPLY, 'utf8'));
   if (!patch) {
     throw new Error(

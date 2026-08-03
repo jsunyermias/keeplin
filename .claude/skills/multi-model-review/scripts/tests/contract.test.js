@@ -37,26 +37,52 @@ function tmpFile(name, body) {
   return p;
 }
 
+// Every gate test goes through --roles, because --roles is mandatory. It was
+// optional until an adjudicator pointed out that these very tests proved it:
+// they called the gate without it and demanded exit 0, so the suite was
+// certifying the silent mode in which nothing checks who wrote the review.
+function gated(body, { reviewer, pr = 197 } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-gate-'));
+  const roles = JSON.parse(run('roles.js', [String(pr), 'claude', '--dir', dir]).stdout);
+  const review = path.join(dir, 'review.md');
+  fs.writeFileSync(review, body);
+  fs.writeFileSync(`${review}.meta.json`,
+    JSON.stringify({ reviewer: reviewer || roles.adjudicator, pr }));
+  return { dir, review, roles, args: ['--roles', path.join(dir, `roles-pr${pr}.json`)] };
+}
+
 test('gate clears only when both signals agree', () => {
-  const ok = tmpFile('r.md', `VEREDICTO: SIN HALLAZGOS\n\nTodo correcto.\n\n${PHRASE}\n`);
-  const r = run('gate.js', [ok]);
-  assert.strictEqual(r.code, 0);
+  const g = gated(`VEREDICTO: SIN HALLAZGOS\n\nTodo correcto.\n\n${PHRASE}\n`);
+  const r = run('gate.js', [g.review, ...g.args]);
+  assert.strictEqual(r.code, 0, r.stderr);
   assert.strictEqual(JSON.parse(r.stdout).cleared, true);
+});
+
+test('gate refuses a clean verdict with no phrase', () => {
+  // The other half of the conjunction. Only the phrase-without-verdict side
+  // was pinned, so half the rule rested on nothing.
+  const g = gated('VEREDICTO: SIN HALLAZGOS\n\nTodo correcto.\n');
+  const r = run('gate.js', [g.review, ...g.args]);
+  assert.strictEqual(r.code, 1);
+  const out = JSON.parse(r.stdout);
+  assert.strictEqual(out.cleared, false);
+  assert.strictEqual(out.phrase_present, false);
+  assert.match(r.stderr, /is absent/);
 });
 
 test('gate refuses a blocking verdict even when the phrase is present', () => {
   // This is the real case that occurred: the diff contains the phrase, so the
   // adjudicator reproduced it while blocking.
-  const f = tmpFile('r.md', `VEREDICTO: BLOQUEANTE\n\nHay problemas.\n\n${PHRASE}\n`);
-  const r = run('gate.js', [f]);
+  const g = gated(`VEREDICTO: BLOQUEANTE\n\nHay problemas.\n\n${PHRASE}\n`);
+  const r = run('gate.js', [g.review, ...g.args]);
   assert.strictEqual(r.code, 1);
   assert.strictEqual(JSON.parse(r.stdout).cleared, false);
 });
 
 test('gate treats a quoted phrase as a quotation, not a declaration', () => {
-  const f = tmpFile('r.md',
+  const g = gated(
     `VEREDICTO: SIN HALLAZGOS\n\nEl gate exige ${PHRASE} al final.\n\nFin del análisis.\n`);
-  const r = run('gate.js', [f]);
+  const r = run('gate.js', [g.review, ...g.args]);
   assert.strictEqual(r.code, 1);
   const out = JSON.parse(r.stdout);
   assert.strictEqual(out.cleared, false);
@@ -64,22 +90,67 @@ test('gate treats a quoted phrase as a quotation, not a declaration', () => {
 });
 
 test('gate refuses when the phrase is repeated', () => {
-  const f = tmpFile('r.md',
-    `VEREDICTO: SIN HALLAZGOS\n\nCito ${PHRASE} aquí.\n\n${PHRASE}\n`);
-  assert.strictEqual(run('gate.js', [f]).code, 1);
+  const g = gated(`VEREDICTO: SIN HALLAZGOS\n\nCito ${PHRASE} aquí.\n\n${PHRASE}\n`);
+  assert.strictEqual(run('gate.js', [g.review, ...g.args]).code, 1);
+});
+
+test('gate refuses a phrase that is not the exact final line', () => {
+  // The contract says exactly, alone. Trimming every line first meant padded
+  // whitespace still counted as exact, so the check was looser than the rule
+  // the reviewers are given.
+  const g = gated(`VEREDICTO: SIN HALLAZGOS\n\nTodo correcto.\n\n   ${PHRASE}   \n`);
+  const r = run('gate.js', [g.review, ...g.args]);
+  assert.strictEqual(r.code, 1);
+  assert.strictEqual(JSON.parse(r.stdout).cleared, false);
 });
 
 test('gate reports a missing verdict as a failed review, not a clean one', () => {
-  const f = tmpFile('r.md', 'el revisor se cayó a media respuesta\n');
-  const r = run('gate.js', [f]);
+  const g = gated('el revisor se cayó a media respuesta\n');
+  const r = run('gate.js', [g.review, ...g.args]);
   assert.strictEqual(r.code, 1);
   assert.strictEqual(JSON.parse(r.stdout).verdict, null);
   assert.match(r.stderr, /not the same as a clean review/);
 });
 
 test('gate stops at the cycle cap with a distinct exit code', () => {
-  const f = tmpFile('r.md', 'VEREDICTO: BLOQUEANTE\n');
-  assert.strictEqual(run('gate.js', [f, '--cycle', '5', '--max-cycles', '5']).code, 2);
+  const g = gated('VEREDICTO: BLOQUEANTE\n');
+  assert.strictEqual(
+    run('gate.js', [g.review, ...g.args, '--cycle', '5', '--max-cycles', '5']).code, 2);
+});
+
+test('gate refuses to run at all without --roles', () => {
+  // Not a style preference: while the identity check sat behind `if (ROLES)`,
+  // forgetting the flag disabled it entirely and a clean review from the
+  // implementer closed the cycle.
+  const g = gated(`VEREDICTO: SIN HALLAZGOS\n\n${PHRASE}\n`);
+  const r = run('gate.js', [g.review]);
+  assert.strictEqual(r.code, 2);
+  assert.match(r.stderr, /--roles is required/);
+});
+
+test('gate does not mistake a flag value for the review path', () => {
+  // `gate.js --cycle 1 --roles r.json review.md` used to judge a file named "1".
+  const g = gated(`VEREDICTO: SIN HALLAZGOS\n\n${PHRASE}\n`);
+  const r = run('gate.js', ['--cycle', '1', ...g.args, g.review]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.strictEqual(JSON.parse(r.stdout).file, g.review);
+});
+
+test('gate treats a corrupt artefact as misuse, not as another cycle', () => {
+  // Exit 1 means "run another cycle". An unreadable roles file is not that.
+  const g = gated(`VEREDICTO: SIN HALLAZGOS\n\n${PHRASE}\n`);
+  fs.writeFileSync(path.join(g.dir, 'roles-pr197.json'), '{ esto no es json');
+  const r = run('gate.js', [g.review, ...g.args]);
+  assert.strictEqual(r.code, 2);
+  assert.match(r.stderr, /not valid JSON/);
+});
+
+test('gate refuses a review from a blind reviewer acting as adjudicator', () => {
+  // qwen and glm never adjudicate. Nothing pinned that.
+  const g = gated(`VEREDICTO: SIN HALLAZGOS\n\n${PHRASE}\n`, { reviewer: 'qwen' });
+  const r = run('gate.js', [g.review, ...g.args]);
+  assert.strictEqual(r.code, 2);
+  assert.match(r.stderr, /assigns adjudication to/);
 });
 
 test('the adjudicator is never the implementer', () => {
@@ -175,7 +246,7 @@ test('ask refuses a reply with no verdict line', () => {
     { env: stubCodex('cat >/dev/null; echo "model: GLM-5.2"') });
 
   assert.strictEqual(r.code, 1);
-  assert.match(r.stderr, /no verdict line/);
+  assert.match(r.stderr, /did not open with one of/);
   assert.ok(!fs.existsSync(out), 'no file may appear at the reviewer path');
   assert.ok(!fs.existsSync(`${out}.meta.json`), 'and it must not be attributed');
   // The reply is still kept, or there is nothing to diagnose the stall with.
@@ -207,6 +278,170 @@ test('ask records the reviewer and pull request of a real review', () => {
   const meta = JSON.parse(fs.readFileSync(`${out}.meta.json`, 'utf8'));
   assert.strictEqual(meta.reviewer, 'codex');
   assert.strictEqual(meta.pr, 197);
+  // The file build-prompt and gate will actually consume, not just stdout and
+  // metadata — the positive path has to pin what downstream reads.
+  assert.strictEqual(fs.readFileSync(out, 'utf8'), 'VEREDICTO: OBSERVACIONES\n\nUn hallazgo.\n');
+  assert.strictEqual(fs.readFileSync(`${out}.raw`, 'utf8'),
+    'VEREDICTO: OBSERVACIONES\n\nUn hallazgo.\n');
+});
+
+test('a mistyped flag is refused, never treated as absent', () => {
+  // The parsers dropped anything starting with --, so `--chek` vanished and
+  // CHECK stayed false: a request to dry-run performed the real write. Every
+  // command that mutates something is checked here, not just the one where it
+  // was noticed.
+  const repo = gitRepo({ 'src.js': 'const a = 1;\n' });
+  const filesReply = tmpFile('reply.md', 'FICHERO: src.js\n```\nPISADO\n```\n');
+  const patchReply = tmpFile('p.md',
+    'diff --git a/src.js b/src.js\n--- a/src.js\n+++ b/src.js\n@@ -1 +1 @@\n' +
+    '-const a = 1;\n+const a = 2;\n');
+
+  for (const [script, reply] of [['apply-files.js', filesReply], ['apply-patch.js', patchReply]]) {
+    const r = run(script, [repo, reply, '--chek']);
+    assert.strictEqual(r.code, 1, `${script} must refuse an unknown flag`);
+    assert.match(r.stderr, /unknown option "--chek"/);
+    assert.strictEqual(fs.readFileSync(path.join(repo, 'src.js'), 'utf8'), 'const a = 1;\n',
+      `${script} must not have written anything`);
+  }
+});
+
+test('a surplus positional is refused rather than ignored', () => {
+  const repo = gitRepo({ 'src.js': 'const a = 1;\n' });
+  const reply = tmpFile('reply.md', 'FICHERO: src.js\n```\nPISADO\n```\n');
+  const r = run('apply-files.js', [repo, reply, 'sobra']);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /unexpected argument "sobra"/);
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'src.js'), 'utf8'), 'const a = 1;\n');
+});
+
+test('apply-patch does not truncate a diff that edits markdown fences', () => {
+  // The old fence regex closed on the first ``` anywhere, and a patch that
+  // adds a markdown code block contains "+```". The capture ended inside the
+  // diff, and --recount could still turn the fragment into something git would
+  // apply: a partial write reported as success.
+  const repo = gitRepo({ 'README.md': 'titulo\n\nfinal\n' });
+  const patch = [
+    'diff --git a/README.md b/README.md',
+    '--- a/README.md',
+    '+++ b/README.md',
+    '@@ -1,3 +1,7 @@',
+    ' titulo',
+    ' ',
+    '+```js',
+    '+const a = 1;',
+    '+```',
+    '+',
+    ' final',
+  ].join('\n');
+  const reply = tmpFile('reply.md', `Aquí tienes:\n\n\`\`\`diff\n${patch}\n\`\`\`\n\nListo.\n`);
+
+  const r = run('apply-patch.js', [repo, reply]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.strictEqual(
+    fs.readFileSync(path.join(repo, 'README.md'), 'utf8'),
+    'titulo\n\n```js\nconst a = 1;\n```\n\nfinal\n',
+    'the whole patch must be applied, byte for byte'
+  );
+});
+
+test('apply-files keeps a first line that merely looks like a language label', () => {
+  // /^[a-z]{1,12}$/ matched any short lowercase word, so a file starting with
+  // `import` lost that line — content deleted while reporting success.
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-repo-'));
+  const body = 'import\nexport\npackage\nconst a = 1;\n';
+  const reply = tmpFile('reply.md', `FICHERO: a.js\n${body}`);
+
+  const r = run('apply-files.js', [repo, reply]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'a.js'), 'utf8'), body);
+});
+
+test('apply-files still strips a language label that does precede a fence', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-repo-'));
+  const reply = tmpFile('reply.md', 'FICHERO: a.js\njs\n```\nconst a = 1;\n```\n');
+  const r = run('apply-files.js', [repo, reply]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'a.js'), 'utf8'), 'const a = 1;\n');
+});
+
+test('apply-files writes an empty file rather than skipping it', () => {
+  // An empty file is a valid complete content. Dropping the block turned a
+  // request to blank a file into a silent no-op reported as success.
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-repo-'));
+  fs.writeFileSync(path.join(repo, 'vacio.js'), 'sobra\n');
+  const reply = tmpFile('reply.md',
+    'FICHERO: vacio.js\n```\n```\n\nFICHERO: otro.js\n```\nconst a = 1;\n```\n');
+
+  const r = run('apply-files.js', [repo, reply]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'vacio.js'), 'utf8'), '');
+  assert.strictEqual(fs.readFileSync(path.join(repo, 'otro.js'), 'utf8'), 'const a = 1;\n');
+});
+
+test('apply-files does not deny headers it actually found', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-repo-'));
+  const reply = tmpFile('reply.md', 'FICHERO: a.js\n```\n```\n');
+  const r = run('apply-files.js', [repo, reply]);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /every "FICHERO:" block .* is empty/);
+  assert.doesNotMatch(r.stderr, /no "FICHERO/);
+});
+
+test('collect refuses to reuse a directory that already holds a package', () => {
+  // files/ and context/ were never cleared, so a capture from another area or
+  // commit survived into the next package while files_captured counted only
+  // the new writes.
+  const repo = repoWithPullRef({ 'AGENTS.md': '# contrato\n' }, { 'a.js': 'const a = 1;\n' });
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-out-'));
+  assert.strictEqual(run('collect.js', [repo, '1', out]).code, 0);
+  const again = run('collect.js', [repo, '1', out]);
+  assert.strictEqual(again.code, 1);
+  assert.match(again.stderr, /is not empty/);
+});
+
+test('ask clears a previous review before running', () => {
+  // Otherwise a failed rerun leaves the earlier run's clean review and its
+  // metadata in place, both still valid-looking, ready to close a cycle on
+  // code that has since changed.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-ask-'));
+  const prompt = path.join(dir, 'p.txt');
+  fs.writeFileSync(prompt, 'revisa\n');
+  const out = path.join(dir, 'review.md');
+  fs.writeFileSync(out, `VEREDICTO: SIN HALLAZGOS\n\n${PHRASE}\n`);
+  fs.writeFileSync(`${out}.meta.json`, JSON.stringify({ reviewer: 'codex', pr: 197 }));
+
+  const r = run('ask.js', ['codex', prompt, out, '--pr', '197'],
+    { env: stubCodex('cat >/dev/null; echo "se atascó"') });
+
+  assert.strictEqual(r.code, 1);
+  assert.ok(!fs.existsSync(out), 'the stale review must be gone');
+  assert.ok(!fs.existsSync(`${out}.meta.json`), 'and its attribution with it');
+});
+
+test('ask refuses a verdict that is not one of the three', () => {
+  // Any line starting VEREDICTO: used to qualify — including the prompt's own
+  // line listing the options, which these UIs echo back.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-ask-'));
+  const prompt = path.join(dir, 'p.txt');
+  fs.writeFileSync(prompt, 'revisa\n');
+  const out = path.join(dir, 'review.md');
+
+  const r = run('ask.js', ['codex', prompt, out],
+    { env: stubCodex('cat >/dev/null; echo "VEREDICTO: BLOQUEANTE | VEREDICTO: SIN HALLAZGOS"') });
+  assert.strictEqual(r.code, 1);
+  assert.ok(!fs.existsSync(out));
+});
+
+test('ask requires the verdict on the first line', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-ask-'));
+  const prompt = path.join(dir, 'p.txt');
+  fs.writeFileSync(prompt, 'revisa\n');
+  const out = path.join(dir, 'review.md');
+
+  const r = run('ask.js', ['codex', prompt, out],
+    { env: stubCodex('cat >/dev/null; printf "Voy a revisar.\\nVEREDICTO: SIN HALLAZGOS\\n"') });
+  assert.strictEqual(r.code, 1);
+  assert.ok(!fs.existsSync(out));
 });
 
 test('apply-files refuses when the target itself is the symlink', () => {
@@ -237,6 +472,11 @@ test('apply-files refuses a symlink target even when it stays inside the reposit
 
   const r = run('apply-files.js', [repo, reply]);
   assert.strictEqual(r.code, 1);
+  // Not just "nothing changed": that would also hold if it failed for some
+  // unrelated reason. It must refuse *because* the target is a link, and the
+  // link must still be a link afterwards.
+  assert.match(r.stderr, /through a symlink/);
+  assert.ok(fs.lstatSync(path.join(repo, 'alias.js')).isSymbolicLink(), 'alias is still a link');
   assert.strictEqual(fs.readFileSync(path.join(repo, 'real.js'), 'utf8'), 'ORIGINAL\n');
 });
 
@@ -274,8 +514,8 @@ test('gate treats an unparseable cycle as misuse, not as licence to iterate', ()
 });
 
 test('gate refuses a cycle past its own cap', () => {
-  const f = tmpFile('r.md', 'VEREDICTO: BLOQUEANTE\n');
-  const r = run('gate.js', [f, '--cycle', '7', '--max-cycles', '5']);
+  const g = gated('VEREDICTO: BLOQUEANTE\n');
+  const r = run('gate.js', [g.review, ...g.args, '--cycle', '7', '--max-cycles', '5']);
   assert.strictEqual(r.code, 2);
   assert.match(r.stderr, /past --max-cycles/);
 });
@@ -344,6 +584,23 @@ test('roles can record an implementer from outside the rotation', () => {
   assert.ok(['kimi', 'codex'].includes(roles.adjudicator));
   assert.notStrictEqual(roles.adjudicator, roles.implementer);
   assert.strictEqual(roles.reviewers.length, 3);
+
+  // And it persists. Inspecting only the first call would pass even if the
+  // external implementer were forgotten on the next cycle.
+  const again = JSON.parse(run('roles.js', ['197', '--dir', dir]).stdout);
+  assert.strictEqual(again.implementer, 'claude');
+  assert.strictEqual(again.adjudicator, roles.adjudicator);
+});
+
+test('roles normalises a family name before deciding who adjudicates', () => {
+  // "Codex" is not literally "codex", so it was taken for an implementer
+  // outside the rotation — and parity then handed adjudication to codex, the
+  // same family judging its own work.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-roles-'));
+  const roles = JSON.parse(run('roles.js', ['197', ' Codex ', '--dir', dir]).stdout);
+  assert.strictEqual(roles.implementer, 'codex');
+  assert.strictEqual(roles.implementer_in_rotation, true);
+  assert.notStrictEqual(roles.adjudicator, 'codex');
 });
 
 test('roles refuses to let a fixed reviewer implement', () => {
@@ -578,6 +835,47 @@ test('build-prompt refuses when the package lost files collect.js captured', () 
   const r = run('build-prompt.js', [dir, tmpFile('c.md', '# checklist\n')]);
   assert.strictEqual(r.code, 1);
   assert.match(r.stderr, /records 2 captured file/);
+});
+
+test('build-prompt refuses a collect.info that cannot vouch for the package', () => {
+  // A missing files_captured line produced NaN, Number.isInteger(NaN) is
+  // false, and the integrity check was skipped — so the file's mere presence
+  // proved nothing while appearing to prove everything.
+  for (const info of [
+    'pr: 1\n',
+    'pr: 1\nfiles_captured: dos\n',
+    'pr: 1\nfiles_captured: 1\nfiles_captured: 2\n',
+  ]) {
+    const dir = collected({ changed: ['a.js'], files: { 'a.js': 'x\n' } });
+    fs.writeFileSync(path.join(dir, 'collect.info'), info);
+    const r = run('build-prompt.js', [dir, tmpFile('c.md', '# checklist\n')]);
+    assert.strictEqual(r.code, 1, `must refuse: ${JSON.stringify(info)}`);
+    assert.match(r.stderr, /files_captured/);
+  }
+});
+
+test('build-prompt refuses an objective that was asked for but is missing', () => {
+  // A typo in the path used to be indistinguishable from "no objective
+  // requested": the prompt was built without it, silently, contradicting the
+  // rule that the objective always travels.
+  const dir = collected({ changed: ['a.js'], files: { 'a.js': 'x\n' } });
+  const r = run('build-prompt.js',
+    [dir, tmpFile('c.md', '# checklist\n'), path.join(dir, 'no-existe.md')]);
+  assert.strictEqual(r.code, 1);
+  assert.match(r.stderr, /no such objective file/);
+});
+
+test('build-prompt names the files it dropped for size', () => {
+  // With everything over budget the prompt used to announce that the change
+  // "only deletes files", and listed nothing.
+  const big = 'x'.repeat(130 * 1024);
+  const dir = collected({ changed: ['grande.js'], files: { 'grande.js': big } });
+  const r = run('build-prompt.js', [dir, tmpFile('c.md', '# checklist\n')]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  const prompt = fs.readFileSync(path.join(dir, 'prompt.txt'), 'utf8');
+  assert.match(prompt, /superaban el presupuesto/);
+  assert.match(prompt, /grande\.js/);
+  assert.doesNotMatch(prompt, /solo borra ficheros/);
 });
 
 test('build-prompt says outright when no whole-file context travels', () => {

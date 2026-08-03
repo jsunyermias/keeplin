@@ -73,13 +73,15 @@ node scripts/collect.js /path/to/repo 197 work/pr197
 #    --dir is required — without it the assignment would follow the operator's
 #    current directory instead of the review, and two runs from two places
 #    would produce two different implementers for the same pull request.
-node scripts/roles.js 197 --dir work/pr197      # -> implementer codex, adjudicator kimi
-
-#    If the change came from outside the rotation — Claude, or a person — say
-#    so, once, on the first call. The seat then goes to whichever of kimi and
-#    codex parity picks, and --roles below still works. Do not leave it to the
-#    default: that records a false implementer.
-# node scripts/roles.js 197 claude --dir work/pr197
+#
+#    NAME THE IMPLEMENTER. The default is a guess from the pull request number,
+#    and a guess that is wrong records a false implementer — which is how this
+#    pull request ended up reviewed with the independence check switched off.
+#    Any name works, in or out of the rotation:
+node scripts/roles.js 4242 kimi   --dir work/pr4242   # -> adjudicator codex
+node scripts/roles.js 4242 claude --dir work/pr4242   # outside the rotation:
+                                                      #    both seats are free,
+                                                      #    parity picks one
 
 # 3. Mirror the objective into work/pr197/meta.md using the GitHub MCP tools,
 #    then assemble the prompt
@@ -266,10 +268,12 @@ They pin the gate's behaviour on each outcome including the quoted-phrase and
 repeated-phrase cases, that the adjudicator is never the implementer and that
 the implementer does not change between cycles, that `apply-files.js` leaves a
 Markdown file's inner fences intact and refuses to write outside the repository,
-that `apply-patch.js` recovers a diff whose blank context lines were rendered
-away and refuses prose, and that `collect.js` refuses when the project contract
-is missing. Three of these were written before the code passed them and found
-real defects.
+that `apply-patch.js` recovers a diff whose `@@` headers the model miscounted
+and *refuses* one whose blank context lines the renderer deleted, and that
+`collect.js` refuses when the project contract is missing. The two cases were
+the wrong way round here until an adjudicator read the tests against the prose:
+a lost context line is exactly what cannot be repaired mechanically, which is
+why `apply-patch.js` stops rather than guessing.
 
 ## Recording the outcome
 

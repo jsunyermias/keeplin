@@ -19,48 +19,78 @@ const path = require('path');
 
 const PHRASE = process.env.REVIEW_PHRASE || 'REVISION-COMPLETADA-SIN-BLOQUEANTES';
 
-const argv = process.argv.slice(2);
-const FILE = argv.find((a) => !a.startsWith('--'));
+const { parse } = require('./args');
 
 // Number() turns a missing or misspelt value into NaN, and every comparison
 // against NaN is false — so `--cycle cinco` sailed past the cap check and the
 // gate exited 1, "run another cycle", while reporting `"cycle": null`. An
 // invalid invocation must be misuse (exit 2), never an invitation to iterate.
+// The shared parser also stops a flag's value being read as the positional:
+// `gate.js --cycle 1 --roles r.json review.md` used to judge a file called "1".
+let ARGS = null;
 const bad = [];
-const flag = (name, dflt) => {
-  const i = argv.indexOf(`--${name}`);
-  if (i === -1) return dflt;
-  const raw = argv[i + 1];
-  if (raw === undefined || raw.startsWith('--')) {
-    bad.push(`--${name} needs a value`);
-    return dflt;
-  }
-  if (!/^\d+$/.test(raw) || Number(raw) < 1) {
-    bad.push(`--${name} must be an integer >= 1, got "${raw}"`);
-    return dflt;
-  }
-  return Number(raw);
-};
-const CYCLE = flag('cycle', 1);
-const MAX_CYCLES = flag('max-cycles', 5);
-const rolesAt = argv.indexOf('--roles');
-const ROLES = rolesAt === -1 ? null : argv[rolesAt + 1];
-if (rolesAt !== -1 && (ROLES === undefined || ROLES.startsWith('--'))) {
-  bad.push('--roles needs a value');
+try {
+  ARGS = parse(process.argv.slice(2), {
+    name: 'gate.js',
+    positionals: ['adjudicator-review.md'],
+    options: {
+      cycle: { integer: true },
+      'max-cycles': { integer: true },
+      roles: {},
+    },
+    usage: 'gate.js <adjudicator-review.md> --roles <roles-prN.json> '
+      + '[--cycle N] [--max-cycles M]',
+  });
+} catch (e) {
+  bad.push(e.message);
+}
+
+const FILE = ARGS ? ARGS.positional[0] : null;
+const CYCLE = ARGS && ARGS.cycle !== undefined ? ARGS.cycle : 1;
+const MAX_CYCLES = ARGS && ARGS.maxCycles !== undefined ? ARGS.maxCycles : 5;
+const ROLES = ARGS ? ARGS.roles : null;
+
+// --roles is required, not merely documented as required. While the whole
+// independence check sat behind `if (ROLES)`, omitting the flag was a silent
+// mode with no identity verification at all: a clean review written by the
+// implementer, or belonging to another pull request, closed the cycle. That is
+// the exact failure this skill exists to prevent, and it was one forgotten
+// argument away.
+if (ARGS && !ROLES) {
+  bad.push('--roles is required: without it nothing checks who wrote the review');
 }
 if (!bad.length && CYCLE > MAX_CYCLES) {
   bad.push(`--cycle ${CYCLE} is past --max-cycles ${MAX_CYCLES}`);
 }
 
+// A corrupt artefact is misuse, not "run another cycle". An uncaught throw
+// exits 1, which an orchestrator reads as an ordinary unfinished review.
+const readJson = (p, what) => {
+  let raw;
+  try {
+    raw = fs.readFileSync(p, 'utf8');
+  } catch (e) {
+    console.error(`cannot read ${what} ${p}: ${e.code || e.message}`);
+    process.exit(2);
+  }
+  try {
+    const v = JSON.parse(raw);
+    if (!v || typeof v !== 'object' || Array.isArray(v)) {
+      console.error(`${what} ${p} is not a JSON object`);
+      process.exit(2);
+    }
+    return v;
+  } catch {
+    console.error(`${what} ${p} is not valid JSON`);
+    process.exit(2);
+  }
+  return null;
+};
+
 (() => {
   if (bad.length) {
     for (const b of bad) console.error(`bad argument: ${b}`);
     console.error('refusing to judge on an invalid invocation');
-    process.exit(2);
-  }
-  if (!FILE) {
-    console.error('usage: node gate.js <adjudicator-review.md> --roles <roles-prN.json> ' +
-      '[--cycle N] [--max-cycles M]');
     process.exit(2);
   }
   if (!fs.existsSync(FILE)) {
@@ -69,13 +99,13 @@ if (!bad.length && CYCLE > MAX_CYCLES) {
   }
 
   // Whose review is this? A clean verdict from the implementer would otherwise
-  // close a cycle, and the documentation admitted the gate did not check.
-  if (ROLES) {
+  // close a cycle. This is unconditional now — see the --roles check above.
+  {
     if (!fs.existsSync(ROLES)) {
       console.error(`no such roles file: ${ROLES}`);
       process.exit(2);
     }
-    const roles = JSON.parse(fs.readFileSync(ROLES, 'utf8'));
+    const roles = readJson(ROLES, 'roles file');
     const metaPath = `${FILE}.meta.json`;
     if (!fs.existsSync(metaPath)) {
       console.error(
@@ -84,7 +114,7 @@ if (!bad.length && CYCLE > MAX_CYCLES) {
       );
       process.exit(2);
     }
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    const meta = readJson(metaPath, 'review metadata');
     if (meta.reviewer !== roles.adjudicator) {
       console.error(
         `refusing: this review is from "${meta.reviewer}" but pull request ${roles.pr} assigns ` +
@@ -130,7 +160,12 @@ if (!bad.length && CYCLE > MAX_CYCLES) {
   // mid-sentence mention alongside a well-formed final line would otherwise
   // clear, and these replies routinely echo a prompt that spells the phrase out.
   const total = text.split(PHRASE).length - 1;
-  const lines = text.split('\n').map((l) => l.trim());
+  // Only the line ending is normalised. The contract says the phrase must be
+  // the final line "exactly, alone, with nothing after it"; trimming every line
+  // first meant leading or trailing whitespace still counted as exact, and a
+  // whitespace-only line counted as no line at all. If the rule is literal, the
+  // check has to be literal too — otherwise the documentation overstates it.
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
   const last = [...lines].reverse().find((l) => l !== '');
   const phrased = total === 1 && last === PHRASE;
   const quoted = total > 0 && !phrased;
