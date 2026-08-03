@@ -1,6 +1,6 @@
 # 0004 — Deterministic convergence and a stagnation brake for the review loop
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-08-03
 - Decision owners: maintainer of `jsunyermias/keeplin` and `jsunyermias/keeplin-srv`
 - Scope: cross-repo
@@ -9,7 +9,7 @@
 - Acceptance PR: [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198), with
   [keeplin-srv#104](https://github.com/jsunyermias/keeplin-srv/pull/104) as its companion
 - Supersedes: none
-- Superseded by: [0006](0006-trusted-review-loop-history.md) once ADR 0006 is accepted
+- Superseded by: [0006](0006-trusted-review-loop-history.md)
 
 ## Context and problem
 

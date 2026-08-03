@@ -79,9 +79,9 @@ the fix crosses a decision boundary.
 | [0001 — Current synchronization delivery semantics](0001-current-sync-delivery.md) | accepted (retrospective) | cross-repo | [keeplin#150](https://github.com/jsunyermias/keeplin/issues/150), [keeplin#151](https://github.com/jsunyermias/keeplin/issues/151), [keeplin-srv#74](https://github.com/jsunyermias/keeplin-srv/issues/74), [keeplin-srv#75](https://github.com/jsunyermias/keeplin-srv/issues/75) |
 | [0002 — Shared domain model and server projections](0002-shared-domain-model.md) | accepted (retrospective) | cross-repo | current implementation |
 | [0003 — Versioned persistent formats and forward migrations](0003-versioned-persistence.md) | accepted (retrospective) | cross-repo | current implementation |
-| [0004 — Deterministic convergence and a stagnation brake for the review loop](0004-review-loop-convergence.md) | accepted; superseded only when 0006 is accepted | cross-repo | [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198), [keeplin-srv#104](https://github.com/jsunyermias/keeplin-srv/pull/104); current implementation remains authoritative while 0006 is proposed |
+| [0004 — Deterministic convergence and a stagnation brake for the review loop](0004-review-loop-convergence.md) | superseded by 0006 | cross-repo | [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198), [keeplin-srv#104](https://github.com/jsunyermias/keeplin-srv/pull/104); current implementation remains authoritative while 0006 is proposed |
 | [0005 — Loop history lives outside the pull-request body](0005-loop-history-outside-the-pull-request-body.md) | rejected | cross-repo | Replaced by the broader, authenticated design proposed in 0006 |
-| [0006 — Trusted review-loop history](0006-trusted-review-loop-history.md) | proposed | cross-repo | Supersedes 0004 if accepted; addresses F-002, F-008 and F-009 from the round-2 review of keeplin#198 |
+| [0006 — Trusted review-loop history](0006-trusted-review-loop-history.md) | accepted | cross-repo | Supersedes 0004; addresses F-002, F-008 and F-009 from the round-2 review of keeplin#198 |
 
 The first prospective use of this framework is
 [keeplin#143](https://github.com/jsunyermias/keeplin/issues/143), which must create its E2EE

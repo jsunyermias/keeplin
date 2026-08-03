@@ -1,12 +1,12 @@
 # 0006 — Trusted review-loop history
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-08-03
 - Decision owners: maintainer of `jsunyermias/keeplin` and `jsunyermias/keeplin-srv`
 - Scope: cross-repo
 - Issue: none — maintainer-directed follow-up to the round-2 review of
   [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198)
-- Acceptance PR: link once the ADR is accepted
+- Acceptance PR: [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198), with [keeplin-srv#104](https://github.com/jsunyermias/keeplin-srv/pull/104) as its companion
 - Supersedes: [0004](0004-review-loop-convergence.md)
 - Superseded by: none
 
@@ -17,7 +17,7 @@ round history from the pull-request body. An author can delete that history and 
 stagnation brake. Rejected ADR 0005 proposed check-run output without fully binding records to
 a trusted producer or defining history through topology rewrites and retention.
 
-This proposal replaces ADR 0004 as one coherent decision. GitHub's default-branch
+This decision replaces ADR 0004 as one coherent decision. GitHub's default-branch
 `workflow_run` evaluator is the simplest repository-native trust boundary: its workflow comes
 from the default branch, not the pull-request head, and it can evaluate completed CI without
 executing untrusted pull-request code. Check runs attached only to commits cannot retain one
@@ -65,7 +65,7 @@ evidence. Rejected as the journal; retained only for the current result.
 **Default-branch `workflow_run` plus authenticated comment journal.** The definition is not
 loaded from the head, receives its token only after unprivileged CI completes, and comments
 survive topology rewrites. Costs are elevated permissions, correlation logic and reliance on
-GitHub retention. Chosen provisionally.
+GitHub retention. Chosen.
 
 **External append-only service.** Stronger retention and signing, but adds credentials,
 operations, availability and cost. It becomes preferable if GitHub cannot meet retention or
@@ -73,7 +73,7 @@ repository policy forbids the writer permissions.
 
 ## Decision and justification
 
-If accepted, ADR 0006 supersedes ADR 0004 in full. The default-branch `workflow_run` evaluator
+ADR 0006 supersedes ADR 0004 in full. The default-branch `workflow_run` evaluator
 is the sole authoritative writer. Unprivileged CI runs tests read-only. The evaluator fetches
 the pull request, files, ledger and exact completed run through APIs; it never checks out or
 executes head content.
