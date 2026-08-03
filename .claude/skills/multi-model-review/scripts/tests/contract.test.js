@@ -432,7 +432,36 @@ test('ask refuses a verdict that is not one of the three', () => {
   assert.ok(!fs.existsSync(out));
 });
 
-test('ask requires the verdict on the first line', () => {
+test('roles reports a bad pull request number instead of crashing', () => {
+  // The strict parser landed while this message still referenced the old
+  // variable, so the usage error raised a ReferenceError instead — found by a
+  // reviewer, not by the suite, because nothing exercised the invalid input.
+  const r = run('roles.js', ['abc', '--dir', os.tmpdir()]);
+  assert.strictEqual(r.code, 1);
+  assert.doesNotMatch(r.stderr, /ReferenceError/);
+  assert.match(r.stderr, /must be an integer >= 1, got "abc"/);
+});
+
+test('ask accepts a verdict behind the chat UI\'s own chrome', () => {
+  // z.ai prepends "Show full message" and "Thought Process". Requiring the
+  // verdict on literally the first line rejected a real GLM review for a
+  // banner the model did not write.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-ask-'));
+  const prompt = path.join(dir, 'p.txt');
+  fs.writeFileSync(prompt, 'revisa\n');
+  const out = path.join(dir, 'review.md');
+
+  const r = run('ask.js', ['codex', prompt, out], {
+    env: stubCodex(
+      'cat >/dev/null; printf "Show full message\\nThought Process\\n' +
+      'VEREDICTO: OBSERVACIONES\\n\\nUn hallazgo.\\n"'),
+  });
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stdout, /VEREDICTO: OBSERVACIONES/);
+  assert.ok(fs.existsSync(out));
+});
+
+test('ask requires the verdict before any substance', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-ask-'));
   const prompt = path.join(dir, 'p.txt');
   fs.writeFileSync(prompt, 'revisa\n');

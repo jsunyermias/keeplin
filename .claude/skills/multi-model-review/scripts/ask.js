@@ -142,8 +142,20 @@ const DRIVERS = {
   // review, and publishing it would put it in front of the adjudicator as one.
   const VERDICTS = ['BLOQUEANTE', 'OBSERVACIONES', 'SIN HALLAZGOS'];
   const body = stdout.replace(/\r\n?/g, '\n');
-  const first = body.split('\n').find((l) => l.trim() !== '') || '';
-  const declared = (first.match(/^\s*VEREDICTO:\s*(.+?)\s*$/) || [])[1];
+
+  // The verdict must be declared before any substance, but not literally on
+  // line one: these UIs prepend their own chrome — "Show full message",
+  // "Thought Process" — and requiring line one rejected a real review from GLM
+  // for a banner it did not write. So: skip known chrome, then the next
+  // non-empty line must be the verdict. That still refuses the case this check
+  // exists for, a reply whose verdict appears somewhere in the middle, and the
+  // prompt's own line listing all three options.
+  const CHROME = /^(show full message|thought process|thinking|pensando|copiar|copy)$/i;
+  const meaningful = body.split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '' && !CHROME.test(l));
+  const first = meaningful[0] || '';
+  const declared = (first.match(/^VEREDICTO:\s*(.+?)$/) || [])[1];
   const verdictLine = declared && VERDICTS.includes(declared.toUpperCase())
     ? `VEREDICTO: ${declared.toUpperCase()}`
     : null;

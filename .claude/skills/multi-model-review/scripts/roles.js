@@ -53,7 +53,8 @@ const OVERRIDE = ARGS.positional[1] ? ARGS.positional[1].trim().toLowerCase() : 
 
 (() => {
   if (!Number.isInteger(PR) || PR < 1) {
-    throw new Error(`pull request number must be an integer >= 1, got "${positional[0]}"`);
+    throw new Error(
+      `pull request number must be an integer >= 1, got "${ARGS.positional[0]}"`);
   }
   if (!DIR) {
     throw new Error(
