@@ -20,6 +20,9 @@ SHELL_MARKER_RE = re.compile(r"^(?P<indent>[ \t]*)# md:(?P<name>.+?)[ \t]*$")
 SQL_MARKER_RE = re.compile(r"^[ \t]*-- md:(?P<name>.+?)[ \t]*$", re.MULTILINE)
 SHELL_SHEBANG_RE = re.compile(r"^#![^\r\n]*(?:[/\s])(?:ba|da|k|z)?sh(?:\s|$)")
 CLOSE_FENCE_RE = re.compile(r"^```[ \t]*(?=\r?$)", re.MULTILINE)
+BLOCK_QUOTE_RE = re.compile(r"^ {0,3}>[ \t]?")
+MARKDOWN_FENCE_RE = re.compile(r"^ {0,3}(?P<run>`{3,}|~{3,})(?P<suffix>.*)$")
+SIMPLE_REFERENCE_DEFINITION_RE = re.compile(r"^ {0,3}\[[^]\r\n]+\]:[ \t]*\S")
 CONTRACT_ID_RE = re.compile(
     r"^`(?P<id>[a-z0-9]+(?:[._:/-][a-z0-9]+)*)`(?:\s+(?:—|-)\s+.+)?$"
 )
@@ -70,6 +73,117 @@ def _read(path: Path) -> tuple[str, str]:
 
 def _write(path: Path, text: str, newline: str = "\n") -> None:
     path.write_bytes(text.replace("\n", newline).encode("utf-8"))
+
+
+def _strip_one_block_quote(line: str) -> str:
+    match = BLOCK_QUOTE_RE.match(line)
+    return line[match.end() :] if match else line
+
+
+def _without_inline_code_and_html_comments(line: str, in_comment: bool) -> tuple[str, bool]:
+    visible: list[str] = []
+    index = 0
+    while index < len(line):
+        if in_comment:
+            closing = line.find("-->", index)
+            if closing < 0:
+                return "".join(visible), True
+            visible.append(" ")
+            index = closing + 3
+            in_comment = False
+            continue
+        if line.startswith("<!--", index):
+            visible.append(" ")
+            index += 4
+            in_comment = True
+            continue
+        if line[index] == "`":
+            width = 1
+            while index + width < len(line) and line[index + width] == "`":
+                width += 1
+            marker = "`" * width
+            search_from = index + width
+            closing = -1
+            while True:
+                candidate = line.find(marker, search_from)
+                if candidate < 0:
+                    break
+                before_is_tick = candidate > 0 and line[candidate - 1] == "`"
+                after = candidate + width
+                after_is_tick = after < len(line) and line[after] == "`"
+                if not before_is_tick and not after_is_tick:
+                    closing = candidate
+                    break
+                search_from = candidate + width
+            if closing >= 0:
+                visible.append(" ")
+                index = closing + width
+                continue
+            visible.append(marker)
+            index += width
+            continue
+        visible.append(line[index])
+        index += 1
+    return "".join(visible), in_comment
+
+
+def reader_visible_markdown(text: str) -> str:
+    """Return prose selected by the repository's declared Markdown subset.
+
+    The subset shares the review-debt recognizer's fenced-code and blank-line-delimited
+    indented-code state machine. It additionally removes HTML comments, same-line inline
+    code spans and simple single-line link-reference definitions, and recognizes fences
+    after one block-quote marker. It is intentionally not a general CommonMark parser.
+
+    Outside the subset are deeper block quotes, list continuation/nested code, raw HTML
+    other than comments, multiline reference definitions and inline-code spans, and inline
+    link/image destinations or titles. Content hidden there has no visibility guarantee.
+    """
+    prose: list[str] = []
+    fence: str | None = None
+    indented_code = False
+    previous_blank = False
+    in_comment = False
+    for raw_line in text.splitlines():
+        line = _strip_one_block_quote(raw_line)
+        if fence is not None:
+            match = MARKDOWN_FENCE_RE.match(line)
+            if match:
+                marker = match.group("run")
+                if (
+                    marker[0] == fence[0]
+                    and len(marker) >= len(fence)
+                    and not match.group("suffix").strip()
+                ):
+                    fence = None
+                    previous_blank = False
+            continue
+
+        visible, in_comment = _without_inline_code_and_html_comments(line, in_comment)
+        stripped = visible.strip()
+        if indented_code:
+            if not stripped or visible.startswith(("    ", "\t")):
+                continue
+            indented_code = False
+        if previous_blank and visible.startswith(("    ", "\t")):
+            indented_code = True
+            continue
+
+        match = MARKDOWN_FENCE_RE.match(visible)
+        if match:
+            marker = match.group("run")
+            suffix = match.group("suffix")
+            if marker[0] != "`" or "`" not in suffix:
+                fence = marker
+                previous_blank = False
+                continue
+        if SIMPLE_REFERENCE_DEFINITION_RE.match(visible):
+            previous_blank = False
+            continue
+
+        prose.append(visible)
+        previous_blank = not stripped
+    return "\n".join(prose)
 
 
 def source_kind(path: Path) -> str | None:

@@ -24,7 +24,7 @@
 #  10. the generated context manifest is current.
 #  11. review-ledger rows use exactly one of the four states defined by AGENTS.md.
 #  12. the three manually enrolled journal-policy surfaces carry the canonical bounded-history
-#      sentence verbatim (delegated to scripts/check-bounded-history.sh).
+#      sentence verbatim (delegated to scripts/check-bounded-history.py).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -114,7 +114,7 @@ done < <(grep -RhsE '^\|[[:space:]]*F-[0-9]{3,}[[:space:]]*\|' --include='*.md' 
 
 # 12. The three manually enrolled journal-policy surfaces must state the bound verbatim.
 #     Delegated so the fixed enrolment and matching rule can be exercised against fixtures.
-if ! ./scripts/check-bounded-history.sh; then
+if ! ./scripts/check-bounded-history.py; then
   fail=1
 fi
 

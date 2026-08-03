@@ -1,34 +1,54 @@
-# `scripts/tests/test_bounded_history.py` — the bounded-history check must be able to fail
+# `scripts/tests/test_bounded_history.py` — bounded-history visible-prose regressions
 
 ## What is tested
 
-`scripts/check-bounded-history.sh` enforces that three surfaces carry one canonical sentence
-verbatim. A check of that kind is only worth its exit status if it fails on the defect it
-names. The negative tests gut fixture copies in the ways a careless edit or a deliberate
-weakening would and require a non-zero exit; the positive tests prove that the checked-in
-repository, intact fixtures, ordinary visible prose and harmless line wrapping still pass.
+`scripts/check-bounded-history.py` requires three manually enrolled surfaces to carry one
+canonical sentence verbatim in prose selected by a declared Markdown subset. The tests execute
+the real checker against temporary fixture roots and assert its process exit status.
 
-| Test | What it pins |
-|------|--------------|
-| `test_the_real_repository_passes` | the checked-in surfaces satisfy the rule right now |
-| `test_intact_fixtures_pass` | the fixtures are a valid baseline, so a failure below is the mutation and not the harness |
-| `test_line_wrapping_does_not_matter` | the sentence may wrap across lines; formatting is not the contract |
-| `test_an_html_comment_does_not_satisfy_the_check` | hiding the sentence in an HTML comment is not a visible policy statement and fails |
-| `test_a_fenced_code_block_does_not_satisfy_the_check` | a fenced example does not satisfy the visible-prose requirement |
-| `test_an_indented_code_block_does_not_satisfy_the_check` | an indented code example does not satisfy the visible-prose requirement |
-| `test_normal_prose_still_satisfies_the_check` | the same sentence in ordinary prose remains a valid positive fixture |
-| `test_a_glossary_of_the_words_does_not_satisfy_the_check` | the exact hole round 10 found in the previous substring implementation: delete the bounded-history prose, leave `Glossary: truncation, reification, advisory.`, and the old check stayed green |
-| `test_a_weakened_sentence_does_not_satisfy_the_check` | hedging `is not detected` into `may not always be detected` turns a stated limit back into a promise |
-| `test_dropping_the_consequence_does_not_satisfy_the_check` | stating the limit without what it costs is the same defect in shorter form |
-| `test_a_missing_surface_fails_closed` | a deleted surface is a failure, never a silent skip |
-| `test_every_surface_is_checked_independently` | gutting any one of the three fails and names that file, so no surface rides on another |
+| Test | Expected | What it pins |
+|------|----------|--------------|
+| `test_the_real_repository_passes` | `0` | all checked-in surfaces satisfy the rule |
+| `test_intact_fixtures_pass` | `0` | the fixture baseline is valid |
+| `test_line_wrapping_does_not_matter` | `0` | collapsed prose whitespace makes wrapping harmless |
+| `test_an_html_comment_does_not_satisfy_the_check` | `1` | comment metadata is not a policy statement |
+| `test_a_fenced_code_block_does_not_satisfy_the_check` | `1` | fenced examples do not count |
+| `test_an_indented_code_block_does_not_satisfy_the_check` | `1` | blank-line-delimited indented examples do not count |
+| `test_a_fence_inside_one_blockquote_does_not_satisfy_the_check` | `1` | one quoted fence level is recognized |
+| `test_an_unused_link_reference_definition_does_not_satisfy_the_check` | `1` | a non-rendered single-line definition does not count |
+| `test_a_fence_inside_an_html_comment_does_not_hide_later_prose` | `0` | a comment cannot open a phantom fence |
+| `test_a_longer_closing_fence_exposes_later_prose` | `0` | a closer at least as long as its opener closes the fence |
+| `test_an_html_comment_marker_inside_inline_code_does_not_hide_later_prose` | `0` | inline code cannot open an HTML comment |
+| `test_normal_prose_still_satisfies_the_check` | `0` | ordinary prose remains positive |
+| `test_a_glossary_of_the_words_does_not_satisfy_the_check` | `1` | vocabulary alone is not the canonical statement |
+| `test_a_weakened_sentence_does_not_satisfy_the_check` | `1` | hedging the limitation fails |
+| `test_dropping_the_consequence_does_not_satisfy_the_check` | `1` | omitting the cost of truncation fails |
+| `test_a_missing_surface_fails_closed` | `1` | absence is never skipped |
+| `test_every_surface_is_checked_independently` | `1` | no enrolled surface rides on another |
 
-## Fixtures
+## Declared-subset boundary tests
 
-Built in a temporary directory per test, not checked in: three files, each containing the
-canonical sentence surrounded by filler prose. Negative tests mutate copies; positive tests read
-an intact fixture or the real repository without changing it. The suite runs the real script
-through `subprocess` against those roots, which is why the script takes a root argument at all.
+The implementation and its companion name six constructs outside the grammar. One test per
+construct pins the current behavior rather than implying parser support:
+
+| Test | Current status | Unhandled construct |
+|------|----------------|---------------------|
+| `test_deeper_blockquote_fences_pin_out_of_subset_behavior` | `0` | blockquotes deeper than one level |
+| `test_list_nested_fences_pin_out_of_subset_behavior` | `0` | list continuation/nested list code |
+| `test_raw_html_blocks_pin_out_of_subset_behavior` | `0` | raw HTML other than comments |
+| `test_multiline_reference_definitions_pin_out_of_subset_behavior` | `0` | split reference definitions |
+| `test_multiline_inline_code_spans_pin_out_of_subset_behavior` | `0` | multiline inline code |
+| `test_inline_link_titles_pin_out_of_subset_behavior` | `0` | inline link/image destinations and titles |
+
+In these representatives the raw canonical bytes currently count, so the checker returns `0`.
+That result is a stability pin only: the public contract remains that a sentence hidden in an
+unsupported construct is neither guaranteed to count nor guaranteed to be ignored.
+
+## Harness and old-implementation measurement
+
+Each fixture contains all three enrolled paths. `BOUNDED_HISTORY_CHECK` can point the same tests
+at a scratch executable, which is how the committed awk implementation is measured without
+altering the working tree. With no override the suite runs the checked-in Python implementation.
 
 ## Run
 
@@ -40,7 +60,6 @@ No network, API, Rust toolchain or model is involved.
 
 ## Related files
 
-- `scripts/check-bounded-history.sh` — the script under test.
-- `scripts/check-docs.sh` — runs it as check 12 in CI.
-- `docs/adr/0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md` — the
-  decision that bounds the claim these tests protect.
+- `scripts/check-bounded-history.py` — checker under test.
+- `scripts/companion_tool.py` — shared Markdown-subset implementation.
+- `scripts/check-docs.sh` — invokes the checker as check 12.
