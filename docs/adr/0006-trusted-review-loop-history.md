@@ -1,6 +1,6 @@
 # 0006 — Trusted review-loop history
 
-- Status: superseded
+- Status: accepted
 - Date: 2026-08-03
 - Decision owners: maintainer of `jsunyermias/keeplin` and `jsunyermias/keeplin-srv`
 - Scope: cross-repo
@@ -8,7 +8,8 @@
   [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198)
 - Acceptance PR: [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198), with [keeplin-srv#104](https://github.com/jsunyermias/keeplin-srv/pull/104) as its companion
 - Supersedes: [0004](0004-review-loop-convergence.md)
-- Superseded by: [0008](0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md)
+- Superseded by: none yet — [0008](0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md)
+  is proposed and supersedes this only once accepted
 
 ## Context and problem
 

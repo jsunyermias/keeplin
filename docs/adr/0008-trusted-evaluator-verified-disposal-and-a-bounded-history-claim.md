@@ -7,8 +7,8 @@
 - Issue: none — successor to the 0005/0006/0007 sequence on
   [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198)
 - Acceptance PR: link once the ADR is accepted
-- Supersedes: [0006](0006-trusted-review-loop-history.md) (accepted, unimplementable) and
-  [0007](0007-trusted-evaluator-and-dual-store-history.md) (proposed, rejected)
+- Supersedes, once accepted: [0006](0006-trusted-review-loop-history.md) (accepted, unimplementable)
+  and [0007](0007-trusted-evaluator-and-dual-store-history.md) (rejected). Until then 0006 stands.
 - Superseded by: none
 
 ## Context and problem
