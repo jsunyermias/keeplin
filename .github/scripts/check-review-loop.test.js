@@ -604,6 +604,25 @@ test("F-011: convergence claims only explicit workflow-dependency evidence", () 
   assert.doesNotMatch(result.message, /required checks are green/i);
 });
 
+// F-014 — ordering must be bytewise. localeCompare varies with the runtime's ICU version and
+// locale, and ADR 0006 requires byte-identical results across both repositories.
+
+test("F-014: open findings are ordered bytewise, not by locale", () => {
+  const rows = [
+    `| F-0010 | 1 | \`t::c\` | open | |`,
+    `| F-002 | 1 | \`t::b\` | open | |`,
+    `| F-001 | 1 | \`t::a\` | open | |`,
+  ];
+  const ids = ["F-0010", "F-002", "F-001"];
+  const bytewise = [...ids].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const result = evaluate(ledger(rows, [round(1, ids, [], 3)]));
+  const mentioned = bytewise.filter((id) => result.message.includes(id));
+  assert.deepEqual(mentioned, bytewise, result.message);
+  // The order the message reports must be the bytewise order, position for position.
+  const positions = bytewise.map((id) => result.message.indexOf(id));
+  assert.deepEqual([...positions].sort((a, b) => a - b), positions, result.message);
+});
+
 // Independent review stays a separate, conjunctive gate.
 
 test("convergence says nothing about independent review", () => {

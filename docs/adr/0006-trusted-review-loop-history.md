@@ -98,11 +98,24 @@ Finding IDs never disappear. A mistake gets a tombstone naming the old ID, repla
 `none`, reason, maintainer identity and source link. The old ID remains reserved; only a
 maintainer-authored correction accepted by the trusted evaluator changes the active projection.
 
+"Maintainer-authored" is not a description but the same verified reference required for
+disposal below: a tombstone, and the genesis record of a pull request that predates this
+decision, are authorized only by a GitHub review or comment whose author association is
+`MEMBER`, `OWNER` or `COLLABORATOR` and whose author is not the pull-request author, recorded
+by digest as in the disposal rule. Leaving the authorization channel unspecified would have
+left the one operation that rewrites the projection as the only unauthenticated one.
+
 The author-editable ledger is input, never authority for disposal. A reified finding may move
 from `open` to `resolved` or `dismissed` only when its row names a GitHub review or comment ID
 whose API author association is `MEMBER`, `OWNER`, or `COLLABORATOR` and whose author is not the
 pull-request author. The trusted evaluator fetches that object, verifies its repository and pull
-request, and records its immutable database ID and author in the observation. `resolved` also
+request, and records its immutable database ID, author **and a digest of the referenced body**
+in the observation, because the reference is a mutable object: a comment can be edited and a
+review can later be dismissed, and an ID alone would keep validating a disposal whose stated
+reason no longer exists. At every re-evaluation the evaluator refetches the reference and
+requires the digest to match and, for a review, its state to be active; a mismatched digest or
+a dismissed review returns the finding to `open` and reports `history-unverifiable` rather than
+silently preserving the disposal. `resolved` also
 names the mechanical check or assertion and the successful run ID and attempt that prove the
 fix; `dismissed` names the accepted ADR or priority decision in the verified maintainer
 reference. Missing, deleted, ambiguous or unauthorized evidence leaves the finding open and
@@ -157,6 +170,8 @@ falling back to body history.
   CommonMark `\|`, `\\|`, `\\\|` plus a terminal literal backslash.
 - API-fixture integration tests cover rerun, force-push, rebase, reset, fork correlation,
   pagination, missing predecessors, wrong App/workflow/schema, tombstones, forged finding-state
+  transitions, a disposal reference whose body digest no longer matches, a disposal reference
+  that is a dismissed review, and a tombstone or genesis lacking a verified maintainer reference
   transitions, missing or author-owned resolution references, branch-protection mismatch and
   permission denial.
 - A canary proves no head code runs with `issues: write` or `checks: write` and only the trusted

@@ -362,7 +362,11 @@ function evaluateReviewLoop({
   const sortedRedChecks = [...new Set(redChecks)].sort();
   const openReified = findings
     .filter((finding) => finding.reified && finding.state === "open")
-    .sort((a, b) => a.id.localeCompare(b.id));
+    // Bytewise, not localeCompare: that comparator varies with the runtime's ICU version and
+    // locale, and ADR 0006 requires the two repositories to produce byte-identical results.
+    // The hash already sorts bytewise, so this only reached message and blocker ordering —
+    // but a determinism requirement that holds only where it is load-bearing is not one.
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const blocking = openReified.length + sortedRedChecks.length;
   const currentHash = loopStateHash({
     diffSignature,
