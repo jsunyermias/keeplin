@@ -4,8 +4,9 @@
 This standard-library checker implements a declared Markdown subset. It recognizes backtick
 and tilde fences at the document margin or inside one blockquote level, including closing
 fences at least as long as their opener; blank-line-delimited code indented by four spaces or
-one tab; HTML comments outside code; same-line backtick code spans; and simple single-line
-link-reference definitions. The fenced and indented state machine is shared with
+one tab, including at the start of a document; HTML comments outside code; same-line backtick
+code spans; and simple single-line link-reference definitions. A fence closes only at the same
+block-quote level where it opened. The fenced and indented state machine is shared with
 ``scripts/companion_tool.py`` rather than duplicated here.
 
 It does not parse blockquotes deeper than one level; list-item continuation indentation or

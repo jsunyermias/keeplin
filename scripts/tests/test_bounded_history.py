@@ -62,14 +62,44 @@ class BoundedHistoryCheck(unittest.TestCase):
         self.write("AGENTS.md", f"# agents\n\n```text\n{CANONICAL}\n```\n")
         self.assertEqual(run(self.root).returncode, 1)
 
+    def test_a_tilde_fenced_code_block_does_not_satisfy_the_check(self):
+        self.write("AGENTS.md", f"# agents\n\n~~~text\n{CANONICAL}\n~~~\n")
+        self.assertEqual(run(self.root).returncode, 1)
+
+    def test_a_fence_with_three_leading_spaces_does_not_satisfy_the_check(self):
+        self.write("AGENTS.md", f"# agents\n\n   ```text\n{CANONICAL}\n   ```\n")
+        self.assertEqual(run(self.root).returncode, 1)
+
     def test_an_indented_code_block_does_not_satisfy_the_check(self):
         self.write("AGENTS.md", f"# agents\n\n    {CANONICAL}\n")
+        self.assertEqual(run(self.root).returncode, 1)
+
+    def test_an_indented_code_block_at_document_start_does_not_satisfy_the_check(self):
+        self.write("AGENTS.md", f"    {CANONICAL}\n")
+        self.assertEqual(run(self.root).returncode, 1)
+
+    def test_a_tab_indented_code_block_does_not_satisfy_the_check(self):
+        self.write("AGENTS.md", f"# agents\n\n\t{CANONICAL}\n")
         self.assertEqual(run(self.root).returncode, 1)
 
     def test_a_fence_inside_one_blockquote_does_not_satisfy_the_check(self):
         self.write(
             "AGENTS.md",
             f"# agents\n\n> ```text\n> {CANONICAL}\n> ```\n",
+        )
+        self.assertEqual(run(self.root).returncode, 1)
+
+    def test_a_blockquote_fence_cannot_close_a_margin_fence(self):
+        self.write(
+            "AGENTS.md",
+            f"```text\nexample\n> ```\n{CANONICAL}\n```\n",
+        )
+        self.assertEqual(run(self.root).returncode, 1)
+
+    def test_a_margin_fence_cannot_close_a_blockquote_fence(self):
+        self.write(
+            "AGENTS.md",
+            f"> ```text\n> example\n```\n> {CANONICAL}\n> ```\n",
         )
         self.assertEqual(run(self.root).returncode, 1)
 
@@ -87,6 +117,10 @@ class BoundedHistoryCheck(unittest.TestCase):
         )
         self.assertEqual(run(self.root).returncode, 0, run(self.root).stdout)
 
+    def test_a_multiline_html_comment_does_not_satisfy_the_check(self):
+        self.write("AGENTS.md", f"# agents\n\n<!--\n{CANONICAL}\n-->\n")
+        self.assertEqual(run(self.root).returncode, 1)
+
     def test_a_longer_closing_fence_exposes_later_prose(self):
         self.write(
             "AGENTS.md",
@@ -100,6 +134,24 @@ class BoundedHistoryCheck(unittest.TestCase):
             f"# agents\n\nThe token `<!--` is shown literally.\n\n{CANONICAL}\n",
         )
         self.assertEqual(run(self.root).returncode, 0, run(self.root).stdout)
+
+    def test_same_line_inline_code_does_not_satisfy_the_check(self):
+        self.write("AGENTS.md", f"# agents\n\n`{CANONICAL}`\n")
+        self.assertEqual(run(self.root).returncode, 1)
+
+    def test_a_shorter_fence_does_not_close_a_longer_fence(self):
+        self.write(
+            "AGENTS.md",
+            f"````text\nexample\n```\n{CANONICAL}\n````\n",
+        )
+        self.assertEqual(run(self.root).returncode, 1)
+
+    def test_a_different_fence_marker_does_not_close_a_fence(self):
+        self.write(
+            "AGENTS.md",
+            f"```text\nexample\n~~~\n{CANONICAL}\n```\n",
+        )
+        self.assertEqual(run(self.root).returncode, 1)
 
     def test_normal_prose_still_satisfies_the_check(self):
         self.write("AGENTS.md", f"# agents\n\n{CANONICAL}\n")

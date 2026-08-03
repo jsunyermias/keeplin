@@ -75,9 +75,9 @@ def _write(path: Path, text: str, newline: str = "\n") -> None:
     path.write_bytes(text.replace("\n", newline).encode("utf-8"))
 
 
-def _strip_one_block_quote(line: str) -> str:
+def _split_one_block_quote(line: str) -> tuple[str, bool]:
     match = BLOCK_QUOTE_RE.match(line)
-    return line[match.end() :] if match else line
+    return (line[match.end() :], True) if match else (line, False)
 
 
 def _without_inline_code_and_html_comments(line: str, in_comment: bool) -> tuple[str, bool]:
@@ -140,19 +140,20 @@ def reader_visible_markdown(text: str) -> str:
     link/image destinations or titles. Content hidden there has no visibility guarantee.
     """
     prose: list[str] = []
-    fence: str | None = None
+    fence: tuple[str, bool] | None = None
     indented_code = False
-    previous_blank = False
+    previous_blank = True
     in_comment = False
     for raw_line in text.splitlines():
-        line = _strip_one_block_quote(raw_line)
+        line, in_block_quote = _split_one_block_quote(raw_line)
         if fence is not None:
-            match = MARKDOWN_FENCE_RE.match(line)
-            if match:
+            marker_open, block_quote_open = fence
+            match = MARKDOWN_FENCE_RE.match(line) if in_block_quote == block_quote_open else None
+            if match is not None:
                 marker = match.group("run")
                 if (
-                    marker[0] == fence[0]
-                    and len(marker) >= len(fence)
+                    marker[0] == marker_open[0]
+                    and len(marker) >= len(marker_open)
                     and not match.group("suffix").strip()
                 ):
                     fence = None
@@ -174,7 +175,7 @@ def reader_visible_markdown(text: str) -> str:
             marker = match.group("run")
             suffix = match.group("suffix")
             if marker[0] != "`" or "`" not in suffix:
-                fence = marker
+                fence = (marker, in_block_quote)
                 previous_blank = False
                 continue
         if SIMPLE_REFERENCE_DEFINITION_RE.match(visible):

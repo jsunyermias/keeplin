@@ -13,12 +13,22 @@ the real checker against temporary fixture roots and assert its process exit sta
 | `test_line_wrapping_does_not_matter` | `0` | collapsed prose whitespace makes wrapping harmless |
 | `test_an_html_comment_does_not_satisfy_the_check` | `1` | comment metadata is not a policy statement |
 | `test_a_fenced_code_block_does_not_satisfy_the_check` | `1` | fenced examples do not count |
-| `test_an_indented_code_block_does_not_satisfy_the_check` | `1` | blank-line-delimited indented examples do not count |
+| `test_a_tilde_fenced_code_block_does_not_satisfy_the_check` | `1` | tilde fences do not count |
+| `test_a_fence_with_three_leading_spaces_does_not_satisfy_the_check` | `1` | up to three spaces may indent a fence |
+| `test_an_indented_code_block_does_not_satisfy_the_check` | `1` | blank-line-delimited four-space code does not count |
+| `test_an_indented_code_block_at_document_start_does_not_satisfy_the_check` | `1` | document-start indentation is code without a preceding blank line |
+| `test_a_tab_indented_code_block_does_not_satisfy_the_check` | `1` | tab-indented code does not count |
 | `test_a_fence_inside_one_blockquote_does_not_satisfy_the_check` | `1` | one quoted fence level is recognized |
+| `test_a_blockquote_fence_cannot_close_a_margin_fence` | `1` | a closer must match its opener's quote level |
+| `test_a_margin_fence_cannot_close_a_blockquote_fence` | `1` | quote-level matching is symmetric |
 | `test_an_unused_link_reference_definition_does_not_satisfy_the_check` | `1` | a non-rendered single-line definition does not count |
 | `test_a_fence_inside_an_html_comment_does_not_hide_later_prose` | `0` | a comment cannot open a phantom fence |
+| `test_a_multiline_html_comment_does_not_satisfy_the_check` | `1` | hidden comment content does not count |
 | `test_a_longer_closing_fence_exposes_later_prose` | `0` | a closer at least as long as its opener closes the fence |
 | `test_an_html_comment_marker_inside_inline_code_does_not_hide_later_prose` | `0` | inline code cannot open an HTML comment |
+| `test_same_line_inline_code_does_not_satisfy_the_check` | `1` | hidden inline-code content does not count |
+| `test_a_shorter_fence_does_not_close_a_longer_fence` | `1` | a shorter run is not a closer |
+| `test_a_different_fence_marker_does_not_close_a_fence` | `1` | backticks and tildes cannot close each other |
 | `test_normal_prose_still_satisfies_the_check` | `0` | ordinary prose remains positive |
 | `test_a_glossary_of_the_words_does_not_satisfy_the_check` | `1` | vocabulary alone is not the canonical statement |
 | `test_a_weakened_sentence_does_not_satisfy_the_check` | `1` | hedging the limitation fails |

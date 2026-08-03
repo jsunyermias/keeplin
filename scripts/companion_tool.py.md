@@ -48,10 +48,11 @@ discovered, preventing new false positives.
 `reader_visible_markdown` exposes the fenced- and indented-code state machine that originated
 in the review-debt registry checker so other documentation gates do not grow a second grammar.
 It recognizes backtick or tilde fences with up to three leading spaces, closes them with the
-same marker at least as long as the opener, and recognizes blank-line-delimited code indented
-by four spaces or one tab. For the bounded-history check it also recognizes those fences after
-one blockquote marker, removes HTML comments outside code and same-line backtick code spans,
-and removes simple single-line link-reference definitions.
+same marker at least as long as the opener and at the same blockquote level where it opened,
+and recognizes code indented by four spaces or one tab at the document start or after a blank
+line. For the bounded-history check it also recognizes those fences after one blockquote
+marker, removes HTML comments outside code and same-line backtick code spans, and removes simple
+single-line link-reference definitions.
 
 This helper is a declared subset, not a CommonMark parser. It does not parse blockquotes deeper
 than one level; list-item continuation indentation or code blocks nested in list items; raw
@@ -111,8 +112,8 @@ discovery, uncovered shell prefixes, fence-only shell synchronization, ignored u
 types, mandatory whole-file SQL companions, stale SQL synchronization without source
 writes, and forbidden SQL markers.
 The Markdown-subset tests cover the bounded-history check through its integration suite,
-including longer fence closers, one-level blockquote fences, comment/fence ordering, inline
-code, single-line references, and one pinned example for every declared unsupported construct.
+including every declared supported construct, fence quote-level matching, and one pinned
+example for every declared unsupported construct.
 
 ## Related files
 

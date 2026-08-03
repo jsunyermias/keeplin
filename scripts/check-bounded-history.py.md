@@ -41,8 +41,8 @@ a second version. It recognizes and ignores:
 
 - backtick and tilde fenced code at the document margin or after one blockquote marker, with up
   to three leading spaces and a closing fence using the same marker at least as long as the
-  opener;
-- blank-line-delimited code indented by four spaces or one tab;
+  opener and appearing at the same blockquote level;
+- code indented by four spaces or one tab at the document start or after a blank line;
 - HTML comments outside code, including comments spanning lines;
 - same-line backtick code spans, so a literal `<!--` in inline code cannot open a comment;
 - simple single-line link-reference definitions with a nonempty label and destination. Every
