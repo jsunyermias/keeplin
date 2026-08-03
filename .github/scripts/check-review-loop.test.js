@@ -19,6 +19,7 @@ const {
   evaluateTrustedReviewLoop,
   journalComment,
   makeJournalRecord,
+  publishEvaluation,
   requireParsedFindings,
   sha256,
   verifyAuthorization,
@@ -486,6 +487,16 @@ test("malformed_app_journal_marker_is_history_unverifiable", () => {
   assert.match(result.message, /malformed marker or JSON/i);
 });
 
+test("configured_app_comment_with_second_malformed_marker_is_history_unverifiable", () => {
+  const comments = journalFixture();
+  comments[0].body += `\n${JOURNAL_MARKER}{not-json} -->`;
+  const result = trusted({ journalComments: comments });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.state, "history-unverifiable");
+  assert.match(result.message, /malformed marker or JSON/i);
+});
+
 test("limitation_F002_terminal_truncation_undetected", () => {
   const extendedJournal = journalFixture();
   const genuinelyTwoRecordJournal = journalFixture(2);
@@ -634,6 +645,25 @@ test("edited_authorization_cannot_regain_force_by_updating_head_digest", () => {
   assert.match(result.projectedFindings[0].disposalError, /body digest does not match/i);
 });
 
+test("reopened_finding_accepts_fresh_authorization_for_new_disposition", () => {
+  const dismissedBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-905", state: "dismissed", reason: "original priority decision" })} -->`;
+  const dismissed = { id: "F-905", reified: true, state: "dismissed", evidence: { referenceId: 905, author: "maintainer", bodyDigest: sha256(dismissedBody) } };
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: ["F-905"], findings: [dismissed] });
+  const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: ["F-905"], findings: [{ id: "F-905", reified: true, state: "open" }] });
+  const resolvedBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-905", state: "resolved", reason: "reopened defect now passes" })} -->`;
+  const resolved = { id: "F-905", reified: true, state: "resolved", evidence: { referenceId: 906, author: "maintainer", bodyDigest: sha256(resolvedBody), checkRunId: 6, checkName: "Check, Test & Lint" } };
+  const reference = { id: 906, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", body: resolvedBody };
+  const check = { id: 6, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
+  const result = trusted({
+    journalComments: [first, second].map((record) => journalComment(record, TRUST)),
+    findings: [resolved], references: [reference], checks: [check],
+  });
+
+  assert.equal(result.ok, true, result.message);
+  assert.equal(result.state, "converged");
+  assert.equal(result.projectedFindings[0].state, "resolved");
+});
+
 test("disposal_reference_from_another_pull_request_or_repository_is_refused", () => {
   const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-013", state: "dismissed", reason: "authorized" })} -->`;
   const finding = { id: "F-013", reified: true, state: "dismissed", evidence: { referenceId: 91, author: "maintainer", bodyDigest: sha256(body) } };
@@ -688,12 +718,36 @@ test("trusted_workflow_ignores_push_runs", () => {
   assert.match(workflow, /Only pull_request workflow runs are review rounds/);
 });
 
-test("trusted_workflow_serializes_each_pull_and_appends_once_per_run_attempt", () => {
+test("trusted_workflow_queues_pending_runs_and_documents_the_queue_bound", () => {
   const workflow = fs.readFileSync(".github/workflows/review-loop-evaluator.yml", "utf8");
-  assert.match(workflow, /^concurrency:\n  group: review-loop-\$\{\{ github\.event\.workflow_run\.pull_requests\[0\]\.number \}\}\n  cancel-in-progress: false$/m);
+  const workflowCompanion = fs.readFileSync(".github/workflows/review-loop-evaluator.yml.md", "utf8");
+  const scriptReadme = fs.readFileSync(".github/scripts/README.md", "utf8");
+  assert.match(workflow, /^concurrency:\n  group: review-loop-\$\{\{ github\.event\.workflow_run\.pull_requests\[0\]\.number \}\}\n  cancel-in-progress: false\n  queue: max$/m);
+  for (const documentation of [workflowCompanion, scriptReadme]) {
+    assert.match(documentation, /up to 100 pending runs/i);
+    assert.match(documentation, /queue (?:remains|is) bounded/i);
+  }
   assert.match(workflow, /runAttempt: run\.run_attempt/);
   assert.match(workflow, /record\.runId === run\.id && record\.runAttempt === run\.run_attempt/);
-  assert.match(workflow, /Journal observation already exists for this workflow run attempt/);
+  assert.match(workflow, /evaluator\.publishEvaluation/);
+});
+
+test("existing_failed_run_attempt_appends_nothing_reports_failure_and_sets_failed", async () => {
+  const calls = { appended: 0, conclusions: [], failures: [], info: [] };
+  const outcome = await publishEvaluation({
+    result: { ok: false, message: "one blocker remains" },
+    alreadyRecorded: true,
+    appendJournal: async () => { calls.appended += 1; },
+    reportCheck: async (conclusion) => { calls.conclusions.push(conclusion); },
+    setFailed: (message) => { calls.failures.push(message); },
+    info: (message) => { calls.info.push(message); },
+  });
+
+  assert.deepEqual(outcome, { appended: false, conclusion: "failure" });
+  assert.equal(calls.appended, 0);
+  assert.deepEqual(calls.conclusions, ["failure"]);
+  assert.deepEqual(calls.failures, ["one blocker remains"]);
+  assert.deepEqual(calls.info, []);
 });
 
 test("only named required jobs with positive success converge; forks fail closed", () => {

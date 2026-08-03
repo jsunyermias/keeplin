@@ -46,6 +46,25 @@ function markedJson(body, marker) {
   try { return JSON.parse(String(body).slice(start + marker.length, end)); } catch { return null; }
 }
 
+function markedJsonPayloads(body, marker) {
+  const source = String(body || "");
+  const payloads = [];
+  let cursor = 0;
+  while (cursor < source.length) {
+    const start = source.indexOf(marker, cursor);
+    if (start < 0) break;
+    const end = source.indexOf(" -->", start + marker.length);
+    if (end < 0) return { payloads, malformed: true };
+    try {
+      payloads.push(JSON.parse(source.slice(start + marker.length, end)));
+    } catch {
+      return { payloads, malformed: true };
+    }
+    cursor = end + 4;
+  }
+  return { payloads, malformed: false };
+}
+
 function verifyAuthorization({ finding, reference, pullAuthor, targetState, repositoryId, pullNumber, evidence = finding.evidence || {} }) {
   if (!reference) return { ok: false, reason: "authorization reference is unreachable" };
   if (reference.repositoryId !== repositoryId || reference.pullNumber !== pullNumber) return { ok: false, reason: "authorization reference is not bound to this repository and pull request" };
@@ -106,25 +125,22 @@ function journalPayloadError(record) {
 function verifyJournal(comments, config) {
   const records = [];
   for (const comment of comments || []) {
-    const body = String(comment.body || "");
-    const hasMarker = body.includes(JOURNAL_MARKER);
     const configuredApp = comment.app_slug === config.appSlug && comment.app_id === config.appId;
-    const record = markedJson(comment.body, JOURNAL_MARKER);
-    if (!record) {
-      if (hasMarker && configuredApp) return { ok: false, state: "history-unverifiable", message: "Configured App journal comment carries a malformed marker or JSON payload." };
-      continue;
+    const marked = markedJsonPayloads(comment.body, JOURNAL_MARKER);
+    if (marked.malformed && configuredApp) return { ok: false, state: "history-unverifiable", message: "Configured App journal comment carries a malformed marker or JSON payload." };
+    for (const record of marked.payloads) {
+      if (record.schema !== JOURNAL_SCHEMA || record.repositoryId !== config.repositoryId || record.workflowId !== config.workflowId || record.appSlug !== config.appSlug || record.appId !== config.appId || comment.app_slug !== config.appSlug || comment.app_id !== config.appId) return { ok: false, state: "history-unverifiable", message: "Journal producer, repository, workflow or schema does not match configuration." };
+      const digest = sha256(canonicalJson({ ...record, digest: undefined }));
+      if (record.digest !== digest) return { ok: false, state: "history-unverifiable", message: "Journal record content does not match its carried digest." };
+      // A matching unkeyed digest catches accidental corruption but is not provenance against a
+      // workflow that shares the App identity and can rebuild the chain. A payload the evaluator
+      // cannot read is not evidence of an empty round, so a
+      // malformed one fails closed here rather than being skipped downstream — skipping it would
+      // silently discard the reification history that authorized disposal depends on.
+      const shape = journalPayloadError(record);
+      if (shape) return { ok: false, state: "history-unverifiable", message: `Journal record ${record.observation} is authentic but unreadable: ${shape}.` };
+      records.push({ ...record, commentId: comment.id });
     }
-    if (record.schema !== JOURNAL_SCHEMA || record.repositoryId !== config.repositoryId || record.workflowId !== config.workflowId || record.appSlug !== config.appSlug || record.appId !== config.appId || comment.app_slug !== config.appSlug || comment.app_id !== config.appId) return { ok: false, state: "history-unverifiable", message: "Journal producer, repository, workflow or schema does not match configuration." };
-    const digest = sha256(canonicalJson({ ...record, digest: undefined }));
-    if (record.digest !== digest) return { ok: false, state: "history-unverifiable", message: "Journal record content does not match its carried digest." };
-    // A matching unkeyed digest catches accidental corruption but is not provenance against a
-    // workflow that shares the App identity and can rebuild the chain. A payload the evaluator
-    // cannot read is not evidence of an empty round, so a
-    // malformed one fails closed here rather than being skipped downstream — skipping it would
-    // silently discard the reification history that authorized disposal depends on.
-    const shape = journalPayloadError(record);
-    if (shape) return { ok: false, state: "history-unverifiable", message: `Journal record ${record.observation} is authentic but unreadable: ${shape}.` };
-    records.push({ ...record, commentId: comment.id });
   }
   records.sort((a, b) => a.observation - b.observation);
   for (let index = 0; index < records.length; index += 1) {
@@ -134,12 +150,15 @@ function verifyJournal(comments, config) {
   return { ok: true, records };
 }
 
-function recordedFindingEvidence(records, findingId) {
+function recordedDispositionEvidence(records, findingId, targetState) {
   for (let index = records.length - 1; index >= 0; index -= 1) {
     const findings = records[index].findings;
     if (!Array.isArray(findings)) continue;
     const finding = findings.find((item) => item && item.id === findingId);
-    if (finding && finding.evidence && typeof finding.evidence === "object" && !Array.isArray(finding.evidence)) return finding.evidence;
+    if (!finding) continue;
+    if (finding.state !== targetState) return null;
+    if (finding.evidence && typeof finding.evidence === "object" && !Array.isArray(finding.evidence)) return finding.evidence;
+    return null;
   }
   return null;
 }
@@ -190,12 +209,12 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
     // reifying record still allows an advisory classification to converge.
     const declassified = everReified.has(finding.id) && (!finding.reified || finding.state === ADVISORY);
     if (!["resolved", "dismissed"].includes(finding.state) && !declassified) return finding;
-    const evidence = recordedFindingEvidence(journal.records, finding.id) || finding.evidence || {};
+    const evidence = recordedDispositionEvidence(journal.records, finding.id, finding.state) || finding.evidence || {};
     const reference = references.find((item) => String(item.id) === String(evidence.referenceId));
     const authorization = verifyAuthorization({ finding, reference, pullAuthor: pull.author, targetState: finding.state, repositoryId: config.repositoryId, pullNumber: pull.number, evidence });
     if (!authorization.ok) return { ...finding, reified: true, state: "open", disposalError: authorization.reason };
     if (finding.state === "resolved") {
-      const proof = verifyResolvedCheck({ finding, checks, headSha: pull.headSha, config });
+      const proof = verifyResolvedCheck({ finding: { ...finding, evidence }, checks, headSha: pull.headSha, config });
       if (!proof.ok) return { ...finding, state: "open", disposalError: proof.reason };
     }
     return finding;
@@ -231,6 +250,14 @@ function makeJournalRecord(fields) {
 
 function journalComment(record, identity) {
   return { id: record.observation, app_slug: identity.appSlug, app_id: identity.appId, body: `${JOURNAL_MARKER}${JSON.stringify(record)} -->` };
+}
+
+async function publishEvaluation({ result, alreadyRecorded, appendJournal, reportCheck, setFailed, info }) {
+  if (!alreadyRecorded) await appendJournal();
+  await reportCheck(result.ok ? "success" : "failure");
+  if (!result.ok) setFailed(result.message);
+  else if (alreadyRecorded) info("Journal observation already exists for this workflow run attempt; no duplicate was appended.");
+  return { appended: !alreadyRecorded, conclusion: result.ok ? "success" : "failure" };
 }
 
 function escapeRegex(value) {
@@ -740,6 +767,7 @@ module.exports = {
   journalComment,
   levelTwoSection,
   makeJournalRecord,
+  publishEvaluation,
   sha256,
   verifyAuthorization,
   verifyJournal,

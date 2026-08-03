@@ -57,14 +57,18 @@ only the newest one, so retiring an ID with an authorized tombstone does not let
 unreified. A finding that names a mechanical check cannot simultaneously use `advisory` state.
 Forks deliberately fail closed.
 
-Only `pull_request` runs of the configured CI workflow count as review rounds; its parallel
-`push` run is ignored. Evaluations are serialized by pull-request number, and journal append is
-idempotent for each workflow run ID and attempt, so concurrent completions and delivery retries
-cannot create sibling records. A configured-App comment carrying the journal marker but malformed
-JSON fails closed instead of disappearing. Every ID observed in surviving history remains
+Only `pull_request` runs of the configured CI workflow are eligible as review rounds; its parallel
+`push` run is ignored. Evaluations are serialized by pull-request number with `queue: max`, which
+retains up to 100 pending runs instead of replacing all but the newest one. The queue is bounded;
+additional runs are canceled when it is full, so the journal does not claim unbounded retention of
+every completion. Journal append is idempotent for each delivered workflow run ID and attempt; a
+retry republishes its success or failure result and a blocked retry fails the workflow without
+appending again. Every journal marker occurrence in a configured-App comment is parsed, so a
+malformed second payload fails closed instead of disappearing. Every ID observed in surviving history remains
 reserved after retirement, including IDs first recorded as advisory. Once authorization evidence
-has been written to the journal, later evaluations bind to that recorded identity, author and body
-digest rather than an author-editable replacement in the current ledger.
+has been written for the latest disposition, later evaluations of that same disposition bind to
+the recorded identity, author and body digest rather than an author-editable replacement in the
+current ledger. If a finding is subsequently reopened, a later disposition uses fresh evidence.
 
 The App comment journal's guarantees are bounded: its unkeyed digest chain detects accidental
 corruption and casual editing that does not rebuild the chain. It does not authenticate records

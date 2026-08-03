@@ -8,6 +8,7 @@ on:
 concurrency:
   group: review-loop-${{ github.event.workflow_run.pull_requests[0].number }}
   cancel-in-progress: false
+  queue: max
 
 permissions:
   actions: read
@@ -115,11 +116,15 @@ jobs:
               core.setFailed(result.message);
               return;
             }
-            if ((result.records || []).some((record) => record.runId === run.id && record.runAttempt === run.run_attempt)) {
-              return core.info('Journal observation already exists for this workflow run attempt; no duplicate was appended.');
-            }
-            const prior = result.records && result.records[result.records.length - 1];
-            const record = evaluator.makeJournalRecord({ ...config, observation: prior ? prior.observation + 1 : 1, priorDigest: prior ? prior.digest : null, headSha: pull.head.sha, findingIds: (result.projectedFindings || []).map((finding) => finding.id), findings: result.projectedFindings || [], stateHash: result.currentHash, blocking: result.blocking });
-            await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: pull.number, body: evaluator.JOURNAL_MARKER + JSON.stringify(record) + ' -->\n\n' + result.message });
-            await github.rest.checks.create({ owner: context.repo.owner, repo: context.repo.repo, name: 'Review loop converged', head_sha: pull.head.sha, status: 'completed', conclusion: result.ok ? 'success' : 'failure', output: { title: result.state, summary: result.message } });
-            if (!result.ok) core.setFailed(result.message);
+            const alreadyRecorded = (result.records || []).some((record) => record.runId === run.id && record.runAttempt === run.run_attempt);
+            await evaluator.publishEvaluation({
+              result, alreadyRecorded,
+              appendJournal: async () => {
+                const prior = result.records && result.records[result.records.length - 1];
+                const record = evaluator.makeJournalRecord({ ...config, observation: prior ? prior.observation + 1 : 1, priorDigest: prior ? prior.digest : null, headSha: pull.head.sha, findingIds: (result.projectedFindings || []).map((finding) => finding.id), findings: result.projectedFindings || [], stateHash: result.currentHash, blocking: result.blocking });
+                await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: pull.number, body: evaluator.JOURNAL_MARKER + JSON.stringify(record) + ' -->\n\n' + result.message });
+              },
+              reportCheck: async (conclusion) => github.rest.checks.create({ owner: context.repo.owner, repo: context.repo.repo, name: 'Review loop converged', head_sha: pull.head.sha, status: 'completed', conclusion, output: { title: result.state, summary: result.message } }),
+              setFailed: (message) => core.setFailed(message),
+              info: (message) => core.info(message),
+            });
