@@ -412,6 +412,29 @@ class CompanionToolTests(unittest.TestCase):
         )
         self.assertEqual(self._review_debt(text), [])
 
+    def test_review_debt_table_inside_indented_code_block_is_ignored(self) -> None:
+        text = fixture_text("review_debt.valid.md.fixture").replace(
+            "## Open\n\n",
+            "## Notes\n\nExample, not an entry:\n\n"
+            "    | Merged | Change | Implementer | What went unreviewed | Follow-up |\n"
+            "    |---|---|---|---|---|\n"
+            "    | 2026-01-01 | none | none | none | none |\n\n## Open\n\n",
+            1,
+        )
+        self.assertEqual(self._review_debt(text), [])
+
+    def test_review_debt_indented_table_cannot_interrupt_paragraph(self) -> None:
+        text = fixture_text("review_debt.valid.md.fixture").replace(
+            "## Open\n\n",
+            "## Notes\n\nExample, not an entry:\n"
+            "    | Merged | Change | Implementer | What went unreviewed | Follow-up |\n"
+            "    |---|---|---|---|---|\n"
+            "    | 2026-01-01 | none | none | none | none |\n\n## Open\n\n",
+            1,
+        )
+        errors = self._review_debt(text)
+        self.assertTrue(any("ROW under unrecognized heading '## Notes'" in error for error in errors))
+
     def test_review_debt_placeholder_marks_an_empty_section_only(self) -> None:
         text = fixture_text("review_debt.valid.md.fixture")
         empty = text.split("## Cleared")[0] + "## Cleared\n\n| Merged | Change | Reviewer | Review |\n|---|---|---|---|\n| — | — | — | — |\n"

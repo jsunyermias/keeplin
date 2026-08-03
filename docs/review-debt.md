@@ -32,7 +32,17 @@ than once or sit in both sections. Rows under any other level-two heading are mi
 fail with that heading named. Only the row immediately after a table header may be its
 separator. Empty strings, `—`, `-`, `TBD` and `pendiente` are unanswered; a row whose cells
 are all `—` marks a genuinely empty section and fails next to real entries. The check is
-offline: it validates link shape, not pull-request state.
+offline: it validates link shape, not pull-request state. Examples inside backtick or tilde
+fences are ignored, as are simple code blocks that begin after a blank line and indent every
+non-blank line by at least four spaces. Indented list-item continuations are not recognized as
+code; use a fence for examples nested in a list.
+
+For example, this indented code block shows the five fields of an open entry without becoming
+registry content:
+
+    | Merged | Change | Implementer | What went unreviewed | Follow-up |
+    |---|---|---|---|---|
+    | 2026-01-01 | [keeplin#123](https://github.com/jsunyermias/keeplin/pull/123) — short scope | Model family or person | Concrete diff and defect class left unchecked | [Follow-up issue](https://github.com/jsunyermias/keeplin/issues/124) |
 
 What no check can see is whether the review happened. A named reviewer and a linked thread
 are a claim; the registry keeps that claim visible and attributable, which is the most a

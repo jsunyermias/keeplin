@@ -27,7 +27,9 @@ in the companion, and that adding `-- md:` markers is rejected.
 The review-debt cases pin exact section placement, separator position and answered-cell
 semantics: rows under a heading other than exact `## Open` or `## Cleared` fail with that
 heading named, an all-hyphen data row cannot masquerade as a separator, and `-`, `TBD` and
-`pendiente` are rejected as unanswered.
+`pendiente` are rejected as unanswered. Fenced examples and simple indented code blocks are
+ignored, while four-space-indented tables immediately following paragraph text remain subject
+to row validation because CommonMark does not let such a block interrupt a paragraph.
 
 ## Fixtures
 

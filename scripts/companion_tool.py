@@ -944,6 +944,8 @@ def _review_debt_rows(text: str) -> tuple[dict[str, list[tuple[int, list[str]]]]
     separator_expected: set[str] = set()
     unrecognized_table_rows: dict[str, int] = {}
     fence: str | None = None
+    indented_code = False
+    previous_blank = False
     for number, line in enumerate(text.splitlines(), start=1):
         stripped = line.strip()
         fence_match = re.match(r"^\s{0,3}(`{3,}|~{3,})(.*)$", line)
@@ -951,12 +953,22 @@ def _review_debt_rows(text: str) -> tuple[dict[str, list[tuple[int, list[str]]]]
             marker, suffix = fence_match.groups()
             if fence is None:
                 fence = marker
+                previous_blank = False
                 continue
             if marker[0] == fence[0] and len(marker) >= len(fence) and not suffix.strip():
                 fence = None
+                previous_blank = False
                 continue
         if fence is not None:
             continue
+        if indented_code:
+            if not stripped or line.startswith("    "):
+                continue
+            indented_code = False
+        if previous_blank and line.startswith("    "):
+            indented_code = True
+            continue
+        previous_blank = not stripped
         if stripped.startswith("## "):
             heading = stripped[3:].strip()
             current_heading = heading

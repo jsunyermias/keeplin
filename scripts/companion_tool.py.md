@@ -86,7 +86,9 @@ request recorded more than once or in both sections. A table row under any other
 heading is rejected and names that heading, so displaced entries cannot become invisible.
 Only the row immediately after a table header may be a separator; a later separator-like
 row is malformed. Empty strings, `—`, `-`, `TBD` and `pendiente` are unanswered cells.
-Fenced examples are ignored. A row
+Fenced examples and simple blank-line-delimited code blocks indented by at least four spaces
+are ignored. The indented-block recognizer deliberately does not model list-item continuation
+indentation, so examples nested in lists should use fences. A row
 whose cells are all `—` marks an empty section and is rejected when real entries sit beside
 it. The check is deliberately offline: it validates URL shape, not pull-request state.
 
@@ -114,8 +116,9 @@ types, mandatory whole-file SQL companions, stale SQL synchronization without so
 writes, and forbidden SQL markers. For the review-debt registry it covers a valid table, a
 missing file, an empty cell, an entry without a pull request link, a duplicate pull request
 within one section, the same pull request open and cleared at once, a cleared entry with no
-HTTP(S) link, an altered column header, a missing section, fenced examples, offline URL-shape
-validation, displaced rows, late separator-like rows, unanswered placeholder cells, and
+HTTP(S) link, an altered column header, a missing section, fenced and indented examples,
+paragraph-interrupting indented tables, offline URL-shape validation, displaced rows,
+late separator-like rows, unanswered placeholder cells, and
 the empty-section placeholder both alone and beside real entries.
 
 ## Related files
