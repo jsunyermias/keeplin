@@ -242,8 +242,9 @@ protection, which is configured outside this repository and which no script here
 **not** upheld by
 the evaluator: `check-review-governance.js` runs inside the head-controlled `ci.yml`, so a head
 can weaken the step while the job still reports success, and the evaluator has no evidence the
-gate ran. [ADR 0009](docs/adr/0009-governance-evaluated-from-the-default-branch.md) proposes
-moving governance into the default-branch evaluator; it is unimplemented while proposed.
+gate ran. [ADR 0009](docs/adr/0009-governance-evaluated-from-the-default-branch.md) accepts
+moving governance into the default-branch evaluator; implementation is pending in a dedicated
+pull request.
 
 Start shared analysis with `docs/prompts/0.A-prompt-comun.md`. The default role split is
 advisory: Claude documents and prepares issues, Kimi implements with

@@ -1,12 +1,13 @@
 # 0009 — Review governance is evaluated from the default branch
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-08-03
 - Decision owners: maintainer of `jsunyermias/keeplin` and `jsunyermias/keeplin-srv`
 - Scope: cross-repo
 - Issue: none — F-025 from the round-9 review of
   [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198)
-- Acceptance PR: none yet
+- Acceptance PR: [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198), with
+  [keeplin-srv#104](https://github.com/jsunyermias/keeplin-srv/pull/104) as its companion
 - Supersedes: none. Extends [0008](0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md)
 - Superseded by: none
 

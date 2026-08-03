@@ -68,7 +68,8 @@ deliberately does not provide.
 Neither script discharges independent review, and `check-review-loop.js` does not weaken
 `check-review-governance.js`. The two gates are conjunctive as policy, not yet as mechanism:
 governance runs inside the head-controlled workflow, so the trusted evaluator cannot prove it
-ran. ADR 0009 proposes moving it into the evaluator and is unimplemented while proposed.
+ran. ADR 0009 accepts moving it into the evaluator; implementation is pending in a dedicated
+pull request.
 
 Both scripts are intentionally dependency-free so the workflow can load them from
 `actions/github-script`. Run their regression suites locally with:

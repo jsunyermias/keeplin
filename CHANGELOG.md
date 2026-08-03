@@ -41,10 +41,10 @@ version and the wire protocol version move independently.
   was skipped rather than failing. F-030 and F-031 bound two overclaims — branch protection is
   not verified by anything here, and ADR 0009 moves the governance *rules* out of the head's
   reach but not the *evidence* they read.
-- **F-025 is open and blocking, awaiting a maintainer decision.** `check-review-governance.js`
-  runs inside the head-controlled `ci.yml`, so the trusted evaluator has no evidence it ran and
-  the documented conjunction of the two gates is policy, not mechanism. ADR 0009 proposes moving
-  governance into the default-branch evaluator and stays unimplemented while proposed.
+- **F-025 is dismissed against accepted ADR 0009.** The maintainer accepted the decision to move
+  governance into the default-branch evaluator. The mechanism is unchanged until ADR 0009 is
+  implemented in its own dedicated pull request: `check-review-governance.js` still runs inside
+  the head-controlled `ci.yml`, so the documented conjunction remains policy, not mechanism.
 
 ### Deterministic convergence for the review loop (keeplin ADR 0004)
 
