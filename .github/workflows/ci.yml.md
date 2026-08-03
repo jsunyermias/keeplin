@@ -14,9 +14,12 @@ start with `claude/`.
 | `push` | `main`, `claude/**` |
 | `pull_request` | target branch: `main`; events `opened`, `synchronize`, `reopened`, `edited`, `ready_for_review` |
 
-The workflow has read-only access to repository contents and pull-request metadata. Body
-edits retrigger it so completing or removing review evidence is reflected in the required
-check without a new commit.
+The workflow has read-only access to repository contents, pull-request metadata and check
+runs. The `checks: read` scope exists for the review-loop convergence step, which reads the
+head commit's check runs to build the set of red required checks; without it that set would
+read as empty and a failing pull request could be declared converged. Body edits retrigger
+the workflow, so completing or removing review evidence — and editing the review ledger — is
+reflected in the required check without a new commit.
 
 ## Environment variables
 
@@ -34,8 +37,9 @@ Runs on `ubuntu-latest`.
 | Step | Action / Command | Purpose |
 |------|-----------------|---------|
 | Checkout | `actions/checkout@v4` | Clones the repository at the triggering commit |
-| Test pull-request governance check | `node --test .github/scripts/check-review-governance.test.js` | Exercises the reviewed and maintainer-waiver paths, including negative cases |
+| Test pull-request governance checks | `node --test` over `check-review-governance.test.js` and `check-review-loop.test.js` | Exercises the reviewed and maintainer-waiver paths, and the convergence, recurrence, advisory and stagnation paths, including negative cases |
 | Check pull-request review governance | `actions/github-script@v7` (non-draft pull requests only) | Requires either an independent review with evidence, or a complete maintainer waiver whose exact PR is recorded in the changed `docs/review-debt.md` |
+| Check review-loop convergence | `actions/github-script@v7` (non-draft pull requests only) | Requires the loop to converge mechanically — required checks green and zero open reified findings — and escalates a stalled loop to `docs/review-stalls.md` instead of letting it iterate silently (keeplin ADR 0004) |
 | Install Python | `actions/setup-python@v5` (`3.12`) | Provides the standard-library runtime used by the deterministic companion checks |
 | Check companion docs | `./scripts/check-docs.sh` | Enforces structure, exact source↔fence fidelity and the generated context manifest (the two-layer navigation model) |
 | Test companion tooling | `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` | Exercises syntax fixtures, drift/error detection, fence-only sync and reproducible packs |
@@ -84,8 +88,36 @@ rebuilt from scratch.
   rather than `--workspace` because the suites are logically independent and
   this makes it easier to identify which crate a failure belongs to.
 
+## Review-loop convergence
+
+The `Check review-loop convergence` step implements
+[keeplin ADR 0004](../../docs/adr/0004-review-loop-convergence.md). It reads the `## Review
+ledger` section of the pull-request body, the changed files, and the head commit's check
+runs, then decides one of four states:
+
+| State | Meaning | Check |
+|-------|---------|-------|
+| `converged` | Required checks green and no reified finding open | passes |
+| `converging` | The blocking set is non-empty but shrinking | fails |
+| `escalated` | The loop state repeated, or the blocking set has not shrunk for `REVIEW_LOOP_STAGNATION_LIMIT` rounds | fails, and demands a `docs/review-stalls.md` entry naming this pull request |
+| `malformed` | The ledger or round log contradicts the observed state | fails |
+
+`REVIEW_LOOP_STAGNATION_LIMIT` is set to `3` on the step and falls back to the script's
+`DEFAULT_STAGNATION_LIMIT`. The brake measures state, not elapsed time: the loop-state hash
+is `sha256(normalized diff ‖ open reified finding IDs ‖ red check names)`, where the
+normalized diff is the changed paths with their blob SHAs, sorted, so commit ordering does
+not affect it.
+
+This step is a floor beneath `Check pull-request review governance`, never a substitute for
+it. The two are conjunctive: a pull request can converge and still be unmergeable for want of
+an independent reviewer.
+
 ## Related files
 
+- `.github/scripts/check-review-loop.js` — the convergence and stagnation evaluator
+- `.github/scripts/check-review-governance.js` — the independent-review and waiver evaluator
+- `docs/adr/0004-review-loop-convergence.md` — the accepted decision this step implements
+- `docs/review-stalls.md` — the durable record of escalated loops
 - `.github/workflows/` — directory containing all GitHub Actions workflow files
 - `keeplin-daemon/build.rs` — the build script that requires `protoc`
 - `keeplin-daemon/proto/keeplin.proto` — compiled by `protoc` during the build

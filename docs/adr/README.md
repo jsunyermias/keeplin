@@ -79,7 +79,7 @@ the fix crosses a decision boundary.
 | [0001 — Current synchronization delivery semantics](0001-current-sync-delivery.md) | accepted (retrospective) | cross-repo | [keeplin#150](https://github.com/jsunyermias/keeplin/issues/150), [keeplin#151](https://github.com/jsunyermias/keeplin/issues/151), [keeplin-srv#74](https://github.com/jsunyermias/keeplin-srv/issues/74), [keeplin-srv#75](https://github.com/jsunyermias/keeplin-srv/issues/75) |
 | [0002 — Shared domain model and server projections](0002-shared-domain-model.md) | accepted (retrospective) | cross-repo | current implementation |
 | [0003 — Versioned persistent formats and forward migrations](0003-versioned-persistence.md) | accepted (retrospective) | cross-repo | current implementation |
-| [0004 — Deterministic convergence and a stagnation brake for the review loop](0004-review-loop-convergence.md) | proposed | cross-repo | `.github/scripts/check-review-loop.js` in both repositories |
+| [0004 — Deterministic convergence and a stagnation brake for the review loop](0004-review-loop-convergence.md) | accepted | cross-repo | [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198), [keeplin-srv#104](https://github.com/jsunyermias/keeplin-srv/pull/104); implemented by `.github/scripts/check-review-loop.js` in both repositories |
 
 The first prospective use of this framework is
 [keeplin#143](https://github.com/jsunyermias/keeplin/issues/143), which must create its E2EE

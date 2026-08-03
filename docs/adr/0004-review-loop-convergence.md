@@ -1,11 +1,13 @@
 # 0004 — Deterministic convergence and a stagnation brake for the review loop
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-08-03
 - Decision owners: maintainer of `jsunyermias/keeplin` and `jsunyermias/keeplin-srv`
 - Scope: cross-repo
-- Issue: link to the originating issue
-- Acceptance PR: link once the ADR is accepted
+- Issue: none — this decision originates from a maintainer order rather than a tracked issue;
+  the order's text and the step-0 findings that justify it are recorded in the acceptance PR
+- Acceptance PR: [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198), with
+  [keeplin-srv#104](https://github.com/jsunyermias/keeplin-srv/pull/104) as its companion
 - Supersedes: none
 - Superseded by: none
 
@@ -133,8 +135,9 @@ assessment: repeated observation that genuine blockers are being filed advisory.
 
 ## Decision and justification
 
-This ADR proposes option D. Its recommendation is stated below as a set of invariants; it is
-not approved until the maintainer moves this ADR to `accepted`.
+Option D is chosen. The maintainer accepted this decision in the acceptance PR above; the
+invariants below are binding from that point, and this decision body is historical record from
+here on. A later change to any invariant requires a new superseding ADR, not an edit to this one.
 
 1. **Reification is the blocking criterion.** A finding blocks a pull request only if it is
    reified: expressed as a named artifact that fails mechanically — a test, a property, a
@@ -269,5 +272,10 @@ because it binds both repositories and neither is subordinate to the other for g
 
 No dependency pin is affected: the decision touches no `keeplin-core` surface, so the
 server's pinned revision of the core crate is unchanged. The paired work is two coordinated
-pull requests — one per repository — carrying byte-identical checker, suite, template and
-workflow changes, each linking the other.
+pull requests, one per repository, each linking the other. The checker, its suite, the
+pull-request template, the prompts and `docs/review-stalls.md` are byte-identical across the
+two repositories, which is what makes the rule the same rule on both sides. The workflow files
+are not and cannot be identical — `keeplin-srv` runs a PostgreSQL service container and a
+different test matrix — so only the two governance steps and the `checks: read` permission are
+copied verbatim into it. `AGENTS.md` and the changelogs are per repository and state the same
+invariants in their own terms.

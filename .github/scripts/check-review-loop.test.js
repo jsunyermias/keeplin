@@ -1,0 +1,364 @@
+"use strict";
+
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const {
+  DEFAULT_STAGNATION_LIMIT,
+  STALLS_PATH,
+  diffSignatureFromFiles,
+  evaluateReviewLoop,
+  loopStateHash,
+  redChecksFromRuns,
+} = require("./check-review-loop.js");
+
+const REPOSITORY = "jsunyermias/keeplin";
+const PULL_NUMBER = 200;
+const DIFF = diffSignatureFromFiles([
+  { filename: "keeplin-core/src/format.rs", status: "modified", sha: "aaaa111" },
+]);
+
+function ledger(findingRows, roundRows, extra = "") {
+  return `## Review ledger
+
+| ID | Round | Reified by | State | Resolution |
+|---|---|---|---|---|
+${findingRows.join("\n")}
+
+### Round log
+
+| Round | Loop-state hash | Blocking |
+|---|---|---|
+${roundRows.join("\n")}
+${extra}
+## Merge readiness
+`;
+}
+
+function round(number, openReifiedIds, redChecks, blocking) {
+  const hash = loopStateHash({ diffSignature: DIFF, openReifiedIds, redChecks });
+  return `| ${number} | ${hash} | ${blocking} |`;
+}
+
+function evaluate(body, overrides = {}) {
+  return evaluateReviewLoop({
+    body,
+    changedFiles: [],
+    stallsContent: "",
+    repository: REPOSITORY,
+    pullNumber: PULL_NUMBER,
+    redChecks: [],
+    diffSignature: DIFF,
+    ...overrides,
+  });
+}
+
+test("a body without a review ledger is rejected", () => {
+  const result = evaluate("## Summary\n\nNothing else.");
+  assert.equal(result.ok, false);
+  assert.equal(result.state, "malformed");
+  assert.match(result.message, /no 'Review ledger' section/i);
+});
+
+test("an empty ledger converges on green required checks alone", () => {
+  const result = evaluate(ledger([], []));
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "converged");
+});
+
+test("an empty ledger does not converge while a required check is red", () => {
+  const result = evaluate(ledger([], []), { redChecks: ["Check, Test & Lint"] });
+  assert.equal(result.ok, false);
+  assert.equal(result.state, "converging");
+  assert.match(result.message, /Check, Test & Lint/);
+});
+
+// Convergence: declared only with required checks green and zero open reified findings.
+
+test("convergence needs zero open reified findings", () => {
+  const rows = [`| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | open | |`];
+  const result = evaluate(ledger(rows, [round(1, ["F-001"], [], 1)]));
+  assert.equal(result.ok, false);
+  assert.equal(result.state, "converging");
+  assert.match(result.message, /F-001/);
+});
+
+test("convergence needs green required checks even with no open findings", () => {
+  const rows = [`| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | resolved | fixed in abc1234 |`];
+  const result = evaluate(ledger(rows, [round(1, [], ["Knowledge graph up to date"], 1)]), {
+    redChecks: ["Knowledge graph up to date"],
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.state, "converging");
+});
+
+test("convergence is declared with green checks and every finding disposed", () => {
+  const rows = [
+    `| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | resolved | fixed in abc1234 |`,
+    `| F-002 | 1 | advisory | advisory | Naming preference; recorded, not blocking. |`,
+    `| F-003 | 2 | advisory | dismissed | Out of scope per keeplin ADR 0003. |`,
+  ];
+  const result = evaluate(ledger(rows, [round(1, [], [], 0)]));
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "converged");
+  assert.match(result.message, /1 advisory/);
+});
+
+// The satisfied-reviewer condition is not accepted anywhere.
+
+test("a ticked 'blocking findings are resolved' box does not converge an open reified finding", () => {
+  const rows = [`| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | open | |`];
+  const body = ledger(
+    rows,
+    [round(1, ["F-001"], [], 1)],
+    "\n- [x] Blocking findings are resolved and conversations are closed.\n",
+  );
+  const result = evaluate(body);
+  assert.equal(result.ok, false);
+  assert.equal(result.state, "malformed");
+  assert.match(result.message, /never a reviewer's satisfaction/i);
+});
+
+// Advisory: a finding with no failing check does not block the merge.
+
+test("an advisory finding does not block convergence", () => {
+  const rows = [
+    `| F-001 | 1 | advisory | advisory | Readability concern; no check can express it. |`,
+    `| F-002 | 1 | advisory | advisory | Prefer a different helper name. |`,
+  ];
+  const result = evaluate(ledger(rows, [round(1, [], [], 0)]));
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "converged");
+});
+
+test("an open finding naming no failing check is rejected as unclassified", () => {
+  const rows = [`| F-001 | 1 | advisory | open | |`];
+  const result = evaluate(ledger(rows, [round(1, [], [], 0)]));
+  assert.equal(result.ok, false);
+  assert.equal(result.state, "malformed");
+  assert.match(result.message, /open but names no failing check/i);
+});
+
+// Recurrence: a dismissed-with-reason finding does not restart the loop.
+
+test("a dismissed finding with a cited reason does not block or restart the loop", () => {
+  const rows = [
+    `| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | dismissed | Deferred per keeplin ADR 0001; delivery gap is recorded there. |`,
+  ];
+  const result = evaluate(ledger(rows, [round(1, [], [], 0)]));
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "converged");
+});
+
+test("re-raising a dismissed finding under its own ID keeps it dismissed", () => {
+  const rows = [
+    `| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | dismissed | Priority call: tracked by keeplin#151. |`,
+    `| F-002 | 4 | advisory | advisory | Reviewer raised F-001 again in round 4; already dismissed, not reopened. |`,
+  ];
+  const result = evaluate(ledger(rows, [round(1, [], [], 0)]));
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "converged");
+});
+
+test("a duplicate finding ID is rejected so a dismissal cannot be silently overwritten", () => {
+  const rows = [
+    `| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | dismissed | Priority call: tracked by keeplin#151. |`,
+    `| F-001 | 4 | \`tests/collab.rs::rejects_replay\` | open | |`,
+  ];
+  const result = evaluate(ledger(rows, [round(1, [], [], 0)]));
+  assert.equal(result.ok, false);
+  assert.match(result.message, /appears more than once/i);
+});
+
+test("a dismissal without a cited reason is rejected", () => {
+  const rows = [`| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | dismissed | |`];
+  const result = evaluate(ledger(rows, [round(1, [], [], 0)]));
+  assert.equal(result.ok, false);
+  assert.match(result.message, /dismissed without a cited reason/i);
+});
+
+// Stagnation: escalate instead of iterating, and detect a repeated state by hash.
+
+test("a repeated loop-state hash escalates and names the stuck item", () => {
+  const rows = [`| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | open | |`];
+  const repeated = round(1, ["F-001"], [], 1);
+  const body = ledger(rows, [repeated, `| 2 | ${repeated.split("|")[2].trim()} | 1 |`]);
+  const result = evaluate(body);
+  assert.equal(result.ok, false);
+  assert.equal(result.state, "escalated");
+  assert.match(result.message, /byte-identical to round 1/i);
+  assert.match(result.message, /F-001/);
+});
+
+// Churn without progress: the implementer pushes every round, so the diff — and therefore the
+// loop-state hash — differs each time and the repeat rule never fires. Only the monotonic
+// progress rule can catch this, which is why it exists alongside the hash.
+
+test("a blocking set that does not shrink escalates at K rounds and not before", () => {
+  const rows = [`| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | open | |`];
+  const churned = (n, blocking) =>
+    `| ${n} | ${loopStateHash({
+      diffSignature: `round-${n}-diff`,
+      openReifiedIds: ["F-001"],
+      redChecks: [],
+    })} | ${blocking} |`;
+  const current = (n, blocking) =>
+    `| ${n} | ${loopStateHash({
+      diffSignature: DIFF,
+      openReifiedIds: ["F-001"],
+      redChecks: [],
+    })} | ${blocking} |`;
+
+  const beforeLimit = evaluate(ledger(rows, [churned(1, 3), churned(2, 3), current(3, 1)]));
+  assert.equal(beforeLimit.state, "converging", beforeLimit.message);
+
+  const atLimit = evaluate(
+    ledger(rows, [churned(1, 1), churned(2, 1), churned(3, 1), current(4, 1)]),
+  );
+  assert.equal(atLimit.ok, false);
+  assert.equal(atLimit.state, "escalated");
+  assert.match(atLimit.message, new RegExp(`limit ${DEFAULT_STAGNATION_LIMIT}`));
+  assert.match(atLimit.message, /F-001/);
+});
+
+test("an escalation demands a review-stalls entry naming this exact pull request", () => {
+  const rows = [`| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | open | |`];
+  const repeated = round(1, ["F-001"], [], 1);
+  const hash = repeated.split("|")[2].trim();
+  const body = ledger(rows, [repeated, `| 2 | ${hash} | 1 |`]);
+
+  const missingFile = evaluate(body);
+  assert.match(missingFile.message, new RegExp(`record it in ${STALLS_PATH}`, "i"));
+
+  const wrongPull = evaluate(body, {
+    changedFiles: [STALLS_PATH],
+    stallsContent: `Stalled: https://github.com/${REPOSITORY}/pull/199`,
+  });
+  assert.equal(wrongPull.state, "escalated");
+  assert.match(wrongPull.message, /must identify this exact pull request/i);
+
+  const recorded = evaluate(body, {
+    changedFiles: [STALLS_PATH],
+    stallsContent: `Stalled on F-001: https://github.com/${REPOSITORY}/pull/${PULL_NUMBER}.`,
+  });
+  assert.equal(recorded.ok, false, "a recorded stall is still not a merge");
+  assert.equal(recorded.state, "escalated");
+  assert.match(recorded.message, /escalated to the maintainer/i);
+});
+
+test("a stagnant loop that has actually converged is not escalated", () => {
+  const rows = [`| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | resolved | fixed in abc1234 |`];
+  const hash = loopStateHash({ diffSignature: DIFF, openReifiedIds: [], redChecks: [] });
+  const body = ledger(rows, [
+    `| 1 | ${hash} | 0 |`,
+    `| 2 | ${hash} | 0 |`,
+    `| 3 | ${hash} | 0 |`,
+    `| 4 | ${hash} | 0 |`,
+  ]);
+  const result = evaluate(body);
+  assert.equal(result.ok, true);
+  assert.equal(result.state, "converged");
+});
+
+// The round log must describe the state CI actually observes.
+
+test("a round log that does not record the current state is rejected", () => {
+  const rows = [`| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | open | |`];
+  const result = evaluate(ledger(rows, [round(1, [], [], 0)]));
+  assert.equal(result.ok, false);
+  assert.equal(result.state, "malformed");
+  assert.match(result.message, /current state hashes to/i);
+});
+
+test("a findings table with no round log is rejected and names the hash to record", () => {
+  const rows = [`| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | open | |`];
+  const result = evaluate(ledger(rows, []));
+  assert.equal(result.ok, false);
+  assert.match(result.message, /round log is empty/i);
+  assert.match(result.message, /[0-9a-f]{64}/);
+});
+
+test("a mis-stated blocking count is rejected", () => {
+  const rows = [`| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | open | |`];
+  const hash = loopStateHash({ diffSignature: DIFF, openReifiedIds: ["F-001"], redChecks: [] });
+  const result = evaluate(ledger(rows, [`| 1 | ${hash} | 5 |`]));
+  assert.equal(result.ok, false);
+  assert.match(result.message, /records a blocking set of 5/i);
+});
+
+test("an unstable finding ID is rejected", () => {
+  const rows = [`| oops | 1 | advisory | advisory | . |`];
+  const result = evaluate(ledger(rows, [round(1, [], [], 0)]));
+  assert.equal(result.ok, false);
+  assert.match(result.message, /stable finding ID/i);
+});
+
+test("an unknown finding state is rejected", () => {
+  const rows = [`| F-001 | 1 | advisory | maybe | . |`];
+  const result = evaluate(ledger(rows, [round(1, [], [], 0)]));
+  assert.equal(result.ok, false);
+  assert.match(result.message, /open, resolved, dismissed, advisory/i);
+});
+
+// The loop-state hash is a state function, not a clock.
+
+test("the loop-state hash ignores ordering and depends on all three inputs", () => {
+  const base = { diffSignature: DIFF, openReifiedIds: ["F-002", "F-001"], redChecks: ["b", "a"] };
+  assert.equal(
+    loopStateHash(base),
+    loopStateHash({ diffSignature: DIFF, openReifiedIds: ["F-001", "F-002"], redChecks: ["a", "b"] }),
+  );
+  assert.notEqual(loopStateHash(base), loopStateHash({ ...base, diffSignature: "other" }));
+  assert.notEqual(loopStateHash(base), loopStateHash({ ...base, openReifiedIds: ["F-001"] }));
+  assert.notEqual(loopStateHash(base), loopStateHash({ ...base, redChecks: [] }));
+});
+
+test("the hash fields are separated, so content cannot migrate between them", () => {
+  // Without a real separator these two states concatenate identically and collide, which
+  // would let a changed diff masquerade as an unchanged one and defeat the stagnation brake.
+  assert.notEqual(
+    loopStateHash({ diffSignature: "diffF-001", openReifiedIds: [], redChecks: [] }),
+    loopStateHash({ diffSignature: "diff", openReifiedIds: ["F-001"], redChecks: [] }),
+  );
+  assert.notEqual(
+    loopStateHash({ diffSignature: "", openReifiedIds: ["F-001", "F-002"], redChecks: [] }),
+    loopStateHash({ diffSignature: "", openReifiedIds: ["F-001"], redChecks: ["F-002"] }),
+  );
+});
+
+test("the diff signature separates its own fields", () => {
+  assert.notEqual(
+    diffSignatureFromFiles([{ filename: "a", status: "b", sha: "c" }]),
+    diffSignatureFromFiles([{ filename: "ab", status: "", sha: "c" }]),
+  );
+});
+
+test("the normalized diff signature is commit-order independent but content sensitive", () => {
+  const files = [
+    { filename: "b.rs", status: "modified", sha: "222" },
+    { filename: "a.rs", status: "added", sha: "111" },
+  ];
+  assert.equal(diffSignatureFromFiles(files), diffSignatureFromFiles([...files].reverse()));
+  assert.notEqual(
+    diffSignatureFromFiles(files),
+    diffSignatureFromFiles([{ filename: "b.rs", status: "modified", sha: "333" }, files[1]]),
+  );
+});
+
+test("only completed failing check runs count as red, and the loop's own check is excluded", () => {
+  const runs = [
+    { name: "Check, Test & Lint", status: "in_progress", conclusion: null },
+    { name: "Knowledge graph up to date", status: "completed", conclusion: "failure" },
+    { name: "Audit", status: "completed", conclusion: "success" },
+    { name: "Flaky", status: "completed", conclusion: "timed_out" },
+    { name: "Self", status: "completed", conclusion: "failure" },
+  ];
+  assert.deepEqual(redChecksFromRuns(runs, ["Self"]), ["Flaky", "Knowledge graph up to date"]);
+});
+
+// Independent review stays a separate, conjunctive gate.
+
+test("convergence says nothing about independent review", () => {
+  const result = evaluate(ledger([], []));
+  assert.equal(result.ok, true);
+  assert.doesNotMatch(result.message, /independent review/i);
+});
