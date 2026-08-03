@@ -53,7 +53,9 @@ labels: []
      -> file_count N, estimated_tokens N (measured at the `Verified at` commit)
 
      Then the reading that no pack carries: AGENTS.md, this issue, the applicable ADR,
-     and the companion of any file the change creates. -->
+     and companions for existing source files the change touches. For a new supported
+     source file, read the applicable template in docs/templates/ and the nearest existing
+     companion of the same source kind; its own companion does not exist yet. -->
 
 ## Approach sketch — `UNVALIDATED DRAFT`
 

@@ -90,7 +90,7 @@ documented loss windows and must not be silent.
 
 ## Verification plan
 
-Current evidence is the implemented sequence in `keeplin-core/src/storage/db.rs`,
+Current evidence is the implemented sequence in `keeplin-core/src/storage/db/sync.rs`,
 `keeplin-core/src/sync/engine.rs`, and `keeplin-srv/crates/keeplin-srv/src/sync.rs`, plus the failure
 analysis in #150/#151/srv#74. The replacing ADR and implementation must inject disconnections before
 and after every persistence and ACK boundary, restart both sides with pending work, verify stable

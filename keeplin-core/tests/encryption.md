@@ -530,7 +530,7 @@ this companion.
 **Direct dependencies** (files this one's symbols reference)
 
 - `keeplin-core/src/encryption.rs` — transparent at-rest encryption (EXTRACTED: references×1; e.g. `EncryptedBackend`)
-- `keeplin-core/src/storage/fs.rs` — FsBackend (filesystem storage) (EXTRACTED: references×1; e.g. `FsBackend`)
+- `keeplin-core/src/storage/fs/` — FsBackend directory module (INFERRED)
 
 **Direct dependents** (files whose symbols reference this one)
 
