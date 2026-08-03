@@ -418,6 +418,36 @@ test('ask clears a previous review before running', () => {
   assert.ok(!fs.existsSync(`${out}.meta.json`), 'and its attribution with it');
 });
 
+test('ask accepts a verdict with a summary appended to the line', () => {
+  // Qwen answers "VEREDICTO: BLOQUEANTE - SKILL.md línea 174 ...". Refusing
+  // that discarded a real review over punctuation.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-ask-'));
+  const prompt = path.join(dir, 'p.txt');
+  fs.writeFileSync(prompt, 'revisa\n');
+  const out = path.join(dir, 'review.md');
+
+  const r = run('ask.js', ['codex', prompt, out], {
+    env: stubCodex(
+      'cat >/dev/null; printf "VEREDICTO: BLOQUEANTE - SKILL.md linea 174\\n\\nDetalle.\\n"'),
+  });
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stdout, /VEREDICTO: BLOQUEANTE/);
+});
+
+test('ask refuses a line that declares several verdicts at once', () => {
+  // That is the prompt's own line listing the options, not a decision.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-ask-'));
+  const prompt = path.join(dir, 'p.txt');
+  fs.writeFileSync(prompt, 'revisa\n');
+  const out = path.join(dir, 'review.md');
+
+  const r = run('ask.js', ['codex', prompt, out], {
+    env: stubCodex('cat >/dev/null; echo "VEREDICTO: BLOQUEANTE | VEREDICTO: SIN HALLAZGOS"'),
+  });
+  assert.strictEqual(r.code, 1);
+  assert.ok(!fs.existsSync(out));
+});
+
 test('ask refuses a verdict that is not one of the three', () => {
   // Any line starting VEREDICTO: used to qualify — including the prompt's own
   // line listing the options, which these UIs echo back.

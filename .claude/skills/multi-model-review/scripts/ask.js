@@ -164,8 +164,16 @@ const DRIVERS = {
     .map((l) => l.trim())
     .filter((l) => l !== '' && !CHROME.test(l));
   const first = meaningful[0] || '';
-  const declared = (first.match(/^VEREDICTO:\s*(.+?)$/) || [])[1];
-  const verdictLine = declared && VERDICTS.includes(declared.toUpperCase())
+  // The verdict must open the line, but reviewers routinely append a summary to
+  // it — "VEREDICTO: BLOQUEANTE - SKILL.md línea 174 ...". Refusing that threw
+  // away a real Qwen review over punctuation. So match the verdict as a prefix,
+  // and refuse a line that declares more than one: the prompt's own line
+  // listing the three options is exactly that shape, and an echoed prompt must
+  // never read as a verdict.
+  const declared = (first.match(
+    new RegExp(`^VEREDICTO:\\s*(${VERDICTS.join('|')})\\b`, 'i')) || [])[1];
+  const restated = (first.match(/VEREDICTO:/gi) || []).length;
+  const verdictLine = declared && restated === 1
     ? `VEREDICTO: ${declared.toUpperCase()}`
     : null;
 
