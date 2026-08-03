@@ -17,6 +17,8 @@ it names something that fails mechanically — a test, a property, a contract as
 body and returns one of four states:
 
 - `converged` — required checks green, no open reified finding (the only passing state);
+- `awaiting-checks` — nothing blocks, but a required check has not finished. A check that has
+  not completed is not a green check, so this does not pass;
 - `converging` — the blocking set is non-empty but shrinking;
 - `escalated` — the loop-state hash repeated, or the blocking set has not shrunk for
   `REVIEW_LOOP_STAGNATION_LIMIT` rounds (3), so the stall must be recorded in
@@ -26,7 +28,21 @@ body and returns one of four states:
 
 The brake measures state, not time: the loop-state hash is
 `sha256(normalized diff ‖ open reified finding IDs ‖ red check names)`, with the normalized
-diff being the changed paths and their blob SHAs, sorted.
+diff being the changed paths and their blob SHAs, sorted. Fields and list entries are joined
+with `\x1e` and `\x1f`, never a comma — check-run names contain commas (`Check, Test & Lint`),
+which would make distinct blocker sets hash alike.
+
+Three behaviours are easy to get wrong and are fixed deliberately:
+
+- **Convergence needs positive evidence.** The check runs in its own `converge` job that
+  `needs` every required job, because a step inside `Check, Test & Lint` cannot know its own
+  job's outcome. Pending runs are reported separately from red ones and block; the absence of
+  an already-completed failure is never read as green.
+- **A pull request with no ledger section is round zero**, per ADR 0004's migration contract —
+  not malformed. It still has to pass its required checks.
+- **A stall record must name what is stuck.** The `## Open` table of `docs/review-stalls.md`
+  needs a row for the exact pull request whose cells mention every current blocker. A mention
+  elsewhere in the file, or a `Cleared` row, does not satisfy it.
 
 Neither script discharges independent review, and `check-review-loop.js` does not weaken
 `check-review-governance.js`: the two gates are conjunctive.

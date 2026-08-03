@@ -39,7 +39,6 @@ Runs on `ubuntu-latest`.
 | Checkout | `actions/checkout@v4` | Clones the repository at the triggering commit |
 | Test pull-request governance checks | `node --test` over `check-review-governance.test.js` and `check-review-loop.test.js` | Exercises the reviewed and maintainer-waiver paths, and the convergence, recurrence, advisory and stagnation paths, including negative cases |
 | Check pull-request review governance | `actions/github-script@v7` (non-draft pull requests only) | Requires either an independent review with evidence, or a complete maintainer waiver whose exact PR is recorded in the changed `docs/review-debt.md` |
-| Check review-loop convergence | `actions/github-script@v7` (non-draft pull requests only) | Requires the loop to converge mechanically — required checks green and zero open reified findings — and escalates a stalled loop to `docs/review-stalls.md` instead of letting it iterate silently (keeplin ADR 0004) |
 | Install Python | `actions/setup-python@v5` (`3.12`) | Provides the standard-library runtime used by the deterministic companion checks |
 | Check companion docs | `./scripts/check-docs.sh` | Enforces structure, exact source↔fence fidelity and the generated context manifest (the two-layer navigation model) |
 | Test companion tooling | `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` | Exercises syntax fixtures, drift/error detection, fence-only sync and reproducible packs |
@@ -88,27 +87,49 @@ rebuilt from scratch.
   rather than `--workspace` because the suites are logically independent and
   this makes it easier to identify which crate a failure belongs to.
 
-## Review-loop convergence
+### `converge` — Review loop converged
 
-The `Check review-loop convergence` step implements
-[keeplin ADR 0004](../../docs/adr/0004-review-loop-convergence.md). It reads the `## Review
-ledger` section of the pull-request body, the changed files, and the head commit's check
-runs, then decides one of four states:
+Runs on `ubuntu-latest`, `needs: [test, graph]`, non-draft pull requests only. Implements
+[keeplin ADR 0004](../../docs/adr/0004-review-loop-convergence.md).
+
+| Step | Action / Command | Purpose |
+|------|-----------------|---------|
+| Checkout | `actions/checkout@v4` | Clones the repository at the triggering commit |
+| Check review-loop convergence | `actions/github-script@v7` | Requires required checks green and zero open reified findings; escalates a stalled loop to `docs/review-stalls.md` instead of letting it iterate silently |
+
+**Why this is a job and not a step.** Convergence asserts "the required checks are green". A
+step inside `test` cannot make that claim: it runs before `cargo test`, Clippy and audit in
+its own job, and while `graph` is still going, so it would be asserting greenness of work that
+had not happened. `needs: [test, graph]` makes the claim checkable. `always()` keeps the job
+reporting when a dependency fails, so branch protection sees a red check rather than a skipped
+one.
+
+The job name is a branch-protection required-check identifier, exactly like `graph`'s: adding
+it to the workflow does not enforce it until it is added to the required-check list in
+Settings → Branches.
+
+It reads the `## Review ledger` section of the pull-request body, the changed files, and the
+head commit's check runs, then decides one of five states:
 
 | State | Meaning | Check |
 |-------|---------|-------|
 | `converged` | Required checks green and no reified finding open | passes |
+| `awaiting-checks` | Nothing blocks, but a required check has not finished — an unfinished check is not a green check | fails |
 | `converging` | The blocking set is non-empty but shrinking | fails |
-| `escalated` | The loop state repeated, or the blocking set has not shrunk for `REVIEW_LOOP_STAGNATION_LIMIT` rounds | fails, and demands a `docs/review-stalls.md` entry naming this pull request |
+| `escalated` | The loop state repeated, or the blocking set has not shrunk for `REVIEW_LOOP_STAGNATION_LIMIT` rounds | fails, and demands a `docs/review-stalls.md` `## Open` row naming this pull request *and every current blocker* |
 | `malformed` | The ledger or round log contradicts the observed state | fails |
+
+A pull request whose body has no `## Review ledger` section at all is round zero, not
+malformed — ADR 0004's migration contract for pull requests opened before the ledger existed.
 
 `REVIEW_LOOP_STAGNATION_LIMIT` is set to `3` on the step and falls back to the script's
 `DEFAULT_STAGNATION_LIMIT`. The brake measures state, not elapsed time: the loop-state hash
 is `sha256(normalized diff ‖ open reified finding IDs ‖ red check names)`, where the
 normalized diff is the changed paths with their blob SHAs, sorted, so commit ordering does
-not affect it.
+not affect it. Fields and list entries are joined with `\x1e` and `\x1f` rather than commas,
+because check-run names contain commas — `Check, Test & Lint` does.
 
-This step is a floor beneath `Check pull-request review governance`, never a substitute for
+This job is a floor beneath `Check pull-request review governance`, never a substitute for
 it. The two are conjunctive: a pull request can converge and still be unmergeable for want of
 an independent reviewer.
 

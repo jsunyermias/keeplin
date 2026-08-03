@@ -33,6 +33,12 @@ record is prohibited. Write the entry in the same session the stall is detected.
 An entry names what is stuck, not a narrative of the rounds. If the stuck item is a reified
 finding, give its ID and the check that fails. If it is a red required check, name the check.
 
+This is enforced, not merely asked for: the checker parses the `## Open` table below and
+requires a row for the exact pull request whose cells mention **every** current blocker by
+name — each open finding's ID and each red check. A mention of the pull request elsewhere in
+this file, or a row under `Cleared`, does not satisfy it. Naming the pull request without
+naming what stuck it would have told the maintainer nothing.
+
 ## How an entry is cleared
 
 A stall is the maintainer's to resolve, and there are exactly three exits:

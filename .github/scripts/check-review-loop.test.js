@@ -8,6 +8,7 @@ const {
   diffSignatureFromFiles,
   evaluateReviewLoop,
   loopStateHash,
+  pendingChecksFromRuns,
   redChecksFromRuns,
 } = require("./check-review-loop.js");
 
@@ -52,12 +53,8 @@ function evaluate(body, overrides = {}) {
   });
 }
 
-test("a body without a review ledger is rejected", () => {
-  const result = evaluate("## Summary\n\nNothing else.");
-  assert.equal(result.ok, false);
-  assert.equal(result.state, "malformed");
-  assert.match(result.message, /no 'Review ledger' section/i);
-});
+// A body with no ledger section is round zero, not a malformed pull request — see the
+// F-004 tests below. This suite therefore asserts the round-zero contract, not a rejection.
 
 test("an empty ledger converges on green required checks alone", () => {
   const result = evaluate(ledger([], []));
@@ -229,16 +226,20 @@ test("an escalation demands a review-stalls entry naming this exact pull request
   const missingFile = evaluate(body);
   assert.match(missingFile.message, new RegExp(`record it in ${STALLS_PATH}`, "i"));
 
+  const openTable = (pull, stuck) =>
+    `## Open\n\n| Detected | Pull request | Stuck on |\n|---|---|---|\n` +
+    `| 2026-08-03 | https://github.com/${REPOSITORY}/pull/${pull} | ${stuck} |\n`;
+
   const wrongPull = evaluate(body, {
     changedFiles: [STALLS_PATH],
-    stallsContent: `Stalled: https://github.com/${REPOSITORY}/pull/199`,
+    stallsContent: openTable(199, "F-001"),
   });
   assert.equal(wrongPull.state, "escalated");
   assert.match(wrongPull.message, /must identify this exact pull request/i);
 
   const recorded = evaluate(body, {
     changedFiles: [STALLS_PATH],
-    stallsContent: `Stalled on F-001: https://github.com/${REPOSITORY}/pull/${PULL_NUMBER}.`,
+    stallsContent: openTable(PULL_NUMBER, "F-001"),
   });
   assert.equal(recorded.ok, false, "a recorded stall is still not a merge");
   assert.equal(recorded.state, "escalated");
@@ -353,6 +354,147 @@ test("only completed failing check runs count as red, and the loop's own check i
     { name: "Self", status: "completed", conclusion: "failure" },
   ];
   assert.deepEqual(redChecksFromRuns(runs, ["Self"]), ["Flaky", "Knowledge graph up to date"]);
+});
+
+// Round 1 findings from the independent review (Codex / GPT-5.5, 2026-08-03).
+// Each test below is the reification of one finding: it fails against the reviewed
+// commit and passes once the finding is fixed.
+
+// F-001 — convergence must require positive evidence that checks are green, never the
+// mere absence of an already-completed failure.
+
+test("F-001: an in-progress required check is not convergence", () => {
+  const result = evaluate(ledger([], []), { pendingChecks: ["Check, Test & Lint"] });
+  assert.equal(result.ok, false, "must not converge while a required check is still running");
+  assert.notEqual(result.state, "converged");
+  assert.match(result.message, /Check, Test & Lint/);
+});
+
+test("F-001: a queued check counts as not-green, not as green", () => {
+  const runs = [
+    { name: "Check, Test & Lint", status: "in_progress", conclusion: null },
+    { name: "Knowledge graph up to date", status: "queued", conclusion: null },
+    { name: "Audit", status: "completed", conclusion: "success" },
+  ];
+  assert.deepEqual(pendingChecksFromRuns(runs, []), [
+    "Check, Test & Lint",
+    "Knowledge graph up to date",
+  ]);
+  assert.deepEqual(pendingChecksFromRuns(runs, ["Check, Test & Lint"]), [
+    "Knowledge graph up to date",
+  ]);
+});
+
+// F-002 — OPEN. The stagnation brake reads its own history out of the freely editable pull
+// request body, so deleting earlier Round log rows resets the streak and deleting the
+// findings too yields an empty ledger that converges immediately. Closing this needs loop
+// state persisted where the agent cannot rewrite it (check-run outputs), which contradicts
+// ADR 0004's recorded compatibility note that the ledger lives in the pull-request body.
+// That is a decision boundary, so this test stays red until the maintainer rules.
+// Deliberately NOT downgraded to advisory: it is reifiable and real, and `0.B` forbids
+// reclassifying a reified finding to get unstuck.
+
+test("F-002: deleting round history does not reset the stagnation brake", () => {
+  const rows = [`| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | open | |`];
+  const churned = (n) =>
+    `| ${n} | ${loopStateHash({
+      diffSignature: `round-${n}-diff`,
+      openReifiedIds: ["F-001"],
+      redChecks: [],
+    })} | 1 |`;
+  const current = `| 4 | ${loopStateHash({
+    diffSignature: DIFF,
+    openReifiedIds: ["F-001"],
+    redChecks: [],
+  })} | 1 |`;
+
+  const stalled = evaluate(ledger(rows, [churned(1), churned(2), churned(3), current]));
+  assert.equal(stalled.state, "escalated", "four non-shrinking rounds must escalate");
+
+  // The agent deletes rounds 1-3 and renumbers, keeping only the current state.
+  const rewritten = ledger(rows, [
+    `| 1 | ${loopStateHash({ diffSignature: DIFF, openReifiedIds: ["F-001"], redChecks: [] })} | 1 |`,
+  ]);
+  assert.equal(
+    evaluate(rewritten).state,
+    "escalated",
+    "erasing the round log must not clear an escalation the loop already earned",
+  );
+});
+
+// F-003 — the stall record must name what is stuck, not merely mention the pull request.
+
+test("F-003: a stall record that names the PR but not the blocker is rejected", () => {
+  const rows = [`| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | open | |`];
+  const repeated = round(1, ["F-001"], [], 1);
+  const hash = repeated.split("|")[2].trim();
+  const body = ledger(rows, [repeated, `| 2 | ${hash} | 1 |`]);
+
+  const vague = evaluate(body, {
+    changedFiles: [STALLS_PATH],
+    stallsContent: `## Open\n\n| Detected | Pull request | Stuck on |\n|---|---|---|\n| 2026-08-03 | https://github.com/${REPOSITORY}/pull/${PULL_NUMBER} | something |\n`,
+  });
+  assert.equal(vague.state, "escalated");
+  assert.match(vague.message, /F-001/, "must say the entry fails to name the stuck finding");
+  assert.doesNotMatch(vague.message, /Recorded in/i);
+
+  const named = evaluate(body, {
+    changedFiles: [STALLS_PATH],
+    stallsContent: `## Open\n\n| Detected | Pull request | Stuck on |\n|---|---|---|\n| 2026-08-03 | https://github.com/${REPOSITORY}/pull/${PULL_NUMBER} | F-001 |\n`,
+  });
+  assert.equal(named.state, "escalated");
+  assert.match(named.message, /escalated to the maintainer/i);
+});
+
+test("F-003: a cleared entry elsewhere in the file does not satisfy the record", () => {
+  const rows = [`| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | open | |`];
+  const repeated = round(1, ["F-001"], [], 1);
+  const hash = repeated.split("|")[2].trim();
+  const result = evaluate(ledger(rows, [repeated, `| 2 | ${hash} | 1 |`]), {
+    changedFiles: [STALLS_PATH],
+    stallsContent: `## Open\n\n| Detected | Pull request | Stuck on |\n|---|---|---|\n| — | — | — |\n\n## Cleared\n\n| Detected | Pull request | Stuck on |\n|---|---|---|\n| 2026-07-01 | ${REPOSITORY}#${PULL_NUMBER} | F-001 |\n`,
+  });
+  assert.equal(result.state, "escalated");
+  assert.match(result.message, /Open/, "a Cleared row must not satisfy an open stall");
+});
+
+// F-004 — the ADR's migration contract: a pull request predating the ledger is round zero,
+// not retroactively invalid.
+
+test("F-004: a body with no ledger section is round zero, per ADR 0004", () => {
+  const legacy = evaluate("## Summary\n\nA pull request opened before the ledger existed.");
+  assert.equal(legacy.ok, true, "ADR 0004 says an absent ledger is round zero");
+  assert.equal(legacy.state, "converged");
+});
+
+test("F-004: a legacy body still does not converge while a check is red", () => {
+  const legacy = evaluate("## Summary\n\nLegacy.", { redChecks: ["Knowledge graph up to date"] });
+  assert.equal(legacy.ok, false);
+  assert.equal(legacy.state, "converging");
+});
+
+// F-005 — the hash must be injective; `Check, Test & Lint` contains a comma.
+
+test("F-005: the hash does not collide on comma-containing names", () => {
+  assert.notEqual(
+    loopStateHash({ diffSignature: "d", openReifiedIds: [], redChecks: ["a,b", "c"] }),
+    loopStateHash({ diffSignature: "d", openReifiedIds: [], redChecks: ["a", "b,c"] }),
+  );
+  assert.notEqual(
+    loopStateHash({ diffSignature: "d", openReifiedIds: ["F-001,F-002"], redChecks: [] }),
+    loopStateHash({ diffSignature: "d", openReifiedIds: ["F-001", "F-002"], redChecks: [] }),
+  );
+});
+
+// F-006 — an escaped pipe is legal Markdown and must not shift the columns.
+
+test("F-006: an escaped pipe in a cell does not shift the state column", () => {
+  const rows = [
+    `| F-001 | 1 | \`tests/x.rs::accepts_a \\| b\` | dismissed | Superseded by contract A \\| B. |`,
+  ];
+  const result = evaluate(ledger(rows, [round(1, [], [], 0)]));
+  assert.equal(result.ok, true, result.message);
+  assert.equal(result.state, "converged");
 });
 
 // Independent review stays a separate, conjunctive gate.

@@ -204,7 +204,9 @@ request.
   can be checked, and a real defect filed advisory still earns a follow-up issue.
 - **A pull request has converged when its required checks are green and no reified finding is
   open.** "The reviewer is satisfied" is not a convergence condition and is not accepted as
-  one anywhere in the pipeline.
+  one anywhere in the pipeline. Green means positive evidence: a check that has not finished
+  is not a green check, which is why the `Review loop converged` job runs only after every
+  required job has completed.
 - Every finding is recorded in the pull request's **review ledger** with a stable ID and one
   state: `open`, `resolved`, `dismissed` or `advisory`. A `dismissed` finding cites its reason
   — a priority decision or an accepted ADR — and re-raising it does not reopen it and does not

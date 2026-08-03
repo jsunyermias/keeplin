@@ -40,6 +40,9 @@ function levelThreeSection(text, heading) {
   return end ? remainder.slice(0, end.index) : remainder;
 }
 
+// `\|` is a legal escaped pipe inside a Markdown cell, and a reifier naming a contract
+// like `accepts_a \| b` is ordinary. Splitting on every pipe would shift every later
+// column, so only unescaped pipes separate cells.
 function tableRows(text) {
   return text
     .split("\n")
@@ -48,8 +51,8 @@ function tableRows(text) {
     .map((line) =>
       line
         .slice(1, -1)
-        .split("|")
-        .map((cell) => cell.trim()),
+        .split(/(?<!\\)\|/)
+        .map((cell) => cell.replace(/\\\|/g, "|").trim()),
     )
     .filter((cells) => !cells.every((cell) => /^:?-{2,}:?$/.test(cell)))
     .filter((cells) => !/^id$/i.test(cells[0] || "") && !/^round$/i.test(cells[0] || ""));
@@ -181,24 +184,72 @@ function redChecksFromRuns(runs, ignoreNames = []) {
   ].sort();
 }
 
+// A check that has not completed is not a green check. Reporting only completed failures
+// turned "unknown" into "passing": with nothing yet finished, the failure set was empty and
+// the loop declared the required checks green before any of them had run. Convergence needs
+// positive evidence, so anything not completed-and-successful is reported and blocks.
+function pendingChecksFromRuns(runs, ignoreNames = []) {
+  const ignored = new Set(ignoreNames);
+  return [
+    ...new Set(
+      (runs || [])
+        .filter((run) => run.status !== "completed" && !ignored.has(run.name))
+        .map((run) => run.name),
+    ),
+  ].sort();
+}
+
+// Both separators must be bytes the inputs cannot contain, or distinct loop states
+// collide. A comma is not such a byte: check-run names routinely contain one — this
+// repository's own required check is literally "Check, Test & Lint" — so joining a list
+// on commas made {"a,b", "c"} and {"a", "b,c"} hash identically.
 function loopStateHash({ diffSignature = "", openReifiedIds = [], redChecks = [] }) {
   return createHash("sha256")
     .update(diffSignature)
     .update("\x1e")
-    .update([...openReifiedIds].sort().join(","))
+    .update([...openReifiedIds].sort().join("\x1f"))
     .update("\x1e")
-    .update([...redChecks].sort().join(","))
+    .update([...redChecks].sort().join("\x1f"))
     .digest("hex");
 }
 
-function stallMentionsPull(stallsContent, repository, pullNumber) {
+function stallMentionsPull(text, repository, pullNumber) {
   const escapedRepository = escapeRegex(repository);
   const number = String(pullNumber);
   return (
-    new RegExp(`github\\.com\\/${escapedRepository}\\/pull\\/${number}(?:\\D|$)`, "i").test(
-      stallsContent,
-    ) || new RegExp(`${escapedRepository}#${number}(?:\\D|$)`, "i").test(stallsContent)
+    new RegExp(`github\\.com\\/${escapedRepository}\\/pull\\/${number}(?:\\D|$)`, "i").test(text) ||
+    new RegExp(`${escapedRepository}#${number}(?:\\D|$)`, "i").test(text)
   );
+}
+
+// A stall record has to say what is stuck, not merely mention the pull request somewhere
+// in the file. Matching the whole document accepted an old `Cleared` row, or a passing
+// reference in the prose, as if the maintainer had been told what to look at.
+function stallRecordsBlockers(stallsContent, repository, pullNumber, blockerNames) {
+  const open = levelTwoSection(stallsContent || "", "Open");
+  if (open === null) {
+    return { ok: false, reason: `${STALLS_PATH} has no '## Open' section` };
+  }
+
+  for (const cells of tableRows(open)) {
+    const row = cells.join(" ");
+    if (!stallMentionsPull(row, repository, pullNumber)) continue;
+
+    const missing = blockerNames.filter((name) => !row.includes(name));
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        reason:
+          `its '## Open' entry does not name what is stuck (missing ${missing.join(", ")})`,
+      };
+    }
+    return { ok: true };
+  }
+
+  return {
+    ok: false,
+    reason: `no row under '## Open' names ${repository}#${pullNumber}`,
+  };
 }
 
 function describeBlockers(openReified, redChecks) {
@@ -232,17 +283,14 @@ function evaluateReviewLoop({
   repository,
   pullNumber,
   redChecks = [],
+  pendingChecks = [],
   diffSignature = "",
   stagnationLimit = DEFAULT_STAGNATION_LIMIT,
 }) {
-  const section = levelTwoSection(body || "", LEDGER_HEADING);
-  if (section === null) {
-    return {
-      ok: false,
-      state: "malformed",
-      message: `The pull request body has no '${LEDGER_HEADING}' section from the repository template.`,
-    };
-  }
+  // ADR 0004's migration contract: a pull request opened before the ledger existed has no
+  // such section, and is treated as round zero rather than retroactively invalidated. It
+  // still has to pass its required checks; it simply carries no findings yet.
+  const section = levelTwoSection(body || "", LEDGER_HEADING) ?? "";
 
   const parsedFindings = parseFindings(section);
   if (parsedFindings.error) {
@@ -322,13 +370,19 @@ function evaluateReviewLoop({
           `Iterating further without that record is prohibited.`,
       };
     }
-    if (!stallMentionsPull(stallsContent, repository, pullNumber)) {
+    const blockerNames = [
+      ...openReified.map((finding) => finding.id),
+      ...sortedRedChecks,
+    ];
+    const record = stallRecordsBlockers(stallsContent, repository, pullNumber, blockerNames);
+    if (!record.ok) {
       return {
         ok: false,
         state: "escalated",
         message:
           `Review loop stalled: ${stalled}. ${STALLS_PATH} must identify this exact pull ` +
-          `request (${repository}#${pullNumber}) and what is stuck (${blockers}).`,
+          `request (${repository}#${pullNumber}) and what is stuck (${blockers}) — ` +
+          `${record.reason}.`,
       };
     }
     return {
@@ -338,6 +392,22 @@ function evaluateReviewLoop({
         `Review loop stalled and escalated to the maintainer: ${stalled}. Stuck on ${blockers}. ` +
         `Recorded in ${STALLS_PATH}; the maintainer resolves it by dismissing the finding with ` +
         `a cited reason or by fixing what fails.`,
+    };
+  }
+
+  // Not-yet-finished checks are reported separately from red ones: they keep the pull
+  // request from converging without entering the hashed blocking set, which would otherwise
+  // churn the round log on every re-run.
+  const sortedPendingChecks = [...new Set(pendingChecks)].sort();
+  if (blocking === 0 && sortedPendingChecks.length > 0) {
+    return {
+      ok: false,
+      state: "awaiting-checks",
+      message:
+        `Review loop has not converged: no reified finding is open, but ` +
+        `${sortedPendingChecks.length} required check(s) have not finished — ` +
+        `${sortedPendingChecks.map((name) => `'${name}'`).join(", ")}. ` +
+        `A check that has not completed is not a green check.`,
     };
   }
 
@@ -370,6 +440,7 @@ module.exports = {
   diffSignatureFromFiles,
   evaluateReviewLoop,
   loopStateHash,
+  pendingChecksFromRuns,
   redChecksFromRuns,
   stallMentionsPull,
 };
