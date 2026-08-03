@@ -4,7 +4,7 @@
 - Date: 2026-08-03
 - Decision owners: maintainer of `jsunyermias/keeplin` and `jsunyermias/keeplin-srv`
 - Scope: cross-repo
-- Issue: none — F-020 from the round-9 review of
+- Issue: none — F-025 from the round-9 review of
   [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198)
 - Acceptance PR: none yet
 - Supersedes: none. Extends [0008](0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md)
@@ -77,7 +77,7 @@ undetected, and this ADR makes no claim about it.
 ## Alternatives considered
 
 - **Bound the claim instead.** State that the conjunction is upheld by policy and branch
-  protection, not by the evaluator, and record F-020 as advisory with a follow-up issue. Honest
+  protection, not by the evaluator, and record F-025 as advisory with a follow-up issue. Honest
   and free. Rejected as the primary path because it would be the sixth promise bounded rather
   than fixed in one change, and unlike terminal truncation this one has a mechanical fix
   available at moderate cost.

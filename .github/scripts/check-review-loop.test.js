@@ -492,7 +492,7 @@ test("terminal_truncation_cannot_erase_reification_before_advisory_reclassificat
   assert.equal(truncated.projectedFindings[0].state, "advisory");
 });
 
-// F-018. An authorized tombstone retires an ID; nothing reserved it. The evaluator used to
+// F-023. An authorized tombstone retires an ID; nothing reserved it. The evaluator used to
 // look for the finding's earlier state only in the newest record, so once a post-tombstone
 // record had been written the ID could return as advisory with no prior state to contradict
 // it, no authorization requested, and the pull request converged. Declassification is now
