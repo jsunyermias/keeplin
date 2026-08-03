@@ -30,12 +30,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Test pull-request governance checks
-        run: |
-          node --test \
-            .github/scripts/check-review-governance.test.js \
-            .github/scripts/check-review-loop.test.js
-
       - name: Check pull-request review governance
         if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
         uses: actions/github-script@v7
@@ -118,6 +112,15 @@ jobs:
 
       - name: Audit dependencies
         run: cargo audit
+
+      # Runs last on purpose. A deliberately-red test for an open reified finding would
+      # otherwise abort the job at step one and hide whether docs, cargo and audit passed,
+      # leaving the maintainer unable to see what else is green while a finding is open.
+      - name: Test pull-request governance checks
+        run: |
+          node --test \
+            .github/scripts/check-review-governance.test.js \
+            .github/scripts/check-review-loop.test.js
 
   graph:
     # This name is the branch-protection required-check identifier. Renaming it

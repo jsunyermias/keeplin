@@ -37,7 +37,6 @@ Runs on `ubuntu-latest`.
 | Step | Action / Command | Purpose |
 |------|-----------------|---------|
 | Checkout | `actions/checkout@v4` | Clones the repository at the triggering commit |
-| Test pull-request governance checks | `node --test` over `check-review-governance.test.js` and `check-review-loop.test.js` | Exercises the reviewed and maintainer-waiver paths, and the convergence, recurrence, advisory and stagnation paths, including negative cases |
 | Check pull-request review governance | `actions/github-script@v7` (non-draft pull requests only) | Requires either an independent review with evidence, or a complete maintainer waiver whose exact PR is recorded in the changed `docs/review-debt.md` |
 | Install Python | `actions/setup-python@v5` (`3.12`) | Provides the standard-library runtime used by the deterministic companion checks |
 | Check companion docs | `./scripts/check-docs.sh` | Enforces structure, exact source↔fence fidelity and the generated context manifest (the two-layer navigation model) |
@@ -51,6 +50,7 @@ Runs on `ubuntu-latest`.
 | cargo clippy | `cargo clippy --workspace --all-targets -- -D warnings` | Lints the entire workspace **including test and bench code** (matching the command the README tells contributors to run) and treats every warning as an error. Also fully subsumes the type-checking a separate `cargo check` step used to provide. |
 | Install cargo-audit | `taiki-e/install-action@v2` (`tool: cargo-audit`) | Downloads a prebuilt `cargo-audit` binary; compiling it from source with `cargo install` added minutes to every run for no additional coverage |
 | cargo audit | `cargo audit` | Checks `Cargo.lock` against the RustSec advisory database |
+| Test pull-request governance checks | `node --test` over `check-review-governance.test.js` and `check-review-loop.test.js` | Exercises the reviewed and maintainer-waiver paths, and the convergence, recurrence, advisory and stagnation paths, including negative cases. **Runs last**: a deliberately-red test for an open reified finding would otherwise abort the job at step one and hide whether everything else passed |
 
 ### `graph` — Knowledge graph up to date
 
@@ -65,27 +65,6 @@ validating its focused corpus and reproducibility, and publishing the ignored ou
 | Install graphify | `python -m pip install "graphifyy==0.9.25"` | Installs the pinned extractor used for every CI artifact |
 | Generate and validate knowledge graph | `./scripts/check-graph.sh` (env `GRAPHIFY_REQUIRED=1`) | Builds twice, verifies same-tree reproducibility, corpus exclusions, cross-file edges, domain hubs, and report quality |
 | Publish knowledge graph | `actions/upload-artifact@v4` | Publishes the complete `graphify-out/` directory as `knowledge-graph-<commit SHA>` for 14 days, including hidden Graphify metadata |
-
-## Caching strategy
-
-`Swatinem/rust-cache@v2` caches the following directories between runs:
-
-- `~/.cargo/registry/` — downloaded crate sources
-- `~/.cargo/git/` — git dependencies
-- `target/` — compiled build artifacts (incremental compilation cache)
-
-The cache key is derived from the Cargo lock file and the target platform. When
-`Cargo.lock` changes (a dependency was added or updated), the cache is invalidated and
-rebuilt from scratch.
-
-## Notes
-
-- `protoc` must be installed before anything compiles the workspace (`cargo test`,
-  `cargo clippy`) because `keeplin-daemon/build.rs` invokes `tonic-build`, which in turn
-  calls `protoc`.
-- The workflow runs tests for each crate separately (`-p keeplin-core`, `-p keeplin-daemon`,
-  rather than `--workspace` because the suites are logically independent and
-  this makes it easier to identify which crate a failure belongs to.
 
 ### `converge` — Review loop converged
 
@@ -132,6 +111,27 @@ because check-run names contain commas — `Check, Test & Lint` does.
 This job is a floor beneath `Check pull-request review governance`, never a substitute for
 it. The two are conjunctive: a pull request can converge and still be unmergeable for want of
 an independent reviewer.
+
+## Caching strategy
+
+`Swatinem/rust-cache@v2` caches the following directories between runs:
+
+- `~/.cargo/registry/` — downloaded crate sources
+- `~/.cargo/git/` — git dependencies
+- `target/` — compiled build artifacts (incremental compilation cache)
+
+The cache key is derived from the Cargo lock file and the target platform. When
+`Cargo.lock` changes (a dependency was added or updated), the cache is invalidated and
+rebuilt from scratch.
+
+## Notes
+
+- `protoc` must be installed before anything compiles the workspace (`cargo test`,
+  `cargo clippy`) because `keeplin-daemon/build.rs` invokes `tonic-build`, which in turn
+  calls `protoc`.
+- The workflow runs tests for each crate separately (`-p keeplin-core`, `-p keeplin-daemon`,
+  rather than `--workspace` because the suites are logically independent and
+  this makes it easier to identify which crate a failure belongs to.
 
 ## Related files
 
