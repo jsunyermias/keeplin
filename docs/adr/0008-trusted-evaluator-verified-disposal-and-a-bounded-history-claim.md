@@ -1,14 +1,14 @@
 # 0008 — Trusted evaluator, verified disposal, and a bounded history claim
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-08-03
 - Decision owners: maintainer of `jsunyermias/keeplin` and `jsunyermias/keeplin-srv`
 - Scope: cross-repo
 - Issue: none — successor to the 0005/0006/0007 sequence on
   [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198)
-- Acceptance PR: link once the ADR is accepted
-- Supersedes, once accepted: [0006](0006-trusted-review-loop-history.md) (accepted, unimplementable)
-  and [0007](0007-trusted-evaluator-and-dual-store-history.md) (rejected). Until then 0006 stands.
+- Acceptance PR: [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198), with [keeplin-srv#104](https://github.com/jsunyermias/keeplin-srv/pull/104) as its companion
+- Supersedes: [0006](0006-trusted-review-loop-history.md) (accepted, unimplementable) and
+  [0007](0007-trusted-evaluator-and-dual-store-history.md) (rejected)
 - Superseded by: none
 
 ## Context and problem
