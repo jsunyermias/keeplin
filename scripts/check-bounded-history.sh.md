@@ -4,10 +4,11 @@
 
 ```bash
 # md:check-bounded-history
-# Every surface that states the review journal's guarantee must also state its bound, in one
-# canonical sentence, verbatim. The guarantee is not "history cannot be rewritten": terminal
-# truncation is undetected, and a truncated prefix can erase the record establishing that a
-# finding was reified and let it converge as advisory.
+# Three manually enrolled policy surfaces must state the review journal's bound in one canonical
+# sentence, verbatim. Enrolment is intentionally not inferred from prose: a new surface is not
+# checked until it is added to SURFACES. The guarantee is not "history cannot be rewritten":
+# terminal truncation is undetected, and a truncated prefix can erase the record establishing
+# that a finding was reified and let it converge as advisory.
 #
 # The check is deliberately a verbatim match on a fixed sentence rather than a search for the
 # words it contains. An earlier version required only the substrings "truncat", "reifi" and
@@ -117,11 +118,16 @@ This check stops relying on that.
 
 ## What it checks
 
-Three surfaces must each carry one canonical sentence, verbatim:
+Three manually enrolled surfaces must each carry one canonical sentence, verbatim:
 
 - `AGENTS.md`
 - `.github/scripts/README.md`
 - `docs/review-stalls.md`
+
+This is a fixed whitelist. Enrolment is manual, so a new document that states the guarantee is not
+discovered or checked until a maintainer adds it to `SURFACES`. That narrower rule is deliberate:
+reliably inferring the meaning of arbitrary prose would create another check that looks stronger
+than the evidence it actually supplies.
 
 > Terminal truncation is not detected: it can erase the record that established reification,
 > after which the shorter authentic prefix may converge with that finding advisory.

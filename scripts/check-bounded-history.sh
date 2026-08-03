@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # md:check-bounded-history
-# Every surface that states the review journal's guarantee must also state its bound, in one
-# canonical sentence, verbatim. The guarantee is not "history cannot be rewritten": terminal
-# truncation is undetected, and a truncated prefix can erase the record establishing that a
-# finding was reified and let it converge as advisory.
+# Three manually enrolled policy surfaces must state the review journal's bound in one canonical
+# sentence, verbatim. Enrolment is intentionally not inferred from prose: a new surface is not
+# checked until it is added to SURFACES. The guarantee is not "history cannot be rewritten":
+# terminal truncation is undetected, and a truncated prefix can erase the record establishing
+# that a finding was reified and let it converge as advisory.
 #
 # The check is deliberately a verbatim match on a fixed sentence rather than a search for the
 # words it contains. An earlier version required only the substrings "truncat", "reifi" and
