@@ -1,6 +1,6 @@
 # 0005 — Loop history lives outside the pull-request body
 
-- Status: proposed
+- Status: rejected
 - Date: 2026-08-03
 - Decision owners: maintainer of `jsunyermias/keeplin` and `jsunyermias/keeplin-srv`
 - Scope: cross-repo
@@ -9,7 +9,12 @@
 - Acceptance PR: link once the ADR is accepted
 - Supersedes: none — amends the storage mechanism of
   [0004](0004-review-loop-convergence.md), whose convergence and blocking rules stand unchanged
-- Superseded by: none
+- Superseded by: [0006](0006-trusted-review-loop-history.md), which replaces ADR 0004 as a
+  whole and specifies authenticated history rather than amending one storage detail
+
+Rejected by maintainer direction on 2026-08-03. The check-run-output proposal did not define
+an adequately trusted writer, authenticate records to an exact producer/schema, or preserve a
+coherent history across rewritten commit topology; ADR 0006 carries the replacement decision.
 
 ## Context and problem
 

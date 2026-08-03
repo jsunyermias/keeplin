@@ -10,6 +10,7 @@ const {
   loopStateHash,
   pendingChecksFromRuns,
   redChecksFromRuns,
+  requiredChecksFromNeeds,
 } = require("./check-review-loop.js");
 
 const REPOSITORY = "jsunyermias/keeplin";
@@ -385,6 +386,31 @@ test("F-001: a queued check counts as not-green, not as green", () => {
   ]);
 });
 
+test("F-001: every required needs result must be explicitly successful", () => {
+  for (const result of ["skipped", "neutral", "cancelled", "unknown", undefined]) {
+    assert.deepEqual(
+      requiredChecksFromNeeds({ test: { result: "success" }, graph: { result } }),
+      ["Knowledge graph up to date"],
+    );
+  }
+  assert.deepEqual(
+    requiredChecksFromNeeds({ test: { result: "success" }, graph: { result: "success" } }),
+    [],
+  );
+  assert.deepEqual(requiredChecksFromNeeds({}), ["Check, Test & Lint", "Knowledge graph up to date"]);
+});
+
+test("F-001: unrelated optional checks are outside the explicit required-job set", () => {
+  assert.deepEqual(
+    requiredChecksFromNeeds({
+      test: { result: "success" },
+      graph: { result: "success" },
+      optional: { result: "failure" },
+    }),
+    [],
+  );
+});
+
 // F-002 — OPEN. The stagnation brake reads its own history out of the freely editable pull
 // request body, so deleting earlier Round log rows resets the streak and deleting the
 // findings too yields an empty ledger that converges immediately. Closing this needs loop
@@ -458,6 +484,18 @@ test("F-003: a cleared entry elsewhere in the file does not satisfy the record",
   assert.match(result.message, /Open/, "a Cleared row must not satisfy an open stall");
 });
 
+test("F-003: F-0010 is not an explicit token naming F-001", () => {
+  const rows = [`| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | open | |`];
+  const repeated = round(1, ["F-001"], [], 1);
+  const hash = repeated.split("|")[2].trim();
+  const result = evaluate(ledger(rows, [repeated, `| 2 | ${hash} | 1 |`]), {
+    changedFiles: [STALLS_PATH],
+    stallsContent: `## Open\n\n| Detected | Pull request | Stuck on |\n|---|---|---|\n| 2026-08-03 | ${REPOSITORY}#${PULL_NUMBER} | F-0010 |\n`,
+  });
+  assert.equal(result.state, "escalated");
+  assert.match(result.message, /missing F-001/);
+});
+
 // F-004 — the ADR's migration contract: a pull request predating the ledger is round zero,
 // not retroactively invalid.
 
@@ -486,6 +524,17 @@ test("F-005: the hash does not collide on comma-containing names", () => {
   );
 });
 
+test("F-005: canonical framing remains injective for former delimiter bytes", () => {
+  assert.notEqual(
+    loopStateHash({ diffSignature: "d", openReifiedIds: ["a\x1fb", "c"], redChecks: [] }),
+    loopStateHash({ diffSignature: "d", openReifiedIds: ["a", "b\x1fc"], redChecks: [] }),
+  );
+  assert.notEqual(
+    diffSignatureFromFiles([{ filename: "a\0b", status: "", sha: "c" }]),
+    diffSignatureFromFiles([{ filename: "a", status: "b", sha: "c" }]),
+  );
+});
+
 // F-006 — an escaped pipe is legal Markdown and must not shift the columns.
 
 test("F-006: an escaped pipe in a cell does not shift the state column", () => {
@@ -495,6 +544,17 @@ test("F-006: an escaped pipe in a cell does not shift the state column", () => {
   const result = evaluate(ledger(rows, [round(1, [], [], 0)]));
   assert.equal(result.ok, true, result.message);
   assert.equal(result.state, "converged");
+});
+
+test("F-006: CommonMark backslash parity controls whether a pipe separates cells", () => {
+  const escaped = [`| F-001 | 1 | check \\| name | dismissed | reason \\| detail |`];
+  assert.equal(evaluate(ledger(escaped, [round(1, [], [], 0)])).state, "converged");
+
+  const separator = [`| F-001 | 1 | check \\\\| dismissed | trailing literal \\\\|`];
+  assert.equal(evaluate(ledger(separator, [round(1, [], [], 0)])).state, "converged");
+
+  const triple = [`| F-001 | 1 | check \\\\\\| name | dismissed | reason |`];
+  assert.equal(evaluate(ledger(triple, [round(1, [], [], 0)])).state, "converged");
 });
 
 // Independent review stays a separate, conjunctive gate.

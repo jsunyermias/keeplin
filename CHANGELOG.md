@@ -35,25 +35,29 @@ version and the wire protocol version move independently.
   `docs/review-stalls.md`. Iterating past a stall without that record fails CI.
 - **The old checkbox became falsifiable rather than removed**: ticking "Blocking findings are
   resolved" while a reified finding is open now fails the check.
-- **Round 1 of independent review (Codex / GPT-5.5) found six reifiable defects; five are
-  fixed here and one is open.** Convergence now runs in its own `converge` job gated on
+- **Independent review found decision-independent evaluator defects that are now fixed.**
+  Convergence runs in its own `converge` job gated on
   `needs: [test, graph]`, because a step inside `Check, Test & Lint` asserted "required checks
-  are green" before `cargo test`, Clippy, audit and the graph job had run; an unfinished check
-  is now reported as `awaiting-checks` and blocks, rather than being read as green. A body with
+  are green" before `cargo test`, Clippy, audit and the graph job had run. The job receives
+  explicit `needs.test.result` and `needs.graph.result` values and requires `success`; skipped,
+  neutral, absent and unknown block while optional checks do not. A body with
   no ledger section is round zero per the ADR's migration contract, not malformed. A stall
-  record must now name every blocker in the `## Open` table, not merely mention the pull
-  request somewhere in the file. The loop-state hash joins with `\x1f` instead of a comma,
-  which had made `{"a,b","c"}` and `{"a","b,c"}` collide — check-run names contain commas, and
-  this repository's own is `Check, Test & Lint`. Escaped pipes in ledger cells no longer shift
-  the state column.
+  record names every blocker as an explicit token in `Stuck on`, so `F-0010` cannot satisfy
+  `F-001`. Canonical JSON frames hash fields and lists, preventing delimiter collisions.
+  Markdown table parsing implements CommonMark backslash parity for pipes.
 - **Open, blocking: the stagnation brake reads its own history from the editable pull-request
   body**, so deleting `Round log` rows resets the streak. Closing it needs loop state persisted
   where an agent cannot rewrite it, which crosses ADR 0004's recorded compatibility note and so
   awaits a maintainer decision. It is reified as a failing test rather than reclassified as
   advisory.
+- **ADR 0005 is rejected and ADR 0006 proposes superseding ADR 0004 in full.** The proposed
+  design uses a default-branch `workflow_run` evaluator, authenticated digest-chained comment
+  history, tombstoned finding-ID corrections, fail-closed retention behavior and documented
+  writer capabilities. Because 0006 is not accepted, F-002/F-008/F-009 remain open and the
+  trusted writer is not implemented here.
 - Independent review is untouched and conjunctive: convergence never ticks the review boxes,
   and a converged pull request with no independent reviewer is still unmergeable. `ci.yml`
-  gains `checks: read` for the head commit's check runs.
+  reads only its explicit required dependency results.
 
 ### Graphify graph moved to a CI artifact (keeplin#148)
 

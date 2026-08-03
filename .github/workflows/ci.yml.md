@@ -14,12 +14,10 @@ start with `claude/`.
 | `push` | `main`, `claude/**` |
 | `pull_request` | target branch: `main`; events `opened`, `synchronize`, `reopened`, `edited`, `ready_for_review` |
 
-The workflow has read-only access to repository contents, pull-request metadata and check
-runs. The `checks: read` scope exists for the review-loop convergence step, which reads the
-head commit's check runs to build the set of red required checks; without it that set would
-read as empty and a failing pull request could be declared converged. Body edits retrigger
-the workflow, so completing or removing review evidence — and editing the review ledger — is
-reflected in the required check without a new commit.
+The workflow has read-only access to repository contents and pull-request metadata. The
+convergence job receives the two required dependency results directly through `needs`, so it
+does not need broad check-run discovery. Body edits retrigger the workflow, so review evidence
+and ledger edits are reflected without a new commit.
 
 ## Environment variables
 
@@ -87,8 +85,10 @@ The job name is a branch-protection required-check identifier, exactly like `gra
 it to the workflow does not enforce it until it is added to the required-check list in
 Settings → Branches.
 
-It reads the `## Review ledger` section of the pull-request body, the changed files, and the
-head commit's check runs, then decides one of five states:
+It reads the `## Review ledger`, changed files and explicit dependency results. Both
+`needs.test.result` and `needs.graph.result` must equal `success`; skipped, neutral, absent and
+unknown are not green, while unrelated optional checks are outside the required set. It then
+decides one of five states:
 
 | State | Meaning | Check |
 |-------|---------|-------|
@@ -102,11 +102,9 @@ A pull request whose body has no `## Review ledger` section at all is round zero
 malformed — ADR 0004's migration contract for pull requests opened before the ledger existed.
 
 `REVIEW_LOOP_STAGNATION_LIMIT` is set to `3` on the step and falls back to the script's
-`DEFAULT_STAGNATION_LIMIT`. The brake measures state, not elapsed time: the loop-state hash
-is `sha256(normalized diff ‖ open reified finding IDs ‖ red check names)`, where the
-normalized diff is the changed paths with their blob SHAs, sorted, so commit ordering does
-not affect it. Fields and list entries are joined with `\x1e` and `\x1f` rather than commas,
-because check-run names contain commas — `Check, Test & Lint` does.
+`DEFAULT_STAGNATION_LIMIT`. The brake measures state, not elapsed time. SHA-256 receives
+canonical JSON containing sorted changed-file tuples, open finding IDs and non-successful
+required job names, so ordering and delimiter bytes cannot create ambiguous framing.
 
 This job is a floor beneath `Check pull-request review governance`, never a substitute for
 it. The two are conjunctive: a pull request can converge and still be unmergeable for want of
@@ -138,6 +136,7 @@ rebuilt from scratch.
 - `.github/scripts/check-review-loop.js` — the convergence and stagnation evaluator
 - `.github/scripts/check-review-governance.js` — the independent-review and waiver evaluator
 - `docs/adr/0004-review-loop-convergence.md` — the accepted decision this step implements
+- `docs/adr/0006-trusted-review-loop-history.md` — proposed replacement, not yet implemented
 - `docs/review-stalls.md` — the durable record of escalated loops
 - `.github/workflows/` — directory containing all GitHub Actions workflow files
 - `keeplin-daemon/build.rs` — the build script that requires `protoc`

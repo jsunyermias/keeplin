@@ -12,8 +12,8 @@ by `.github/scripts/check-review-loop.js`.
 
 ## What counts as a stall
 
-The loop state is hashed as `sha256(normalized diff ‖ open reified finding IDs ‖ red required
-check names)`. A stall is either of:
+The loop state is SHA-256 over canonical JSON containing normalized changed-file tuples, open
+reified finding IDs and non-successful required job names. A stall is either of:
 
 - **A repeated state.** The current hash equals an earlier round's hash: the round changed
   nothing that matters to convergence.
@@ -34,10 +34,15 @@ An entry names what is stuck, not a narrative of the rounds. If the stuck item i
 finding, give its ID and the check that fails. If it is a red required check, name the check.
 
 This is enforced, not merely asked for: the checker parses the `## Open` table below and
-requires a row for the exact pull request whose cells mention **every** current blocker by
-name — each open finding's ID and each red check. A mention of the pull request elsewhere in
+requires a row for the exact pull request whose `Stuck on` cell names **every** current blocker
+as an explicit comma- or semicolon-delimited token. Thus `F-0010` does not name `F-001`. A
+mention of the pull request elsewhere in
 this file, or a row under `Cleared`, does not satisfy it. Naming the pull request without
 naming what stuck it would have told the maintainer nothing.
+
+ADR 0006 proposes a trusted default-branch writer. Until it is accepted and implemented, body
+history remains editable and F-002/F-008/F-009 remain open; rewriting the body is not evidence
+that an earned stall disappeared.
 
 ## How an entry is cleared
 

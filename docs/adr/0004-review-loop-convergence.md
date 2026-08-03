@@ -9,7 +9,7 @@
 - Acceptance PR: [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198), with
   [keeplin-srv#104](https://github.com/jsunyermias/keeplin-srv/pull/104) as its companion
 - Supersedes: none
-- Superseded by: none
+- Superseded by: [0006](0006-trusted-review-loop-history.md) once ADR 0006 is accepted
 
 ## Context and problem
 

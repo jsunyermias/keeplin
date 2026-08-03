@@ -26,23 +26,24 @@ body and returns one of four states:
 - `malformed` — the ledger or round log contradicts the state CI observes, including a ticked
   "Blocking findings are resolved" box while a reified finding is still open.
 
-The brake measures state, not time: the loop-state hash is
-`sha256(normalized diff ‖ open reified finding IDs ‖ red check names)`, with the normalized
-diff being the changed paths and their blob SHAs, sorted. Fields and list entries are joined
-with `\x1e` and `\x1f`, never a comma — check-run names contain commas (`Check, Test & Lint`),
-which would make distinct blocker sets hash alike.
+The brake measures state, not time. SHA-256 receives canonical JSON containing normalized
+changed-file tuples, sorted open finding IDs and sorted red check names, so delimiter bytes
+inside filenames or names cannot make different states collide.
 
 Three behaviours are easy to get wrong and are fixed deliberately:
 
-- **Convergence needs positive evidence.** The check runs in its own `converge` job that
-  `needs` every required job, because a step inside `Check, Test & Lint` cannot know its own
-  job's outcome. Pending runs are reported separately from red ones and block; the absence of
-  an already-completed failure is never read as green.
+- **Convergence needs positive evidence.** The `converge` job passes `needs.test.result` and
+  `needs.graph.result` explicitly and requires both to equal `success`. Skipped, neutral,
+  absent and unknown block; optional checks are outside this explicit required set.
 - **A pull request with no ledger section is round zero**, per ADR 0004's migration contract —
   not malformed. It still has to pass its required checks.
 - **A stall record must name what is stuck.** The `## Open` table of `docs/review-stalls.md`
-  needs a row for the exact pull request whose cells mention every current blocker. A mention
-  elsewhere in the file, or a `Cleared` row, does not satisfy it.
+  needs a row for the exact pull request whose `Stuck on` cell contains every blocker as an
+  explicit comma- or semicolon-delimited token. `F-0010` is not `F-001`.
+
+Table parsing follows CommonMark backslash parity. ADR 0006 proposes trusted external history,
+but while it is proposed the editable body remains authoritative and F-002 stays deliberately
+red.
 
 Neither script discharges independent review, and `check-review-loop.js` does not weaken
 `check-review-governance.js`: the two gates are conjunctive.

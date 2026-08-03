@@ -197,6 +197,10 @@ Step 6 above ends on a computed condition, never on an agent's satisfaction.
 accepted decision; `.github/scripts/check-review-loop.js` enforces it on every non-draft pull
 request.
 
+[`docs/adr/0006-trusted-review-loop-history.md`](docs/adr/0006-trusted-review-loop-history.md)
+proposes superseding 0004 with a default-branch trusted writer and authenticated history. It is
+not active while proposed: body history remains authoritative and F-002/F-008/F-009 stay open.
+
 - A finding **blocks** only if it is *reified*: expressed as something that fails
   mechanically — a test, a property, a contract assertion, or a `scripts/check-docs.sh`
   check. A finding that cannot be reduced to a failing check is **advisory**: recorded in the

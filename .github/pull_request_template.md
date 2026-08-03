@@ -70,6 +70,9 @@ check; leave `Reified by` as `advisory` only for a finding that is not blocking.
 strictly each round. A repeated loop-state hash, or no shrink for 3 rounds, escalates to the
 maintainer and is recorded in
 [`docs/review-stalls.md`](../docs/review-stalls.md). CI prints the hash to record.
+Required jobs must explicitly report `success`; skipped, neutral, missing and unknown are not
+green. ADR 0006's trusted history is proposed only, so prior body rows must not be removed to
+reset the brake.
 
 | Round | Loop-state hash | Blocking |
 |---|---|---|

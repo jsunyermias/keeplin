@@ -13,10 +13,6 @@ on:
 permissions:
   contents: read
   pull-requests: read
-  # The review-loop convergence check reads the head commit's check runs to build the
-  # set of red required checks. Without this it sees an empty set and would declare a
-  # failing pull request converged.
-  checks: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -185,8 +181,7 @@ jobs:
               STALLS_PATH,
               diffSignatureFromFiles,
               evaluateReviewLoop,
-              pendingChecksFromRuns,
-              redChecksFromRuns,
+              requiredChecksFromNeeds,
             } = require('./.github/scripts/check-review-loop.js');
 
             const files = await github.paginate(
@@ -203,23 +198,6 @@ jobs:
                 sha: file.sha,
               })),
             );
-            const runs = await github.paginate(
-              github.rest.checks.listForRef,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                ref: context.payload.pull_request.head.sha,
-                per_page: 100,
-              },
-              response => response.data.check_runs.map(run => ({
-                name: run.name,
-                status: run.status,
-                conclusion: run.conclusion,
-              })),
-            );
-            // Only this job is excluded, and only because it is the one still running.
-            // The jobs it depends on have completed, so their real conclusions count.
-            const self = ['Review loop converged'];
             const stallsContent = fs.existsSync(STALLS_PATH)
               ? fs.readFileSync(STALLS_PATH, 'utf8')
               : '';
@@ -229,8 +207,10 @@ jobs:
               stallsContent,
               repository: `${context.repo.owner}/${context.repo.repo}`,
               pullNumber: context.issue.number,
-              redChecks: redChecksFromRuns(runs, self),
-              pendingChecks: pendingChecksFromRuns(runs, self),
+              redChecks: requiredChecksFromNeeds({
+                test: { result: '${{ needs.test.result }}' },
+                graph: { result: '${{ needs.graph.result }}' },
+              }),
               diffSignature: diffSignatureFromFiles(files),
               stagnationLimit:
                 Number(process.env.REVIEW_LOOP_STAGNATION_LIMIT) || DEFAULT_STAGNATION_LIMIT,

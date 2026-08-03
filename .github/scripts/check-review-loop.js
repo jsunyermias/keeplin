@@ -40,20 +40,36 @@ function levelThreeSection(text, heading) {
   return end ? remainder.slice(0, end.index) : remainder;
 }
 
-// `\|` is a legal escaped pipe inside a Markdown cell, and a reifier naming a contract
-// like `accepts_a \| b` is ordinary. Splitting on every pipe would shift every later
-// column, so only unescaped pipes separate cells.
+function splitTableRow(line) {
+  const cells = [];
+  let cell = "";
+  let backslashes = 0;
+
+  for (const character of line.slice(1, -1)) {
+    if (character === "\\") {
+      backslashes += 1;
+      cell += character;
+      continue;
+    }
+    if (character === "|" && backslashes % 2 === 0) {
+      cells.push(cell.trim());
+      cell = "";
+    } else {
+      cell += character;
+    }
+    backslashes = 0;
+  }
+  cells.push(cell.trim());
+  return cells.map((value) => value.replace(/(\\+)\|/g, (match, escapes) =>
+    `${"\\".repeat(Math.floor(escapes.length / 2))}|`));
+}
+
 function tableRows(text) {
   return text
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.startsWith("|") && line.endsWith("|"))
-    .map((line) =>
-      line
-        .slice(1, -1)
-        .split(/(?<!\\)\|/)
-        .map((cell) => cell.replace(/\\\|/g, "|").trim()),
-    )
+    .map(splitTableRow)
     .filter((cells) => !cells.every((cell) => /^:?-{2,}:?$/.test(cell)))
     .filter((cells) => !/^id$/i.test(cells[0] || "") && !/^round$/i.test(cells[0] || ""));
 }
@@ -162,10 +178,11 @@ function parseRoundLog(section) {
 }
 
 function diffSignatureFromFiles(files) {
-  return (files || [])
-    .map((file) => `${file.filename}\0${file.status || ""}\0${file.sha || ""}`)
-    .sort()
-    .join("\n");
+  return JSON.stringify(
+    (files || [])
+      .map((file) => [file.filename, file.status || "", file.sha || ""])
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+  );
 }
 
 function redChecksFromRuns(runs, ignoreNames = []) {
@@ -199,17 +216,30 @@ function pendingChecksFromRuns(runs, ignoreNames = []) {
   ].sort();
 }
 
+function requiredChecksFromNeeds(needs) {
+  const names = { test: "Check, Test & Lint", graph: "Knowledge graph up to date" };
+  return Object.entries(names).reduce(
+    (result, [job, name]) => {
+      const conclusion = needs && needs[job] && needs[job].result;
+      if (conclusion !== "success") result.push(name);
+      return result;
+    },
+    [],
+  );
+}
+
 // Both separators must be bytes the inputs cannot contain, or distinct loop states
 // collide. A comma is not such a byte: check-run names routinely contain one — this
 // repository's own required check is literally "Check, Test & Lint" — so joining a list
 // on commas made {"a,b", "c"} and {"a", "b,c"} hash identically.
 function loopStateHash({ diffSignature = "", openReifiedIds = [], redChecks = [] }) {
+  const canonical = JSON.stringify({
+    diffSignature,
+    openReifiedIds: [...openReifiedIds].sort(),
+    redChecks: [...redChecks].sort(),
+  });
   return createHash("sha256")
-    .update(diffSignature)
-    .update("\x1e")
-    .update([...openReifiedIds].sort().join("\x1f"))
-    .update("\x1e")
-    .update([...redChecks].sort().join("\x1f"))
+    .update(canonical)
     .digest("hex");
 }
 
@@ -235,7 +265,12 @@ function stallRecordsBlockers(stallsContent, repository, pullNumber, blockerName
     const row = cells.join(" ");
     if (!stallMentionsPull(row, repository, pullNumber)) continue;
 
-    const missing = blockerNames.filter((name) => !row.includes(name));
+    const stuckOn = cells[2] || "";
+    const tokens = stuckOn
+      .split(/[;,]/)
+      .map((token) => unquote(token).trim())
+      .filter(Boolean);
+    const missing = blockerNames.filter((name) => !tokens.includes(name));
     if (missing.length > 0) {
       return {
         ok: false,
@@ -442,5 +477,6 @@ module.exports = {
   loopStateHash,
   pendingChecksFromRuns,
   redChecksFromRuns,
+  requiredChecksFromNeeds,
   stallMentionsPull,
 };
