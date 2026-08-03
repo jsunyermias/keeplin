@@ -81,8 +81,9 @@ the fix crosses a decision boundary.
 | [0003 — Versioned persistent formats and forward migrations](0003-versioned-persistence.md) | accepted (retrospective) | cross-repo | current implementation |
 | [0004 — Deterministic convergence and a stagnation brake for the review loop](0004-review-loop-convergence.md) | superseded by 0006 | cross-repo | [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198), [keeplin-srv#104](https://github.com/jsunyermias/keeplin-srv/pull/104); current implementation remains authoritative while 0006 is proposed |
 | [0005 — Loop history lives outside the pull-request body](0005-loop-history-outside-the-pull-request-body.md) | rejected | cross-repo | Replaced by the broader, authenticated design proposed in 0006 |
-| [0006 — Trusted review-loop history](0006-trusted-review-loop-history.md) | accepted | cross-repo | Supersedes 0004; addresses F-002, F-008 and F-009 from the round-2 review of keeplin#198 |
+| [0006 — Trusted review-loop history](0006-trusted-review-loop-history.md) | accepted; superseded by 0007 when accepted | cross-repo | Supersedes 0004; addresses F-002, F-008 and F-009 from the round-2 review of keeplin#198 |
 
+| [0007 — Trusted evaluator, verified disposal, and dual-store loop history](0007-trusted-evaluator-and-dual-store-history.md) | proposed | cross-repo | Supersedes 0006, which was accepted and then found unimplementable (F-017): a digest chain cannot detect deletion of its own newest record. To be reviewed by two model families before acceptance |
 The first prospective use of this framework is
 [keeplin#143](https://github.com/jsunyermias/keeplin/issues/143), which must create its E2EE
 threat-model ADR from the template and obtain maintainer acceptance before cryptographic or
