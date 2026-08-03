@@ -23,6 +23,13 @@ reified finding IDs and non-successful required job names. A stall is either of:
 The brake measures state, not elapsed time or token budget. A slow round that shrinks the
 blocking set is progress; a fast round that does not is not.
 
+The accepted brake has two residual accounting limitations. Alternating between different
+blocking sets can reset the non-shrinking streak even when the loop makes no lasting progress.
+Also, records created by the legacy pull-request path used every observed red check while the
+trusted path uses only its explicitly named required jobs, so a migrated journal can compare
+blocking counts drawn from different domains. These are advisory limitations of the accepted
+ADR 0008 design; neither changes the current convergence rule.
+
 ## How an entry is opened
 
 CI fails the pull request with the exact finding or check that is stuck and refuses to pass
@@ -57,7 +64,8 @@ A stall is the maintainer's to resolve, and there are exactly three exits:
    finding moves to `dismissed` in the ledger with that citation and does not reopen unless the
    code in its area changes.
 3. **Reclassify it as advisory** — only when it genuinely cannot be reduced to a failing
-   check. It is then recorded, tracked as a follow-up issue, and no longer blocking.
+   check and an independent authorized reference carries the machine-readable reclassification
+   directive. It is then recorded, tracked as a follow-up issue, and no longer blocking.
 
 Recording a stall here does not make the pull request mergeable, and neither does a green CI
 run on an unrelated commit: convergence still requires zero open reified findings. Move the

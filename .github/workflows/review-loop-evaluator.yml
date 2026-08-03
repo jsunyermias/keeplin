@@ -16,6 +16,8 @@ jobs:
   evaluate:
     name: Review loop converged
     runs-on: ubuntu-latest
+    env:
+      CI_WORKFLOW_ID: ${{ vars.CI_WORKFLOW_ID }}
     steps:
       - name: Evaluate from default-branch code and API evidence only
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
@@ -36,6 +38,11 @@ jobs:
             }, { filename: 'default-branch/check-review-loop.js' });
             const evaluator = module.exports;
             const run = context.payload.workflow_run;
+            const configuredCiWorkflowId = Number(process.env.CI_WORKFLOW_ID);
+            if (!Number.isSafeInteger(configuredCiWorkflowId) || run.workflow_id !== configuredCiWorkflowId) {
+              core.setFailed('Triggering workflow does not match the configured CI_WORKFLOW_ID repository variable.');
+              return;
+            }
             const pulls = await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, {
               owner: context.repo.owner, repo: context.repo.repo, commit_sha: run.head_sha,
             });
@@ -53,20 +60,36 @@ jobs:
               stallsContent = Buffer.from(stalls.data.content, 'base64').toString('utf8');
             } catch {}
             const section = evaluator.parseFindings(evaluator.levelTwoSection(pull.body || '', evaluator.LEDGER_HEADING) || '');
-            const findings = (section.findings || []).map((finding) => {
+            let parsedFindings;
+            try { parsedFindings = evaluator.requireParsedFindings(section); } catch (error) {
+              core.setFailed(error.message);
+              return;
+            }
+            const findings = parsedFindings.map((finding) => {
               try { return { ...finding, evidence: JSON.parse(finding.resolution) }; } catch { return finding; }
             });
             const metadata = (pull.body || '').match(/<!-- keeplin-review-loop-metadata ([\s\S]*?) -->/);
             let trustedMetadata = {};
             try { trustedMetadata = metadata ? JSON.parse(metadata[1]) : {}; } catch { trustedMetadata = {}; }
             const references = [
-              ...comments.map((item) => ({ ...item, kind: 'comment' })),
-              ...reviews.map((item) => ({ ...item, kind: 'review' })),
+              ...comments.map((item) => ({ ...item, kind: 'comment', repositoryId: repository.id, pullNumber: pull.number })),
+              ...reviews.map((item) => ({ ...item, kind: 'review', repositoryId: repository.id, pullNumber: pull.number })),
             ];
-            const config = { repositoryId: repository.id, repository: repository.full_name, workflowId: run.workflow_id, runId: run.id, appSlug: 'github-actions', appId: 15368 };
+            const mappedChecks = await Promise.all(checks.map(async (item) => {
+              const workflowRunId = Number((item.details_url || '').match(/\/actions\/runs\/(\d+)/)?.[1]);
+              if (!Number.isSafeInteger(workflowRunId)) return { ...item, app_slug: item.app && item.app.slug, app_id: item.app && item.app.id, workflow_id: null, workflow_run_id: null };
+              const checkRun = (await github.rest.actions.getWorkflowRun({ owner: context.repo.owner, repo: context.repo.repo, run_id: workflowRunId })).data;
+              return { ...item, app_slug: item.app && item.app.slug, app_id: item.app && item.app.id, workflow_id: checkRun.workflow_id, workflow_run_id: workflowRunId };
+            }));
+            const referencedCheckIds = new Set(findings.filter((finding) => finding.state === 'resolved').map((finding) => String(finding.evidence && finding.evidence.checkRunId)));
+            if (mappedChecks.some((checkRun) => referencedCheckIds.has(String(checkRun.id)) && checkRun.workflow_id !== configuredCiWorkflowId)) {
+              core.setFailed('A referenced resolution check does not match the configured CI_WORKFLOW_ID repository variable.');
+              return;
+            }
+            const config = { repositoryId: repository.id, repository: repository.full_name, pullNumber: pull.number, workflowId: configuredCiWorkflowId, runId: run.id, appSlug: 'github-actions', appId: 15368 };
             const result = evaluator.evaluateTrustedReviewLoop({
-              pull: { author: pull.user.login, headSha: pull.head.sha, headRepositoryId: pull.head.repo.id, baseRepositoryId: pull.base.repo.id },
-              findings, references, checks: checks.map((item) => ({ ...item, app_slug: item.app && item.app.slug, app_id: item.app && item.app.id, workflow_id: run.workflow_id, workflow_run_id: Number((item.details_url || '').match(/\/actions\/runs\/(\d+)/)?.[1]) })),
+              pull: { number: pull.number, author: pull.user.login, headSha: pull.head.sha, headRepositoryId: pull.head.repo.id, baseRepositoryId: pull.base.repo.id },
+              findings, references, checks: mappedChecks,
               journalComments: comments.map((item) => ({ ...item, app_slug: item.performed_via_github_app && item.performed_via_github_app.slug, app_id: item.performed_via_github_app && item.performed_via_github_app.id })), jobs,
               tombstones: trustedMetadata.tombstones || [], genesisEvidence: trustedMetadata.genesisEvidence, config,
               changedFiles: files.map((file) => file.filename), stallsContent,

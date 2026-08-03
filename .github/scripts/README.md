@@ -45,11 +45,14 @@ The dependency result proves only the jobs named by `converge.needs`. GitHub bra
 required checks are configured outside this repository, so this script cannot prove that the
 workflow dependency list and branch protection agree. It deliberately makes no broader claim.
 
-The default-branch `workflow_run` workflow is authoritative. It verifies App, workflow,
-repository and schema identity; collaborator authorization directives and body digests; and,
+The default-branch `workflow_run` workflow is authoritative. It rejects malformed ledger
+parses and open findings without a named mechanical check. It verifies App, configured CI
+workflow, repository, pull-request and schema identity; collaborator authorization directives
+and body digests; and,
 for `resolved`, a successful named check bound to the evaluated head, workflow and App. Missing,
 changed, dismissed or unreachable evidence reopens the finding. Genesis and tombstones use the
-same authorization path. Forks deliberately fail closed.
+same authorization path. A previously reified finding also cannot become advisory without that
+verified authorization. Forks deliberately fail closed.
 
 The App comment journal's guarantees are bounded: editing any record is detected, while deletion
 is detected only if a surviving descendant commits to the missing record. Terminal truncation is

@@ -7,12 +7,20 @@ This default-branch `workflow_run` workflow is the authoritative evaluator requi
 It correlates the completed unprivileged CI run to exactly one open pull request and reads all
 pull-request content and evidence through GitHub APIs.
 
+The repository variable `CI_WORKFLOW_ID` must contain the numeric database ID of this
+repository's `CI` workflow. The evaluator rejects a triggering run or referenced resolution
+check whose API-reported workflow ID differs from that separately configured value; it never
+copies the trigger's asserted identity onto fetched checks.
+
 ## Trust boundary
 
 There is no checkout and no shell step. The sole action is GitHub's script action pinned to a
 full commit SHA. It fetches `.github/scripts/check-review-loop.js` explicitly from the
 repository's API-reported default branch. Pull-request files, body text, comments, reviews,
 jobs and check runs remain data; none is executed, imported or interpolated into a shell.
+Malformed ledger data fails before evaluation. Comment and review references are annotated with
+the API request's repository and pull-request coordinates, then those coordinates are verified
+again inside the evaluator.
 
 The job alone receives `issues: write` and `checks: write`, used to append one digest-chained
 journal comment and create the current result check. Contents, actions and pull-request access
@@ -28,6 +36,7 @@ authentic prefix as though the missing round never happened.
 ## Repository mirror
 
 The server repository must carry this workflow and both `.github/scripts/check-review-loop.js`
-files byte-identically. Only its unprivileged CI workflow may differ in Rust/PostgreSQL setup;
-the trigger name `CI`, required job names, permissions, action pin, schema and evaluator logic
-must remain identical.
+files byte-identically. Each repository configures its own numeric `CI_WORKFLOW_ID` variable, so
+that value is deliberately not embedded in either workflow file. Only the server's unprivileged
+CI workflow may differ in Rust/PostgreSQL setup; the trigger name `CI`, required job names,
+permissions, action pin, schema and evaluator logic must remain identical.

@@ -18,7 +18,9 @@ const {
   evaluateTrustedReviewLoop,
   journalComment,
   makeJournalRecord,
+  requireParsedFindings,
   sha256,
+  verifyAuthorization,
 } = require("./check-review-loop.js");
 
 const REPOSITORY = "jsunyermias/keeplin";
@@ -433,16 +435,20 @@ test("F-001: unrelated optional checks are outside the explicit required-job set
   );
 });
 
-const TRUST = { repositoryId: 7, workflowId: 88, runId: 77, appSlug: "github-actions", appId: 15368 };
-function journalFixture() {
+const TRUST = { repositoryId: 7, repository: "jsunyermias/keeplin", pullNumber: 200, workflowId: 88, runId: 77, appSlug: "github-actions", appId: 15368 };
+function journalFixture(length = 3) {
   const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 3 });
   const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 2, priorDigest: first.digest });
+  if (length === 2) return [first, second].map((record) => journalComment(record, TRUST));
   const third = makeJournalRecord({ ...TRUST, observation: 3, headSha: "ccc", stateHash: "three", blocking: 1, priorDigest: second.digest });
   return [first, second, third].map((record) => journalComment(record, TRUST));
 }
+function journalRecord(comment) {
+  return JSON.parse(comment.body.slice(comment.body.indexOf("{"), comment.body.lastIndexOf("}") + 1));
+}
 function trusted(overrides = {}) {
   return evaluateTrustedReviewLoop({
-    pull: { author: "author", headSha: "ccc", headRepositoryId: 7, baseRepositoryId: 7 },
+    pull: { number: 200, author: "author", headSha: "ccc", headRepositoryId: 7, baseRepositoryId: 7 },
     findings: [], references: [], checks: [], journalComments: journalFixture(),
     jobs: [
       { name: "Check, Test & Lint", status: "completed", conclusion: "success" },
@@ -466,18 +472,33 @@ test("middle-deleted journal record is history-unverifiable", () => {
 });
 
 test("limitation_F002_terminal_truncation_undetected", () => {
-  const comments = journalFixture();
-  const truncated = trusted({ journalComments: comments.slice(0, 2) });
-  const prefixNeverExtended = trusted({ journalComments: comments.slice(0, 2) });
+  const extendedJournal = journalFixture();
+  const genuinelyTwoRecordJournal = journalFixture(2);
+  const truncated = trusted({ journalComments: extendedJournal.slice(0, 2) });
+  const prefixNeverExtended = trusted({ journalComments: genuinelyTwoRecordJournal });
   assert.equal(truncated.state, "converged");
   assert.deepEqual(truncated.records.map((record) => record.stateHash), ["one", "two"]);
   assert.deepEqual(truncated.records, prefixNeverExtended.records);
   assert.doesNotMatch(JSON.stringify(truncated.records), /three/);
 });
 
+test("trusted_evaluator_rejects_parseFindings_error_instead_of_converging", () => {
+  assert.throws(
+    () => requireParsedFindings({ error: "Review ledger: duplicate F-001." }),
+    /duplicate F-001/,
+  );
+  assert.deepEqual(requireParsedFindings({ findings: [] }), []);
+});
+
+test("trusted_evaluator_rejects_open_finding_that_names_no_failing_check", () => {
+  const result = trusted({ findings: [{ id: "F-015", state: "open", reified: false }] });
+  assert.equal(result.state, "history-unverifiable");
+  assert.match(result.message, /open.*names no failing check/i);
+});
+
 test("verified disposal requires exact directive, independent authorized author and body digest", () => {
   const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-013", state: "dismissed", reason: "ADR 0008" })} -->`;
-  const reference = { id: 91, kind: "comment", user: { login: "maintainer" }, author_association: "MEMBER", body };
+  const reference = { id: 91, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", body };
   const finding = { id: "F-013", reified: true, state: "dismissed", evidence: { referenceId: 91, author: "maintainer", bodyDigest: sha256(body) } };
   assert.equal(trusted({ findings: [finding], references: [reference] }).state, "converged");
   for (const changed of [
@@ -490,15 +511,45 @@ test("verified disposal requires exact directive, independent authorized author 
   ]) assert.equal(trusted({ findings: [finding], ...changed }).projectedFindings[0].state, "open");
 });
 
+test("disposal_reference_from_another_pull_request_or_repository_is_refused", () => {
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-013", state: "dismissed", reason: "authorized" })} -->`;
+  const finding = { id: "F-013", reified: true, state: "dismissed", evidence: { referenceId: 91, author: "maintainer", bodyDigest: sha256(body) } };
+  const reference = { id: 91, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", body };
+  for (const mutation of [{ repositoryId: 8 }, { pullNumber: 201 }]) {
+    const result = verifyAuthorization({ finding, reference: { ...reference, ...mutation }, pullAuthor: "author", targetState: "dismissed", repositoryId: 7, pullNumber: 200 });
+    assert.equal(result.ok, false);
+    assert.match(result.reason, /repository and pull request/);
+  }
+});
+
+test("prior_reified_finding_cannot_be_reclassified_advisory_without_verified_authorization", () => {
+  const comments = journalFixture();
+  const prior = { id: "F-014", reified: true, state: "open" };
+  const record = makeJournalRecord({ ...TRUST, observation: 3, headSha: "ccc", stateHash: "three", blocking: 1, priorDigest: journalRecord(comments[1]).digest, findingIds: ["F-014"], findings: [prior] });
+  comments[2] = journalComment(record, TRUST);
+  const result = trusted({ journalComments: comments, findings: [{ id: "F-014", reified: false, state: "advisory" }] });
+  assert.equal(result.state, "converging");
+  assert.equal(result.projectedFindings[0].state, "open");
+  assert.match(result.projectedFindings[0].disposalError, /authorization/);
+});
+
 test("resolved evidence is bound to current head, named job, workflow and App", () => {
   const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-013", state: "resolved", reason: "test passes" })} -->`;
-  const reference = { id: 92, kind: "comment", user: { login: "maintainer" }, author_association: "OWNER", body };
+  const reference = { id: 92, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
   const finding = { id: "F-013", reified: true, state: "resolved", evidence: { referenceId: 92, author: "maintainer", bodyDigest: sha256(body), checkRunId: 5, checkName: "Check, Test & Lint" } };
   const check = { id: 5, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
   assert.equal(trusted({ findings: [finding], references: [reference], checks: [check] }).state, "converged");
   for (const mutation of [{ head_sha: "old" }, { workflow_id: 99 }, { workflow_run_id: 66 }, { app_id: 1 }, { conclusion: "neutral" }]) {
     assert.equal(trusted({ findings: [finding], references: [reference], checks: [{ ...check, ...mutation }] }).projectedFindings[0].state, "open");
   }
+});
+
+test("trusted_adapter_rejects_triggering_or_check_workflow_id_not_equal_to_configured_ci_workflow_id", () => {
+  const workflow = fs.readFileSync(".github/workflows/review-loop-evaluator.yml", "utf8");
+  assert.match(workflow, /CI_WORKFLOW_ID:.*vars\.CI_WORKFLOW_ID/);
+  assert.match(workflow, /run\.workflow_id !== configuredCiWorkflowId/);
+  assert.match(workflow, /checkRun\.workflow_id !== configuredCiWorkflowId/);
+  assert.doesNotMatch(workflow, /workflow_id:\s*run\.workflow_id/);
 });
 
 test("only named required jobs with positive success converge; forks fail closed", () => {
@@ -512,12 +563,12 @@ test("only named required jobs with positive success converge; forks fail closed
 
 test("genesis and tombstones require the same verified authorization", () => {
   const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "GENESIS", state: "genesis", reason: "migrate this PR" })} -->`;
-  const reference = { id: 93, kind: "comment", user: { login: "maintainer" }, author_association: "COLLABORATOR", body };
+  const reference = { id: 93, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "COLLABORATOR", body };
   const evidence = { referenceId: 93, author: "maintainer", bodyDigest: sha256(body) };
   assert.equal(trusted({ journalComments: [], genesisEvidence: evidence, references: [reference] }).state, "converged");
   assert.equal(trusted({ journalComments: [], genesisEvidence: evidence, references: [] }).state, "history-unverifiable");
   const tombstoneBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-OLD", state: "tombstone", reason: "duplicate ID" })} -->`;
-  const tombstoneReference = { id: 94, kind: "comment", user: { login: "maintainer" }, author_association: "MEMBER", body: tombstoneBody };
+  const tombstoneReference = { id: 94, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", body: tombstoneBody };
   const tombstone = { id: "F-OLD", evidence: { referenceId: 94, author: "maintainer", bodyDigest: sha256(tombstoneBody) } };
   assert.equal(trusted({ tombstones: [tombstone], references: [tombstoneReference] }).state, "converged");
   assert.equal(trusted({ tombstones: [tombstone], references: [] }).state, "history-unverifiable");

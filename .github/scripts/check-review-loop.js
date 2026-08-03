@@ -45,8 +45,9 @@ function markedJson(body, marker) {
   try { return JSON.parse(String(body).slice(start + marker.length, end)); } catch { return null; }
 }
 
-function verifyAuthorization({ finding, reference, pullAuthor, targetState }) {
+function verifyAuthorization({ finding, reference, pullAuthor, targetState, repositoryId, pullNumber }) {
   if (!reference) return { ok: false, reason: "authorization reference is unreachable" };
+  if (reference.repositoryId !== repositoryId || reference.pullNumber !== pullNumber) return { ok: false, reason: "authorization reference is not bound to this repository and pull request" };
   const login = reference.user && reference.user.login;
   const association = String(reference.author_association || "").toUpperCase();
   if (!AUTHORIZING_ASSOCIATIONS.has(association)) return { ok: false, reason: "reference author is not authorized" };
@@ -93,6 +94,8 @@ function verifyJournal(comments, config) {
 
 function evaluateTrustedReviewLoop({ pull, findings = [], references = [], checks = [], journalComments = [], jobs = [], tombstones = [], genesisEvidence, changedFiles = [], stallsContent = "", diffSignature = "", stagnationLimit = DEFAULT_STAGNATION_LIMIT, config }) {
   if (pull.headRepositoryId !== pull.baseRepositoryId) return { ok: false, state: "fork-refused", message: "Fork pull requests deliberately fail closed: partial evidence is not evaluated." };
+  const unreifiedOpen = findings.find((finding) => finding.state === "open" && !finding.reified);
+  if (unreifiedOpen) return { ok: false, state: "history-unverifiable", message: `Review ledger: finding ${unreifiedOpen.id} is open but names no failing check.` };
   const journal = verifyJournal(journalComments, config);
   if (!journal.ok) return journal;
   const priorRecord = journal.records[journal.records.length - 1];
@@ -106,7 +109,7 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
   ];
   for (const special of specialAuthorizations) {
     const reference = references.find((item) => String(item.id) === String(special.evidence && special.evidence.referenceId));
-    const authorization = verifyAuthorization({ finding: special, reference, pullAuthor: pull.author, targetState: special.state });
+    const authorization = verifyAuthorization({ finding: special, reference, pullAuthor: pull.author, targetState: special.state, repositoryId: config.repositoryId, pullNumber: pull.number });
     if (!authorization.ok) return { ok: false, state: "history-unverifiable", message: `${special.id} lacks verified authorization: ${authorization.reason}.` };
   }
   const requiredFailures = REQUIRED_JOBS.filter((name) => {
@@ -114,10 +117,12 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
     return matches.length !== 1 || matches[0].status !== "completed" || matches[0].conclusion !== "success";
   });
   const projected = findings.map((finding) => {
-    if (!["resolved", "dismissed"].includes(finding.state)) return finding;
+    const priorFinding = priorRecord && Array.isArray(priorRecord.findings) ? priorRecord.findings.find((item) => item.id === finding.id) : undefined;
+    const declassified = priorFinding && priorFinding.reified && (!finding.reified || finding.state === ADVISORY);
+    if (!["resolved", "dismissed"].includes(finding.state) && !declassified) return finding;
     const reference = references.find((item) => String(item.id) === String(finding.evidence && finding.evidence.referenceId));
-    const authorization = verifyAuthorization({ finding, reference, pullAuthor: pull.author, targetState: finding.state });
-    if (!authorization.ok) return { ...finding, state: "open", disposalError: authorization.reason };
+    const authorization = verifyAuthorization({ finding, reference, pullAuthor: pull.author, targetState: finding.state, repositoryId: config.repositoryId, pullNumber: pull.number });
+    if (!authorization.ok) return { ...finding, reified: true, state: "open", disposalError: authorization.reason };
     if (finding.state === "resolved") {
       const proof = verifyResolvedCheck({ finding, checks, headSha: pull.headSha, config });
       if (!proof.ok) return { ...finding, state: "open", disposalError: proof.reason };
@@ -298,6 +303,12 @@ function parseFindings(section) {
   }
 
   return { findings };
+}
+
+function requireParsedFindings(parsed) {
+  if (parsed && parsed.error) throw new Error(parsed.error);
+  if (!parsed || !Array.isArray(parsed.findings)) throw new Error("Review ledger parser returned no findings result.");
+  return parsed.findings;
 }
 
 function parseRoundLog(section) {
@@ -642,6 +653,7 @@ module.exports = {
   loopStateHash,
   pendingChecksFromRuns,
   parseFindings,
+  requireParsedFindings,
   redChecksFromRuns,
   requiredChecksFromNeeds,
   splitTableRow,
