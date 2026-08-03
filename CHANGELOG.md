@@ -19,7 +19,9 @@ version and the wire protocol version move independently.
   author and body digest are reverified. Resolved findings additionally require a successful
   named check bound to the evaluated commit, configured workflow and App. Genesis and tombstones
   use the same authorization.
-- The App comment journal detects edits and deletions with surviving descendants. Terminal
+- The App comment journal is digest-linked, but the implementation does not detect edits
+  unconditionally. In the Round 13 reproduction, corrupting one record made it disappear from
+  parsing; the evaluator observed one of the two records and returned `converged`. Terminal
   truncation remains undetected and is pinned by `limitation_F002_terminal_truncation_undetected`;
   F-002 is dismissed by ADR 0008 and the option-C platform probes are tracked in
   `docs/review-loop-spike.md`. F-008 and F-013 are closed.
@@ -31,9 +33,9 @@ version and the wire protocol version move independently.
   applies. F-024 bounds the stall protocol's reclassification "only", and `check-docs.sh`
   check 12 fails if any mandated surface states the journal guarantee without its bound.
 - **Round 10 (GPT-5.6 Sol and Kimi K3) rejected the round-9 fix round and both were right.**
-  F-027: the evaluator skipped a journal record whose findings payload was authentic but not an
+  F-027: the evaluator skipped a journal record whose findings payload was digest-consistent but not an
   array, silently discarding the reification history the F-023 fix had just been built on — an
-  authentic-but-unreadable record now fails closed in `verifyJournal`, and the two lists must
+  unreadable digest-consistent record now fails closed in `verifyJournal`, and the two lists must
   agree. F-028: check 12 required only the substrings `truncat`, `reifi` and `advisory` anywhere
   in each file, which a one-line glossary satisfies with the bounded-history prose deleted. It is
   now a verbatim canonical sentence enforced by `scripts/check-bounded-history.sh`, whose own
@@ -84,8 +86,10 @@ version and the wire protocol version move independently.
   body. ADR 0008 replaces that evaluator and honestly bounds the remaining terminal-truncation
   limitation; the older deliberately-red F-002 test is retired.
 - **ADR 0005 is rejected and ADR 0006 is superseded by ADR 0008.** The implemented design keeps
-  the default-branch evaluator and authenticated digest chain while withdrawing the false claim
-  that terminal deletion is detectable.
+  the default-branch evaluator and an unkeyed digest-linked comment journal. It does not
+  authenticate history: in the Round 13 reproduction, a repository workflow declared
+  `issues: write`, received a token for the same `github-actions` App identity, and could
+  recompute records, successors and their unkeyed digests.
 - Independent review is untouched: convergence never ticks the review boxes, and a converged
   pull request with no independent reviewer is still unmergeable. That conjunction is required by
   policy and intended to be enforced by branch protection, which nothing here verifies; it is not

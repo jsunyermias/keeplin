@@ -26,6 +26,10 @@ This is a fixed whitelist. Enrolment is manual, so a new document that states th
 not discovered or checked until a maintainer adds it to `SURFACES`. The checker never infers
 enrolment from prose.
 
+`CHANGELOG.md` is not enrolled and can therefore carry the same overclaim without this check
+failing. Whether it should become a fourth policy surface is an open scope question for the
+maintainer; factual corrections to the changelog do not make that enrolment decision.
+
 > Terminal truncation is not detected: it can erase the record that established reification,
 > after which the shorter authentic prefix may converge with that finding advisory.
 
