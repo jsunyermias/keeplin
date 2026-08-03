@@ -141,7 +141,16 @@ const DRIVERS = {
   // "VEREDICTO: cualquier cosa". A reply that echoes the instructions is not a
   // review, and publishing it would put it in front of the adjudicator as one.
   const VERDICTS = ['BLOQUEANTE', 'OBSERVACIONES', 'SIN HALLAZGOS'];
-  const body = stdout.replace(/\r\n?/g, '\n');
+  // The browser drivers print their own header — model, chat url — and then a
+  // "--- reply ---" marker before the model's words. Everything before that
+  // marker is ours, not the reviewer's, and judging the reply by it rejected
+  // every valid browser review the moment the first-line rule landed.
+  const REPLY_MARKER = /^-{3}\s*reply\s*-{3}$/m;
+  const whole = stdout.replace(/\r\n?/g, '\n');
+  const marker = whole.match(REPLY_MARKER);
+  const body = marker
+    ? whole.slice(whole.indexOf(marker[0]) + marker[0].length)
+    : whole;
 
   // The verdict must be declared before any substance, but not literally on
   // line one: these UIs prepend their own chrome — "Show full message",

@@ -442,6 +442,43 @@ test('roles reports a bad pull request number instead of crashing', () => {
   assert.match(r.stderr, /must be an integer >= 1, got "abc"/);
 });
 
+test('ask judges the reply, not the driver\'s own banner', () => {
+  // The browser drivers print "model:", "url:" and a "--- reply ---" marker
+  // before the model's words. Counting those as the reply meant the first-line
+  // rule rejected every valid browser review the moment it landed — two real
+  // GLM reviews were thrown away before this was noticed.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-ask-'));
+  const prompt = path.join(dir, 'p.txt');
+  fs.writeFileSync(prompt, 'revisa\n');
+  const out = path.join(dir, 'review.md');
+
+  const r = run('ask.js', ['codex', prompt, out], {
+    env: stubCodex(
+      'cat >/dev/null; printf "model: GLM-5.2\\nurl: https://chat.z.ai/c/abc\\n' +
+      '--- reply ---\\nShow full message\\nVEREDICTO: OBSERVACIONES\\n\\nUn hallazgo.\\n"'),
+  });
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stdout, /VEREDICTO: OBSERVACIONES/);
+});
+
+test('ask still refuses when the reply after the banner is an echoed prompt', () => {
+  // The other side of the same coin: skipping the banner must not become a
+  // licence to hunt for a verdict anywhere below it. A stalled Qwen session
+  // returns the prompt itself, which contains the line listing all three.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-ask-'));
+  const prompt = path.join(dir, 'p.txt');
+  fs.writeFileSync(prompt, 'revisa\n');
+  const out = path.join(dir, 'review.md');
+
+  const r = run('ask.js', ['codex', prompt, out], {
+    env: stubCodex(
+      'cat >/dev/null; printf "model: Qwen\\n--- reply ---\\nHoy\\n# 0.C Revision\\n' +
+      'La primera linea debe ser: VEREDICTO: BLOQUEANTE | VEREDICTO: SIN HALLAZGOS\\n"'),
+  });
+  assert.strictEqual(r.code, 1);
+  assert.ok(!fs.existsSync(out));
+});
+
 test('ask accepts a verdict behind the chat UI\'s own chrome', () => {
   // z.ai prepends "Show full message" and "Thought Process". Requiring the
   // verdict on literally the first line rejected a real GLM review for a
