@@ -146,7 +146,12 @@ const readJson = (p, what) => {
 
   // Take the verdict from the first line that declares one: a later mention is
   // usually the adjudicator discussing another reviewer's verdict, not its own.
-  const verdict = (text.match(/^VEREDICTO:\s*(.+)$/m) || [])[1];
+  // Leading whitespace is tolerated here because ask.js tolerates it when
+  // deciding the reply is a review. While the two disagreed, a verdict indented
+  // by one space was published as a valid review and then reported by the gate
+  // as "no VEREDICTO line" — a wasted cycle out of five, and a message that
+  // contradicted the file sitting in front of the operator.
+  const verdict = (text.match(/^[ \t]*VEREDICTO:\s*(.+)$/m) || [])[1];
   const normalised = (verdict || '').trim().toUpperCase();
   const clean = normalised === 'SIN HALLAZGOS';
 

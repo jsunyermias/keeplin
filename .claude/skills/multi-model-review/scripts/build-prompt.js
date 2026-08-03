@@ -287,9 +287,14 @@ const read = (p) => fs.readFileSync(p, 'utf8');
   // Report what went in, not what was asked for. The old line counted
   // changed-files.txt, so it said "9 files" about a prompt containing none, and
   // the operator read that as confirmation the context had travelled.
+  // Deleted files are named rather than left as a silent shortfall. Counting
+  // against changed.length made "3/5 embedded, 0 omitted" mean either two
+  // deletions or two files lost from the package, with no way to tell which.
+  const deleted = changed.length - embedded - skipped.length;
   console.error(`wrote ${out}: ${Buffer.byteLength(prompt)} bytes ` +
-    `(diff ${Buffer.byteLength(diff)}, ${embedded}/${changed.length} files embedded, ` +
+    `(diff ${Buffer.byteLength(diff)}, ${embedded}/${captured} files embedded, ` +
     `${skipped.length} omitted ${NO_FILES ? 'by --no-files' : 'by size'}` +
+    `${deleted ? `, ${deleted} deleted by the pull request` : ''}` +
     `, context ${ctxIncluded.length} in/${ctxOmitted.length} out` +
     `${PRIOR.length ? `, ${PRIOR.length} prior review(s)` : ''})`);
   if (Buffer.byteLength(diff) > DIFF_WARN_BYTES) {

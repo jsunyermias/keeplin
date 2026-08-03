@@ -94,6 +94,43 @@ test('gate refuses when the phrase is repeated', () => {
   assert.strictEqual(run('gate.js', [g.review, ...g.args]).code, 1);
 });
 
+test('gate reads a verdict that ask.js would have accepted', () => {
+  // ask.js trims before matching, the gate did not. A verdict indented by one
+  // space was therefore published as a valid review and then reported by the
+  // gate as "no VEREDICTO line" — a cycle burned out of five, and a message
+  // that contradicted the file in front of the operator.
+  const g = gated(`  VEREDICTO: SIN HALLAZGOS\n\nTodo correcto.\n\n${PHRASE}\n`);
+  const r = run('gate.js', [g.review, ...g.args]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.strictEqual(JSON.parse(r.stdout).verdict, 'SIN HALLAZGOS');
+});
+
+test('ask clears the previous raw reply too', () => {
+  // Otherwise a failure before the driver even starts leaves the last run's
+  // raw output in place, and whoever opens it to diagnose this failure is
+  // reading the previous one.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmr-ask-'));
+  const prompt = path.join(dir, 'p.txt');
+  fs.writeFileSync(prompt, 'x'.repeat(131073));
+  const out = path.join(dir, 'review.md');
+  fs.writeFileSync(`${out}.raw`, 'respuesta de la ejecución anterior\n');
+
+  const r = run('ask.js', ['qwen', prompt, out]);
+  assert.strictEqual(r.code, 1);
+  assert.ok(!fs.existsSync(`${out}.raw`), 'the previous raw reply must not survive');
+});
+
+test('build-prompt distinguishes deleted files from missing ones', () => {
+  // "3/5 embedded, 0 omitted" meant either two deletions or two files lost
+  // from the package, with no way to tell which.
+  const dir = collected({ changed: ['a.js', 'borrado.js'], files: { 'a.js': 'x\n' } });
+  fs.writeFileSync(path.join(dir, 'collect.info'), 'pr: 1\nfiles_captured: 1\n');
+  const r = run('build-prompt.js', [dir, tmpFile('c.md', '# checklist\n')]);
+  assert.strictEqual(r.code, 0, r.stderr);
+  assert.match(r.stderr, /1\/1 files embedded/);
+  assert.match(r.stderr, /1 deleted by the pull request/);
+});
+
 test('gate refuses a phrase that is not the exact final line', () => {
   // The contract says exactly, alone. Trimming every line first meant padded
   // whitespace still counted as exact, so the check was looser than the rule
@@ -911,7 +948,10 @@ test('build-prompt counts the files it embedded, not the ones it was asked for',
   fs.writeFileSync(path.join(dir, 'collect.info'), 'pr: 1\nfiles_captured: 1\n');
   const r = run('build-prompt.js', [dir, tmpFile('c.md', '# checklist\n')]);
   assert.strictEqual(r.code, 0, r.stderr);
-  assert.match(r.stderr, /1\/3 files embedded/);
+  // Against what collect.js captured, not against changed-files.txt: the
+  // latter counts deletions too, so the shortfall was unreadable.
+  assert.match(r.stderr, /1\/1 files embedded/);
+  assert.match(r.stderr, /2 deleted by the pull request/);
 });
 
 test('build-prompt refuses a package that collect.js did not produce', () => {

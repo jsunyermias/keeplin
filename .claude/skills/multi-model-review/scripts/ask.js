@@ -64,7 +64,10 @@ const DRIVERS = {
   // request, ready for the gate to close a cycle on code that has since
   // changed. Removing them first means a failed run leaves no review at all,
   // which is the truth.
-  for (const stale of [OUT, `${OUT}.meta.json`, `${OUT}.err`]) {
+  // .raw is included: if a run fails before the driver is even spawned — the
+  // input-size check, say — a .raw from the previous run would survive, and
+  // whoever opened it to diagnose this failure would be reading the last one.
+  for (const stale of [OUT, `${OUT}.meta.json`, `${OUT}.err`, `${OUT}.raw`]) {
     if (fs.existsSync(stale)) fs.rmSync(stale);
   }
 

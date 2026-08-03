@@ -104,7 +104,11 @@ const OVERRIDE = ARGS.positional[1] ? ARGS.positional[1].trim().toLowerCase() : 
     // Then this one, with both prior reviews attached.
     adjudicator,
     reviewers: [...FIXED_REVIEWERS, adjudicator],
-    note: 'assignment is recorded on first use and holds for every cycle of this pull request',
+    // Scoped to the directory, and says so. Persistence is per --dir, not per
+    // pull request: a new package gets a new assignment, and a note that
+    // promised otherwise would mislead exactly the operator who relied on it.
+    note: 'recorded on first use in this directory, and holds for every cycle run against it; '
+      + 'a different --dir is a separate assignment',
   };
 
   if (!stored) fs.writeFileSync(file, JSON.stringify(assignment, null, 2) + '\n');
