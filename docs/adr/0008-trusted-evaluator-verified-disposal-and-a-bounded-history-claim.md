@@ -111,32 +111,59 @@ ADR 0008 supersedes 0006 and 0007.
    and the conclusions of the completed unprivileged run through APIs, and never checks out,
    executes, imports or shell-interpolates head-controlled content. Unprivileged CI keeps running
    tests read-only. This closes F-008.
-2. **A reified finding reaches `resolved` or `dismissed` only against a verified reference:** a
-   GitHub review or comment whose author association is `MEMBER`, `OWNER` or `COLLABORATOR` and
-   whose author is not the pull-request author. The evaluator records its immutable ID, author
-   and a digest of its body, and re-verifies all three every evaluation; a mismatched digest or a
-   dismissed review returns the finding to `open`. `resolved` additionally names the check and
-   the successful run proving the fix, and fails closed if that evidence is unreachable.
-   Tombstones and genesis records require the same verified reference. This closes F-013.
+2. **A reified finding reaches `resolved` or `dismissed` only against a verified *authorization*.**
+   Provenance alone is not authorization — both reviews caught this independently. The reference
+   is a GitHub review or comment whose author association is `MEMBER`, `OWNER` or `COLLABORATOR`
+   and whose author is not the pull-request author, **and whose body carries a machine-readable
+   directive naming the exact finding ID, the target state, and the reason**. An unrelated "looks
+   good" from a collaborator authorizes nothing. The evaluator records the reference's immutable
+   ID, author and body digest, and re-verifies all three every evaluation; a mismatched digest or
+   a dismissed review returns the finding to `open`.
+
+   `resolved` additionally names the check proving the fix, and that evidence is **bound to the
+   commit being evaluated and to the configured workflow and App identity**: a success from an
+   earlier head, a different workflow, or a different App does not resolve anything. Unreachable
+   evidence fails closed. Tombstones and genesis records require the same verified authorization.
+   This closes F-013.
 3. **Every pull-request-triggered workflow declares read-only permissions explicitly**, and the
    repository's default token permission is set to read-only. This is an enforced invariant, not
    a sentence: an adversarial step in pull-request CI attempts to `PATCH` a check run and the
    build fails unless it receives `403`. Without this, head code may hold `checks: write` by
    default on a pre-2023 repository — which matters for every design in this family, including
    the ones not chosen.
-4. **The journal is retained as a digest-chained sequence of App-authored comments**, and detects
-   editing a record and deleting one from the middle. Those are real properties and they hold.
+4. **The journal is retained as a digest-chained sequence of App-authored comments.** Its two
+   guarantees are stated separately because they are not equally strong:
+   - **Editing any record is detected unconditionally.** Its successor names a digest that no
+     longer matches, whether or not the tail survives.
+   - **Deleting a record is detected only when a surviving descendant still commits to it.**
+     Deleting a record *and its entire tail* leaves an authentic shorter prefix, which is
+     terminal deletion of a longer chain and is therefore invisible. The honest phrasing is that
+     deletion is caught when something downstream survives to notice it — not that "middle
+     deletion is detected", which reads as unconditional and is not.
+
+   Composing this with 5 below: the journal defends against tampering, not against truncation.
 5. **Terminal deletion of history is not detected, and this is stated wherever it matters** —
    in `AGENTS.md`, in `docs/review-stalls.md`, and in the checker's own message text, which must
-   not claim more than "nothing reachable through this pull request contradicts this". An actor
-   with repository write access can delete the newest journal record and the loop will read the
-   result as a round that has not happened yet.
+   state the limit rather than gesture at it: the message must say that history is verified only
+   against tampering, and that an actor with repository write access can truncate it, in those
+   terms. "Nothing reachable through this pull request contradicts this" is too vague to inform
+   anyone. An actor with repository write access can delete the newest journal record and the
+   loop will read the result as a round that has not happened yet.
 6. **Only explicitly named required jobs count**, each needing positive `success` evidence.
    Skipped, neutral, absent and unknown are not green.
-7. **Fork pull requests cannot produce a trusted evaluation** and do not converge.
+7. **Fork pull requests do not converge — as a deliberate fail-closed policy, not an
+   impossibility.** `workflow_run` does run the default-branch definition for forks; what is
+   unavailable is the journal, because the fork's unprivileged run holds no token able to append
+   one. The policy is to refuse rather than evaluate on partial evidence.
 
-Option C remains the documented path to property 3. Taking it requires empirical spikes against
-the live API first, and a superseding ADR — not an amendment to this one.
+Option C remains the path to property 3, and is **not** filed as vague future work: without a
+tracking artifact a "documented path" is limbo, and limbo is surrender by starvation. Accepting
+this ADR therefore also opens a follow-up issue for a three-probe spike against a scratch
+repository, settling exactly the facts that killed 0007: whether deleting a workflow run removes
+API-created check runs sharing its suite; whether cross-App `PATCH` of a check run is restricted;
+and whether check runs stay listable on dangling SHAs after a force-push. The spike is
+specifiable today. Its result decides whether option C proceeds to a superseding ADR — not an
+amendment to this one — or whether option A becomes necessary.
 
 ## Consequences and risks
 
@@ -178,14 +205,26 @@ property is absent — the specific defect in 0007's plan:
   pull-request author, digest-mismatched, or a dismissed review leaves the finding `open`.
 - **Journal, for what it does cover:** an edited record and a middle-deleted record both yield
   `history-unverifiable`.
-- **Journal, for what it does not:** a test asserting that terminal deletion is **not** detected,
-  so the limitation is pinned by the suite and cannot be quietly assumed away later.
+- **Journal, for what it does not:** `limitation_F002_terminal_truncation_undetected`, asserting
+  the concrete behaviour — a truncated journal evaluates as if the missing rounds never happened.
+  It must share its fixture with the positive tests above. Asserting mere absence of detection
+  would pass even if the checker stopped reading the journal entirely, letting a total breakage
+  masquerade as a documented limitation. The name marks it as a limitation pin, and the ADR that
+  delivers property 3 is required to delete it.
 - **Required checks:** skipped, neutral, absent and unknown do not converge.
 - ADR 0004's inherited semantics continue to pass unchanged.
 
 The deliberately-red F-002 test is retired rather than made green: it reifies a property this
-decision does not deliver. It is replaced by the two journal tests above, and F-002 is recorded
-as accepted-limitation in the ledger rather than closed.
+decision does not deliver, and a permanently red test for a formally undelivered property is a
+specification error, not a failing test. Both reviews agreed that is honest accounting rather
+than the reclassification `0.B` forbids — the difference being that the reclassification here
+*is* the reviewed decision.
+
+It does **not** get a new ledger state. `AGENTS.md` defines exactly four — `open`, `resolved`,
+`dismissed`, `advisory` — and inventing a fifth to describe an inconvenient case is precisely the
+move this sequence exists to prevent. F-002 therefore stays `open` until this ADR is accepted,
+and becomes `dismissed` at acceptance, citing this decision and linking the spike below. The
+docs check is extended to reject any ledger state outside the four.
 
 ## Equivalent decision in the other repository
 

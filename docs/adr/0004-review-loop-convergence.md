@@ -11,6 +11,13 @@
 - Supersedes: none
 - Superseded by: [0006](0006-trusted-review-loop-history.md)
 
+**Correction, 2026-08-03** (metadata only; the decision below is unchanged). This ADR's
+Consequences claim that indefinite silent iteration "ceases to be reachable". That was never
+true of any implementation of it: the history lived in the pull-request body, which the agents
+it constrains can edit, and no later design has closed truncation either. Read that sentence as
+"is detected when the loop's own record is intact". The bounded claim is stated in
+[0008](0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md).
+
 ## Context and problem
 
 The implementation↔review loop defined in `AGENTS.md` ("Workflow and review independence")
