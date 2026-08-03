@@ -9,7 +9,7 @@ template when a pull request leaves draft state:
   the exact pull request.
 
 `check-review-loop.js` enforces the loop's termination condition from
-[keeplin ADR 0004](https://github.com/jsunyermias/keeplin/blob/main/docs/adr/0004-review-loop-convergence.md): a pull request converges
+[keeplin ADR 0008](https://github.com/jsunyermias/keeplin/blob/main/docs/adr/0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md): a pull request converges
 when its explicit workflow dependencies succeed and no *reified* finding is open. A finding is reified when
 it names something that fails mechanically — a test, a property, a contract assertion, a
 `scripts/check-docs.sh` check; a finding that cannot be reduced to a failing check is
@@ -32,9 +32,9 @@ inside filenames or names cannot make different states collide.
 
 Three behaviours are easy to get wrong and are fixed deliberately:
 
-- **Convergence needs positive evidence.** The `converge` job passes `needs.test.result` and
-  `needs.graph.result` explicitly and requires both to equal `success`. Skipped, neutral,
-  absent and unknown block; optional checks are outside this explicit required set.
+- **Convergence needs positive evidence.** The trusted evaluator reads the completed CI run's
+  jobs through the API and requires the two explicitly named jobs to equal `success`. Skipped,
+  neutral, absent and unknown block; optional checks are outside this explicit required set.
 - **A pull request with no ledger section is round zero**, per ADR 0004's migration contract —
   not malformed. It still has to pass its required checks.
 - **A stall record must name what is stuck.** The `## Open` table of `docs/review-stalls.md`
@@ -45,9 +45,16 @@ The dependency result proves only the jobs named by `converge.needs`. GitHub bra
 required checks are configured outside this repository, so this script cannot prove that the
 workflow dependency list and branch protection agree. It deliberately makes no broader claim.
 
-Table parsing follows CommonMark backslash parity. ADR 0006 proposes trusted external history,
-but while it is proposed the editable body remains authoritative and F-002 stays deliberately
-red.
+The default-branch `workflow_run` workflow is authoritative. It verifies App, workflow,
+repository and schema identity; collaborator authorization directives and body digests; and,
+for `resolved`, a successful named check bound to the evaluated head, workflow and App. Missing,
+changed, dismissed or unreachable evidence reopens the finding. Genesis and tombstones use the
+same authorization path. Forks deliberately fail closed.
+
+The App comment journal's guarantees are bounded: editing any record is detected, while deletion
+is detected only if a surviving descendant commits to the missing record. Terminal truncation is
+not detected; a repository writer can delete the newest records and the shorter prefix evaluates
+as if those rounds never happened. The limitation test shares the positive journal fixture.
 
 Neither script discharges independent review, and `check-review-loop.js` does not weaken
 `check-review-governance.js`: the two gates are conjunctive.

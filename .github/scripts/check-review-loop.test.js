@@ -2,6 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const {
   DEFAULT_STAGNATION_LIMIT,
   STALLS_PATH,
@@ -13,6 +14,11 @@ const {
   requiredChecksFromNeeds,
   splitTableRow,
   stallRecordsBlockers,
+  DIRECTIVE_MARKER,
+  evaluateTrustedReviewLoop,
+  journalComment,
+  makeJournalRecord,
+  sha256,
 } = require("./check-review-loop.js");
 
 const REPOSITORY = "jsunyermias/keeplin";
@@ -427,41 +433,119 @@ test("F-001: unrelated optional checks are outside the explicit required-job set
   );
 });
 
-// F-002 — OPEN. The stagnation brake reads its own history out of the freely editable pull
-// request body, so deleting earlier Round log rows resets the streak and deleting the
-// findings too yields an empty ledger that converges immediately. Closing this needs loop
-// state persisted where the agent cannot rewrite it (check-run outputs), which contradicts
-// ADR 0004's recorded compatibility note that the ledger lives in the pull-request body.
-// That is a decision boundary, so this test stays red until the maintainer rules.
-// Deliberately NOT downgraded to advisory: it is reifiable and real, and `0.B` forbids
-// reclassifying a reified finding to get unstuck.
+const TRUST = { repositoryId: 7, workflowId: 88, runId: 77, appSlug: "github-actions", appId: 15368 };
+function journalFixture() {
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 3 });
+  const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 2, priorDigest: first.digest });
+  const third = makeJournalRecord({ ...TRUST, observation: 3, headSha: "ccc", stateHash: "three", blocking: 1, priorDigest: second.digest });
+  return [first, second, third].map((record) => journalComment(record, TRUST));
+}
+function trusted(overrides = {}) {
+  return evaluateTrustedReviewLoop({
+    pull: { author: "author", headSha: "ccc", headRepositoryId: 7, baseRepositoryId: 7 },
+    findings: [], references: [], checks: [], journalComments: journalFixture(),
+    jobs: [
+      { name: "Check, Test & Lint", status: "completed", conclusion: "success" },
+      { name: "Knowledge graph up to date", status: "completed", conclusion: "success" },
+    ], config: TRUST, ...overrides,
+  });
+}
 
-test("F-002: deleting round history does not reset the stagnation brake", () => {
-  const rows = [`| F-001 | 1 | \`tests/collab.rs::rejects_replay\` | open | |`];
-  const churned = (n) =>
-    `| ${n} | ${loopStateHash({
-      diffSignature: `round-${n}-diff`,
-      openReifiedIds: ["F-001"],
-      redChecks: [],
-    })} | 1 |`;
-  const current = `| 4 | ${loopStateHash({
-    diffSignature: DIFF,
-    openReifiedIds: ["F-001"],
-    redChecks: [],
-  })} | 1 |`;
+test("journal accepts the shared intact fixture", () => assert.equal(trusted().state, "converged"));
 
-  const stalled = evaluate(ledger(rows, [churned(1), churned(2), churned(3), current]));
-  assert.equal(stalled.state, "escalated", "four non-shrinking rounds must escalate");
+test("edited journal record is history-unverifiable", () => {
+  const comments = journalFixture();
+  comments[1].body = comments[1].body.replace('"two"', '"changed"');
+  assert.equal(trusted({ journalComments: comments }).state, "history-unverifiable");
+});
 
-  // The agent deletes rounds 1-3 and renumbers, keeping only the current state.
-  const rewritten = ledger(rows, [
-    `| 1 | ${loopStateHash({ diffSignature: DIFF, openReifiedIds: ["F-001"], redChecks: [] })} | 1 |`,
-  ]);
-  assert.equal(
-    evaluate(rewritten).state,
-    "escalated",
-    "erasing the round log must not clear an escalation the loop already earned",
-  );
+test("middle-deleted journal record is history-unverifiable", () => {
+  const comments = journalFixture();
+  comments.splice(1, 1);
+  assert.equal(trusted({ journalComments: comments }).state, "history-unverifiable");
+});
+
+test("limitation_F002_terminal_truncation_undetected", () => {
+  const comments = journalFixture();
+  const truncated = trusted({ journalComments: comments.slice(0, 2) });
+  const prefixNeverExtended = trusted({ journalComments: comments.slice(0, 2) });
+  assert.equal(truncated.state, "converged");
+  assert.deepEqual(truncated.records.map((record) => record.stateHash), ["one", "two"]);
+  assert.deepEqual(truncated.records, prefixNeverExtended.records);
+  assert.doesNotMatch(JSON.stringify(truncated.records), /three/);
+});
+
+test("verified disposal requires exact directive, independent authorized author and body digest", () => {
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-013", state: "dismissed", reason: "ADR 0008" })} -->`;
+  const reference = { id: 91, kind: "comment", user: { login: "maintainer" }, author_association: "MEMBER", body };
+  const finding = { id: "F-013", reified: true, state: "dismissed", evidence: { referenceId: 91, author: "maintainer", bodyDigest: sha256(body) } };
+  assert.equal(trusted({ findings: [finding], references: [reference] }).state, "converged");
+  for (const changed of [
+    { references: [] },
+    { references: [{ ...reference, author_association: "CONTRIBUTOR" }] },
+    { references: [{ ...reference, user: { login: "author" } }] },
+    { references: [{ ...reference, body: `${body} edited` }] },
+    { references: [{ ...reference, kind: "review", state: "DISMISSED" }] },
+    { references: [{ ...reference, body: "looks good" }] },
+  ]) assert.equal(trusted({ findings: [finding], ...changed }).projectedFindings[0].state, "open");
+});
+
+test("resolved evidence is bound to current head, named job, workflow and App", () => {
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-013", state: "resolved", reason: "test passes" })} -->`;
+  const reference = { id: 92, kind: "comment", user: { login: "maintainer" }, author_association: "OWNER", body };
+  const finding = { id: "F-013", reified: true, state: "resolved", evidence: { referenceId: 92, author: "maintainer", bodyDigest: sha256(body), checkRunId: 5, checkName: "Check, Test & Lint" } };
+  const check = { id: 5, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
+  assert.equal(trusted({ findings: [finding], references: [reference], checks: [check] }).state, "converged");
+  for (const mutation of [{ head_sha: "old" }, { workflow_id: 99 }, { workflow_run_id: 66 }, { app_id: 1 }, { conclusion: "neutral" }]) {
+    assert.equal(trusted({ findings: [finding], references: [reference], checks: [{ ...check, ...mutation }] }).projectedFindings[0].state, "open");
+  }
+});
+
+test("only named required jobs with positive success converge; forks fail closed", () => {
+  for (const conclusion of ["skipped", "neutral", undefined, "failure"]) {
+    const jobs = [{ name: "Check, Test & Lint", status: "completed", conclusion }, { name: "Knowledge graph up to date", status: "completed", conclusion: "success" }];
+    assert.equal(trusted({ jobs }).state, "converging");
+  }
+  assert.equal(trusted({ jobs: [{ name: "optional", status: "completed", conclusion: "failure" }, ...trusted().records.slice(0, 0), { name: "Check, Test & Lint", status: "completed", conclusion: "success" }, { name: "Knowledge graph up to date", status: "completed", conclusion: "success" }] }).state, "converged");
+  assert.equal(trusted({ pull: { author: "author", headSha: "ccc", headRepositoryId: 8, baseRepositoryId: 7 } }).state, "fork-refused");
+});
+
+test("genesis and tombstones require the same verified authorization", () => {
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "GENESIS", state: "genesis", reason: "migrate this PR" })} -->`;
+  const reference = { id: 93, kind: "comment", user: { login: "maintainer" }, author_association: "COLLABORATOR", body };
+  const evidence = { referenceId: 93, author: "maintainer", bodyDigest: sha256(body) };
+  assert.equal(trusted({ journalComments: [], genesisEvidence: evidence, references: [reference] }).state, "converged");
+  assert.equal(trusted({ journalComments: [], genesisEvidence: evidence, references: [] }).state, "history-unverifiable");
+  const tombstoneBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-OLD", state: "tombstone", reason: "duplicate ID" })} -->`;
+  const tombstoneReference = { id: 94, kind: "comment", user: { login: "maintainer" }, author_association: "MEMBER", body: tombstoneBody };
+  const tombstone = { id: "F-OLD", evidence: { referenceId: 94, author: "maintainer", bodyDigest: sha256(tombstoneBody) } };
+  assert.equal(trusted({ tombstones: [tombstone], references: [tombstoneReference] }).state, "converged");
+  assert.equal(trusted({ tombstones: [tombstone], references: [] }).state, "history-unverifiable");
+});
+
+test("trusted workflow cannot execute or interpolate pull-request-head content", () => {
+  const workflow = fs.readFileSync(".github/workflows/review-loop-evaluator.yml", "utf8");
+  assert.match(workflow, /^\s*workflow_run:/m);
+  assert.doesNotMatch(workflow, /actions\/checkout|^\s*run:|github\.event\.workflow_run\.head|github\.event\.pull_request|pull\.head\.ref|head_repository/m);
+  const actions = workflow.match(/^\s*uses:\s*(.+)$/gm) || [];
+  assert.deepEqual(actions.map((line) => line.trim()), ["uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea"]);
+  assert.match(workflow, /ref: repository\.default_branch/);
+  const evaluatorSource = fs.readFileSync(".github/scripts/check-review-loop.js", "utf8");
+  assert.deepEqual(evaluatorSource.match(/require\([^\n]+/g), ['require("node:crypto");']);
+});
+
+test("every pull-request workflow is explicitly read-only and carries the 403 canary", () => {
+  const workflows = fs.readdirSync(".github/workflows").filter((name) => /\.ya?ml$/.test(name));
+  const pullWorkflows = workflows.map((name) => fs.readFileSync(`.github/workflows/${name}`, "utf8")).filter((body) => /^\s*pull_request:/m.test(body));
+  assert.ok(pullWorkflows.length > 0);
+  for (const workflow of pullWorkflows) {
+    const permissions = workflow.match(/^permissions:\n((?:  [^\n]+\n)+)/m);
+    assert.ok(permissions, "pull-request workflow must declare top-level permissions");
+    assert.doesNotMatch(permissions[1], /:\s*write\s*$/m);
+  }
+  const ci = fs.readFileSync(".github/workflows/ci.yml", "utf8");
+  assert.match(ci, /PATCH[\s\S]*check-runs\/\$\{check_id\}/);
+  assert.match(ci, /test "\$\{status\}" = 403/);
 });
 
 // F-003 — the stall record must name what is stuck, not merely mention the pull request.

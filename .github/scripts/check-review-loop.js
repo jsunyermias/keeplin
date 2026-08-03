@@ -1,7 +1,9 @@
 "use strict";
 
 const { createHash } = require("node:crypto");
-const { checked } = require("./check-review-governance.js");
+function checked(body, label) {
+  return new RegExp(`^- \\[x\\] ${escapeRegex(label)}\\.?\\s*$`, "im").test(body || "");
+}
 
 const LEDGER_HEADING = "Review ledger";
 const ROUND_LOG_HEADING = "Round log";
@@ -17,6 +19,143 @@ const FAILING_CONCLUSIONS = new Set([
   "action_required",
   "stale",
 ]);
+const JOURNAL_SCHEMA = "keeplin.review-loop/v1";
+const JOURNAL_MARKER = "<!-- keeplin-review-loop-journal ";
+const DIRECTIVE_MARKER = "<!-- keeplin-review-loop-authorize ";
+const AUTHORIZING_ASSOCIATIONS = new Set(["MEMBER", "OWNER", "COLLABORATOR"]);
+const REQUIRED_JOBS = ["Check, Test & Lint", "Knowledge graph up to date"];
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function markedJson(body, marker) {
+  const start = String(body || "").indexOf(marker);
+  if (start < 0) return null;
+  const end = String(body).indexOf(" -->", start);
+  if (end < 0) return null;
+  try { return JSON.parse(String(body).slice(start + marker.length, end)); } catch { return null; }
+}
+
+function verifyAuthorization({ finding, reference, pullAuthor, targetState }) {
+  if (!reference) return { ok: false, reason: "authorization reference is unreachable" };
+  const login = reference.user && reference.user.login;
+  const association = String(reference.author_association || "").toUpperCase();
+  if (!AUTHORIZING_ASSOCIATIONS.has(association)) return { ok: false, reason: "reference author is not authorized" };
+  if (!login || login.toLowerCase() === String(pullAuthor || "").toLowerCase()) return { ok: false, reason: "pull-request author cannot authorize disposal" };
+  if (reference.kind === "review" && String(reference.state || "").toUpperCase() === "DISMISSED") return { ok: false, reason: "authorization review was dismissed" };
+  const directive = markedJson(reference.body, DIRECTIVE_MARKER);
+  if (!directive || directive.finding !== finding.id || directive.state !== targetState || typeof directive.reason !== "string" || !directive.reason.trim()) {
+    return { ok: false, reason: "reference has no matching machine-readable directive" };
+  }
+  const digest = sha256(reference.body || "");
+  const evidence = finding.evidence || {};
+  if (String(evidence.referenceId) !== String(reference.id) || evidence.author !== login || evidence.bodyDigest !== digest) {
+    return { ok: false, reason: "recorded reference identity, author or body digest does not match" };
+  }
+  return { ok: true, reference: { id: reference.id, author: login, bodyDigest: digest, reason: directive.reason } };
+}
+
+function verifyResolvedCheck({ finding, checks, headSha, config }) {
+  const evidence = finding.evidence || {};
+  const check = (checks || []).find((candidate) => String(candidate.id) === String(evidence.checkRunId));
+  if (!check) return { ok: false, reason: "resolution check is unreachable" };
+  if (!REQUIRED_JOBS.includes(evidence.checkName) || check.name !== evidence.checkName || check.status !== "completed" || check.conclusion !== "success") return { ok: false, reason: "resolution check is not an explicitly required successful job" };
+  if (check.head_sha !== headSha || check.workflow_id !== config.workflowId || check.workflow_run_id !== config.runId || check.app_slug !== config.appSlug || check.app_id !== config.appId) return { ok: false, reason: "resolution check is not bound to this head, workflow and App" };
+  return { ok: true };
+}
+
+function verifyJournal(comments, config) {
+  const records = [];
+  for (const comment of comments || []) {
+    const record = markedJson(comment.body, JOURNAL_MARKER);
+    if (!record) continue;
+    if (record.schema !== JOURNAL_SCHEMA || record.repositoryId !== config.repositoryId || record.workflowId !== config.workflowId || record.appSlug !== config.appSlug || record.appId !== config.appId || comment.app_slug !== config.appSlug || comment.app_id !== config.appId) return { ok: false, state: "history-unverifiable", message: "Journal producer, repository, workflow or schema does not match configuration." };
+    const digest = sha256(canonicalJson({ ...record, digest: undefined }));
+    if (record.digest !== digest) return { ok: false, state: "history-unverifiable", message: "Journal record was edited: its digest no longer matches." };
+    records.push({ ...record, commentId: comment.id });
+  }
+  records.sort((a, b) => a.observation - b.observation);
+  for (let index = 0; index < records.length; index += 1) {
+    const prior = records[index - 1];
+    if (records[index].observation !== index + 1 || records[index].priorDigest !== (prior ? prior.digest : null)) return { ok: false, state: "history-unverifiable", message: "Journal deletion or reordering is visible because a surviving descendant no longer matches its predecessor." };
+  }
+  return { ok: true, records };
+}
+
+function evaluateTrustedReviewLoop({ pull, findings = [], references = [], checks = [], journalComments = [], jobs = [], tombstones = [], genesisEvidence, changedFiles = [], stallsContent = "", diffSignature = "", stagnationLimit = DEFAULT_STAGNATION_LIMIT, config }) {
+  if (pull.headRepositoryId !== pull.baseRepositoryId) return { ok: false, state: "fork-refused", message: "Fork pull requests deliberately fail closed: partial evidence is not evaluated." };
+  const journal = verifyJournal(journalComments, config);
+  if (!journal.ok) return journal;
+  const priorRecord = journal.records[journal.records.length - 1];
+  const currentIds = new Set(findings.map((finding) => finding.id));
+  const tombstonedIds = new Set(tombstones.map((entry) => entry.id));
+  const vanished = ((priorRecord && priorRecord.findingIds) || []).filter((id) => !currentIds.has(id) && !tombstonedIds.has(id));
+  if (vanished.length > 0) return { ok: false, state: "history-unverifiable", message: `Finding IDs vanished without authorized tombstones: ${vanished.join(", ")}.` };
+  const specialAuthorizations = [
+    ...(journal.records.length === 0 ? [{ id: "GENESIS", state: "genesis", evidence: genesisEvidence }] : []),
+    ...tombstones.map((entry) => ({ ...entry, state: "tombstone" })),
+  ];
+  for (const special of specialAuthorizations) {
+    const reference = references.find((item) => String(item.id) === String(special.evidence && special.evidence.referenceId));
+    const authorization = verifyAuthorization({ finding: special, reference, pullAuthor: pull.author, targetState: special.state });
+    if (!authorization.ok) return { ok: false, state: "history-unverifiable", message: `${special.id} lacks verified authorization: ${authorization.reason}.` };
+  }
+  const requiredFailures = REQUIRED_JOBS.filter((name) => {
+    const matches = jobs.filter((job) => job.name === name);
+    return matches.length !== 1 || matches[0].status !== "completed" || matches[0].conclusion !== "success";
+  });
+  const projected = findings.map((finding) => {
+    if (!["resolved", "dismissed"].includes(finding.state)) return finding;
+    const reference = references.find((item) => String(item.id) === String(finding.evidence && finding.evidence.referenceId));
+    const authorization = verifyAuthorization({ finding, reference, pullAuthor: pull.author, targetState: finding.state });
+    if (!authorization.ok) return { ...finding, state: "open", disposalError: authorization.reason };
+    if (finding.state === "resolved") {
+      const proof = verifyResolvedCheck({ finding, checks, headSha: pull.headSha, config });
+      if (!proof.ok) return { ...finding, state: "open", disposalError: proof.reason };
+    }
+    return finding;
+  });
+  const open = projected.filter((finding) => finding.reified && finding.state === "open");
+  const blockingNames = [...open.map((finding) => finding.id), ...requiredFailures].sort();
+  const blocking = blockingNames.length;
+  const currentHash = loopStateHash({ diffSignature, openReifiedIds: open.map((finding) => finding.id), redChecks: requiredFailures });
+  const rounds = [...journal.records.map((record) => ({ round: record.observation, hash: record.stateHash, blocking: record.blocking })), { round: journal.records.length + 1, hash: currentHash, blocking }];
+  const stalled = journal.records.length > 0 && blocking > 0 ? stagnationReason(rounds, currentHash, stagnationLimit) : "";
+  if (stalled) {
+    if (!changedFiles.includes(STALLS_PATH)) return { ok: false, state: "escalated", projectedFindings: projected, records: journal.records, currentHash, blocking, message: `Review loop stalled: ${stalled}. Record every blocker in ${STALLS_PATH}. History is verified only against tampering; an actor with repository write access can truncate it.` };
+    const record = stallRecordsBlockers(stallsContent, config.repository, pull.number, blockingNames);
+    if (!record.ok) return { ok: false, state: "escalated", projectedFindings: projected, records: journal.records, currentHash, blocking, message: `Review loop stalled: ${record.reason}. History is verified only against tampering; an actor with repository write access can truncate it.` };
+  }
+  const ok = blocking === 0;
+  return {
+    ok,
+    state: ok ? "converged" : "converging",
+    projectedFindings: projected,
+    records: journal.records,
+    currentHash,
+    blocking,
+    message: `${ok ? "Review loop converged" : "Review loop has not converged"}. History is verified only against tampering; an actor with repository write access can truncate it, and terminal truncation is not detected.`,
+  };
+}
+
+function makeJournalRecord(fields) {
+  const record = { schema: JOURNAL_SCHEMA, priorDigest: null, ...fields };
+  record.digest = sha256(canonicalJson({ ...record, digest: undefined }));
+  return record;
+}
+
+function journalComment(record, identity) {
+  return { id: record.observation, app_slug: identity.appSlug, app_id: identity.appId, body: `${JOURNAL_MARKER}${JSON.stringify(record)} -->` };
+}
 
 function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -502,9 +641,23 @@ module.exports = {
   evaluateReviewLoop,
   loopStateHash,
   pendingChecksFromRuns,
+  parseFindings,
   redChecksFromRuns,
   requiredChecksFromNeeds,
   splitTableRow,
   stallMentionsPull,
   stallRecordsBlockers,
+  AUTHORIZING_ASSOCIATIONS,
+  DIRECTIVE_MARKER,
+  JOURNAL_MARKER,
+  JOURNAL_SCHEMA,
+  REQUIRED_JOBS,
+  canonicalJson,
+  evaluateTrustedReviewLoop,
+  journalComment,
+  levelTwoSection,
+  makeJournalRecord,
+  sha256,
+  verifyAuthorization,
+  verifyJournal,
 };

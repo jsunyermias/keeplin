@@ -10,6 +10,20 @@ version and the wire protocol version move independently.
 
 ## [Unreleased]
 
+### Trusted review-loop evaluation (keeplin ADR 0008)
+
+- The authoritative evaluator now runs from a default-branch `workflow_run` workflow with no
+  checkout or shell execution of pull-request content. Pull-request CI is explicitly read-only
+  and proves its token receives 403 when attempting to patch a check run.
+- Finding disposal now requires an independent MEMBER/OWNER/COLLABORATOR directive whose ID,
+  author and body digest are reverified. Resolved findings additionally require a successful
+  named check bound to the evaluated commit, configured workflow and App. Genesis and tombstones
+  use the same authorization.
+- The App comment journal detects edits and deletions with surviving descendants. Terminal
+  truncation remains undetected and is pinned by `limitation_F002_terminal_truncation_undetected`;
+  F-002 is dismissed by ADR 0008 and the option-C platform probes are tracked in
+  `docs/review-loop-spike.md`. F-008 and F-013 are closed.
+
 ### Deterministic convergence for the review loop (keeplin ADR 0004)
 
 - **The implementation↔review loop now terminates on a computed condition.** Previously the
@@ -18,8 +32,7 @@ version and the wire protocol version move independently.
   are resolved and conversations are closed`, an assertion by the agents inside the loop. No
   repository state held finding identity, round count or round-to-round comparison, so settled
   findings returned as new and a stalled loop was indistinguishable from a progressing one.
-- **New `.github/scripts/check-review-loop.js`**, run by the dedicated `Review loop
-  converged` job for non-draft pull requests. A finding blocks only when *reified* — named as a
+- **New `.github/scripts/check-review-loop.js`**, now driven by the default-branch trusted evaluator. A finding blocks only when *reified* — named as a
   test, property, contract assertion or `check-docs` check that fails; anything not reducible
   to a failing check is `advisory`, recorded but not blocking. Convergence is required checks
   green **and** zero open reified findings.
@@ -45,16 +58,12 @@ version and the wire protocol version move independently.
   record names every blocker as an explicit token in `Stuck on`, so `F-0010` cannot satisfy
   `F-001`. Canonical JSON frames hash fields and lists, preventing delimiter collisions.
   Markdown table parsing implements CommonMark backslash parity for pipes.
-- **Open, blocking: the stagnation brake reads its own history from the editable pull-request
-  body**, so deleting `Round log` rows resets the streak. Closing it needs loop state persisted
-  where an agent cannot rewrite it, which crosses ADR 0004's recorded compatibility note and so
-  awaits a maintainer decision. It is reified as a failing test rather than reclassified as
-  advisory.
-- **ADR 0005 is rejected and ADR 0006 proposes superseding ADR 0004 in full.** The proposed
-  design uses a default-branch `workflow_run` evaluator, authenticated digest-chained comment
-  history, tombstoned finding-ID corrections, fail-closed retention behavior and documented
-  writer capabilities. Because 0006 is not accepted, F-002/F-008/F-009 remain open and the
-  trusted writer is not implemented here.
+- **Historical limitation resolved by ADR 0008:** ADR 0004 read history from the editable PR
+  body. ADR 0008 replaces that evaluator and honestly bounds the remaining terminal-truncation
+  limitation; the older deliberately-red F-002 test is retired.
+- **ADR 0005 is rejected and ADR 0006 is superseded by ADR 0008.** The implemented design keeps
+  the default-branch evaluator and authenticated digest chain while withdrawing the false claim
+  that terminal deletion is detectable.
 - Independent review is untouched and conjunctive: convergence never ticks the review boxes,
   and a converged pull request with no independent reviewer is still unmergeable. `ci.yml`
   reads only its explicit required dependency results.

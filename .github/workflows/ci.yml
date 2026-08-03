@@ -26,6 +26,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Prove pull-request token cannot rewrite check runs
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKS_URL: ${{ github.api_url }}/repos/${{ github.repository }}/commits/${{ github.event.pull_request.head.sha }}/check-runs
+        run: |
+          check_id=$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${CHECKS_URL}" | jq -r '.check_runs[] | select(.name == "Check, Test & Lint") | .id' | head -n1)
+          test -n "${check_id}"
+          status=$(curl --silent --output /tmp/check-patch-response --write-out '%{http_code}' \
+            -X PATCH \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            "${CHECKS_URL%/commits/*}/check-runs/${check_id}" \
+            -d '{"output":{"title":"permission canary","summary":"must be forbidden"}}')
+          test "${status}" = 403
+
       - name: Check pull-request review governance
         if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
         uses: actions/github-script@v7
@@ -109,9 +129,8 @@ jobs:
       - name: Audit dependencies
         run: cargo audit
 
-      # Runs last on purpose. A deliberately-red test for an open reified finding would
-      # otherwise abort the job at step one and hide whether docs, cargo and audit passed,
-      # leaving the maintainer unable to see what else is green while a finding is open.
+      # Runs last on purpose: a governance regression should not abort the job before
+      # docs, cargo and audit have reported what else is green.
       - name: Test pull-request governance checks
         run: |
           node --test \
@@ -151,70 +170,3 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 14
-
-  converge:
-    # This name is a branch-protection required-check identifier, like the graph job's.
-    # Change it only together with the required-check list in Settings -> Branches.
-    #
-    # It is a separate job because convergence claims "the required checks are green",
-    # and a step inside `test` cannot know its own job's outcome: it ran before cargo
-    # test, clippy and audit, while `graph` was still going. `needs` makes that claim
-    # checkable. `always()` keeps it reporting when a dependency fails, so protection
-    # sees a red check rather than a skipped one.
-    name: Review loop converged
-    needs: [test, graph]
-    if: always() && github.event_name == 'pull_request' && github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check review-loop convergence
-        env:
-          REVIEW_LOOP_STAGNATION_LIMIT: "3"
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('node:fs');
-            const {
-              DEFAULT_STAGNATION_LIMIT,
-              STALLS_PATH,
-              diffSignatureFromFiles,
-              evaluateReviewLoop,
-              requiredChecksFromNeeds,
-            } = require('./.github/scripts/check-review-loop.js');
-
-            const files = await github.paginate(
-              github.rest.pulls.listFiles,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.issue.number,
-                per_page: 100,
-              },
-              response => response.data.map(file => ({
-                filename: file.filename,
-                status: file.status,
-                sha: file.sha,
-              })),
-            );
-            const stallsContent = fs.existsSync(STALLS_PATH)
-              ? fs.readFileSync(STALLS_PATH, 'utf8')
-              : '';
-            const result = evaluateReviewLoop({
-              body: context.payload.pull_request.body || '',
-              changedFiles: files.map(file => file.filename),
-              stallsContent,
-              repository: `${context.repo.owner}/${context.repo.repo}`,
-              pullNumber: context.issue.number,
-              redChecks: requiredChecksFromNeeds({
-                test: { result: '${{ needs.test.result }}' },
-                graph: { result: '${{ needs.graph.result }}' },
-              }),
-              diffSignature: diffSignatureFromFiles(files),
-              stagnationLimit:
-                Number(process.env.REVIEW_LOOP_STAGNATION_LIMIT) || DEFAULT_STAGNATION_LIMIT,
-            });
-
-            core.info(`${result.state}: ${result.message}`);
-            if (!result.ok) core.setFailed(result.message);

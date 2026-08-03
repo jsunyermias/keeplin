@@ -6,8 +6,8 @@ progress, it escalates to the maintainer rather than iterating quietly. This fil
 durable record of what is currently stuck, so a loop that ran out of ideas stays visible
 instead of being absorbed into another round.
 
-The convergence rule, the blocking criterion and the stagnation brake are decided in
-[`docs/adr/0004-review-loop-convergence.md`](https://github.com/jsunyermias/keeplin/blob/main/docs/adr/0004-review-loop-convergence.md) and enforced
+The convergence rule, the blocking criterion and the bounded stagnation brake are decided in
+[`docs/adr/0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md`](https://github.com/jsunyermias/keeplin/blob/main/docs/adr/0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md) and enforced
 by `.github/scripts/check-review-loop.js`.
 
 ## What counts as a stall
@@ -41,9 +41,11 @@ mention of the pull request elsewhere in
 this file, or a row under `Cleared`, does not satisfy it. Naming the pull request without
 naming what stuck it would have told the maintainer nothing.
 
-ADR 0006 proposes a trusted default-branch writer. Until it is accepted and implemented, body
-history remains editable and F-002/F-008/F-009 remain open; rewriting the body is not evidence
-that an earned stall disappeared.
+The journal verifies tampering, not terminal truncation. Editing any record is detected, and a
+deleted record is detected when a surviving descendant names it. An actor with repository write
+access can delete the newest record and the evaluator reads the shorter prefix as though the
+missing round never happened. This dismissed F-002 limitation remains tracked by
+[`docs/review-loop-spike.md`](review-loop-spike.md).
 
 ## How an entry is cleared
 
@@ -65,10 +67,11 @@ entry to Cleared with the exit that was taken and a link to it.
 
 | Detected | Pull request | Stuck on | Rounds without progress | Exit taken |
 |---|---|---|---|---|
-| 2026-08-03 | [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198) | Check, Test & Lint<br>F-002<br>F-008<br>F-009<br>F-011<br>F-012<br>F-013<br>F-014<br>F-015 | 3 (blocking set grew 6 → 8 → more) | Maintainer escalated to and decided to continue iterating; blockers remain open until their reified checks pass or the proposed ADR decision is accepted. |
+| — | — | — | — | — |
 
 ## Cleared
 
 | Detected | Pull request | Stuck on | Exit | Resolution |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| 2026-08-03 | [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198) | F-002 | dismissed | Accepted [ADR 0008](adr/0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md) bounds the claim; the three-probe follow-up is [tracked](review-loop-spike.md). |
+| 2026-08-03 | [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198) | F-008<br>F-013 | resolved | Default-branch isolation and verified-disposal tests pass. |
