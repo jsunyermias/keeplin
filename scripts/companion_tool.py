@@ -38,6 +38,7 @@ REVIEW_DEBT_SECTIONS = {
     "Cleared": ("Merged", "Change", "Reviewer", "Review"),
 }
 REVIEW_DEBT_EMPTY_CELL = "—"
+REVIEW_DEBT_UNANSWERED = {"", "—", "-", "tbd", "pendiente"}
 PULL_REQUEST_RE = re.compile(
     r"https://github\.com/jsunyermias/(?P<repo>keeplin|keeplin-srv)/pull/(?P<number>\d+)\b"
 )
@@ -937,8 +938,11 @@ def _review_debt_rows(text: str) -> tuple[dict[str, list[tuple[int, list[str]]]]
     """
     sections: dict[str, list[tuple[int, list[str]]]] = {name: [] for name in REVIEW_DEBT_SECTIONS}
     errors: list[str] = []
+    current_heading: str | None = None
     current: str | None = None
     header_seen: set[str] = set()
+    separator_expected: set[str] = set()
+    unrecognized_table_rows: dict[str, int] = {}
     fence: str | None = None
     for number, line in enumerate(text.splitlines(), start=1):
         stripped = line.strip()
@@ -955,13 +959,26 @@ def _review_debt_rows(text: str) -> tuple[dict[str, list[tuple[int, list[str]]]]
             continue
         if stripped.startswith("## "):
             heading = stripped[3:].strip()
+            current_heading = heading
             current = heading if heading in REVIEW_DEBT_SECTIONS else None
             continue
-        if current is None or not stripped.startswith("|"):
+        if not stripped.startswith("|"):
             continue
         cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if current is None:
+            heading = current_heading or "(before any level-two heading)"
+            count = unrecognized_table_rows.get(heading, 0)
+            unrecognized_table_rows[heading] = count + 1
+            if count >= 2 or (count == 0 and not set("".join(cells)) <= {"-", ":", " "}):
+                errors.append(
+                    f"{REVIEW_DEBT_REGISTRY}:{number}: ROW under unrecognized heading "
+                    f"'## {heading}'. Review-debt entries belong only under exact "
+                    f"'## Open' or '## Cleared' headings."
+                )
+            continue
         if current not in header_seen:
             header_seen.add(current)
+            separator_expected.add(current)
             expected = list(REVIEW_DEBT_SECTIONS[current])
             if cells != expected:
                 errors.append(
@@ -969,7 +986,17 @@ def _review_debt_rows(text: str) -> tuple[dict[str, list[tuple[int, list[str]]]]
                     f"{cells}, expected {expected}. The check reads these columns by name."
                 )
             continue
-        if set("".join(cells)) <= {"-", ":", " "}:
+        separator_like = set("".join(cells)) <= {"-", ":", " "}
+        if current in separator_expected:
+            separator_expected.remove(current)
+            if separator_like:
+                continue
+        elif separator_like:
+            errors.append(
+                f"{REVIEW_DEBT_REGISTRY}:{number}: MALFORMED separator-like row in "
+                f"'## {current}'. Only the row immediately after the table header may "
+                f"be a separator."
+            )
             continue
         sections[current].append((number, cells))
     for name in REVIEW_DEBT_SECTIONS:
@@ -1009,9 +1036,9 @@ def verify_review_debt(root: Path) -> list[str]:
                 )
                 continue
             for column, cell in zip(columns, cells):
-                if not cell or cell == REVIEW_DEBT_EMPTY_CELL:
+                if cell.casefold() in REVIEW_DEBT_UNANSWERED:
                     errors.append(
-                        f"{REVIEW_DEBT_REGISTRY}:{number}: EMPTY '{column}' in '## {name}'. "
+                        f"{REVIEW_DEBT_REGISTRY}:{number}: UNANSWERED '{column}' in '## {name}'. "
                         f"An entry nobody can act on is the same as no entry."
                     )
             change = cells[columns.index("Change")]

@@ -162,7 +162,9 @@ For every `.rs` file in the repo (pruning `target/`, `graphify-out/`, `.git/`), 
    `docs/context-manifest.json` no longer matches the source/companion corpus.
 10. **Review-debt registry** — `companion_tool.py review-debt` fails if
    `docs/review-debt.md` loses either section or its exact column header, carries a row
-   with an empty or missing cell, records an entry whose `Change` contains no pull-request
+   with an unanswered or missing cell (`—`, `-`, `TBD` and `pendiente` are unanswered),
+   places a table row under any other level-two heading, uses a separator-like row anywhere
+   except immediately after a table header, records an entry whose `Change` contains no pull-request
    URL of the expected repository/number shape, marks an entry `Cleared` without an HTTP(S)
    review link, or lists the same pull request more than once or in both sections. Fenced
    examples are ignored. A row of `—` marks a genuinely empty section and is rejected next

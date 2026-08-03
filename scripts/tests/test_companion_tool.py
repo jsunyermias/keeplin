@@ -327,7 +327,35 @@ class CompanionToolTests(unittest.TestCase):
 
     def test_review_debt_empty_cell_is_detected(self) -> None:
         text = fixture_text("review_debt.valid.md.fixture").replace("| Claude | No independent review at all |", "|  | No independent review at all |")
-        self.assertTrue(any("EMPTY 'Implementer'" in e for e in self._review_debt(text)))
+        self.assertTrue(any("UNANSWERED 'Implementer'" in e for e in self._review_debt(text)))
+
+    def test_review_debt_rows_under_displaced_open_heading_are_detected(self) -> None:
+        text = fixture_text("review_debt.valid.md.fixture").replace(
+            "## Open\n\n| Merged | Change | Implementer | What went unreviewed | Follow-up |\n|---|---|---|---|---|",
+            "## Open\n\n| Merged | Change | Implementer | What went unreviewed | Follow-up |\n"
+            "|---|---|---|---|---|\n\n## Open (pendientes)\n\n"
+            "| Merged | Change | Implementer | What went unreviewed | Follow-up |\n"
+            "|---|---|---|---|---|",
+        )
+        errors = self._review_debt(text)
+        self.assertTrue(any("ROW under unrecognized heading '## Open (pendientes)'" in e for e in errors))
+
+    def test_review_debt_all_hyphen_data_row_is_malformed(self) -> None:
+        text = fixture_text("review_debt.valid.md.fixture").replace(
+            "| 2026-07-26 | [keeplin#180]",
+            "| - | - | - | - | - |\n| 2026-07-26 | [keeplin#180]",
+        )
+        self.assertTrue(any("MALFORMED separator-like row" in e for e in self._review_debt(text)))
+
+    def test_review_debt_placeholder_cells_are_unanswered(self) -> None:
+        text = fixture_text("review_debt.valid.md.fixture").replace(
+            "| Claude | No independent review at all | maintainer sweep, pending |",
+            "| - | TBD | pendiente |",
+        )
+        errors = self._review_debt(text)
+        self.assertTrue(any("UNANSWERED 'Implementer'" in e for e in errors))
+        self.assertTrue(any("UNANSWERED 'What went unreviewed'" in e for e in errors))
+        self.assertTrue(any("UNANSWERED 'Follow-up'" in e for e in errors))
 
     def test_review_debt_entry_without_pull_request_link_is_detected(self) -> None:
         text = fixture_text("review_debt.valid.md.fixture").replace(

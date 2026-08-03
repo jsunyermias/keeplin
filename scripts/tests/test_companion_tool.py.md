@@ -24,6 +24,11 @@ and byte-preserving fence synchronization. SQL fixtures prove that a migration r
 one companion with one complete verbatim `sql` fence, that stale content is repaired only
 in the companion, and that adding `-- md:` markers is rejected.
 
+The review-debt cases pin exact section placement, separator position and answered-cell
+semantics: rows under a heading other than exact `## Open` or `## Cleared` fail with that
+heading named, an all-hyphen data row cannot masquerade as a separator, and `-`, `TBD` and
+`pendiente` are rejected as unanswered.
+
 ## Fixtures
 
 Fixtures intentionally use `.fixture` suffixes so repo-wide companion discovery does not

@@ -79,10 +79,14 @@ paths. Size/file limits are checked before writing.
 `review-debt` verifies `docs/review-debt.md`, the record of merges that went in without an
 independent reviewer. It is the only subject the tool does not derive from source: a
 hand-written table whose value depends entirely on staying complete. The check requires the
-`## Open` and `## Cleared` sections with their exact column headers, every cell filled,
+`## Open` and `## Cleared` sections with their exact column headers, every cell answered,
 every `Change` containing at least one pull-request URL whose shape names either repository,
 every `Cleared` row containing an HTTP(S) link to the review that cleared it, and no pull
-request recorded more than once or in both sections. Fenced examples are ignored. A row
+request recorded more than once or in both sections. A table row under any other level-two
+heading is rejected and names that heading, so displaced entries cannot become invisible.
+Only the row immediately after a table header may be a separator; a later separator-like
+row is malformed. Empty strings, `—`, `-`, `TBD` and `pendiente` are unanswered cells.
+Fenced examples are ignored. A row
 whose cells are all `—` marks an empty section and is rejected when real entries sit beside
 it. The check is deliberately offline: it validates URL shape, not pull-request state.
 
@@ -111,7 +115,8 @@ writes, and forbidden SQL markers. For the review-debt registry it covers a vali
 missing file, an empty cell, an entry without a pull request link, a duplicate pull request
 within one section, the same pull request open and cleared at once, a cleared entry with no
 HTTP(S) link, an altered column header, a missing section, fenced examples, offline URL-shape
-validation, and the empty-section placeholder both alone and beside real entries.
+validation, displaced rows, late separator-like rows, unanswered placeholder cells, and
+the empty-section placeholder both alone and beside real entries.
 
 ## Related files
 
