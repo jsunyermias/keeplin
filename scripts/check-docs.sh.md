@@ -27,6 +27,8 @@
 #      writes source SQL or bytes outside valid companion fences.
 #  10. the generated context manifest is current.
 #  11. review-ledger rows use exactly one of the four states defined by AGENTS.md.
+#  12. every surface stating the journal guarantee also states its bound: terminal
+#      truncation, reification, and the advisory consequence of losing that record.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -114,6 +116,19 @@ while IFS= read -r row; do
 done < <(grep -RhsE '^\|[[:space:]]*F-[0-9]{3,}[[:space:]]*\|' --include='*.md' . \
   --exclude-dir=.git --exclude-dir=graphify-out --exclude-dir=target || true)
 
+# 12. Every surface that states the journal's guarantee must also state its bound. The
+#     guarantee is not "history cannot be rewritten": terminal truncation is undetected, and
+#     the consequence is that a truncated prefix can erase the record establishing that a
+#     finding was reified and let it converge as advisory. A surface that promises the first
+#     without the second is the unconditional-promise defect this change exists to remove.
+for surface in AGENTS.md .github/scripts/README.md docs/review-stalls.md; do
+  [[ -f $surface ]] || continue
+  for token in truncat reifi advisory; do
+    grep -qis "$token" "$surface" \
+      || err "BOUNDED HISTORY: $surface states the journal guarantee without '$token' — it must state terminal truncation, reification and the advisory consequence together"
+  done
+done
+
 if [[ $fail -ne 0 ]]; then
   echo
   echo "Every supported source needs a mechanically faithful companion:"
@@ -163,6 +178,14 @@ For every `.rs` file in the repo (pruning `target/`, `graphify-out/`, `.git/`), 
    `docs/context-manifest.json` no longer matches the source/companion corpus.
 10. **Ledger state vocabulary** — every Markdown ledger row whose ID has the `F-001`
     shape uses exactly `open`, `resolved`, `dismissed` or `advisory`; a fifth state fails.
+11. **Bounded-history consistency** — `AGENTS.md`, `.github/scripts/README.md` and
+    `docs/review-stalls.md` must each mention truncation, reification and the advisory
+    consequence. The journal's guarantee is not "history cannot be rewritten": terminal
+    truncation is undetected, and a truncated prefix can erase the record establishing
+    that a finding was reified, letting it converge as advisory. Stating the guarantee on
+    one of these surfaces without its bound is the unconditional-promise defect the review
+    loop exists to remove, so the check fails rather than trusting prose review to catch a
+    sentence that quietly drops the caveat.
 
 ## Known caveat
 

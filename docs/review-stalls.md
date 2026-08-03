@@ -65,7 +65,12 @@ A stall is the maintainer's to resolve, and there are exactly three exits:
    code in its area changes.
 3. **Reclassify it as advisory** — only when it genuinely cannot be reduced to a failing
    check and an independent authorized reference carries the machine-readable reclassification
-   directive. It is then recorded, tracked as a follow-up issue, and no longer blocking.
+   directive. It is then recorded, tracked as a follow-up issue, and no longer blocking. That
+   authorization requirement is bounded by the truncation limit above, and the "only" holds no
+   further: it is enforced while the record establishing reification survives. An actor with
+   repository write access who deletes the newest records reaches a shorter authentic prefix in
+   which the finding was never reified, and can file it advisory there with no authorization at
+   all.
 
 Recording a stall here does not make the pull request mergeable, and neither does a green CI
 run on an unrelated commit: convergence still requires zero open reified findings. Move the

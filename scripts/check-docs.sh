@@ -23,6 +23,8 @@
 #      writes source SQL or bytes outside valid companion fences.
 #  10. the generated context manifest is current.
 #  11. review-ledger rows use exactly one of the four states defined by AGENTS.md.
+#  12. every surface stating the journal guarantee also states its bound: terminal
+#      truncation, reification, and the advisory consequence of losing that record.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -109,6 +111,19 @@ while IFS= read -r row; do
   esac
 done < <(grep -RhsE '^\|[[:space:]]*F-[0-9]{3,}[[:space:]]*\|' --include='*.md' . \
   --exclude-dir=.git --exclude-dir=graphify-out --exclude-dir=target || true)
+
+# 12. Every surface that states the journal's guarantee must also state its bound. The
+#     guarantee is not "history cannot be rewritten": terminal truncation is undetected, and
+#     the consequence is that a truncated prefix can erase the record establishing that a
+#     finding was reified and let it converge as advisory. A surface that promises the first
+#     without the second is the unconditional-promise defect this change exists to remove.
+for surface in AGENTS.md .github/scripts/README.md docs/review-stalls.md; do
+  [[ -f $surface ]] || continue
+  for token in truncat reifi advisory; do
+    grep -qis "$token" "$surface" \
+      || err "BOUNDED HISTORY: $surface states the journal guarantee without '$token' — it must state terminal truncation, reification and the advisory consequence together"
+  done
+done
 
 if [[ $fail -ne 0 ]]; then
   echo

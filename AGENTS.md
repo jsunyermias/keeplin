@@ -193,12 +193,12 @@ pull request templates.
 ### Convergence is mechanical
 
 Step 6 above ends on a computed condition, never on an agent's satisfaction.
-[`docs/adr/0004-review-loop-convergence.md`](docs/adr/0004-review-loop-convergence.md) is the
-accepted decision; `.github/scripts/check-review-loop.js` enforces it on every non-draft pull
-request.
-
 [`docs/adr/0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md`](docs/adr/0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md)
-supersedes 0004/0006. A default-branch `workflow_run` evaluator is authoritative, and disposal
+is the standing decision, superseding
+[`docs/adr/0004-review-loop-convergence.md`](docs/adr/0004-review-loop-convergence.md) through
+0006; `.github/scripts/check-review-loop.js` enforces it on every non-draft pull request.
+
+A default-branch `workflow_run` evaluator is authoritative, and disposal
 requires independently authored, machine-readable authorization plus commit/workflow/App-bound
 success evidence when resolved. Fork pull requests deliberately fail closed.
 
