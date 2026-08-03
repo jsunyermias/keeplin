@@ -219,9 +219,9 @@ success evidence when resolved. Fork pull requests deliberately fail closed.
 - A finding that names a mechanical check is reified and cannot simultaneously have `advisory`
   state. Changing a previously reified finding to advisory needs verified authorization, and
   reification is remembered across every surviving journal record — retiring an ID with an
-  authorized tombstone does not let it return unreified. The protection is still bounded by
-  truncation: terminal truncation can erase the record that established reification, after
-  which the shorter authentic prefix may converge with that finding advisory.
+  authorized tombstone does not let it return unreified. The protection is still bounded.
+  Terminal truncation is not detected: it can erase the record that established reification,
+  after which the shorter authentic prefix may converge with that finding advisory.
 - The blocking set `{red required checks} ∪ {open reified findings}` must shrink strictly each
   round.
 - The brake is state, not a clock. When the loop-state hash repeats, or the blocking set has
@@ -237,7 +237,9 @@ success evidence when resolved. Fork pull requests deliberately fail closed.
 This is a floor beneath independent review, never a substitute for it. A converged pull request
 with no independent reviewer is still unmergeable, and convergence never ticks the review boxes
 of `.github/pull_request_template.md`. The ledger is part of the diff the independent reviewer
-examines. That conjunction is upheld today by this policy and by branch protection, **not** by
+examines. That conjunction is **required** by this policy and intended to be enforced by branch
+protection, which is configured outside this repository and which no script here verifies. It is
+**not** upheld by
 the evaluator: `check-review-governance.js` runs inside the head-controlled `ci.yml`, so a head
 can weaken the step while the job still reports success, and the evaluator has no evidence the
 gate ran. [ADR 0009](docs/adr/0009-governance-evaluated-from-the-default-branch.md) proposes

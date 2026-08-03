@@ -58,10 +58,10 @@ unreified. A finding that names a mechanical check cannot simultaneously use `ad
 Forks deliberately fail closed.
 
 The App comment journal's guarantees are bounded: editing any record is detected, while deletion
-is detected only if a surviving descendant commits to the missing record. Terminal truncation is
-not detected; a repository writer can delete the newest records and the shorter prefix evaluates
-as if those rounds never happened. That can erase the record establishing that a finding was
-reified, after which an advisory reclassification can converge. The limitation tests pin both
+is detected only if a surviving descendant commits to the missing record. A repository writer can
+delete the newest records and the shorter prefix evaluates as if those rounds never happened.
+Terminal truncation is not detected: it can erase the record that established reification, after
+which the shorter authentic prefix may converge with that finding advisory. The limitation tests pin both
 this consequence and the positive journal fixture rather than claiming resistance ADR 0008
 deliberately does not provide.
 

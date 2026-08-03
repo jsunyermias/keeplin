@@ -12,6 +12,7 @@ const DEFAULT_STAGNATION_LIMIT = 3;
 const RESOLVED_CHECKBOX = "Blocking findings are resolved and conversations are closed";
 const ADVISORY = "advisory";
 const STATES = new Set(["open", "resolved", "dismissed", ADVISORY]);
+const FINDING_ID = /^F-\d{3,}$/;
 const FAILING_CONCLUSIONS = new Set([
   "failure",
   "timed_out",
@@ -74,6 +75,35 @@ function verifyResolvedCheck({ finding, checks, headSha, config }) {
   return { ok: true };
 }
 
+// A record may omit both lists, which is an ordinary round with no findings. If either is
+// present it must be readable and the two must agree, so a record cannot claim an ID in
+// `findingIds` while hiding what that finding was.
+function journalPayloadError(record) {
+  const hasIds = record.findingIds !== undefined;
+  const hasFindings = record.findings !== undefined;
+  if (!hasIds && !hasFindings) return null;
+  if (hasIds && !Array.isArray(record.findingIds)) return "findingIds is present but is not an array";
+  if (hasFindings && !Array.isArray(record.findings)) return "findings is present but is not an array";
+  const ids = record.findingIds || [];
+  const entries = record.findings || [];
+  for (const id of ids) {
+    if (typeof id !== "string" || !FINDING_ID.test(id)) return `findingIds contains ${JSON.stringify(id)}, which is not a finding ID`;
+  }
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return "findings contains an entry that is not an object";
+    if (typeof entry.id !== "string" || !FINDING_ID.test(entry.id)) return `findings contains ${JSON.stringify(entry && entry.id)}, which is not a finding ID`;
+    if (typeof entry.reified !== "boolean") return `finding ${entry.id} has a non-boolean reified flag`;
+    if (!STATES.has(entry.state)) return `finding ${entry.id} has state ${JSON.stringify(entry.state)}`;
+  }
+  const idSet = new Set(ids);
+  const entrySet = new Set(entries.map((entry) => entry.id));
+  if (idSet.size !== ids.length) return "findingIds repeats an ID";
+  if (entrySet.size !== entries.length) return "findings repeats an ID";
+  for (const id of idSet) if (!entrySet.has(id)) return `findingIds names ${id} but findings does not describe it`;
+  for (const id of entrySet) if (!idSet.has(id)) return `findings describes ${id} but findingIds omits it`;
+  return null;
+}
+
 function verifyJournal(comments, config) {
   const records = [];
   for (const comment of comments || []) {
@@ -82,6 +112,12 @@ function verifyJournal(comments, config) {
     if (record.schema !== JOURNAL_SCHEMA || record.repositoryId !== config.repositoryId || record.workflowId !== config.workflowId || record.appSlug !== config.appSlug || record.appId !== config.appId || comment.app_slug !== config.appSlug || comment.app_id !== config.appId) return { ok: false, state: "history-unverifiable", message: "Journal producer, repository, workflow or schema does not match configuration." };
     const digest = sha256(canonicalJson({ ...record, digest: undefined }));
     if (record.digest !== digest) return { ok: false, state: "history-unverifiable", message: "Journal record was edited: its digest no longer matches." };
+    // An authentic digest proves nobody edited the record; it does not prove the record says
+    // anything. A payload the evaluator cannot read is not evidence of an empty round, so a
+    // malformed one fails closed here rather than being skipped downstream — skipping it would
+    // silently discard the reification history that authorized disposal depends on.
+    const shape = journalPayloadError(record);
+    if (shape) return { ok: false, state: "history-unverifiable", message: `Journal record ${record.observation} is authentic but unreadable: ${shape}.` };
     records.push({ ...record, commentId: comment.id });
   }
   records.sort((a, b) => a.observation - b.observation);
@@ -267,7 +303,7 @@ function parseFindings(section) {
     const [id = "", round = "", reifiedBy = "", state = "", resolution = ""] = cells;
     if (!id) continue;
 
-    if (!/^F-\d{3,}$/.test(id)) {
+    if (!FINDING_ID.test(id)) {
       return { error: `Review ledger: '${id}' is not a stable finding ID of the form F-001.` };
     }
     if (seen.has(id)) {

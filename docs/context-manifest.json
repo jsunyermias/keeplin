@@ -6378,6 +6378,50 @@
     {
       "companion": {
         "origin": "EXTRACTED",
+        "value": "scripts/check-bounded-history.sh.md"
+      },
+      "cross_repo_contracts": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "direct_dependencies": [],
+      "direct_dependents": [],
+      "high_risk_dependents": [],
+      "invariants": {
+        "origin": "INFERRED",
+        "value": []
+      },
+      "markers": {
+        "origin": "EXTRACTED",
+        "value": [
+          "check-bounded-history"
+        ]
+      },
+      "purpose": {
+        "origin": "EXTRACTED",
+        "value": "`scripts/check-bounded-history.sh` — the journal guarantee must carry its bound"
+      },
+      "risk": {
+        "basis": [
+          "no elevated-risk term matched"
+        ],
+        "origin": "INFERRED",
+        "value": "normal"
+      },
+      "source": {
+        "origin": "EXTRACTED",
+        "value": "scripts/check-bounded-history.sh"
+      },
+      "tests": {
+        "origin": "INFERRED",
+        "value": [
+          "cargo test --workspace"
+        ]
+      }
+    },
+    {
+      "companion": {
+        "origin": "EXTRACTED",
         "value": "scripts/check-docs.sh.md"
       },
       "cross_repo_contracts": {

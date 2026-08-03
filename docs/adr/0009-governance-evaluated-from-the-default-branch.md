@@ -41,11 +41,31 @@ Move review-governance evaluation into the trusted default-branch evaluator.
    exactly as it already loads `check-review-loop.js`, and evaluates it against API data: the
    pull-request body, its changed files, and `docs/review-debt.md` as of the evaluated head.
 2. Convergence requires the governance result to pass. The two gates become conjunctive in the
-   evaluator, where the head cannot reach them.
+   evaluator, where the head cannot reach the *evaluating code*. It can still reach the
+   *evidence* — see "What this bounds" below, which is the load-bearing limit of this decision.
 3. The `ci.yml` step remains, unchanged in behaviour, as a fast signal to the author. It is
    explicitly **not** the gate: it fails early and locally, the evaluator decides.
 4. The evaluator's message names which gate failed, so a red `Review loop converged` is
    diagnosable without opening the run.
+
+### What this bounds
+
+This decision moves the *evaluating code* out of the head's reach. It does **not** move the
+*evidence* out of the head's reach, and the difference decides what may be claimed.
+
+Governance reads three head-controlled inputs: the pull-request body, the list of changed files,
+and `docs/review-debt.md` at the evaluated commit. A pull request can therefore still write its
+own maintainer waiver into `docs/review-debt.md`, name itself in it, fill the waiver fields in
+its own body, and satisfy the waiver path — with the evaluator running default-branch code the
+whole time. What the evaluator gains is that the *rules* cannot be edited or deleted by the
+change being judged; what it does not gain is any proof that the *facts* asserted to those rules
+are true.
+
+So the accurate claim after this ADR is: **a head can no longer remove the governance rules, and
+can still author the evidence they read.** Closing the second half is a separate decision about
+authenticating waivers and review records — plausibly the same verified-authorization machinery
+0008 already uses for finding disposal — and this ADR does not make it. Anyone implementing this
+must not restate the first half as though it were both.
 
 ### What this deliberately does not do
 
@@ -63,8 +83,9 @@ undetected, and this ADR makes no claim about it.
 
 ## Consequences
 
-- The head can no longer weaken independent-review enforcement by editing its own workflow.
-  Removing the `ci.yml` step becomes a diff a reviewer sees, not a bypass.
+- The head can no longer weaken the independent-review *rules* by editing its own workflow.
+  Removing the `ci.yml` step becomes a diff a reviewer sees, not a bypass. It can still author
+  the evidence those rules read, per "What this bounds".
 - `docs/review-debt.md` must be read at the evaluated head through the API rather than from a
   checkout, because the evaluator never checks out head content. The waiver path therefore
   verifies the same file the pull request actually changes.

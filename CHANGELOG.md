@@ -30,6 +30,17 @@ version and the wire protocol version move independently.
   remembered across every surviving record. The truncation bound is unchanged and still
   applies. F-024 bounds the stall protocol's reclassification "only", and `check-docs.sh`
   check 12 fails if any mandated surface states the journal guarantee without its bound.
+- **Round 10 (GPT-5.6 Sol and Kimi K3) rejected the round-9 fix round and both were right.**
+  F-027: the evaluator skipped a journal record whose findings payload was authentic but not an
+  array, silently discarding the reification history the F-023 fix had just been built on — an
+  authentic-but-unreadable record now fails closed in `verifyJournal`, and the two lists must
+  agree. F-028: check 12 required only the substrings `truncat`, `reifi` and `advisory` anywhere
+  in each file, which a one-line glossary satisfies with the bounded-history prose deleted. It is
+  now a verbatim canonical sentence enforced by `scripts/check-bounded-history.sh`, whose own
+  ability to fail is tested by `scripts/tests/test_bounded_history.py`. F-029: a missing surface
+  was skipped rather than failing. F-030 and F-031 bound two overclaims — branch protection is
+  not verified by anything here, and ADR 0009 moves the governance *rules* out of the head's
+  reach but not the *evidence* they read.
 - **F-025 is open and blocking, awaiting a maintainer decision.** `check-review-governance.js`
   runs inside the head-controlled `ci.yml`, so the trusted evaluator has no evidence it ran and
   the documented conjunction of the two gates is policy, not mechanism. ADR 0009 proposes moving
@@ -76,8 +87,9 @@ version and the wire protocol version move independently.
   the default-branch evaluator and authenticated digest chain while withdrawing the false claim
   that terminal deletion is detectable.
 - Independent review is untouched: convergence never ticks the review boxes, and a converged
-  pull request with no independent reviewer is still unmergeable. That conjunction is policy
-  and branch protection rather than evaluator-verified — see F-025 above. `ci.yml`
+  pull request with no independent reviewer is still unmergeable. That conjunction is required by
+  policy and intended to be enforced by branch protection, which nothing here verifies; it is not
+  evaluator-verified — see F-025 above. `ci.yml`
   reads only its explicit required dependency results.
 
 ### Graphify graph moved to a CI artifact (keeplin#148)

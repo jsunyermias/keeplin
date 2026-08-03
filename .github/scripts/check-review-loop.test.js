@@ -510,6 +510,29 @@ test("tombstoned_finding_id_cannot_return_as_advisory_without_authorization", ()
   assert.equal(result.projectedFindings[0].disposalError, "authorization reference is unreachable");
 });
 
+// F-027. The digest proves nobody edited the record; it does not prove the record is readable.
+// A record whose findings payload is authentic but malformed used to be skipped, which silently
+// discarded the reification history and reopened the F-023 path underneath the fix for it.
+test("malformed_surviving_findings_record_is_history_unverifiable", () => {
+  for (const malformed of ["malformed", {}, 42, undefined]) {
+    const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 1, findingIds: ["F-900"], findings: malformed });
+    const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 0, priorDigest: first.digest });
+    const third = makeJournalRecord({ ...TRUST, observation: 3, headSha: "ccc", stateHash: "three", blocking: 0, priorDigest: second.digest });
+    const comments = [first, second, third].map((record) => journalComment(record, TRUST));
+    const result = trusted({ journalComments: comments, findings: [{ id: "F-900", reified: false, state: "advisory" }] });
+
+    assert.equal(result.state, "history-unverifiable", `findings: ${JSON.stringify(malformed)} must fail closed`);
+  }
+});
+
+// The two lists must agree, so a record cannot claim an ID while hiding what that finding was.
+test("journal_record_whose_lists_disagree_is_history_unverifiable", () => {
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 1, findingIds: ["F-900"], findings: [{ id: "F-901", reified: true, state: "open" }] });
+  const comments = [first].map((record) => journalComment(record, TRUST));
+
+  assert.equal(trusted({ journalComments: comments }).state, "history-unverifiable");
+});
+
 // The same union lookup must not manufacture a blocker out of an ordinary advisory finding
 // that no surviving record ever carried as reified.
 test("advisory_finding_never_reified_in_any_record_still_converges", () => {

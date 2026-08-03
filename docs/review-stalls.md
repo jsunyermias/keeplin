@@ -51,7 +51,9 @@ naming what stuck it would have told the maintainer nothing.
 The journal verifies tampering, not terminal truncation. Editing any record is detected, and a
 deleted record is detected when a surviving descendant names it. An actor with repository write
 access can delete the newest record and the evaluator reads the shorter prefix as though the
-missing round never happened. This dismissed F-002 limitation remains tracked by
+missing round never happened. Terminal truncation is not detected: it can erase the record that
+established reification, after which the shorter authentic prefix may converge with that finding
+advisory. This dismissed F-002 limitation remains tracked by
 [`docs/review-loop-spike.md`](review-loop-spike.md).
 
 ## How an entry is cleared
