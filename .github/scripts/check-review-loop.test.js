@@ -11,6 +11,8 @@ const {
   pendingChecksFromRuns,
   redChecksFromRuns,
   requiredChecksFromNeeds,
+  splitTableRow,
+  stallRecordsBlockers,
 } = require("./check-review-loop.js");
 
 const REPOSITORY = "jsunyermias/keeplin";
@@ -346,6 +348,20 @@ test("the normalized diff signature is commit-order independent but content sens
   );
 });
 
+test("F-014: diff ordering uses code-unit order", () => {
+  const files = [
+    { filename: "ä.rs", status: "modified", sha: "222" },
+    { filename: "z.rs", status: "modified", sha: "111" },
+  ];
+  assert.equal(
+    diffSignatureFromFiles(files),
+    JSON.stringify([
+      ["z.rs", "modified", "111"],
+      ["ä.rs", "modified", "222"],
+    ]),
+  );
+});
+
 test("only completed failing check runs count as red, and the loop's own check is excluded", () => {
   const runs = [
     { name: "Check, Test & Lint", status: "in_progress", conclusion: null },
@@ -496,6 +512,22 @@ test("F-003: F-0010 is not an explicit token naming F-001", () => {
   assert.match(result.message, /missing F-001/);
 });
 
+test("F-012: a comma-containing check name is one exact stall blocker", () => {
+  const content = `## Open\n\n| Detected | Pull request | Stuck on |\n|---|---|---|\n| 2026-08-03 | ${REPOSITORY}#${PULL_NUMBER} | Check, Test & Lint |\n`;
+  assert.deepEqual(
+    stallRecordsBlockers(content, REPOSITORY, PULL_NUMBER, ["Check, Test & Lint"]),
+    { ok: true },
+  );
+});
+
+test("F-012: br-delimited blocker names preserve punctuation and exact IDs", () => {
+  const content = `## Open\n\n| Detected | Pull request | Stuck on |\n|---|---|---|\n| 2026-08-03 | ${REPOSITORY}#${PULL_NUMBER} | Check, Test & Lint<br>F-0010; audit |\n`;
+  assert.equal(
+    stallRecordsBlockers(content, REPOSITORY, PULL_NUMBER, ["Check, Test & Lint", "F-001"]).ok,
+    false,
+  );
+});
+
 // F-004 — the ADR's migration contract: a pull request predating the ledger is round zero,
 // not retroactively invalid.
 
@@ -555,6 +587,21 @@ test("F-006: CommonMark backslash parity controls whether a pipe separates cells
 
   const triple = [`| F-001 | 1 | check \\\\\\| name | dismissed | reason |`];
   assert.equal(evaluate(ledger(triple, [round(1, [], [], 0)])).state, "converged");
+});
+
+test("F-015: table parsing preserves an escaped terminal pipe and collapses backslash pairs", () => {
+  assert.deepEqual(splitTableRow("| a \\\\ b | c |"), ["a \\ b", "c"]);
+  const rows = [`| F-001 | 1 | advisory | advisory | terminal escaped pipe \\|`];
+  const result = evaluate(ledger(rows, [round(1, [], [], 0)]));
+  assert.equal(result.ok, true, result.message);
+  assert.equal(result.state, "converged");
+});
+
+test("F-011: convergence claims only explicit workflow-dependency evidence", () => {
+  const result = evaluate(ledger([], []));
+  assert.equal(result.ok, true);
+  assert.match(result.message, /explicit workflow dependencies succeeded/i);
+  assert.doesNotMatch(result.message, /required checks are green/i);
 });
 
 // Independent review stays a separate, conjunctive gate.

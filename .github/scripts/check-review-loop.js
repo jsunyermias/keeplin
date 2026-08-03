@@ -43,32 +43,49 @@ function levelThreeSection(text, heading) {
 function splitTableRow(line) {
   const cells = [];
   let cell = "";
-  let backslashes = 0;
-
-  for (const character of line.slice(1, -1)) {
-    if (character === "\\") {
-      backslashes += 1;
-      cell += character;
+  const content = line.slice(1, hasUnescapedTerminalPipe(line) ? -1 : undefined);
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index];
+    if (character !== "\\") {
+      if (character === "|") {
+        cells.push(cell.trim());
+        cell = "";
+      } else cell += character;
       continue;
     }
-    if (character === "|" && backslashes % 2 === 0) {
-      cells.push(cell.trim());
-      cell = "";
+    let end = index;
+    while (content[end] === "\\") end += 1;
+    const count = end - index;
+    cell += "\\".repeat(Math.floor(count / 2));
+    if (content[end] === "|") {
+      if (count % 2 === 1) cell += "|";
+      else {
+        cells.push(cell.trim());
+        cell = "";
+      }
+      index = end;
     } else {
-      cell += character;
+      if (count % 2 === 1) cell += "\\";
+      index = end - 1;
     }
-    backslashes = 0;
   }
   cells.push(cell.trim());
-  return cells.map((value) => value.replace(/(\\+)\|/g, (match, escapes) =>
-    `${"\\".repeat(Math.floor(escapes.length / 2))}|`));
+  return cells;
+}
+
+function hasUnescapedTerminalPipe(line) {
+  let backslashes = 0;
+  for (let index = line.length - 2; index >= 0 && line[index] === "\\"; index -= 1) {
+    backslashes += 1;
+  }
+  return line.endsWith("|") && backslashes % 2 === 0;
 }
 
 function tableRows(text) {
   return text
     .split("\n")
     .map((line) => line.trim())
-    .filter((line) => line.startsWith("|") && line.endsWith("|"))
+    .filter((line) => line.startsWith("|"))
     .map(splitTableRow)
     .filter((cells) => !cells.every((cell) => /^:?-{2,}:?$/.test(cell)))
     .filter((cells) => !/^id$/i.test(cells[0] || "") && !/^round$/i.test(cells[0] || ""));
@@ -181,7 +198,11 @@ function diffSignatureFromFiles(files) {
   return JSON.stringify(
     (files || [])
       .map((file) => [file.filename, file.status || "", file.sha || ""])
-      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+      .sort((left, right) => {
+        const leftJson = JSON.stringify(left);
+        const rightJson = JSON.stringify(right);
+        return leftJson < rightJson ? -1 : leftJson > rightJson ? 1 : 0;
+      }),
   );
 }
 
@@ -267,7 +288,7 @@ function stallRecordsBlockers(stallsContent, repository, pullNumber, blockerName
 
     const stuckOn = cells[2] || "";
     const tokens = stuckOn
-      .split(/[;,]/)
+      .split(/<br\s*\/?>/i)
       .map((token) => unquote(token).trim())
       .filter(Boolean);
     const missing = blockerNames.filter((name) => !tokens.includes(name));
@@ -451,7 +472,8 @@ function evaluateReviewLoop({
       ok: true,
       state: "converged",
       message:
-        `Review loop converged: required checks are green and no reified finding is open ` +
+        `Review loop converged: its explicit workflow dependencies succeeded and no reified ` +
+        `finding is open ` +
         `(${findings.length} finding(s) recorded, ${
           findings.filter((finding) => finding.state === ADVISORY).length
         } advisory).`,
@@ -478,5 +500,7 @@ module.exports = {
   pendingChecksFromRuns,
   redChecksFromRuns,
   requiredChecksFromNeeds,
+  splitTableRow,
   stallMentionsPull,
+  stallRecordsBlockers,
 };

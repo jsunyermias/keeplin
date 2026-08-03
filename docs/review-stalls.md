@@ -35,7 +35,8 @@ finding, give its ID and the check that fails. If it is a red required check, na
 
 This is enforced, not merely asked for: the checker parses the `## Open` table below and
 requires a row for the exact pull request whose `Stuck on` cell names **every** current blocker
-as an explicit comma- or semicolon-delimited token. Thus `F-0010` does not name `F-001`. A
+as an exact token. Separate multiple blockers with `<br>`; commas and semicolons are ordinary
+characters inside a blocker name. Thus `F-0010` does not name `F-001`. A
 mention of the pull request elsewhere in
 this file, or a row under `Cleared`, does not satisfy it. Naming the pull request without
 naming what stuck it would have told the maintainer nothing.
@@ -64,7 +65,7 @@ entry to Cleared with the exit that was taken and a link to it.
 
 | Detected | Pull request | Stuck on | Rounds without progress | Exit taken |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| 2026-08-03 | [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198) | Check, Test & Lint<br>F-002<br>F-008<br>F-009<br>F-011<br>F-012<br>F-013<br>F-014<br>F-015 | 3 (blocking set grew 6 → 8 → more) | Maintainer escalated to and decided to continue iterating; blockers remain open until their reified checks pass or the proposed ADR decision is accepted. |
 
 ## Cleared
 

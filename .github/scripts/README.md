@@ -10,13 +10,13 @@ template when a pull request leaves draft state:
 
 `check-review-loop.js` enforces the loop's termination condition from
 [keeplin ADR 0004](https://github.com/jsunyermias/keeplin/blob/main/docs/adr/0004-review-loop-convergence.md): a pull request converges
-when its required checks are green and no *reified* finding is open. A finding is reified when
+when its explicit workflow dependencies succeed and no *reified* finding is open. A finding is reified when
 it names something that fails mechanically — a test, a property, a contract assertion, a
 `scripts/check-docs.sh` check; a finding that cannot be reduced to a failing check is
 `advisory` and does not block. It reads the `## Review ledger` section of the pull-request
 body and returns one of four states:
 
-- `converged` — required checks green, no open reified finding (the only passing state);
+- `converged` — explicit workflow dependencies succeeded, no open reified finding (the only passing state);
 - `awaiting-checks` — nothing blocks, but a required check has not finished. A check that has
   not completed is not a green check, so this does not pass;
 - `converging` — the blocking set is non-empty but shrinking;
@@ -39,7 +39,11 @@ Three behaviours are easy to get wrong and are fixed deliberately:
   not malformed. It still has to pass its required checks.
 - **A stall record must name what is stuck.** The `## Open` table of `docs/review-stalls.md`
   needs a row for the exact pull request whose `Stuck on` cell contains every blocker as an
-  explicit comma- or semicolon-delimited token. `F-0010` is not `F-001`.
+  exact `<br>`-delimited token. Punctuation remains part of a name, and `F-0010` is not `F-001`.
+
+The dependency result proves only the jobs named by `converge.needs`. GitHub branch-protection
+required checks are configured outside this repository, so this script cannot prove that the
+workflow dependency list and branch protection agree. It deliberately makes no broader claim.
 
 Table parsing follows CommonMark backslash parity. ADR 0006 proposes trusted external history,
 but while it is proposed the editable body remains authoritative and F-002 stays deliberately

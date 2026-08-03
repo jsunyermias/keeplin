@@ -32,6 +32,7 @@ as the journal and check runs only to present the current-head result.
 - Unreachable, ambiguous or unauthenticated prior history fails closed.
 - Finding-ID mistakes have an auditable correction that never deletes history.
 - Only explicitly named required jobs count; each needs positive `success` evidence.
+- Current finding-state transitions cannot be forged by a pull-request author.
 - Fork behavior and all capabilities granted by `checks: write` are explicit.
 - Both repositories carry byte-identical evaluator code and tests.
 
@@ -97,6 +98,16 @@ Finding IDs never disappear. A mistake gets a tombstone naming the old ID, repla
 `none`, reason, maintainer identity and source link. The old ID remains reserved; only a
 maintainer-authored correction accepted by the trusted evaluator changes the active projection.
 
+The author-editable ledger is input, never authority for disposal. A reified finding may move
+from `open` to `resolved` or `dismissed` only when its row names a GitHub review or comment ID
+whose API author association is `MEMBER`, `OWNER`, or `COLLABORATOR` and whose author is not the
+pull-request author. The trusted evaluator fetches that object, verifies its repository and pull
+request, and records its immutable database ID and author in the observation. `resolved` also
+names the mechanical check or assertion and the successful run ID and attempt that prove the
+fix; `dismissed` names the accepted ADR or priority decision in the verified maintainer
+reference. Missing, deleted, ambiguous or unauthorized evidence leaves the finding open and
+fails closed.
+
 Fork PRs are supported because `workflow_run` executes from the base repository after read-only
 CI. The trusted job never checks out, sources, imports or executes fork content. If a run cannot
 be correlated to exactly one open PR and head SHA, it fails closed without writing.
@@ -105,6 +116,14 @@ Only `Check, Test & Lint` and `Knowledge graph up to date` are required. Their c
 results must equal `success`; skipped, neutral, absent and unknown are non-green. Optional checks
 are irrelevant unless a later accepted ADR names them. A separate early governance-test job is
 not adopted because it adds another required identity without strengthening the trust boundary.
+
+Those names are repository policy, not evidence that GitHub branch protection has the same
+configuration. Before declaring convergence, the trusted evaluator queries the branch-protection
+API for the pull request's base branch and compares its required status-check contexts byte for
+byte with the ADR-configured set plus the evaluator's own check. Missing API permission,
+rulesets whose effective requirements cannot be resolved, or any mismatch fails closed. This is
+the named follow-up requirement for F-011; until ADR 0006 is accepted and implemented, ADR 0004's
+job can prove only `converge.needs` and must not claim all protected checks are green.
 
 ## Consequences and risks
 
@@ -137,7 +156,9 @@ falling back to body history.
   checks; prove canonical framing injective; distinguish `F-001` from `F-0010`; and cover
   CommonMark `\|`, `\\|`, `\\\|` plus a terminal literal backslash.
 - API-fixture integration tests cover rerun, force-push, rebase, reset, fork correlation,
-  pagination, missing predecessors, wrong App/workflow/schema, tombstones and permission denial.
+  pagination, missing predecessors, wrong App/workflow/schema, tombstones, forged finding-state
+  transitions, missing or author-owned resolution references, branch-protection mismatch and
+  permission denial.
 - A canary proves no head code runs with `issues: write` or `checks: write` and only the trusted
   job has them. Cross-repository tests compare JavaScript and suites byte-for-byte.
 - Operational drills delete and make unreachable journal history; both must return

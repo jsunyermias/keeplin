@@ -72,7 +72,7 @@ Runs on `ubuntu-latest`, `needs: [test, graph]`, non-draft pull requests only. I
 | Step | Action / Command | Purpose |
 |------|-----------------|---------|
 | Checkout | `actions/checkout@v4` | Clones the repository at the triggering commit |
-| Check review-loop convergence | `actions/github-script@v7` | Requires required checks green and zero open reified findings; escalates a stalled loop to `docs/review-stalls.md` instead of letting it iterate silently |
+| Check review-loop convergence | `actions/github-script@v7` | Requires its explicit workflow dependencies to succeed and zero open reified findings; escalates a stalled loop to `docs/review-stalls.md` instead of letting it iterate silently |
 
 **Why this is a job and not a step.** Convergence asserts "the required checks are green". A
 step inside `test` cannot make that claim: it runs before `cargo test`, Clippy and audit in
@@ -88,6 +88,8 @@ Settings → Branches.
 It reads the `## Review ledger`, changed files and explicit dependency results. Both
 `needs.test.result` and `needs.graph.result` must equal `success`; skipped, neutral, absent and
 unknown are not green, while unrelated optional checks are outside the required set. It then
+does not inspect branch-protection settings, so it does not claim those external required-check
+settings agree with `needs`; that residual needs an authenticated API check. The evaluator then
 decides one of five states:
 
 | State | Meaning | Check |
