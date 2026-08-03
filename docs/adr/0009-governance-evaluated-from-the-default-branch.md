@@ -9,7 +9,7 @@
 - Acceptance PR: [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198), with
   [keeplin-srv#104](https://github.com/jsunyermias/keeplin-srv/pull/104) as its companion
 - Supersedes: none. Extends [0008](0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md)
-- Superseded by: none
+- Superseded by: [0012](0012-default-branch-review-governance.md) completely
 
 ## Context and problem
 
@@ -112,6 +112,5 @@ undetected, and this ADR makes no claim about it.
 
 ## Status of implementation
 
-None. This ADR is `proposed`. Per `docs/adr/README.md`, no implementation may land while it is
-proposed; the maintainer accepts or rejects it first, and implementation lands in a dedicated
-pull request that links the accepted ADR.
+None. This ADR is `accepted`, but its implementation has not landed. Implementation belongs in a
+dedicated pull request that links the accepted ADR.
