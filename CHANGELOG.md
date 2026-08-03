@@ -23,6 +23,17 @@ version and the wire protocol version move independently.
   truncation remains undetected and is pinned by `limitation_F002_terminal_truncation_undetected`;
   F-002 is dismissed by ADR 0008 and the option-C platform probes are tracked in
   `docs/review-loop-spike.md`. F-008 and F-013 are closed.
+- **Round 9 (Codex) found that an authorized tombstone retires a finding ID without reserving
+  it (F-018).** The evaluator looked for a finding's earlier state only in the newest journal
+  record, so once a post-tombstone record existed the ID could return as `advisory`, meet no
+  contradicting prior state, request no authorization and converge. Reification is now
+  remembered across every surviving record. The truncation bound is unchanged and still
+  applies. F-019 bounds the stall protocol's reclassification "only", and `check-docs.sh`
+  check 12 fails if any mandated surface states the journal guarantee without its bound.
+- **F-020 is open and blocking, awaiting a maintainer decision.** `check-review-governance.js`
+  runs inside the head-controlled `ci.yml`, so the trusted evaluator has no evidence it ran and
+  the documented conjunction of the two gates is policy, not mechanism. ADR 0009 proposes moving
+  governance into the default-branch evaluator and stays unimplemented while proposed.
 
 ### Deterministic convergence for the review loop (keeplin ADR 0004)
 
@@ -64,8 +75,9 @@ version and the wire protocol version move independently.
 - **ADR 0005 is rejected and ADR 0006 is superseded by ADR 0008.** The implemented design keeps
   the default-branch evaluator and authenticated digest chain while withdrawing the false claim
   that terminal deletion is detectable.
-- Independent review is untouched and conjunctive: convergence never ticks the review boxes,
-  and a converged pull request with no independent reviewer is still unmergeable. `ci.yml`
+- Independent review is untouched: convergence never ticks the review boxes, and a converged
+  pull request with no independent reviewer is still unmergeable. That conjunction is policy
+  and branch protection rather than evaluator-verified — see F-020 above. `ci.yml`
   reads only its explicit required dependency results.
 
 ### Graphify graph moved to a CI artifact (keeplin#148)

@@ -118,12 +118,22 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
     const matches = jobs.filter((job) => job.name === name);
     return matches.length !== 1 || matches[0].status !== "completed" || matches[0].conclusion !== "success";
   });
+  // Reification is remembered across every surviving record, not just the newest one. Reading
+  // only the newest record left a hole: an authorized tombstone retires an ID without reserving
+  // it, and once a later record had been written without that finding, the ID could return as
+  // advisory with no prior state to contradict it and converge unauthorized.
+  const everReified = new Set();
+  for (const record of journal.records) {
+    if (!Array.isArray(record.findings)) continue;
+    for (const item of record.findings) {
+      if (item && item.reified) everReified.add(item.id);
+    }
+  }
   const projected = findings.map((finding) => {
-    // Declassification is protected only relative to the newest surviving record. ADR 0008
-    // deliberately does not detect terminal truncation, so an older authentic prefix can erase
-    // the record that established reification and allow an advisory classification to converge.
-    const priorFinding = priorRecord && Array.isArray(priorRecord.findings) ? priorRecord.findings.find((item) => item.id === finding.id) : undefined;
-    const declassified = priorFinding && priorFinding.reified && (!finding.reified || finding.state === ADVISORY);
+    // This is still bounded by the truncation limit, and deliberately so: ADR 0008 does not
+    // detect terminal truncation, so a shorter authentic prefix that never contained the
+    // reifying record still allows an advisory classification to converge.
+    const declassified = everReified.has(finding.id) && (!finding.reified || finding.state === ADVISORY);
     if (!["resolved", "dismissed"].includes(finding.state) && !declassified) return finding;
     const reference = references.find((item) => String(item.id) === String(finding.evidence && finding.evidence.referenceId));
     const authorization = verifyAuthorization({ finding, reference, pullAuthor: pull.author, targetState: finding.state, repositoryId: config.repositoryId, pullNumber: pull.number });

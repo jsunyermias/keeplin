@@ -492,6 +492,33 @@ test("terminal_truncation_cannot_erase_reification_before_advisory_reclassificat
   assert.equal(truncated.projectedFindings[0].state, "advisory");
 });
 
+// F-018. An authorized tombstone retires an ID; nothing reserved it. The evaluator used to
+// look for the finding's earlier state only in the newest record, so once a post-tombstone
+// record had been written the ID could return as advisory with no prior state to contradict
+// it, no authorization requested, and the pull request converged. Declassification is now
+// judged against every surviving record, not just the last one.
+test("tombstoned_finding_id_cannot_return_as_advisory_without_authorization", () => {
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 1, findingIds: ["F-900"], findings: [{ id: "F-900", reified: true, state: "open" }] });
+  const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 0, priorDigest: first.digest });
+  const third = makeJournalRecord({ ...TRUST, observation: 3, headSha: "ccc", stateHash: "three", blocking: 0, priorDigest: second.digest });
+  const comments = [first, second, third].map((record) => journalComment(record, TRUST));
+  const result = trusted({ journalComments: comments, findings: [{ id: "F-900", reified: false, state: "advisory" }] });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.projectedFindings[0].state, "open");
+  assert.equal(result.projectedFindings[0].reified, true);
+  assert.equal(result.projectedFindings[0].disposalError, "authorization reference is unreachable");
+});
+
+// The same union lookup must not manufacture a blocker out of an ordinary advisory finding
+// that no surviving record ever carried as reified.
+test("advisory_finding_never_reified_in_any_record_still_converges", () => {
+  const result = trusted({ findings: [{ id: "F-901", reified: false, state: "advisory" }] });
+
+  assert.equal(result.state, "converged");
+  assert.equal(result.projectedFindings[0].state, "advisory");
+});
+
 test("trusted_evaluator_rejects_parseFindings_error_instead_of_converging", () => {
   assert.throws(
     () => requireParsedFindings({ error: "Review ledger: duplicate F-001." }),

@@ -217,9 +217,11 @@ success evidence when resolved. Fork pull requests deliberately fail closed.
   — a priority decision or an accepted ADR — and re-raising it does not reopen it and does not
   start a round unless the code in its area changed.
 - A finding that names a mechanical check is reified and cannot simultaneously have `advisory`
-  state. Protection against changing a previously reified finding to advisory is bounded to the
-  newest surviving journal record; terminal truncation can erase the record that established
-  reification, after which the shorter authentic prefix may converge with that finding advisory.
+  state. Changing a previously reified finding to advisory needs verified authorization, and
+  reification is remembered across every surviving journal record — retiring an ID with an
+  authorized tombstone does not let it return unreified. The protection is still bounded by
+  truncation: terminal truncation can erase the record that established reification, after
+  which the shorter authentic prefix may converge with that finding advisory.
 - The blocking set `{red required checks} ∪ {open reified findings}` must shrink strictly each
   round.
 - The brake is state, not a clock. When the loop-state hash repeats, or the blocking set has
@@ -232,10 +234,14 @@ success evidence when resolved. Fork pull requests deliberately fail closed.
   can truncate the newest record and the evaluator will read the shorter prefix as though those
   rounds never happened; terminal truncation is not detected.
 
-This is a floor beneath independent review, never a substitute for it. The two are
-conjunctive: a converged pull request with no independent reviewer is still unmergeable, and
-convergence never ticks the review boxes of `.github/pull_request_template.md`. The ledger is
-part of the diff the independent reviewer examines.
+This is a floor beneath independent review, never a substitute for it. A converged pull request
+with no independent reviewer is still unmergeable, and convergence never ticks the review boxes
+of `.github/pull_request_template.md`. The ledger is part of the diff the independent reviewer
+examines. That conjunction is upheld today by this policy and by branch protection, **not** by
+the evaluator: `check-review-governance.js` runs inside the head-controlled `ci.yml`, so a head
+can weaken the step while the job still reports success, and the evaluator has no evidence the
+gate ran. [ADR 0009](docs/adr/0009-governance-evaluated-from-the-default-branch.md) proposes
+moving governance into the default-branch evaluator; it is unimplemented while proposed.
 
 Start shared analysis with `docs/prompts/0.A-prompt-comun.md`. The default role split is
 advisory: Claude documents and prepares issues, Kimi implements with

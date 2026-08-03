@@ -52,8 +52,9 @@ and body digests; and,
 for `resolved`, a successful named check bound to the evaluated head, workflow and App. Missing,
 changed, dismissed or unreachable evidence reopens the finding. Genesis and tombstones use the
 same authorization path. A previously reified finding also cannot become advisory without that
-verified authorization when the record establishing reification remains in the surviving
-journal. A finding that names a mechanical check cannot simultaneously use `advisory` state.
+verified authorization, and reification is remembered across every surviving record rather than
+only the newest one, so retiring an ID with an authorized tombstone does not let it return
+unreified. A finding that names a mechanical check cannot simultaneously use `advisory` state.
 Forks deliberately fail closed.
 
 The App comment journal's guarantees are bounded: editing any record is detected, while deletion
@@ -65,7 +66,9 @@ this consequence and the positive journal fixture rather than claiming resistanc
 deliberately does not provide.
 
 Neither script discharges independent review, and `check-review-loop.js` does not weaken
-`check-review-governance.js`: the two gates are conjunctive.
+`check-review-governance.js`. The two gates are conjunctive as policy, not yet as mechanism:
+governance runs inside the head-controlled workflow, so the trusted evaluator cannot prove it
+ran. ADR 0009 proposes moving it into the evaluator and is unimplemented while proposed.
 
 Both scripts are intentionally dependency-free so the workflow can load them from
 `actions/github-script`. Run their regression suites locally with:
