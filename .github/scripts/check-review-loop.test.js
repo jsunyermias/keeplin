@@ -2061,6 +2061,26 @@ test("trusted workflow cannot execute or interpolate pull-request-head content",
   assert.deepEqual(evaluatorSource.match(/require\([^\n]+/g), ['require("node:crypto");']);
 });
 
+test("trusted evaluator declares its exact least-privilege permission set", () => {
+  const workflow = fs.readFileSync(".github/workflows/review-loop-evaluator.yml", "utf8");
+  const lines = workflow.split("\n");
+  const permissionHeaders = lines.filter((line) => line.trim() === "permissions:");
+  const start = lines.indexOf("permissions:");
+  const endOffset = lines.slice(start + 1).findIndex((line) => line.length === 0 || !line.startsWith("  "));
+
+  assert.deepEqual(permissionHeaders, ["permissions:"], "the evaluator must declare one top-level permission block with no job override");
+  assert.notEqual(start, -1, "the evaluator must declare top-level permissions");
+  assert.notEqual(endOffset, -1, "the evaluator permission block must have a boundary");
+  assert.deepEqual(lines.slice(start, start + 1 + endOffset), [
+    "permissions:",
+    "  actions: read",
+    "  checks: write",
+    "  contents: read",
+    "  issues: write",
+    "  pull-requests: write",
+  ]);
+});
+
 test("every pull-request workflow is explicitly read-only and carries the 403 canary", () => {
   const workflows = fs.readdirSync(".github/workflows").filter((name) => /\.ya?ml$/.test(name));
   const pullWorkflows = workflows.map((name) => fs.readFileSync(`.github/workflows/${name}`, "utf8")).filter((body) => /^\s*pull_request:/m.test(body));
