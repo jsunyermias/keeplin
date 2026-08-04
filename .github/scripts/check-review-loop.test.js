@@ -524,7 +524,7 @@ function trustedWorkflowScript(repositoryRoot) {
     .join("\n");
 }
 
-async function executeTrustedWorkflow(repositoryRoot, pullBody, comments) {
+async function executeTrustedWorkflow(repositoryRoot, pullBody, comments, options = {}) {
   const endpoints = {
     associatedPulls: async () => {},
     comments: async () => {},
@@ -535,9 +535,23 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments) {
   };
   let postedBody;
   const github = {
-    paginate: async (endpoint) => {
+    paginate: async (endpoint, _parameters, mapPage) => {
       if (endpoint === endpoints.associatedPulls) return [{ number: 200, state: "open", head: { sha: "ccc" } }];
       if (endpoint === endpoints.comments) return comments;
+      if (endpoint === endpoints.checks && options.checkPages) {
+        const items = [];
+        for (const page of options.checkPages) {
+          items.push(...[].concat(mapPage ? await mapPage(page) : page.data));
+        }
+        return items;
+      }
+      if (endpoint === endpoints.jobs && options.jobPages) {
+        const items = [];
+        for (const page of options.jobPages) {
+          items.push(...[].concat(mapPage ? await mapPage(page) : page.data));
+        }
+        return items;
+      }
       if (endpoint === endpoints.reviews || endpoint === endpoints.checks || endpoint === endpoints.files) return [];
       if (endpoint === endpoints.jobs) return [
         { name: "Check, Test & Lint", status: "completed", conclusion: "success" },
@@ -586,7 +600,8 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments) {
       workflow_run: { id: 77, run_attempt: 1, event: "pull_request", workflow_id: 88, head_sha: "ccc" },
     },
   };
-  const core = { info: () => {}, setFailed: () => {} };
+  const failures = [];
+  const core = { info: () => {}, setFailed: (message) => failures.push(message) };
   const priorWorkflowId = process.env.CI_WORKFLOW_ID;
   process.env.CI_WORKFLOW_ID = "88";
   try {
@@ -596,6 +611,8 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments) {
     if (priorWorkflowId === undefined) delete process.env.CI_WORKFLOW_ID;
     else process.env.CI_WORKFLOW_ID = priorWorkflowId;
   }
+  if (options.expectJournal === false) return { postedBody, failures };
+  if (options.expectFailure === false) assert.deepEqual(failures, [], "trusted workflow must not fail");
   assert.ok(postedBody, "trusted workflow must append a journal observation");
   return journalRecord({ body: postedBody });
 }
@@ -1609,9 +1626,46 @@ test("trusted_adapter_rejects_triggering_or_check_workflow_id_not_equal_to_confi
   assert.doesNotMatch(workflow, /workflow_id:\s*run\.workflow_id/);
 });
 
-test("trusted_adapter_paginates_checks_and_fails_closed_on_malformed_metadata_or_check_lookup", () => {
+test("trusted_adapter_executes_normalized_check_pages_without_creating_undefined_items", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const pullBody = "## Review ledger\n\n| ID | Round | Reified by | State | Resolution |\n|---|---|---|---|---|\n\n### Round log\n";
+  const check = { id: 17, name: "Optional check", status: "completed", conclusion: "success", head_sha: "ccc", details_url: "" };
+  const prior = makeJournalRecord({ ...TRUST, runId: 76, runAttempt: 1, observation: 1, headSha: "bbb", stateHash: "prior", blocking: 0 });
+  const comments = [{ ...journalComment(prior, TRUST), id: 1500, created_at: "2026-08-03T00:01:00Z", performed_via_github_app: { slug: TRUST.appSlug, id: TRUST.appId } }];
+  const cases = [
+    [{ data: [] }],
+    [{ data: [check] }],
+    [{ data: [] }, { data: [check] }, { data: [] }],
+  ];
+
+  for (const checkPages of cases) {
+    await executeTrustedWorkflow(repositoryRoot, pullBody, comments, { checkPages, expectFailure: false });
+  }
+});
+
+test("trusted_adapter_fails_closed_on_malformed_job_or_check_pagination_evidence", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const pullBody = "## Review ledger\n\n| ID | Round | Reified by | State | Resolution |\n|---|---|---|---|---|\n\n### Round log\n";
+  const cases = [
+    [{ checkPages: [{ data: {} }] }, /check-run evidence: malformed pagination response/i],
+    [{ checkPages: [{ data: [undefined] }] }, /check-run evidence: malformed paginated item/i],
+    [{ jobPages: [{ data: {} }] }, /job evidence: malformed pagination response/i],
+    [{ jobPages: [{ data: [undefined] }] }, /job evidence: malformed paginated item/i],
+  ];
+
+  for (const [pagination, expected] of cases) {
+    const outcome = await executeTrustedWorkflow(repositoryRoot, pullBody, journalFixture(), {
+      ...pagination,
+      expectJournal: false,
+    });
+    assert.equal(outcome.postedBody, undefined, "malformed evidence must not produce a journal observation");
+    assert.equal(outcome.failures.length, 1);
+    assert.match(outcome.failures[0], expected);
+  }
+});
+
+test("trusted_adapter_fails_closed_on_malformed_metadata_or_check_lookup", () => {
   const workflow = fs.readFileSync(".github/workflows/review-loop-evaluator.yml", "utf8");
-  assert.match(workflow, /github\.paginate\(github\.rest\.checks\.listForRef/);
   assert.match(workflow, /Malformed trusted review-loop metadata/);
   assert.match(workflow, /Unable to verify workflow identity for check run/);
 });
