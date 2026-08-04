@@ -1,0 +1,130 @@
+name: Trusted review-loop evaluator
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+concurrency:
+  group: review-loop-${{ github.event.workflow_run.pull_requests[0].number }}
+  cancel-in-progress: false
+  queue: max
+
+permissions:
+  actions: read
+  checks: write
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  evaluate:
+    name: Review loop converged
+    runs-on: ubuntu-latest
+    env:
+      CI_WORKFLOW_ID: ${{ vars.CI_WORKFLOW_ID }}
+    steps:
+      - name: Evaluate from default-branch code and API evidence only
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const vm = require('node:vm');
+            const repository = context.payload.repository;
+            const source = await github.rest.repos.getContent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: '.github/scripts/check-review-loop.js',
+              ref: repository.default_branch,
+            });
+            const module = { exports: {} };
+            vm.runInNewContext(Buffer.from(source.data.content, 'base64').toString('utf8'), {
+              module, exports: module.exports, require, console, Buffer, process,
+            }, { filename: 'default-branch/check-review-loop.js' });
+            const evaluator = module.exports;
+            const run = context.payload.workflow_run;
+            if (run.event !== 'pull_request') return core.info('Only pull_request workflow runs are review rounds; this run was ignored.');
+            const configuredCiWorkflowId = Number(process.env.CI_WORKFLOW_ID);
+            if (!Number.isSafeInteger(configuredCiWorkflowId) || run.workflow_id !== configuredCiWorkflowId) {
+              core.setFailed('Triggering workflow does not match the configured CI_WORKFLOW_ID repository variable.');
+              return;
+            }
+            const pulls = await github.paginate(github.rest.repos.listPullRequestsAssociatedWithCommit, {
+              owner: context.repo.owner, repo: context.repo.repo, commit_sha: run.head_sha,
+            });
+            const open = pulls.filter((pull) => pull.state === 'open' && pull.head.sha === run.head_sha);
+            if (open.length !== 1) return core.info('No unique open pull request matches the completed run; nothing was written.');
+            const pull = (await github.rest.pulls.get({ owner: context.repo.owner, repo: context.repo.repo, pull_number: open[0].number })).data;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner: context.repo.owner, repo: context.repo.repo, issue_number: pull.number, per_page: 100 });
+            const reviews = await github.paginate(github.rest.pulls.listReviews, { owner: context.repo.owner, repo: context.repo.repo, pull_number: pull.number, per_page: 100 });
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, { owner: context.repo.owner, repo: context.repo.repo, run_id: run.id, per_page: 100 });
+            const checks = await github.paginate(github.rest.checks.listForRef, { owner: context.repo.owner, repo: context.repo.repo, ref: run.head_sha, per_page: 100 }, response => response.data.check_runs);
+            const files = await github.paginate(github.rest.pulls.listFiles, { owner: context.repo.owner, repo: context.repo.repo, pull_number: pull.number, per_page: 100 });
+            let stallsContent = '';
+            try {
+              const stalls = await github.rest.repos.getContent({ owner: context.repo.owner, repo: context.repo.repo, path: 'docs/review-stalls.md', ref: pull.head.sha });
+              stallsContent = Buffer.from(stalls.data.content, 'base64').toString('utf8');
+            } catch {}
+            const section = evaluator.parseFindings(evaluator.levelTwoSection(pull.body || '', evaluator.LEDGER_HEADING) || '');
+            let parsedFindings;
+            try { parsedFindings = evaluator.requireParsedFindings(section); } catch (error) {
+              core.setFailed(error.message);
+              return;
+            }
+            const findings = parsedFindings.map((finding) => {
+              try { return { ...finding, evidence: JSON.parse(finding.resolution) }; } catch { return finding; }
+            });
+            const metadata = (pull.body || '').match(/<!-- keeplin-review-loop-metadata ([\s\S]*?) -->/);
+            let trustedMetadata = {};
+            try { trustedMetadata = metadata ? JSON.parse(metadata[1]) : {}; } catch {
+              core.setFailed('Malformed trusted review-loop metadata.');
+              return;
+            }
+            const references = [
+              ...comments.map((item) => ({ ...item, kind: 'comment', repositoryId: repository.id, pullNumber: pull.number })),
+              ...reviews.map((item) => ({ ...item, kind: 'review', repositoryId: repository.id, pullNumber: pull.number })),
+            ];
+            const mappedChecks = await Promise.all(checks.map(async (item) => {
+              const workflowRunId = Number((item.details_url || '').match(/\/actions\/runs\/(\d+)/)?.[1]);
+              if (!Number.isSafeInteger(workflowRunId)) return { ...item, app_slug: item.app && item.app.slug, app_id: item.app && item.app.id, workflow_id: null, workflow_run_id: null };
+              try {
+                const checkRun = (await github.rest.actions.getWorkflowRun({ owner: context.repo.owner, repo: context.repo.repo, run_id: workflowRunId })).data;
+                return { ...item, app_slug: item.app && item.app.slug, app_id: item.app && item.app.id, workflow_id: checkRun.workflow_id, workflow_run_id: workflowRunId };
+              } catch {
+                return { ...item, app_slug: item.app && item.app.slug, app_id: item.app && item.app.id, workflow_id: null, workflow_run_id: workflowRunId, workflow_lookup_failed: true };
+              }
+            }));
+            const referencedCheckIds = new Set(findings.filter((finding) => finding.state === 'resolved').map((finding) => String(finding.evidence && finding.evidence.checkRunId)));
+            if (mappedChecks.some((checkRun) => referencedCheckIds.has(String(checkRun.id)) && checkRun.workflow_lookup_failed)) {
+              core.setFailed('Unable to verify workflow identity for check run referenced as resolution evidence.');
+              return;
+            }
+            if (mappedChecks.some((checkRun) => referencedCheckIds.has(String(checkRun.id)) && checkRun.workflow_id !== configuredCiWorkflowId)) {
+              core.setFailed('A referenced resolution check does not match the configured CI_WORKFLOW_ID repository variable.');
+              return;
+            }
+            const config = { repositoryId: repository.id, repository: repository.full_name, pullNumber: pull.number, workflowId: configuredCiWorkflowId, runId: run.id, runAttempt: run.run_attempt, appSlug: 'github-actions', appId: 15368 };
+            const result = evaluator.evaluateTrustedReviewLoop({
+              pull: { number: pull.number, author: pull.user.login, headSha: pull.head.sha, headRepositoryId: pull.head.repo.id, baseRepositoryId: pull.base.repo.id },
+              findings, references, checks: mappedChecks,
+              journalComments: comments.map((item) => ({ ...item, app_slug: item.performed_via_github_app && item.performed_via_github_app.slug, app_id: item.performed_via_github_app && item.performed_via_github_app.id })), jobs,
+              tombstones: trustedMetadata.tombstones || [], genesisEvidence: trustedMetadata.genesisEvidence, config,
+              changedFiles: files.map((file) => file.filename), stallsContent,
+              diffSignature: evaluator.diffSignatureFromFiles(files.map((file) => ({ filename: file.filename, status: file.status, sha: file.sha }))),
+            });
+            if (['history-unverifiable', 'fork-refused'].includes(result.state)) {
+              core.setFailed(result.message);
+              return;
+            }
+            const alreadyRecorded = (result.records || []).some((record) => record.runId === run.id && record.runAttempt === run.run_attempt);
+            await evaluator.publishEvaluation({
+              result, alreadyRecorded,
+              appendJournal: async () => {
+                const prior = result.records && result.records[result.records.length - 1];
+                const record = evaluator.makeJournalRecord({ ...config, observation: prior ? prior.observation + 1 : 1, priorDigest: prior ? prior.digest : null, headSha: pull.head.sha, findingIds: (result.projectedFindings || []).map((finding) => finding.id), findings: result.projectedFindings || [], ledgerFindings: findings, stateHash: result.currentHash, blocking: result.blocking });
+                await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: pull.number, body: evaluator.journalComment(record, config, result.message).body });
+              },
+              reportCheck: async (conclusion) => github.rest.checks.create({ owner: context.repo.owner, repo: context.repo.repo, name: 'Review loop converged', head_sha: pull.head.sha, status: 'completed', conclusion, output: { title: result.state, summary: result.message } }),
+              setFailed: (message) => core.setFailed(message),
+              info: (message) => core.info(message),
+            });

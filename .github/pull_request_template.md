@@ -48,7 +48,49 @@ These are claims made by the implementer and must remain distinct from CI eviden
 - [ ] No required check is skipped or neutral without an accepted explanation.
 - CI run or check-suite link:
 
+## Review ledger
+
+Every finding raised in the review loop, with a stable ID and exactly one state. A finding
+**blocks** only when it is *reified* — named as something that fails mechanically: a test, a
+property, a contract assertion, or a `scripts/check-docs.sh` check. A finding that cannot be
+reduced to a failing check is `advisory`: recorded, not blocking. A `dismissed` finding cites
+the priority decision or accepted ADR that settles it, and re-raising it does not reopen it
+unless the code in its area changed. See
+[`docs/adr/0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md`](https://github.com/jsunyermias/keeplin/blob/main/docs/adr/0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md).
+
+States: `open` · `resolved` · `dismissed` · `advisory`. An `open` finding must name a failing
+check; leave `Reified by` as `advisory` only for a finding that is not blocking.
+
+| ID | Round | Reified by | State | Resolution |
+|---|---|---|---|---|
+
+For `resolved` or `dismissed`, `Resolution` is compact JSON containing `referenceId`, `author`
+and `bodyDigest`; `resolved` also contains `checkRunId` and one exact required `checkName`.
+The referenced review/comment body must carry a `keeplin-review-loop-authorize` HTML comment
+whose JSON names the exact `finding`, target `state` and non-empty `reason`. Its author must be
+an independent MEMBER, OWNER or COLLABORATOR. Genesis and tombstones use states `genesis` and
+`tombstone` in the metadata object below.
+
+<!-- keeplin-review-loop-metadata {"genesisEvidence":null,"tombstones":[]} -->
+
+### Round log
+
+`Blocking` is the size of `{red required checks} ∪ {open reified findings}` and must shrink
+strictly each round. A repeated loop-state hash, or no shrink for 3 rounds, escalates to the
+maintainer and is recorded in
+[`docs/review-stalls.md`](../docs/review-stalls.md). CI prints the hash to record.
+Required jobs must explicitly report `success`; skipped, neutral, missing and unknown are not
+green. The App comment journal's unkeyed chain detects accidental corruption and casual edits,
+not forgery by another repository workflow with the same App identity. Deletion is detected only
+while a descendant survives. Terminal truncation is not detected.
+
+| Round | Loop-state hash | Blocking |
+|---|---|---|
+
 ## Independent review
+
+Convergence is not review. This section is a separate, conjunctive requirement: a pull
+request can converge above and still be unmergeable for want of an independent reviewer.
 
 The independent reviewer receives the objective and diff; the author's explanation is not
 the sole source.
