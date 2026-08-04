@@ -12,16 +12,17 @@ the same three manually enrolled paths as the repositories.
 | `test_canonical_sentence_without_anchor_fails` | `1` | old prose, even semantically correct prose, is not the machine anchor |
 | `test_anchor_must_be_one_exact_standalone_line` | `1` | embedding the anchor in a longer line does not satisfy equality |
 | `test_near_match_does_not_satisfy_the_anchor` | `1` | wording changes are explicit contract changes |
-| `test_nested_fenced_code_bypass_does_not_substitute_for_anchor` | `1` | the old declared-subset nested-fence bypass is red on the old checker |
-| `test_link_title_bypass_does_not_substitute_for_anchor` | `1` | the old declared-subset link-title bypass is red on the old checker |
+| `test_anchor_hidden_in_multiline_html_comment_counts_as_raw_enrolment` | `0` | the raw-line checker does not enforce rendered visibility through HTML comments |
+| `test_anchor_inside_fenced_code_counts_as_raw_enrolment` | `0` | the raw-line checker does not enforce whether the anchor is ordinary policy prose |
 | `test_a_missing_surface_fails_closed` | `1` | absence is never skipped |
 | `test_every_surface_is_checked_independently` | `1` | every enrolled path is required independently |
 | `test_enrolment_remains_the_same_fixed_three_surfaces` | `0` | an unenrolled `CHANGELOG.md` does not widen the whitelist |
 | `test_changelog_names_the_real_bounded_history_checker` | n/a | documentation names the checked-in `.py` executable |
 
-The two bypass fixtures include both the new anchor and old canonical prose on unaffected
-surfaces. Only the attacked surface lacks the anchor. That construction prevents a failure on a
-different surface from masking whether the old prose checker accepts the hidden sentence.
+The two concealment fixtures put the actual anchor line inside a multi-line HTML comment and an
+ordinary margin fence. Both pass deliberately: the decided interim contract is raw enrolment,
+not Markdown parsing or rendered conspicuousness. If the maintainer later chooses visibility
+enforcement, these focused fixtures flip to exit `1` without changing what they exercise.
 
 ## Retired parser tests
 
@@ -36,7 +37,7 @@ name, and positive-fixture coverage remain because those contracts did not chang
 ## Harness and old-code measurement
 
 `BOUNDED_HISTORY_CHECK` points the suite at a preserved checker in a scratch worktree. This is how
-the two old bypass regressions are measured without editing the old implementation.
+the concealment contract is measured without editing the old implementation.
 
 ## Run
 

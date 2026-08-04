@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Require one explicit bounded-history anchor in three manually enrolled surfaces."""
+"""Require one raw bounded-history anchor line in three manually enrolled surfaces.
+
+This checker does not parse Markdown or enforce rendered visibility. An exact anchor line inside
+an HTML comment or fenced code block satisfies the deliberately narrow enrolment contract.
+"""
 
 from __future__ import annotations
 

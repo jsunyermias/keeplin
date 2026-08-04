@@ -91,12 +91,16 @@ still fails closed; the terminal-record recovery procedure is in
 [`docs/review-stalls.md`](../../docs/review-stalls.md#recovering-a-terminal-malformed-journal-record).
 That procedure uses `check-review-loop-recovery.js` from the default branch to recover and verify
 the candidate record mechanically before deletion, including predecessor continuity and exact
-candidate-finding preservation in the replay ledger. Recovery compares the ledger-derived `id`,
-`round`, `reifiedBy`, `reified`, `state` and `resolution` fields. `reified` is deterministic from
-`reifiedBy`; parsed `evidence` is represented by `resolution`, while evaluator-only
-`disposalError` has no Markdown representation and is not compared separately. The candidate
-frame must have no non-whitespace suffix. Recovery input must be chronological by `created_at`
-and comment ID. The API's nested `performed_via_github_app` attribution is authoritative when
+candidate-finding preservation in the replay ledger. Recovery compares the restorable raw ledger
+representation: `id`, `round`, `reifiedBy`, parser-derived `reified`, `state` and `resolution`.
+For the one evaluator-only failed-declassification projection, the surviving prefix and its
+parser-unreified `reifiedBy` classification, forced `reified: true` / `state: open`, and
+the exact unreachable-authorization `disposalError` map back to the raw `reified: false` /
+`state: advisory` pair only when the replay and surviving prefix carry no authorization reference.
+All six fields are then compared. Parsed
+`evidence` remains represented by `resolution`; no ledger field is dropped. The candidate frame
+must have no non-whitespace suffix. Recovery input must be chronological by `created_at` and
+comment ID. The API's nested `performed_via_github_app` attribution is authoritative when
 present, and conflicting top-level attribution is refused.
 
 The App comment journal's guarantees are bounded: its unkeyed digest chain detects accidental
@@ -111,6 +115,10 @@ this consequence and the positive journal fixture rather than claiming resistanc
 deliberately does not provide.
 
 Bounded-history anchor: terminal truncation can erase reification history and enable advisory convergence.
+
+The anchor checker enforces raw exact-line enrolment only. It does not parse Markdown or enforce
+that the anchor is visible or conspicuous in rendered prose; an exact line inside an HTML comment
+or fenced code block satisfies the checker.
 
 Neither script discharges independent review, and `check-review-loop.js` does not weaken
 `check-review-governance.js`. The two gates are conjunctive as policy, not yet as mechanism:

@@ -3,8 +3,9 @@
 ## Purpose
 
 The review journal cannot detect terminal truncation, which can erase the record that established
-reification and allow the shorter prefix to converge with the finding advisory. The three policy
-surfaces must keep that bound conspicuous without asking a checker to infer meaning from Markdown.
+reification and allow the shorter prefix to converge with the finding advisory. The checker
+requires a raw enrolment marker in each of three policy surfaces; it does not enforce whether
+Markdown rendering makes that marker visible or conspicuous.
 
 ## Machine-checkable rule
 
@@ -14,8 +15,9 @@ Each manually enrolled surface must contain this exact standalone line:
 
 The checker reads UTF-8 text and tests raw line equality. It does not collapse whitespace, search
 for related vocabulary, interpret prose, or parse Markdown containers. A line either equals the
-anchor or it does not. The anchor itself names the limitation and its consequence, so it remains
-understandable to a reader as well as unambiguous to the machine.
+anchor or it does not. Consequently, an exact anchor line inside a multi-line HTML comment or an
+ordinary fenced code block satisfies this narrow contract even though a rendered reader may not
+see it as policy prose. Human review, not this checker, is responsible for rendered visibility.
 
 The manually enrolled surfaces remain exactly:
 
