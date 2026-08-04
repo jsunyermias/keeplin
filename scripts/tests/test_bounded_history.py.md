@@ -1,74 +1,42 @@
-# `scripts/tests/test_bounded_history.py` — bounded-history visible-prose regressions
+# `scripts/tests/test_bounded_history.py` — exact-anchor regressions
 
 ## What is tested
 
-`scripts/check-bounded-history.py` requires three manually enrolled surfaces to carry one
-canonical sentence verbatim in prose selected by a declared Markdown subset. The tests execute
-the real checker against temporary fixture roots and assert its process exit status.
+The tests execute the real `scripts/check-bounded-history.py` against temporary roots containing
+the same three manually enrolled paths as the repositories.
 
-| Test | Expected | What it pins |
-|------|----------|--------------|
-| `test_the_real_repository_passes` | `0` | all checked-in surfaces satisfy the rule |
-| `test_intact_fixtures_pass` | `0` | the fixture baseline is valid |
-| `test_line_wrapping_does_not_matter` | `0` | collapsed prose whitespace makes wrapping harmless |
-| `test_canonical_sentence_cannot_be_synthesized_across_markdown_blocks` | `1` | separate rendered blocks are never flattened into one sentence |
-| `test_an_html_comment_does_not_satisfy_the_check` | `1` | comment metadata is not a policy statement |
-| `test_a_fenced_code_block_does_not_satisfy_the_check` | `1` | fenced examples do not count |
-| `test_a_tilde_fenced_code_block_does_not_satisfy_the_check` | `1` | tilde fences do not count |
-| `test_a_fence_with_three_leading_spaces_does_not_satisfy_the_check` | `1` | up to three spaces may indent a fence |
-| `test_an_indented_code_block_does_not_satisfy_the_check` | `1` | blank-line-delimited four-space code does not count |
-| `test_an_indented_code_block_at_document_start_does_not_satisfy_the_check` | `1` | document-start indentation is code without a preceding blank line |
-| `test_indented_code_after_a_fence_does_not_satisfy_the_check` | `1` | a preceding non-paragraph fence does not turn indentation into prose |
-| `test_margin_prose_after_a_fence_still_satisfies_the_check` | `0` | ordinary prose after a fence remains visible |
-| `test_indented_code_after_a_heading_does_not_satisfy_the_check` | `1` | a preceding heading does not turn indentation into prose |
-| `test_margin_prose_after_a_heading_still_satisfies_the_check` | `0` | ordinary prose after a heading remains visible |
-| `test_a_tab_indented_code_block_does_not_satisfy_the_check` | `1` | tab-indented code does not count |
-| `test_a_fence_inside_one_blockquote_does_not_satisfy_the_check` | `1` | one quoted fence level is recognized |
-| `test_unquoted_line_after_a_blockquote_fence_is_visible_prose` | `0` | ending the quote container also ends its fenced block |
-| `test_lazy_continuation_of_a_blockquote_paragraph_stays_in_one_block` | `0` | genuine lazy paragraph continuation remains reader-visible within one block |
-| `test_a_blockquote_fence_cannot_close_a_margin_fence` | `1` | a closer must match its opener's quote level |
-| `test_a_margin_fence_cannot_close_a_blockquote_fence` | `1` | quote-level matching is symmetric |
-| `test_an_unused_link_reference_definition_does_not_satisfy_the_check` | `1` | a non-rendered single-line definition does not count |
-| `test_link_reference_definition_with_an_empty_label_remains_visible` | `0` | the documented nonempty-label qualifier is enforced |
-| `test_link_reference_definition_with_an_empty_destination_remains_visible` | `0` | the documented nonempty-destination qualifier is enforced |
-| `test_a_fence_inside_an_html_comment_does_not_hide_later_prose` | `0` | a comment cannot open a phantom fence |
-| `test_a_multiline_html_comment_does_not_satisfy_the_check` | `1` | hidden comment content does not count |
-| `test_a_longer_closing_fence_exposes_later_prose` | `0` | a closer at least as long as its opener closes the fence |
-| `test_an_html_comment_marker_inside_inline_code_does_not_hide_later_prose` | `0` | inline code cannot open an HTML comment |
-| `test_same_line_inline_code_does_not_satisfy_the_check` | `1` | hidden inline-code content does not count |
-| `test_a_shorter_fence_does_not_close_a_longer_fence` | `1` | a shorter run is not a closer |
-| `test_a_different_fence_marker_does_not_close_a_fence` | `1` | backticks and tildes cannot close each other |
-| `test_normal_prose_still_satisfies_the_check` | `0` | ordinary prose remains positive |
-| `test_a_glossary_of_the_words_does_not_satisfy_the_check` | `1` | vocabulary alone is not the canonical statement |
-| `test_a_weakened_sentence_does_not_satisfy_the_check` | `1` | hedging the limitation fails |
-| `test_dropping_the_consequence_does_not_satisfy_the_check` | `1` | omitting the cost of truncation fails |
+| Test | Expected | Contract |
+|------|----------|----------|
+| `test_the_real_repository_passes` | `0` | all checked-in enrolled surfaces carry the anchor |
+| `test_intact_fixtures_pass` | `0` | a fixture with one exact standalone anchor per surface passes |
+| `test_canonical_sentence_without_anchor_fails` | `1` | old prose, even semantically correct prose, is not the machine anchor |
+| `test_anchor_must_be_one_exact_standalone_line` | `1` | embedding the anchor in a longer line does not satisfy equality |
+| `test_near_match_does_not_satisfy_the_anchor` | `1` | wording changes are explicit contract changes |
+| `test_nested_fenced_code_bypass_does_not_substitute_for_anchor` | `1` | the old declared-subset nested-fence bypass is red on the old checker |
+| `test_link_title_bypass_does_not_substitute_for_anchor` | `1` | the old declared-subset link-title bypass is red on the old checker |
 | `test_a_missing_surface_fails_closed` | `1` | absence is never skipped |
-| `test_every_surface_is_checked_independently` | `1` | no enrolled surface rides on another |
-| `test_changelog_names_the_real_bounded_history_checker` | n/a | documentation names the checked-in `.py` executable and never the nonexistent `.sh` path |
+| `test_every_surface_is_checked_independently` | `1` | every enrolled path is required independently |
+| `test_enrolment_remains_the_same_fixed_three_surfaces` | `0` | an unenrolled `CHANGELOG.md` does not widen the whitelist |
+| `test_changelog_names_the_real_bounded_history_checker` | n/a | documentation names the checked-in `.py` executable |
 
-## Declared-subset boundary tests
+The two bypass fixtures include both the new anchor and old canonical prose on unaffected
+surfaces. Only the attacked surface lacks the anchor. That construction prevents a failure on a
+different surface from masking whether the old prose checker accepts the hidden sentence.
 
-The implementation and its companion name six constructs outside the grammar. One test per
-construct pins the current behavior rather than implying parser support:
+## Retired parser tests
 
-| Test | Current status | Unhandled construct |
-|------|----------------|---------------------|
-| `test_deeper_blockquote_fences_pin_out_of_subset_behavior` | `0` | blockquotes deeper than one level |
-| `test_list_nested_fences_pin_out_of_subset_behavior` | `0` | list continuation/nested list code |
-| `test_raw_html_blocks_pin_out_of_subset_behavior` | `0` | raw HTML other than comments |
-| `test_multiline_reference_definitions_pin_out_of_subset_behavior` | `0` | split reference definitions |
-| `test_multiline_inline_code_spans_pin_out_of_subset_behavior` | `0` | multiline inline code |
-| `test_inline_link_titles_pin_out_of_subset_behavior` | `0` | inline link/image destinations and titles |
+The former suite tested whitespace collapsing and a declared Markdown subset: headings,
+blockquotes, backtick and tilde fences, indentation, HTML comments, inline code, reference
+definitions, fence lengths and markers, raw HTML, nested list code, multiline definitions, and
+link titles. Those tests were removed because the checker no longer selects reader-visible prose
+or implements any Markdown state machine. Keeping them would specify behavior the decided anchor
+checker neither has nor needs. Missing-surface, per-surface enrolment, real-repository, executable
+name, and positive-fixture coverage remain because those contracts did not change.
 
-In these representatives the raw canonical bytes currently count, so the checker returns `0`.
-That result is a stability pin only: the public contract remains that a sentence hidden in an
-unsupported construct is neither guaranteed to count nor guaranteed to be ignored.
+## Harness and old-code measurement
 
-## Harness and old-implementation measurement
-
-Each fixture contains all three enrolled paths. `BOUNDED_HISTORY_CHECK` can point the same tests
-at a scratch executable, which is how the committed awk implementation is measured without
-altering the working tree. With no override the suite runs the checked-in Python implementation.
+`BOUNDED_HISTORY_CHECK` points the suite at a preserved checker in a scratch worktree. This is how
+the two old bypass regressions are measured without editing the old implementation.
 
 ## Run
 
@@ -76,10 +44,8 @@ altering the working tree. With no override the suite runs the checked-in Python
 python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 ```
 
-No network, API, Rust toolchain or model is involved.
-
 ## Related files
 
 - `scripts/check-bounded-history.py` — checker under test.
-- `scripts/companion_tool.py` — shared Markdown-subset implementation.
+- `scripts/check-bounded-history.py.md` — exact line rule and fixed enrolment.
 - `scripts/check-docs.sh` — invokes the checker as check 12.

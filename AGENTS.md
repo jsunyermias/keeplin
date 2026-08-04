@@ -237,6 +237,8 @@ success evidence when resolved. Fork pull requests deliberately fail closed.
   with repository write access can truncate the newest record and the evaluator will read the
   shorter prefix as though those rounds never happened; terminal truncation is not detected.
 
+Bounded-history anchor: terminal truncation can erase reification history and enable advisory convergence.
+
 This is a floor beneath independent review, never a substitute for it. A converged pull request
 with no independent reviewer is still unmergeable, and convergence never ticks the review boxes
 of `.github/pull_request_template.md`. The ledger is part of the diff the independent reviewer
@@ -245,9 +247,9 @@ protection, which is configured outside this repository and which no script here
 **not** upheld by
 the evaluator: `check-review-governance.js` runs inside the head-controlled `ci.yml`, so a head
 can weaken the step while the job still reports success, and the evaluator has no evidence the
-gate ran. [ADR 0009](docs/adr/0009-governance-evaluated-from-the-default-branch.md) accepts
-moving governance into the default-branch evaluator; implementation is pending in a dedicated
-pull request.
+gate ran. [ADR 0012](docs/adr/0012-default-branch-review-governance.md) accepts moving governance
+into the default-branch evaluator and supersedes ADR 0009; its implementation remains pending in
+a separate pull request off `main`.
 
 Start shared analysis with `docs/prompts/0.A-prompt-comun.md`. The default role split is
 advisory: Claude documents and prepares issues, Kimi implements with

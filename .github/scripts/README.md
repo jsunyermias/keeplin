@@ -91,7 +91,13 @@ still fails closed; the terminal-record recovery procedure is in
 [`docs/review-stalls.md`](../../docs/review-stalls.md#recovering-a-terminal-malformed-journal-record).
 That procedure uses `check-review-loop-recovery.js` from the default branch to recover and verify
 the candidate record mechanically before deletion, including predecessor continuity and exact
-candidate-finding preservation in the replay ledger.
+candidate-finding preservation in the replay ledger. Recovery compares the ledger-derived `id`,
+`round`, `reifiedBy`, `reified`, `state` and `resolution` fields. `reified` is deterministic from
+`reifiedBy`; parsed `evidence` is represented by `resolution`, while evaluator-only
+`disposalError` has no Markdown representation and is not compared separately. The candidate
+frame must have no non-whitespace suffix. Recovery input must be chronological by `created_at`
+and comment ID. The API's nested `performed_via_github_app` attribution is authoritative when
+present, and conflicting top-level attribution is refused.
 
 The App comment journal's guarantees are bounded: its unkeyed digest chain detects accidental
 corruption and casual editing that does not rebuild the chain. It does not authenticate records
@@ -104,11 +110,13 @@ which the shorter authentic prefix may converge with that finding advisory. The 
 this consequence and the positive journal fixture rather than claiming resistance ADR 0008
 deliberately does not provide.
 
+Bounded-history anchor: terminal truncation can erase reification history and enable advisory convergence.
+
 Neither script discharges independent review, and `check-review-loop.js` does not weaken
 `check-review-governance.js`. The two gates are conjunctive as policy, not yet as mechanism:
 governance runs inside the head-controlled workflow, so the trusted evaluator cannot prove it
-ran. ADR 0009 accepts moving it into the evaluator; implementation is pending in a dedicated
-pull request.
+ran. Keeplin ADR 0012 accepts moving it into the evaluator and supersedes ADR 0009;
+implementation is pending in a separate pull request off `main`.
 
 Both scripts are intentionally dependency-free so the workflow can load them from
 `actions/github-script`. Run their regression suites locally with:

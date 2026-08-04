@@ -58,6 +58,8 @@ it can erase the record that established reification, after which the shorter au
 may converge with that finding advisory. This dismissed F-002 limitation remains tracked by
 [`docs/review-loop-spike.md`](review-loop-spike.md).
 
+Bounded-history anchor: terminal truncation can erase reification history and enable advisory convergence.
+
 ## Recovering a terminal malformed journal record
 
 Journal serialization prevents records written after the delimiter-escaping fix from persisting
@@ -73,6 +75,19 @@ surviving head, and its declared `priorDigest` must equal that head's digest. Be
 restore the pull request's current review ledger to the exact findings asserted by that recovered
 record. This carries forward findings introduced only by the malformed record rather than losing
 them during replay.
+
+The exact comparison covers the fields the Markdown ledger represents: `id`, `round`,
+`reifiedBy`, `state`, `resolution`, and `reified`, which is derived deterministically from
+`reifiedBy`. The adapter derives `evidence` by parsing `resolution`, so the resolution comparison
+pins the evidence the ledger can carry. `disposalError` is added only by evaluator projection and
+cannot be restored as a ledger column, so it is not compared separately. No non-whitespace
+content may follow the recovered frame.
+
+The downloaded comment array must be chronological by both `created_at` and comment ID. When the
+API provides nested `performed_via_github_app` attribution, it is authoritative; a conflicting
+top-level `app_slug` or `app_id` is refused. These checks harden the operator gate's input
+attribution and terminality assumptions inside the already documented bounded App-identity threat
+model; they do not establish a new provenance guarantee.
 
 The default-branch `check-review-loop-recovery.js` performs all of those checks mechanically. Use
 a clean temporary directory, substitute the repository, pull request and candidate issue-comment

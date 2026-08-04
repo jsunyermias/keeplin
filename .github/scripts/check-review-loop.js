@@ -173,6 +173,9 @@ function recoverCompleteJournalRecord(comment, config) {
   if (source.indexOf(JOURNAL_MARKER, frameEnd) >= 0) {
     return { ok: false, message: "Recovery candidate carries another journal marker after the recoverable record." };
   }
+  if (source.slice(frameEnd).trim() !== "") {
+    return { ok: false, message: "Recovery candidate carries content after the recoverable record." };
+  }
   if (record.schema !== JOURNAL_SCHEMA || record.repositoryId !== config.repositoryId || record.workflowId !== config.workflowId || record.appSlug !== config.appSlug || record.appId !== config.appId) {
     return { ok: false, message: "Recovery candidate producer, repository, workflow or schema does not match configuration." };
   }
@@ -183,8 +186,23 @@ function recoverCompleteJournalRecord(comment, config) {
   return { ok: true, record: { ...record, commentId: comment.id, commentCreatedAt: comment.created_at } };
 }
 
-function normalizedFindings(findings) {
-  return [...findings].sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+function normalizedLedgerFindings(findings) {
+  // These are exactly the Markdown ledger columns plus `reified`, which parseFindings derives
+  // deterministically from `reifiedBy`. `evidence` is evaluator-derived by parsing `resolution`,
+  // so pinning the original resolution pins everything the ledger can encode. `disposalError`
+  // exists only on evaluator projections and has no ledger representation. An explicit allowlist
+  // keeps journal-only metadata from making safe replay impossible without weakening comparison
+  // of any ID, classification, state, round, check name or resolution the operator can restore.
+  return findings
+    .map((finding) => ({
+      id: finding.id,
+      round: finding.round,
+      reifiedBy: finding.reifiedBy,
+      reified: finding.reified,
+      state: finding.state,
+      resolution: finding.resolution,
+    }))
+    .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
 }
 
 function verifyTerminalMalformedRecovery({ comments, candidateCommentId, config, replayFindings }) {
@@ -211,7 +229,7 @@ function verifyTerminalMalformedRecovery({ comments, candidateCommentId, config,
   const replayShape = journalPayloadError({ findingIds: replayFindings.map((finding) => finding && finding.id), findings: replayFindings });
   if (replayShape) return { ok: false, message: `Current replay ledger findings are unreadable: ${replayShape}.` };
   const candidateFindings = recovered.record.findings || [];
-  if (canonicalJson(normalizedFindings(replayFindings)) !== canonicalJson(normalizedFindings(candidateFindings))) {
+  if (canonicalJson(normalizedLedgerFindings(replayFindings)) !== canonicalJson(normalizedLedgerFindings(candidateFindings))) {
     const candidateIds = candidateFindings.map((finding) => finding.id).join(", ") || "none";
     return { ok: false, message: `Current replay ledger is not semantically identical to the recovered candidate findings (${candidateIds}).` };
   }
@@ -887,6 +905,7 @@ module.exports = {
   levelTwoSection,
   makeJournalRecord,
   publishEvaluation,
+  recordedDispositionContext,
   sha256,
   verifyAuthorization,
   verifyJournal,

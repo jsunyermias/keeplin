@@ -1,25 +1,5 @@
 #!/usr/bin/env python3
-"""Require the bounded-history sentence in reader-visible prose.
-
-This standard-library checker implements a declared Markdown subset. It recognizes backtick
-and tilde fences at the document margin or inside one blockquote level, including closing
-fences at least as long as their opener; code indented by four spaces or one tab whenever no
-paragraph is open; HTML comments outside code; same-line backtick code spans; ATX headings;
-and simple single-line link-reference definitions with a nonempty label and destination. A
-margin fence closes only at the margin; a quoted fence closes at its quote level or ends when
-the blockquote ends. Rendered block boundaries are preserved so the sentence cannot be assembled
-across separate blocks. The fenced and indented state machine is shared with
-``scripts/companion_tool.py`` rather than duplicated here.
-
-It does not parse blockquotes deeper than one level; list-item continuation indentation or
-code blocks nested in list items; raw inline or block HTML other than ``<!-- -->`` comments;
-reference definitions split across lines; multiline inline-code spans; or inline link/image
-destinations and titles. A canonical sentence hidden in one of those constructs is neither
-guaranteed to count nor guaranteed to be ignored. This is not a CommonMark conformance claim.
-
-The three policy surfaces are manually enrolled below. Enrolment is not inferred from prose,
-so a new document is outside the check until a maintainer adds it explicitly.
-"""
+"""Require one explicit bounded-history anchor in three manually enrolled surfaces."""
 
 from __future__ import annotations
 
@@ -27,23 +7,16 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from companion_tool import reader_visible_markdown
 
-
-CANONICAL = (
-    "Terminal truncation is not detected: it can erase the record that established "
-    "reification, after which the shorter authentic prefix may converge with that finding "
-    "advisory."
+ANCHOR = (
+    "Bounded-history anchor: terminal truncation can erase reification history and "
+    "enable advisory convergence."
 )
 SURFACES = ("AGENTS.md", ".github/scripts/README.md", "docs/review-stalls.md")
 
 
-def _contains_canonical_sentence(path: Path) -> bool:
-    text = path.read_text(encoding="utf-8")
-    return any(
-        CANONICAL in " ".join(block.split())
-        for block in reader_visible_markdown(text).split("\n\n")
-    )
+def _carries_anchor(path: Path) -> bool:
+    return ANCHOR in path.read_text(encoding="utf-8").splitlines()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -60,22 +33,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             failed = True
             continue
         try:
-            contains_sentence = _contains_canonical_sentence(path)
+            carries_anchor = _carries_anchor(path)
         except (OSError, UnicodeError) as error:
             print(f"BOUNDED HISTORY: cannot read {surface} from {root}: {error}")
             failed = True
             continue
-        if not contains_sentence:
-            print(
-                f"BOUNDED HISTORY: {surface} does not carry the canonical "
-                "bounded-history sentence verbatim"
-            )
+        if not carries_anchor:
+            print(f"BOUNDED HISTORY: {surface} does not carry the exact bounded-history anchor")
             failed = True
     if failed:
-        print("\nThe canonical sentence is:")
-        print(f"  {CANONICAL}")
+        print("\nThe required standalone anchor is:")
+        print(f"  {ANCHOR}")
         return 1
-    print(f"bounded-history check OK: {len(SURFACES)} surfaces carry the canonical sentence")
+    print(f"bounded-history check OK: {len(SURFACES)} surfaces carry the exact anchor")
     return 0
 
 

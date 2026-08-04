@@ -6,6 +6,8 @@ const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const EVALUATOR_PATH = process.env.REVIEW_LOOP_CHECK || "./check-review-loop.js";
+const RECOVERY_PATH = process.env.REVIEW_LOOP_RECOVERY || ".github/scripts/check-review-loop-recovery.js";
 const {
   DEFAULT_STAGNATION_LIMIT,
   STALLS_PATH,
@@ -23,11 +25,12 @@ const {
   journalComment,
   makeJournalRecord,
   publishEvaluation,
+  recordedDispositionContext,
   requireParsedFindings,
   sha256,
   verifyAuthorization,
   verifyTerminalMalformedRecovery,
-} = require("./check-review-loop.js");
+} = require(EVALUATOR_PATH);
 
 const REPOSITORY = "jsunyermias/keeplin";
 const PULL_NUMBER = 200;
@@ -463,6 +466,25 @@ function trusted(overrides = {}) {
   });
 }
 
+function runRecoveryCommand(context, comments, finding, candidateCommentId) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "keeplin-recovery-input-"));
+  context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const commentsPath = path.join(directory, "comments.json");
+  const pullPath = path.join(directory, "pull.json");
+  fs.writeFileSync(commentsPath, JSON.stringify(comments));
+  fs.writeFileSync(pullPath, JSON.stringify({ body: `## Review ledger\n\n| ID | Round | Reified by | State | Resolution |\n|---|---|---|---|---|\n| ${finding.id} | ${finding.round} | \`${finding.reifiedBy}\` | ${finding.state} | ${finding.resolution} |\n\n### Round log\n` }));
+  return spawnSync(process.execPath, [
+    RECOVERY_PATH,
+    "--pull", pullPath,
+    "--comments", commentsPath,
+    "--candidate-comment-id", String(candidateCommentId),
+    "--repository-id", String(TRUST.repositoryId),
+    "--workflow-id", String(TRUST.workflowId),
+    "--app-slug", TRUST.appSlug,
+    "--app-id", String(TRUST.appId),
+  ], { encoding: "utf8" });
+}
+
 test("journal accepts the shared intact fixture", () => assert.equal(trusted().state, "converged"));
 
 test("edited journal record is history-unverifiable", () => {
@@ -553,6 +575,39 @@ test("terminal_malformed_recovery_preserves_candidate_findings", () => {
   assert.deepEqual(preserved.record.findings, [finding]);
 });
 
+test("terminal_malformed_recovery_accepts_safe_replay_of_evaluator_projected_open_finding", () => {
+  const current = { id: "F-200", round: 4, reifiedBy: "invalid disposition", reified: true, state: "dismissed", resolution: "literal --> remains journal data" };
+  const evaluated = trusted({ findings: [current], references: [] });
+  const projected = evaluated.projectedFindings[0];
+  assert.equal(projected.state, "open");
+  assert.match(projected.disposalError, /authorization reference is unreachable/i);
+  const prefix = journalFixture();
+  const prior = journalRecord(prefix[prefix.length - 1]);
+  const candidateRecord = makeJournalRecord({ ...TRUST, observation: 4, headSha: "ccc", stateHash: "four", blocking: 1, priorDigest: prior.digest, findingIds: [projected.id], findings: [projected] });
+  const candidate = { id: 1004, app_slug: TRUST.appSlug, app_id: TRUST.appId, created_at: "2026-08-03T00:04:00Z", body: `${JOURNAL_MARKER}${JSON.stringify(candidateRecord)} -->` };
+  const { disposalError, ...replayFinding } = projected;
+
+  const safe = verifyTerminalMalformedRecovery({ comments: [...prefix, candidate], candidateCommentId: 1004, config: TRUST, replayFindings: [replayFinding] });
+  const changedResolution = verifyTerminalMalformedRecovery({ comments: [...prefix, candidate], candidateCommentId: 1004, config: TRUST, replayFindings: [{ ...replayFinding, resolution: "different load-bearing ledger value" }] });
+
+  assert.equal(safe.ok, true, safe.message);
+  assert.equal(changedResolution.ok, false);
+  assert.match(changedResolution.message, /not semantically identical.*F-200/i);
+});
+
+test("terminal_malformed_recovery_rejects_unaccounted_suffix_and_accepts_whitespace", () => {
+  const finding = { id: "F-213", round: 4, reifiedBy: "recovery suffix", reified: true, state: "open", resolution: "literal --> remains journal data" };
+  const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "ccc", stateHash: "one", blocking: 1, findingIds: [finding.id], findings: [finding] });
+  const candidate = (suffix) => ({ id: 1013, app_slug: TRUST.appSlug, app_id: TRUST.appId, created_at: "2026-08-03T00:01:00Z", body: `${JOURNAL_MARKER}${JSON.stringify(record)} -->${suffix}` });
+
+  const unaccounted = verifyTerminalMalformedRecovery({ comments: [candidate("\nmaterial the verifier did not account for")], candidateCommentId: 1013, config: TRUST, replayFindings: [finding] });
+  const whitespace = verifyTerminalMalformedRecovery({ comments: [candidate(" \n\t")], candidateCommentId: 1013, config: TRUST, replayFindings: [finding] });
+
+  assert.equal(unaccounted.ok, false);
+  assert.match(unaccounted.message, /content after the recoverable record/i);
+  assert.equal(whitespace.ok, true, whitespace.message);
+});
+
 test("terminal_malformed_recovery_rejects_forked_predecessor_and_accepts_continuity", () => {
   const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: [], findings: [] });
   const finding = { id: "F-102", round: 2, reifiedBy: "recovery continuity", reified: true, state: "open", resolution: "literal --> remains journal data" };
@@ -595,7 +650,7 @@ test("terminal_malformed_recovery_command_executes_the_mechanical_check", (conte
   fs.writeFileSync(commentsPath, JSON.stringify(comments));
   fs.writeFileSync(pullPath, JSON.stringify({ body: `## Review ledger\n\n| ID | Round | Reified by | State | Resolution |\n|---|---|---|---|---|\n| F-101 | 2 | \`recovery command\` | open | literal --> remains journal data |\n\n### Round log\n` }));
   const command = spawnSync(process.execPath, [
-    ".github/scripts/check-review-loop-recovery.js",
+    RECOVERY_PATH,
     "--pull", pullPath,
     "--comments", commentsPath,
     "--candidate-comment-id", "1002",
@@ -609,6 +664,41 @@ test("terminal_malformed_recovery_command_executes_the_mechanical_check", (conte
   assert.deepEqual(JSON.parse(command.stdout).findings, [finding]);
 });
 
+test("recovery_command_prefers_nested_app_attribution_and_rejects_conflicting_top_level_values", (context) => {
+  const finding = { id: "F-212", round: 2, reifiedBy: "nested attribution", reified: true, state: "open", resolution: "literal --> remains journal data" };
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: [], findings: [] });
+  const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: [finding.id], findings: [finding] });
+  const nested = { slug: TRUST.appSlug, id: TRUST.appId };
+  const consistent = [
+    { ...journalComment(first, TRUST), id: 1201, created_at: "2026-08-03T00:01:00Z", performed_via_github_app: nested },
+    { id: 1202, app_slug: TRUST.appSlug, app_id: TRUST.appId, performed_via_github_app: nested, created_at: "2026-08-03T00:02:00Z", body: `${JOURNAL_MARKER}${JSON.stringify(second)} -->` },
+  ];
+  const conflicting = consistent.map((comment) => ({ ...comment, performed_via_github_app: { slug: "different-app", id: 999 } }));
+
+  const accepted = runRecoveryCommand(context, consistent, finding, 1202);
+  const refused = runRecoveryCommand(context, conflicting, finding, 1202);
+
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /conflicting.*App attribution/i);
+});
+
+test("recovery_command_rejects_nonchronological_comments_and_accepts_ordered_input", (context) => {
+  const finding = { id: "F-212", round: 2, reifiedBy: "chronological recovery input", reified: true, state: "open", resolution: "literal --> remains journal data" };
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: [], findings: [] });
+  const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: [finding.id], findings: [finding] });
+  const prefix = { ...journalComment(first, TRUST), id: 1211, created_at: "2026-08-03T00:01:00Z" };
+  const candidate = { id: 1212, app_slug: TRUST.appSlug, app_id: TRUST.appId, created_at: "2026-08-03T00:02:00Z", body: `${JOURNAL_MARKER}${JSON.stringify(second)} -->` };
+  const unrelatedLater = { id: 1213, created_at: "2026-08-03T00:03:00Z", body: "ordinary issue comment" };
+
+  const ordered = runRecoveryCommand(context, [prefix, candidate, unrelatedLater], finding, 1212);
+  const nonchronological = runRecoveryCommand(context, [prefix, unrelatedLater, candidate], finding, 1212);
+
+  assert.equal(ordered.status, 0, ordered.stderr);
+  assert.equal(nonchronological.status, 1);
+  assert.match(nonchronological.stderr, /chronological.*order/i);
+});
+
 test("same_second_disposition_authorization_boundary_is_documented", () => {
   const scriptReadme = fs.readFileSync(".github/scripts/README.md", "utf8");
   const stalls = fs.readFileSync("docs/review-stalls.md", "utf8");
@@ -618,6 +708,26 @@ test("same_second_disposition_authorization_boundary_is_documented", () => {
     assert.match(claim, /strictly\s+after/i);
     assert.match(claim, /reissue/i);
   }
+});
+
+test("same_second_disposition_authorization_is_rejected_but_later_second_is_accepted", () => {
+  const open = { id: "F-211", reified: true, state: "open" };
+  const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "bbb", stateHash: "one", blocking: 1, findingIds: [open.id], findings: [open] });
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-211", state: "dismissed", reason: "maintainer disposition" })} -->`;
+  const finding = { id: "F-211", reified: true, state: "dismissed", evidence: { referenceId: 211, author: "maintainer", bodyDigest: sha256(body) } };
+  const reference = { id: 211, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", body };
+  const evaluateAt = (created_at) => trusted({
+    journalComments: [{ ...journalComment(record, TRUST), created_at: "2026-08-03T00:01:00Z" }],
+    findings: [finding],
+    references: [{ ...reference, created_at }],
+  });
+
+  const sameSecond = evaluateAt("2026-08-03T00:01:00Z");
+  const laterSecond = evaluateAt("2026-08-03T00:01:01Z");
+
+  assert.equal(sameSecond.projectedFindings[0].state, "open");
+  assert.match(sameSecond.projectedFindings[0].disposalError, /not issued after/i);
+  assert.equal(laterSecond.projectedFindings[0].state, "dismissed", laterSecond.message);
 });
 
 test("nonterminal_raw_comment_terminator_has_no_deletion_recovery", () => {
@@ -864,6 +974,19 @@ test("historical_absence_cannot_be_collapsed_into_one_disposition_run", () => {
   assert.equal(result.ok, false);
   assert.equal(result.state, "history-unverifiable");
   assert.match(result.message, /retired finding IDs cannot be reused/i);
+});
+
+test("recorded_disposition_context_treats_absence_as_a_freshness_boundary", () => {
+  const dismissed = { id: "F-210", reified: true, state: "dismissed", evidence: { referenceId: 210 } };
+  const records = [
+    { commentCreatedAt: "2026-08-03T00:01:00Z", findings: [dismissed] },
+    { commentCreatedAt: "2026-08-03T00:02:00Z", findings: [] },
+    { commentCreatedAt: "2026-08-03T00:03:00Z", findings: [dismissed] },
+  ];
+  const continuous = [records[0], { commentCreatedAt: "2026-08-03T00:02:00Z", findings: [dismissed] }, records[2]];
+
+  assert.equal(recordedDispositionContext(records, dismissed.id, dismissed.state).changedAt, "2026-08-03T00:02:00Z");
+  assert.equal(recordedDispositionContext(continuous, dismissed.id, dismissed.state).changedAt, null);
 });
 
 test("continuous_presence_is_not_mistaken_for_an_interrupted_disposition_run", () => {

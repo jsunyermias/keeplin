@@ -23,8 +23,8 @@
 #      writes source SQL or bytes outside valid companion fences.
 #  10. the generated context manifest is current.
 #  11. review-ledger rows use exactly one of the four states defined by AGENTS.md.
-#  12. the three manually enrolled journal-policy surfaces carry the canonical bounded-history
-#      sentence verbatim (delegated to scripts/check-bounded-history.py).
+#  12. the three manually enrolled journal-policy surfaces carry the exact bounded-history
+#      anchor as a standalone line (delegated to scripts/check-bounded-history.py).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -112,8 +112,8 @@ while IFS= read -r row; do
 done < <(grep -RhsE '^\|[[:space:]]*F-[0-9]{3,}[[:space:]]*\|' --include='*.md' . \
   --exclude-dir=.git --exclude-dir=graphify-out --exclude-dir=target || true)
 
-# 12. The three manually enrolled journal-policy surfaces must state the bound verbatim.
-#     Delegated so the fixed enrolment and matching rule can be exercised against fixtures.
+# 12. The three manually enrolled journal-policy surfaces must carry the exact anchor.
+#     Delegated so the fixed enrolment and line-equality rule can be exercised against fixtures.
 if ! ./scripts/check-bounded-history.py; then
   fail=1
 fi

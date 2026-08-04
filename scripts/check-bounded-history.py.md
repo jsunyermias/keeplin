@@ -1,110 +1,56 @@
-# `scripts/check-bounded-history.py` — require the journal bound in reader-visible prose
+# `scripts/check-bounded-history.py` — require the bounded-history anchor
 
 ## Purpose
 
-The review journal's guarantee is easy to state as more than it is. Its unkeyed chain detects
-accidental corruption and casual editing that does not rebuild the digests; it does not
-authenticate records against another repository workflow carrying the same App identity.
-Deletion is detected only when a surviving descendant commits to the missing record. It does
-not detect terminal truncation: an actor with repository write access can delete the newest
-records, and the shorter prefix evaluates as though those rounds never happened.
+The review journal cannot detect terminal truncation, which can erase the record that established
+reification and allow the shorter prefix to converge with the finding advisory. The three policy
+surfaces must keep that bound conspicuous without asking a checker to infer meaning from Markdown.
 
-That matters beyond history-keeping. The deleted records can be the ones establishing that a
-finding was reified, and once that evidence is gone the finding can be filed `advisory` and
-converge without the authorization the surviving records would have demanded. This checker
-requires the exact bounded-history sentence that states both the limitation and its consequence.
+## Machine-checkable rule
 
-## What it checks
+Each manually enrolled surface must contain this exact standalone line:
 
-Three manually enrolled surfaces must each carry one canonical sentence, verbatim:
+> Bounded-history anchor: terminal truncation can erase reification history and enable advisory convergence.
+
+The checker reads UTF-8 text and tests raw line equality. It does not collapse whitespace, search
+for related vocabulary, interpret prose, or parse Markdown containers. A line either equals the
+anchor or it does not. The anchor itself names the limitation and its consequence, so it remains
+understandable to a reader as well as unambiguous to the machine.
+
+The manually enrolled surfaces remain exactly:
 
 - `AGENTS.md`
 - `.github/scripts/README.md`
 - `docs/review-stalls.md`
 
-This is a fixed whitelist. Enrolment is manual, so a new document that states the guarantee is
-not discovered or checked until a maintainer adds it to `SURFACES`. The checker never infers
-enrolment from prose.
-
-`CHANGELOG.md` is not enrolled and can therefore carry the same overclaim without this check
-failing. Whether it should become a fourth policy surface is an open scope question for the
-maintainer; factual corrections to the changelog do not make that enrolment decision.
-
-> Terminal truncation is not detected: it can erase the record that established reification,
-> after which the shorter authentic prefix may converge with that finding advisory.
-
-After selecting reader-visible text with the declared subset below, the checker collapses
-whitespace within each rendered block so ordinary line wrapping does not alter the contract. It
-never joins separate paragraphs, headings or blockquotes to synthesize the sentence. Every other
-character of the canonical sentence must be present exactly. A missing or unreadable surface
-fails closed.
-
-## Declared Markdown subset
-
-The implementation uses `companion_tool.reader_visible_markdown`, sharing the fenced- and
-indented-code state machine that was developed for the review-debt registry instead of carrying
-a second version. It recognizes and ignores:
-
-- backtick and tilde fenced code at the document margin or after one blockquote marker, with up
-  to three leading spaces and a closing fence using the same marker at least as long as the
-  opener; margin fences close at the margin, while a quoted fence ends when its blockquote ends;
-- code indented by four spaces or one tab whenever no paragraph is open, including at the
-  document start, after a blank line, after a heading and after a fenced block;
-- ATX headings and one-level blockquotes as rendered-block boundaries, while preserving lazy
-  continuation of an ordinary quoted paragraph;
-- HTML comments outside code, including comments spanning lines;
-- same-line backtick code spans, so a literal `<!--` in inline code cannot open a comment;
-- simple single-line link-reference definitions with a nonempty label and destination. Every
-  recognized definition is ignored; the checker does not try to decide whether another link
-  uses it.
-
-This is intentionally not a CommonMark parser. The following constructs are not handled:
-
-- blockquotes deeper than one level;
-- list-item continuation indentation and code blocks nested in list items;
-- raw inline or block HTML other than `<!-- -->` comments;
-- reference definitions split across lines;
-- inline-code spans split across lines;
-- inline link or image destinations and titles.
-
-A canonical sentence hidden in any construct on that list is neither guaranteed to count nor
-guaranteed to be ignored. The tests pin the current result for one example of each construct;
-that pin makes a later behavior change explicit, but it does not expand the declared grammar.
-
-## Why verbatim, and not the words it contains
-
-The first implementation required only the substrings `truncat`, `reifi` and `advisory`
-somewhere in each file. Deleting the bounded-history paragraphs and leaving `Glossary:
-truncation, reification, advisory.` kept that check green. The exact sentence is therefore the
-contract: weakening `is not detected` or dropping the consequence after the colon fails.
+Enrolment remains a fixed whitelist. A new document is not discovered from its contents and does
+not enter the check until a maintainer changes `SURFACES` explicitly. `CHANGELOG.md` remains
+outside the whitelist.
 
 ## Failure behavior and usage
 
-The checker uses only Python's standard library and returns `0` when all three surfaces pass,
-`1` when a surface is absent, unreadable or lacks the visible sentence, and `2` for invalid
-command-line usage. It prints every failing surface before the canonical sentence.
+The checker uses only Python's standard library. It returns `0` when all three surfaces carry the
+anchor, `1` when a surface is missing, unreadable, or lacks the exact line, and `2` for invalid
+command-line usage. It reports every failing surface and prints the required anchor.
 
 ```sh
-./scripts/check-bounded-history.py            # repository root inferred from the script
-./scripts/check-bounded-history.py /some/root # fixture root used by tests
+./scripts/check-bounded-history.py
+./scripts/check-bounded-history.py /some/fixture/root
 ```
 
-`scripts/check-docs.sh` invokes it directly as check 12 and preserves that exit-status contract.
+`scripts/check-docs.sh` invokes it as check 12.
 
 ## Graph context
 
-LAYER 1 (Graphify) locates this script among the repository's governance checks. LAYER 2 is
-this companion. The rule it enforces follows keeplin ADR 0008's bounded history claim. No local
-graph artifact was available while this implementation was prepared, so these relationships are
-authored inference rather than refreshed extracted edges.
+LAYER 1 (Graphify) locates this script among the repository's governance checks. LAYER 2 is this
+companion. The rule follows keeplin ADR 0008's bounded-history claim. No local graph artifact was
+available, so these relationships are authored inference rather than refreshed extracted edges.
 
 ## Related files
 
-- `scripts/companion_tool.py` — owns the reusable declared Markdown subset.
-- `scripts/check-docs.sh` — runs this checker as check 12.
-- `scripts/tests/test_bounded_history.py` — positive, negative, regression and subset-boundary
-  tests.
+- `scripts/check-docs.sh` — runs the checker.
+- `scripts/tests/test_bounded_history.py` — exact-anchor, enrolment, failure, and old-bypass tests.
+- `AGENTS.md`, `.github/scripts/README.md`, `docs/review-stalls.md` — the unchanged three-surface
+  enrolment.
 - `docs/adr/0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md` — accepted
-  decision that bounds the claim; unchanged by this task.
-- `.github/scripts/check-review-loop.js` — evaluator whose bounded history is being stated.
-- `docs/review-stalls.md` — one of the three manually enrolled surfaces.
+  decision whose terminal-truncation bound the anchor keeps visible.
