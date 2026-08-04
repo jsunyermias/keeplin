@@ -1,12 +1,12 @@
 # 0013 — What an empty review journal may do
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-08-04
 - Decision owners: maintainer of `jsunyermias/keeplin` and `jsunyermias/keeplin-srv`
 - Scope: cross-repo
 - Issue: none — found by running the trusted evaluator against the live GitHub API after
   [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198) merged
-- Acceptance PR: pending maintainer acceptance
+- Acceptance PR: [keeplin#201](https://github.com/jsunyermias/keeplin/pull/201)
 - Supersedes: none. Amends the genesis-authorization consequence of
   [0008](0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md)
 - Superseded by: none
@@ -98,36 +98,53 @@ through the journal record, which is new state and needs its own tests.
 
 ## Decision and justification
 
-**Pending maintainer decision.** The maintainer indicated a preference for option A and asked for
-this ADR before implementation, which is why the body is written with all three options intact
-rather than one.
+**Option C is accepted.** An empty journal starts the chain with the genesis record marked
+unauthenticated. Evaluation proceeds normally and publishes its real state. The synthetic `GENESIS`
+finding is **open and reified** until a verified authorization directive exists, so `converged` is
+unreachable without the anchor while every other state is reachable without it.
 
-The recommendation of this ADR is **option C**. It removes the blockage that motivated the
-question — no pull request is refused for a missing anchor, and every one of them reports its real
-state — while leaving the anchor mandatory for the single state that authorizes a merge. Option A
-buys the same unblocking by paying the security cost on every pull request forever, including the
-ones that would never have needed it. Option B keeps the strongest anchor and is the only option
-that requires no code change, but it makes the loop unusable until a runbook exists and imposes a
-step before any feedback at all.
+The maintainer initially preferred option A and asked for this ADR before implementation, which is
+why the body records all three options rather than one.
 
-If the maintainer accepts option A instead, this ADR must also widen ADR 0011's stated bound to
-record that a clean-history restart requires only comment deletion. Accepting A without that
-correction would leave a documented claim that the implementation no longer supports, which is the
-defect class this project has spent thirty-two review rounds removing.
+C removes the blockage that motivated the question — no pull request is refused for a missing
+anchor, and every one of them reports its real state — while leaving the anchor mandatory for the
+single state that authorizes a merge. Option A buys the same unblocking by paying the security cost
+on every pull request forever, including the ones that would never have needed it. Option B keeps
+the strongest anchor and is the only option requiring no code change, but it makes the loop
+unusable until a runbook exists and imposes a step before any feedback at all.
+
+### Why ADR 0011 needs no amendment under this decision
+
+Option A would have obliged a widening of [0011](0011-bounded-journal-authenticity.md)'s stated
+bound, because under A deleting the journal comments would have been sufficient to reach
+`converged`, and 0011 records that manufacturing convergence requires an actor able to add or
+modify a repository workflow.
+
+Under C that bound stays exact. An actor who deletes every journal comment restarts the chain, but
+the resulting genesis record is unauthenticated, so the `GENESIS` finding is open and reified and
+`converged` is not reachable. Reaching it still requires a verified authorization directive, which
+is the same bar as any other disposal. Comment deletion therefore buys a fresh evaluation, never a
+convergence.
+
+This matters procedurally as well: 0011 is `accepted`, and an accepted body is immutable except for
+status and cross-link metadata. Widening its threat claim would have been a substantive change
+requiring its own ADR rather than an edit. C avoids that debt instead of incurring it.
 
 ## Consequences and risks
 
-Under A: the loop works everywhere immediately; the authenticity claim narrows and 0011 needs a
-matching correction.
+Accepted consequences, under C: the loop works everywhere immediately for every state except
+`converged`; a new `unauthenticatedAnchor` fact enters the journal record and every consumer of it
+needs coverage, including the recovery path, which currently assumes an authorized anchor. A pull
+request that intends to converge still needs one authorization directive, once, at the point where
+it matters rather than before any feedback exists.
 
-Under B: the anchor is strongest; the loop stays blocked until the runbook exists and is followed
-per pull request.
+Rejected alternatives, recorded for the next reader: A would have worked everywhere immediately and
+narrowed the authenticity claim, requiring a matching correction to 0011. B would have kept the
+strongest anchor and stayed blocked until a runbook existed and was followed per pull request.
 
-Under C: the loop works everywhere immediately for every state except `converged`; a new
-`unauthenticatedAnchor` fact enters the journal record and every consumer of it needs coverage,
-including the recovery path, which currently assumes an authorized anchor.
-
-Under all three: the refusal must publish its check run, which #200 delivers independently.
+Under all three the refusal must publish its check run, which
+[keeplin#200](https://github.com/jsunyermias/keeplin/pull/200) delivered independently and which is
+already on `main`.
 
 ## Compatibility, migration, and rollback
 
