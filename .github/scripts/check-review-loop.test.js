@@ -534,6 +534,7 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments, option
     files: async () => {},
   };
   let postedBody;
+  let reportedCheck;
   const github = {
     paginate: async (endpoint, _parameters, mapPage) => {
       if (endpoint === endpoints.associatedPulls) return [{ number: 200, state: "open", head: { sha: "ccc" } }];
@@ -573,7 +574,7 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments, option
           number: 200,
           body: pullBody,
           user: { login: "author" },
-          head: { sha: "ccc", repo: { id: 7 } },
+          head: { sha: "ccc", repo: { id: options.headRepositoryId ?? 7 } },
           base: { repo: { id: 7 } },
         } }),
         listReviews: endpoints.reviews,
@@ -589,7 +590,7 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments, option
       },
       checks: {
         listForRef: endpoints.checks,
-        create: async () => {},
+        create: async (check) => { reportedCheck = check; },
       },
     },
   };
@@ -611,7 +612,7 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments, option
     if (priorWorkflowId === undefined) delete process.env.CI_WORKFLOW_ID;
     else process.env.CI_WORKFLOW_ID = priorWorkflowId;
   }
-  if (options.expectJournal === false) return { postedBody, failures };
+  if (options.expectJournal === false) return { postedBody, reportedCheck, failures };
   if (options.expectFailure === false) assert.deepEqual(failures, [], "trusted workflow must not fail");
   assert.ok(postedBody, "trusted workflow must append a journal observation");
   return journalRecord({ body: postedBody });
@@ -1735,6 +1736,84 @@ test("existing_failed_run_attempt_appends_nothing_reports_failure_and_sets_faile
   assert.deepEqual(calls.conclusions, ["failure"]);
   assert.deepEqual(calls.failures, ["one blocker remains"]);
   assert.deepEqual(calls.info, []);
+});
+
+for (const refusal of [
+  {
+    state: "history-unverifiable",
+    reason: "GENESIS lacks verified authorization: authorization reference is unreachable.",
+    options: {},
+  },
+  {
+    state: "fork-refused",
+    reason: "Fork pull requests deliberately fail closed: partial evidence is not evaluated.",
+    options: { headRepositoryId: 8 },
+  },
+]) {
+  test(`trusted workflow reports ${refusal.state} without journaling`, async () => {
+    const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+    const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+      expectJournal: false,
+      ...refusal.options,
+    });
+
+    assert.equal(outcome.postedBody, undefined, "a refusal must not append an untrusted journal observation");
+    assert.deepEqual(outcome.failures, [refusal.reason]);
+    assert.equal(outcome.reportedCheck.name, "Review loop converged");
+    assert.equal(outcome.reportedCheck.conclusion, "failure");
+    assert.equal(outcome.reportedCheck.output.title, refusal.state);
+    assert.equal(outcome.reportedCheck.output.summary, refusal.reason);
+  });
+}
+
+test("normal blocking evaluation still appends, reports failure and fails the workflow", async () => {
+  const calls = { appended: 0, conclusions: [], failures: [] };
+  const outcome = await publishEvaluation({
+    result: { ok: false, state: "converging", message: "one blocker remains" },
+    alreadyRecorded: false,
+    appendJournal: async () => { calls.appended += 1; },
+    reportCheck: async (conclusion) => { calls.conclusions.push(conclusion); },
+    setFailed: (message) => { calls.failures.push(message); },
+    info: () => {},
+  });
+
+  assert.deepEqual(outcome, { appended: true, conclusion: "failure" });
+  assert.equal(calls.appended, 1);
+  assert.deepEqual(calls.conclusions, ["failure"]);
+  assert.deepEqual(calls.failures, ["one blocker remains"]);
+});
+
+test("converged evaluation still appends and reports success", async () => {
+  const calls = { appended: 0, conclusions: [], failures: [] };
+  const outcome = await publishEvaluation({
+    result: { ok: true, state: "converged", message: "review loop converged" },
+    alreadyRecorded: false,
+    appendJournal: async () => { calls.appended += 1; },
+    reportCheck: async (conclusion) => { calls.conclusions.push(conclusion); },
+    setFailed: (message) => { calls.failures.push(message); },
+    info: () => {},
+  });
+
+  assert.deepEqual(outcome, { appended: true, conclusion: "success" });
+  assert.equal(calls.appended, 1);
+  assert.deepEqual(calls.conclusions, ["success"]);
+  assert.deepEqual(calls.failures, []);
+});
+
+test("journal-required evaluation rejects a missing journal writer before reporting", async () => {
+  let reported = false;
+
+  await assert.rejects(
+    publishEvaluation({
+      result: { ok: false, state: "converging", message: "one blocker remains" },
+      alreadyRecorded: false,
+      reportCheck: async () => { reported = true; },
+      setFailed: () => {},
+      info: () => {},
+    }),
+    /Evaluation state converging requires a journal writer/,
+  );
+  assert.equal(reported, false, "a journal-required result must not be reported as if publication completed");
 });
 
 test("only named required jobs with positive success converge; forks fail closed", () => {
