@@ -11,14 +11,21 @@ the real checker against temporary fixture roots and assert its process exit sta
 | `test_the_real_repository_passes` | `0` | all checked-in surfaces satisfy the rule |
 | `test_intact_fixtures_pass` | `0` | the fixture baseline is valid |
 | `test_line_wrapping_does_not_matter` | `0` | collapsed prose whitespace makes wrapping harmless |
+| `test_canonical_sentence_cannot_be_synthesized_across_markdown_blocks` | `1` | separate rendered blocks are never flattened into one sentence |
 | `test_an_html_comment_does_not_satisfy_the_check` | `1` | comment metadata is not a policy statement |
 | `test_a_fenced_code_block_does_not_satisfy_the_check` | `1` | fenced examples do not count |
 | `test_a_tilde_fenced_code_block_does_not_satisfy_the_check` | `1` | tilde fences do not count |
 | `test_a_fence_with_three_leading_spaces_does_not_satisfy_the_check` | `1` | up to three spaces may indent a fence |
 | `test_an_indented_code_block_does_not_satisfy_the_check` | `1` | blank-line-delimited four-space code does not count |
 | `test_an_indented_code_block_at_document_start_does_not_satisfy_the_check` | `1` | document-start indentation is code without a preceding blank line |
+| `test_indented_code_after_a_fence_does_not_satisfy_the_check` | `1` | a preceding non-paragraph fence does not turn indentation into prose |
+| `test_margin_prose_after_a_fence_still_satisfies_the_check` | `0` | ordinary prose after a fence remains visible |
+| `test_indented_code_after_a_heading_does_not_satisfy_the_check` | `1` | a preceding heading does not turn indentation into prose |
+| `test_margin_prose_after_a_heading_still_satisfies_the_check` | `0` | ordinary prose after a heading remains visible |
 | `test_a_tab_indented_code_block_does_not_satisfy_the_check` | `1` | tab-indented code does not count |
 | `test_a_fence_inside_one_blockquote_does_not_satisfy_the_check` | `1` | one quoted fence level is recognized |
+| `test_unquoted_line_after_a_blockquote_fence_is_visible_prose` | `0` | ending the quote container also ends its fenced block |
+| `test_lazy_continuation_of_a_blockquote_paragraph_stays_in_one_block` | `0` | genuine lazy paragraph continuation remains reader-visible within one block |
 | `test_a_blockquote_fence_cannot_close_a_margin_fence` | `1` | a closer must match its opener's quote level |
 | `test_a_margin_fence_cannot_close_a_blockquote_fence` | `1` | quote-level matching is symmetric |
 | `test_an_unused_link_reference_definition_does_not_satisfy_the_check` | `1` | a non-rendered single-line definition does not count |

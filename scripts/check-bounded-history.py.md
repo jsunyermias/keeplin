@@ -34,8 +34,10 @@ maintainer; factual corrections to the changelog do not make that enrolment deci
 > after which the shorter authentic prefix may converge with that finding advisory.
 
 After selecting reader-visible text with the declared subset below, the checker collapses
-whitespace so ordinary line wrapping does not alter the contract. Every other character of the
-canonical sentence must be present exactly. A missing or unreadable surface fails closed.
+whitespace within each rendered block so ordinary line wrapping does not alter the contract. It
+never joins separate paragraphs, headings or blockquotes to synthesize the sentence. Every other
+character of the canonical sentence must be present exactly. A missing or unreadable surface
+fails closed.
 
 ## Declared Markdown subset
 
@@ -45,8 +47,11 @@ a second version. It recognizes and ignores:
 
 - backtick and tilde fenced code at the document margin or after one blockquote marker, with up
   to three leading spaces and a closing fence using the same marker at least as long as the
-  opener and appearing at the same blockquote level;
-- code indented by four spaces or one tab at the document start or after a blank line;
+  opener; margin fences close at the margin, while a quoted fence ends when its blockquote ends;
+- code indented by four spaces or one tab whenever no paragraph is open, including at the
+  document start, after a blank line, after a heading and after a fenced block;
+- ATX headings and one-level blockquotes as rendered-block boundaries, while preserving lazy
+  continuation of an ordinary quoted paragraph;
 - HTML comments outside code, including comments spanning lines;
 - same-line backtick code spans, so a literal `<!--` in inline code cannot open a comment;
 - simple single-line link-reference definitions with a nonempty label and destination. Every

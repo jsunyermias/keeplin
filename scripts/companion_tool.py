@@ -22,6 +22,7 @@ SHELL_SHEBANG_RE = re.compile(r"^#![^\r\n]*(?:[/\s])(?:ba|da|k|z)?sh(?:\s|$)")
 CLOSE_FENCE_RE = re.compile(r"^```[ \t]*(?=\r?$)", re.MULTILINE)
 BLOCK_QUOTE_RE = re.compile(r"^ {0,3}>[ \t]?")
 MARKDOWN_FENCE_RE = re.compile(r"^ {0,3}(?P<run>`{3,}|~{3,})(?P<suffix>.*)$")
+ATX_HEADING_RE = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+|$)")
 SIMPLE_REFERENCE_DEFINITION_RE = re.compile(r"^ {0,3}\[[^]\r\n]+\]:[ \t]*\S")
 CONTRACT_ID_RE = re.compile(
     r"^`(?P<id>[a-z0-9]+(?:[._:/-][a-z0-9]+)*)`(?:\s+(?:—|-)\s+.+)?$"
@@ -139,26 +140,37 @@ def reader_visible_markdown(text: str) -> str:
     other than comments, multiline reference definitions and inline-code spans, and inline
     link/image destinations or titles. Content hidden there has no visibility guarantee.
     """
-    prose: list[str] = []
+    blocks: list[str] = []
+    paragraph: list[str] = []
+    paragraph_in_block_quote = False
     fence: tuple[str, bool] | None = None
     indented_code = False
-    previous_blank = True
     in_comment = False
+
+    def flush_paragraph() -> None:
+        nonlocal paragraph, paragraph_in_block_quote
+        if paragraph:
+            blocks.append("\n".join(paragraph))
+        paragraph = []
+        paragraph_in_block_quote = False
+
     for raw_line in text.splitlines():
         line, in_block_quote = _split_one_block_quote(raw_line)
         if fence is not None:
             marker_open, block_quote_open = fence
-            match = MARKDOWN_FENCE_RE.match(line) if in_block_quote == block_quote_open else None
-            if match is not None:
-                marker = match.group("run")
-                if (
-                    marker[0] == marker_open[0]
-                    and len(marker) >= len(marker_open)
-                    and not match.group("suffix").strip()
-                ):
-                    fence = None
-                    previous_blank = False
-            continue
+            if block_quote_open and not in_block_quote:
+                fence = None
+            else:
+                match = MARKDOWN_FENCE_RE.match(line) if in_block_quote == block_quote_open else None
+                if match is not None:
+                    marker = match.group("run")
+                    if (
+                        marker[0] == marker_open[0]
+                        and len(marker) >= len(marker_open)
+                        and not match.group("suffix").strip()
+                    ):
+                        fence = None
+                continue
 
         visible, in_comment = _without_inline_code_and_html_comments(line, in_comment)
         stripped = visible.strip()
@@ -166,8 +178,9 @@ def reader_visible_markdown(text: str) -> str:
             if not stripped or visible.startswith(("    ", "\t")):
                 continue
             indented_code = False
-        if previous_blank and visible.startswith(("    ", "\t")):
-            indented_code = True
+
+        if not stripped:
+            flush_paragraph()
             continue
 
         match = MARKDOWN_FENCE_RE.match(visible)
@@ -175,16 +188,27 @@ def reader_visible_markdown(text: str) -> str:
             marker = match.group("run")
             suffix = match.group("suffix")
             if marker[0] != "`" or "`" not in suffix:
+                flush_paragraph()
                 fence = (marker, in_block_quote)
-                previous_blank = False
                 continue
-        if SIMPLE_REFERENCE_DEFINITION_RE.match(visible):
-            previous_blank = False
+        if ATX_HEADING_RE.match(visible):
+            flush_paragraph()
+            blocks.append(visible)
             continue
+        if SIMPLE_REFERENCE_DEFINITION_RE.match(visible):
+            flush_paragraph()
+            continue
+        if not paragraph and visible.startswith(("    ", "\t")):
+            indented_code = True
+            continue
+        if in_block_quote and paragraph and not paragraph_in_block_quote:
+            flush_paragraph()
 
-        prose.append(visible)
-        previous_blank = not stripped
-    return "\n".join(prose)
+        if not paragraph:
+            paragraph_in_block_quote = in_block_quote
+        paragraph.append(visible)
+    flush_paragraph()
+    return "\n\n".join(blocks)
 
 
 def source_kind(path: Path) -> str | None:

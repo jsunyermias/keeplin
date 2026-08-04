@@ -54,6 +54,11 @@ class BoundedHistoryCheck(unittest.TestCase):
         self.write("AGENTS.md", f"# wrapped\n\n{wrapped}\n")
         self.assertEqual(run(self.root).returncode, 0, run(self.root).stdout)
 
+    def test_canonical_sentence_cannot_be_synthesized_across_markdown_blocks(self):
+        first, second = CANONICAL.split(" reification", 1)
+        self.write("AGENTS.md", f"# agents\n\n{first}\n> reification{second}\n")
+        self.assertEqual(run(self.root).returncode, 1)
+
     def test_an_html_comment_does_not_satisfy_the_check(self):
         self.write("AGENTS.md", f"# agents\n\n<!-- {CANONICAL} -->\n")
         self.assertEqual(run(self.root).returncode, 1)
@@ -78,6 +83,22 @@ class BoundedHistoryCheck(unittest.TestCase):
         self.write("AGENTS.md", f"    {CANONICAL}\n")
         self.assertEqual(run(self.root).returncode, 1)
 
+    def test_indented_code_after_a_fence_does_not_satisfy_the_check(self):
+        self.write("AGENTS.md", f"```text\nexample\n```\n    {CANONICAL}\n")
+        self.assertEqual(run(self.root).returncode, 1)
+
+    def test_margin_prose_after_a_fence_still_satisfies_the_check(self):
+        self.write("AGENTS.md", f"```text\nexample\n```\n{CANONICAL}\n")
+        self.assertEqual(run(self.root).returncode, 0, run(self.root).stdout)
+
+    def test_indented_code_after_a_heading_does_not_satisfy_the_check(self):
+        self.write("AGENTS.md", f"# heading\n    {CANONICAL}\n")
+        self.assertEqual(run(self.root).returncode, 1)
+
+    def test_margin_prose_after_a_heading_still_satisfies_the_check(self):
+        self.write("AGENTS.md", f"# heading\n{CANONICAL}\n")
+        self.assertEqual(run(self.root).returncode, 0, run(self.root).stdout)
+
     def test_a_tab_indented_code_block_does_not_satisfy_the_check(self):
         self.write("AGENTS.md", f"# agents\n\n\t{CANONICAL}\n")
         self.assertEqual(run(self.root).returncode, 1)
@@ -88,6 +109,15 @@ class BoundedHistoryCheck(unittest.TestCase):
             f"# agents\n\n> ```text\n> {CANONICAL}\n> ```\n",
         )
         self.assertEqual(run(self.root).returncode, 1)
+
+    def test_unquoted_line_after_a_blockquote_fence_is_visible_prose(self):
+        self.write("AGENTS.md", f"> ```text\n{CANONICAL}\n")
+        self.assertEqual(run(self.root).returncode, 0, run(self.root).stdout)
+
+    def test_lazy_continuation_of_a_blockquote_paragraph_stays_in_one_block(self):
+        first, second = CANONICAL.split(" reification", 1)
+        self.write("AGENTS.md", f"> {first}\nreification{second}\n")
+        self.assertEqual(run(self.root).returncode, 0, run(self.root).stdout)
 
     def test_a_blockquote_fence_cannot_close_a_margin_fence(self):
         self.write(
