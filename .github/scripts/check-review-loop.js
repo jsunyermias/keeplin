@@ -391,11 +391,14 @@ function journalComment(record, identity, message = "") {
 }
 
 async function publishEvaluation({ result, alreadyRecorded, appendJournal, reportCheck, setFailed, info }) {
-  if (!alreadyRecorded) await appendJournal();
+  const reportOnly = ["history-unverifiable", "fork-refused"].includes(result.state);
+  const appendRequired = !reportOnly && !alreadyRecorded;
+  if (appendRequired && typeof appendJournal !== "function") throw new Error(`Evaluation state ${result.state} requires a journal writer.`);
+  if (appendRequired) await appendJournal();
   await reportCheck(result.ok ? "success" : "failure");
   if (!result.ok) setFailed(result.message);
   else if (alreadyRecorded) info("Journal observation already exists for this workflow run attempt; no duplicate was appended.");
-  return { appended: !alreadyRecorded, conclusion: result.ok ? "success" : "failure" };
+  return { appended: appendRequired, conclusion: result.ok ? "success" : "failure" };
 }
 
 function escapeRegex(value) {
