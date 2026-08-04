@@ -23,7 +23,9 @@ CLOSE_FENCE_RE = re.compile(r"^```[ \t]*(?=\r?$)", re.MULTILINE)
 BLOCK_QUOTE_RE = re.compile(r"^ {0,3}>[ \t]?")
 MARKDOWN_FENCE_RE = re.compile(r"^ {0,3}(?P<run>`{3,}|~{3,})(?P<suffix>.*)$")
 ATX_HEADING_RE = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+|$)")
-SIMPLE_REFERENCE_DEFINITION_RE = re.compile(r"^ {0,3}\[[^]\r\n]+\]:[ \t]*\S")
+SIMPLE_REFERENCE_DEFINITION_RE = re.compile(
+    r'^ {0,3}\[[^]\r\n]+\]:[ \t]*(?:<[^>\s]+>|[^<\s"\'][^\s]*)'
+)
 CONTRACT_ID_RE = re.compile(
     r"^`(?P<id>[a-z0-9]+(?:[._:/-][a-z0-9]+)*)`(?:\s+(?:—|-)\s+.+)?$"
 )
@@ -133,8 +135,9 @@ def reader_visible_markdown(text: str) -> str:
 
     The subset shares the review-debt recognizer's fenced-code and blank-line-delimited
     indented-code state machine. It additionally removes HTML comments, same-line inline
-    code spans and simple single-line link-reference definitions, and recognizes fences
-    after one block-quote marker. It is intentionally not a general CommonMark parser.
+    code spans and simple single-line link-reference definitions with a nonempty label and
+    destination, and recognizes fences after one block-quote marker. It is intentionally not a
+    general CommonMark parser.
 
     Outside the subset are deeper block quotes, list continuation/nested code, raw HTML
     other than comments, multiline reference definitions and inline-code spans, and inline

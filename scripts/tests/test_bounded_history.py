@@ -140,6 +140,20 @@ class BoundedHistoryCheck(unittest.TestCase):
         )
         self.assertEqual(run(self.root).returncode, 1)
 
+    def test_link_reference_definition_with_an_empty_label_remains_visible(self):
+        self.write(
+            "AGENTS.md",
+            f'# agents\n\n[]: https://example.invalid "{CANONICAL}"\n',
+        )
+        self.assertEqual(run(self.root).returncode, 0, run(self.root).stdout)
+
+    def test_link_reference_definition_with_an_empty_destination_remains_visible(self):
+        self.write(
+            "AGENTS.md",
+            f'# agents\n\n[unused]: <> "{CANONICAL}"\n',
+        )
+        self.assertEqual(run(self.root).returncode, 0, run(self.root).stdout)
+
     def test_a_fence_inside_an_html_comment_does_not_hide_later_prose(self):
         self.write(
             "AGENTS.md",
@@ -223,6 +237,11 @@ class BoundedHistoryCheck(unittest.TestCase):
                 result = run(self.root)
                 self.assertEqual(result.returncode, 1)
                 self.assertIn(surface, result.stdout)
+
+    def test_changelog_names_the_real_bounded_history_checker(self):
+        changelog = (REPO / "CHANGELOG.md").read_text()
+        self.assertIn("scripts/check-bounded-history.py", changelog)
+        self.assertNotIn("scripts/check-bounded-history.sh", changelog)
 
     def test_deeper_blockquote_fences_pin_out_of_subset_behavior(self):
         self.write(

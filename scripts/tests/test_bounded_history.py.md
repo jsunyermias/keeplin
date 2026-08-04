@@ -29,6 +29,8 @@ the real checker against temporary fixture roots and assert its process exit sta
 | `test_a_blockquote_fence_cannot_close_a_margin_fence` | `1` | a closer must match its opener's quote level |
 | `test_a_margin_fence_cannot_close_a_blockquote_fence` | `1` | quote-level matching is symmetric |
 | `test_an_unused_link_reference_definition_does_not_satisfy_the_check` | `1` | a non-rendered single-line definition does not count |
+| `test_link_reference_definition_with_an_empty_label_remains_visible` | `0` | the documented nonempty-label qualifier is enforced |
+| `test_link_reference_definition_with_an_empty_destination_remains_visible` | `0` | the documented nonempty-destination qualifier is enforced |
 | `test_a_fence_inside_an_html_comment_does_not_hide_later_prose` | `0` | a comment cannot open a phantom fence |
 | `test_a_multiline_html_comment_does_not_satisfy_the_check` | `1` | hidden comment content does not count |
 | `test_a_longer_closing_fence_exposes_later_prose` | `0` | a closer at least as long as its opener closes the fence |
@@ -42,6 +44,7 @@ the real checker against temporary fixture roots and assert its process exit sta
 | `test_dropping_the_consequence_does_not_satisfy_the_check` | `1` | omitting the cost of truncation fails |
 | `test_a_missing_surface_fails_closed` | `1` | absence is never skipped |
 | `test_every_surface_is_checked_independently` | `1` | no enrolled surface rides on another |
+| `test_changelog_names_the_real_bounded_history_checker` | n/a | documentation names the checked-in `.py` executable and never the nonexistent `.sh` path |
 
 ## Declared-subset boundary tests
 

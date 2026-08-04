@@ -5,11 +5,11 @@ This standard-library checker implements a declared Markdown subset. It recogniz
 and tilde fences at the document margin or inside one blockquote level, including closing
 fences at least as long as their opener; code indented by four spaces or one tab whenever no
 paragraph is open; HTML comments outside code; same-line backtick code spans; ATX headings;
-and simple single-line link-reference definitions. A margin fence closes only at the margin;
-a quoted fence closes at its quote level or ends when the blockquote ends. Rendered block
-boundaries are preserved so the sentence cannot be assembled across separate blocks. The
-fenced and indented state machine is shared with ``scripts/companion_tool.py`` rather than
-duplicated here.
+and simple single-line link-reference definitions with a nonempty label and destination. A
+margin fence closes only at the margin; a quoted fence closes at its quote level or ends when
+the blockquote ends. Rendered block boundaries are preserved so the sentence cannot be assembled
+across separate blocks. The fenced and indented state machine is shared with
+``scripts/companion_tool.py`` rather than duplicated here.
 
 It does not parse blockquotes deeper than one level; list-item continuation indentation or
 code blocks nested in list items; raw inline or block HTML other than ``<!-- -->`` comments;

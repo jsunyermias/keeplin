@@ -38,7 +38,7 @@ version and the wire protocol version move independently.
   unreadable digest-consistent record now fails closed in `verifyJournal`, and the two lists must
   agree. F-028: check 12 required only the substrings `truncat`, `reifi` and `advisory` anywhere
   in each file, which a one-line glossary satisfies with the bounded-history prose deleted. It is
-  now a verbatim canonical sentence enforced by `scripts/check-bounded-history.sh`, whose own
+  now a verbatim canonical sentence enforced by `scripts/check-bounded-history.py`, whose own
   ability to fail is tested by `scripts/tests/test_bounded_history.py`. F-029: a missing surface
   was skipped rather than failing. F-030 and F-031 bound two overclaims — branch protection is
   not verified by anything here, and ADR 0009 moves the governance *rules* out of the head's
