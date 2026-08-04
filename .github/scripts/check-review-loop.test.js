@@ -518,6 +518,31 @@ test("raw_comment_terminator_inside_journal_json_still_fails_closed", () => {
   assert.match(result.message, /malformed marker or JSON/i);
 });
 
+test("pre_fix_raw_comment_terminator_recovery_is_terminal_only_and_documented", () => {
+  const scriptReadme = fs.readFileSync(".github/scripts/README.md", "utf8");
+  const workflowCompanion = fs.readFileSync(".github/workflows/review-loop-evaluator.yml.md", "utf8");
+  const stalls = fs.readFileSync("docs/review-stalls.md", "utf8");
+
+  for (const claim of [scriptReadme, workflowCompanion]) {
+    assert.match(claim, /records written after this\s+change/i);
+    assert.match(claim, /record written before this\s+change.*fails closed/is);
+  }
+  assert.match(stalls, /malformed record must be\s+terminal/i);
+  assert.match(stalls, /authentic verifying prefix/i);
+  assert.match(stalls, /re-recorded/i);
+});
+
+test("nonterminal_raw_comment_terminator_has_no_deletion_recovery", () => {
+  const finding = { id: "F-908", reified: true, state: "open", resolution: "literal --> remains journal data" };
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "bbb", stateHash: "one", blocking: 1, findingIds: [finding.id], findings: [finding] });
+  const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "ccc", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: [finding.id], findings: [finding] });
+  const unsafe = { id: 1, app_slug: TRUST.appSlug, app_id: TRUST.appId, body: `${JOURNAL_MARKER}${JSON.stringify(first)} -->` };
+  const successor = { ...journalComment(second, TRUST), id: 2 };
+
+  assert.equal(trusted({ journalComments: [unsafe, successor], findings: [finding] }).state, "history-unverifiable");
+  assert.equal(trusted({ journalComments: [successor], findings: [finding] }).state, "history-unverifiable");
+});
+
 test("limitation_F002_terminal_truncation_undetected", () => {
   const extendedJournal = journalFixture();
   const genuinelyTwoRecordJournal = journalFixture(2);
@@ -750,6 +775,52 @@ test("fresh_directive_after_intervening_non_open_disposition_is_accepted", () =>
   assert.equal(result.projectedFindings[0].state, "dismissed");
 });
 
+test("recorded_stale_return_after_intervening_disposition_is_rejected", () => {
+  const staleBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-911", state: "dismissed", reason: "original priority decision" })} -->`;
+  const staleEvidence = { referenceId: 915, author: "maintainer", bodyDigest: sha256(staleBody) };
+  const dismissed = { id: "F-911", reified: true, state: "dismissed", evidence: staleEvidence };
+  const resolved = { id: "F-911", reified: true, state: "resolved", evidence: { referenceId: 916, author: "maintainer", bodyDigest: "recorded-resolution" } };
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: [dismissed.id], findings: [dismissed] });
+  const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 0, priorDigest: first.digest, findingIds: [resolved.id], findings: [resolved] });
+  const third = makeJournalRecord({ ...TRUST, observation: 3, headSha: "ccc", stateHash: "three", blocking: 0, priorDigest: second.digest, findingIds: [dismissed.id], findings: [dismissed] });
+  const reference = { id: 915, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", created_at: "2026-08-03T00:00:00Z", body: staleBody };
+  const result = trusted({
+    journalComments: [
+      { ...journalComment(first, TRUST), created_at: "2026-08-03T00:01:00Z" },
+      { ...journalComment(second, TRUST), created_at: "2026-08-03T00:02:00Z" },
+      { ...journalComment(third, TRUST), created_at: "2026-08-03T00:03:00Z" },
+    ],
+    findings: [dismissed], references: [reference],
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.projectedFindings[0].state, "open");
+  assert.match(result.projectedFindings[0].disposalError, /disposition changed/i);
+});
+
+test("recorded_fresh_return_after_intervening_disposition_is_accepted", () => {
+  const originalBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-912", state: "dismissed", reason: "original priority decision" })} -->`;
+  const resolved = { id: "F-912", reified: true, state: "resolved", evidence: { referenceId: 918, author: "maintainer", bodyDigest: "recorded-resolution" } };
+  const freshBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-912", state: "dismissed", reason: "renewed priority decision" })} -->`;
+  const freshEvidence = { referenceId: 919, author: "maintainer", bodyDigest: sha256(freshBody) };
+  const returned = { id: "F-912", reified: true, state: "dismissed", evidence: freshEvidence };
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: [returned.id], findings: [{ ...returned, evidence: { referenceId: 917, author: "maintainer", bodyDigest: sha256(originalBody) } }] });
+  const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 0, priorDigest: first.digest, findingIds: [resolved.id], findings: [resolved] });
+  const third = makeJournalRecord({ ...TRUST, observation: 3, headSha: "ccc", stateHash: "three", blocking: 0, priorDigest: second.digest, findingIds: [returned.id], findings: [returned] });
+  const reference = { id: 919, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", created_at: "2026-08-03T00:02:30Z", body: freshBody };
+  const result = trusted({
+    journalComments: [
+      { ...journalComment(first, TRUST), created_at: "2026-08-03T00:01:00Z" },
+      { ...journalComment(second, TRUST), created_at: "2026-08-03T00:02:00Z" },
+      { ...journalComment(third, TRUST), created_at: "2026-08-03T00:03:00Z" },
+    ],
+    findings: [returned], references: [reference],
+  });
+
+  assert.equal(result.ok, true, result.message);
+  assert.equal(result.projectedFindings[0].state, "dismissed");
+});
+
 test("fresh_directive_after_reopening_survives_later_open_observations", () => {
   const dismissed = { id: "F-910", reified: true, state: "dismissed", evidence: { referenceId: 912, author: "maintainer", bodyDigest: "recorded-dismissal" } };
   const open = { id: "F-910", reified: true, state: "open" };
@@ -772,7 +843,7 @@ test("fresh_directive_after_reopening_survives_later_open_observations", () => {
   assert.equal(result.projectedFindings[0].state, "dismissed");
 });
 
-test("stale_directive_before_reopening_remains_stale_after_later_open_observations", () => {
+test("directive_before_first_reopening_remains_stale_after_later_open_observations", () => {
   const dismissed = { id: "F-910", reified: true, state: "dismissed", evidence: { referenceId: 912, author: "maintainer", bodyDigest: "recorded-dismissal" } };
   const open = { id: "F-910", reified: true, state: "open" };
   const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: [dismissed.id], findings: [dismissed] });
@@ -848,6 +919,62 @@ test("resolved evidence is bound to current head, named job, workflow and App", 
   for (const mutation of [{ head_sha: "old" }, { workflow_id: 99 }, { workflow_run_id: 66 }, { app_id: 1 }, { conclusion: "neutral" }]) {
     assert.equal(trusted({ findings: [finding], references: [reference], checks: [{ ...check, ...mutation }] }).projectedFindings[0].state, "open");
   }
+});
+
+test("unchanged_resolved_disposition_uses_current_run_resolution_proof", () => {
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-913", state: "resolved", reason: "test passes" })} -->`;
+  const authorization = { referenceId: 920, author: "maintainer", bodyDigest: sha256(body) };
+  const recorded = { id: "F-913", reified: true, state: "resolved", evidence: { ...authorization, checkRunId: 7, checkName: "Check, Test & Lint" } };
+  const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "ccc", stateHash: "one", blocking: 0, findingIds: [recorded.id], findings: [recorded] });
+  const current = { ...recorded, evidence: { ...authorization, checkRunId: 8, checkName: "Check, Test & Lint" } };
+  const reference = { id: 920, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
+  const priorCheck = { id: 7, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
+  const currentCheck = { ...priorCheck, id: 8, workflow_run_id: 78 };
+  const result = trusted({
+    journalComments: [journalComment(record, TRUST)], findings: [current], references: [reference],
+    checks: [priorCheck, currentCheck], config: { ...TRUST, runId: 78 },
+  });
+
+  assert.equal(result.ok, true, result.message);
+  assert.equal(result.projectedFindings[0].state, "resolved");
+  assert.equal(result.projectedFindings[0].evidence.checkRunId, 8);
+});
+
+test("unchanged_resolved_disposition_keeps_recorded_authorization_with_current_proof", () => {
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-915", state: "resolved", reason: "test passes" })} -->`;
+  const authorization = { referenceId: 922, author: "maintainer", bodyDigest: sha256(body) };
+  const recorded = { id: "F-915", reified: true, state: "resolved", evidence: { ...authorization, checkRunId: 11, checkName: "Check, Test & Lint" } };
+  const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "ccc", stateHash: "one", blocking: 0, findingIds: [recorded.id], findings: [recorded] });
+  const current = { ...recorded, evidence: { referenceId: 999, author: "replacement", bodyDigest: "replacement", checkRunId: 12, checkName: "Check, Test & Lint" } };
+  const reference = { id: 922, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
+  const priorCheck = { id: 11, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
+  const currentCheck = { ...priorCheck, id: 12, workflow_run_id: 78 };
+  const result = trusted({
+    journalComments: [journalComment(record, TRUST)], findings: [current], references: [reference],
+    checks: [priorCheck, currentCheck], config: { ...TRUST, runId: 78 },
+  });
+
+  assert.equal(result.ok, true, result.message);
+  assert.deepEqual(result.projectedFindings[0].evidence, { ...authorization, checkRunId: 12, checkName: "Check, Test & Lint" });
+});
+
+test("unchanged_resolved_disposition_rejects_current_failed_resolution_proof", () => {
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-914", state: "resolved", reason: "test passes" })} -->`;
+  const authorization = { referenceId: 921, author: "maintainer", bodyDigest: sha256(body) };
+  const recorded = { id: "F-914", reified: true, state: "resolved", evidence: { ...authorization, checkRunId: 9, checkName: "Check, Test & Lint" } };
+  const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "ccc", stateHash: "one", blocking: 0, findingIds: [recorded.id], findings: [recorded] });
+  const current = { ...recorded, evidence: { ...authorization, checkRunId: 10, checkName: "Check, Test & Lint" } };
+  const reference = { id: 921, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
+  const priorCheck = { id: 9, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
+  const failedCurrentCheck = { ...priorCheck, id: 10, conclusion: "failure" };
+  const result = trusted({
+    journalComments: [journalComment(record, TRUST)], findings: [current], references: [reference],
+    checks: [priorCheck, failedCurrentCheck],
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.projectedFindings[0].state, "open");
+  assert.match(result.projectedFindings[0].disposalError, /required successful job/i);
 });
 
 test("trusted_adapter_rejects_triggering_or_check_workflow_id_not_equal_to_configured_ci_workflow_id", () => {

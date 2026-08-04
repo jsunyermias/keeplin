@@ -72,10 +72,16 @@ the recorded identity, author and body digest rather than an author-editable rep
 current ledger. After any intervening disposition, a later change requires a directive whose API
 creation/submission time is after the first journal observation of the intervening disposition;
 unchanged observations in that same disposition do not move the freshness boundary.
+For an unchanged `resolved` disposition, only the authorization reference ID, author and body
+digest remain pinned to the journal. Its check-run ID and name come from the current ledger and
+must prove the resolution again against the current evaluator run.
 Every marked payload in an authorization comment is parsed before any matching directive is
 accepted. Journal serialization escapes HTML comment delimiters inside record fields without
 changing their decoded values, and marker text in the human-readable message is neutralized
-before the App persists the comment.
+before the App persists the comment. This closes the wedge for records written after this change.
+A record written before this change that already contains a raw `-->` in its serialized JSON
+still fails closed; the terminal-record recovery procedure is in
+[`docs/review-stalls.md`](../../docs/review-stalls.md#recovering-a-terminal-malformed-journal-record).
 
 The App comment journal's guarantees are bounded: its unkeyed digest chain detects accidental
 corruption and casual editing that does not rebuild the chain. It does not authenticate records

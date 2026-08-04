@@ -144,24 +144,29 @@ function verifyJournal(comments, config) {
 }
 
 function recordedDispositionContext(records, findingId, targetState) {
-  let latestState;
-  let changedAt = null;
-  for (let index = records.length - 1; index >= 0; index -= 1) {
+  const observations = [];
+  for (let index = 0; index < records.length; index += 1) {
     const findings = records[index].findings;
     if (!Array.isArray(findings)) continue;
     const finding = findings.find((item) => item && item.id === findingId);
     if (!finding) continue;
-    if (latestState === undefined) {
-      latestState = finding.state;
-    }
-    if (latestState === targetState) {
-      const evidence = finding.evidence && typeof finding.evidence === "object" && !Array.isArray(finding.evidence) ? finding.evidence : {};
-      return { evidence, changedAt: null };
-    }
-    if (finding.state !== latestState) break;
-    changedAt = records[index].commentCreatedAt;
+    observations.push({ finding, changedAt: records[index].commentCreatedAt });
   }
-  return { evidence: undefined, changedAt };
+  if (observations.length === 0) return { evidence: undefined, changedAt: null };
+  const latest = observations[observations.length - 1];
+  const evidence = latest.finding.state === targetState
+    ? latest.finding.evidence && typeof latest.finding.evidence === "object" && !Array.isArray(latest.finding.evidence) ? latest.finding.evidence : {}
+    : undefined;
+  let runStart = observations.length - 1;
+  while (runStart > 0 && observations[runStart - 1].finding.state === latest.finding.state) runStart -= 1;
+  if (latest.finding.state !== targetState) return { evidence, changedAt: observations[runStart].changedAt };
+  if (runStart === 0) return { evidence, changedAt: null };
+  const interveningState = observations[runStart - 1].finding.state;
+  let interveningStart = runStart - 1;
+  while (interveningStart > 0 && observations[interveningStart - 1].finding.state === interveningState) {
+    interveningStart -= 1;
+  }
+  return { evidence, changedAt: observations[interveningStart].changedAt };
 }
 
 function referenceIssuedAt(reference) {
@@ -219,9 +224,15 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
     const declassified = everReified.has(finding.id) && (!finding.reified || finding.state === ADVISORY);
     if (!["resolved", "dismissed"].includes(finding.state) && !declassified) return finding;
     const disposition = recordedDispositionContext(journal.records, finding.id, finding.state);
-    const evidence = disposition.evidence === undefined ? finding.evidence || {} : disposition.evidence;
-    const reference = references.find((item) => String(item.id) === String(evidence.referenceId));
-    const authorization = verifyAuthorization({ finding, reference, pullAuthor: pull.author, targetState: finding.state, repositoryId: config.repositoryId, pullNumber: pull.number, evidence });
+    const currentEvidence = finding.evidence && typeof finding.evidence === "object" && !Array.isArray(finding.evidence) ? finding.evidence : {};
+    const recordedAuthorization = disposition.evidence === undefined ? currentEvidence : disposition.evidence;
+    const authorizationEvidence = {
+      referenceId: recordedAuthorization.referenceId,
+      author: recordedAuthorization.author,
+      bodyDigest: recordedAuthorization.bodyDigest,
+    };
+    const reference = references.find((item) => String(item.id) === String(authorizationEvidence.referenceId));
+    const authorization = verifyAuthorization({ finding, reference, pullAuthor: pull.author, targetState: finding.state, repositoryId: config.repositoryId, pullNumber: pull.number, evidence: authorizationEvidence });
     if (!authorization.ok) return { ...finding, reified: true, state: "open", disposalError: authorization.reason };
     if (disposition.changedAt !== null) {
       const changedAt = Date.parse(disposition.changedAt || "");
@@ -229,10 +240,10 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
       if (!Number.isFinite(changedAt) || issuedAt === null || issuedAt <= changedAt) return { ...finding, reified: true, state: "open", disposalError: "authorization was not issued after the finding was reopened or its disposition changed" };
     }
     if (finding.state === "resolved") {
-      const proof = verifyResolvedCheck({ finding: { ...finding, evidence }, checks, headSha: pull.headSha, config });
+      const proof = verifyResolvedCheck({ finding: { ...finding, evidence: currentEvidence }, checks, headSha: pull.headSha, config });
       if (!proof.ok) return { ...finding, state: "open", disposalError: proof.reason };
     }
-    return finding;
+    return { ...finding, evidence: { ...currentEvidence, ...authorizationEvidence } };
   });
   const open = projected.filter((finding) => finding.reified && finding.state === "open");
   const blockingNames = [...open.map((finding) => finding.id), ...requiredFailures].sort();

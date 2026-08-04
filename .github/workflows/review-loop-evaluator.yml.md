@@ -30,7 +30,13 @@ marker also fails explicitly; absence alone retains the empty-metadata default.
 The evaluator's journal helper escapes HTML comment delimiters inside serialized record fields
 without changing their decoded values and neutralizes marker text in the appended human-readable
 message, so pull-request data cannot terminate the payload comment or create a second parseable
-marker inside the persisted App comment.
+marker inside the persisted App comment. This closes the wedge for records written after this
+change. A record written before this change that already contains a raw `-->` in its serialized
+JSON still fails closed; operators must use the terminal-record recovery procedure in
+[`docs/review-stalls.md`](../../docs/review-stalls.md#recovering-a-terminal-malformed-journal-record).
+For an unchanged `resolved` disposition, the recorded authorization reference ID, author and body
+digest remain pinned while the check-run ID and name are read from the current ledger and proved
+again against the current evaluator run.
 
 The job alone receives `issues: write` and `checks: write`, used to append one digest-chained
 journal comment and create the current result check. Contents, actions and pull-request access

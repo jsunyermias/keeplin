@@ -58,6 +58,28 @@ it can erase the record that established reification, after which the shorter au
 may converge with that finding advisory. This dismissed F-002 limitation remains tracked by
 [`docs/review-loop-spike.md`](review-loop-spike.md).
 
+## Recovering a terminal malformed journal record
+
+Journal serialization prevents records written after the delimiter-escaping fix from persisting
+a raw `-->` inside their JSON. A malformed record written before that change still fails closed;
+the fix is forward-only and does not rewrite existing issue comments.
+
+The malformed record must be terminal. It must be the newest review-loop journal comment and no
+surviving descendant may name its digest. Before deleting it, pass every earlier configured-App
+journal comment, excluding only the candidate, through the default-branch evaluator's
+`verifyJournal` with the repository's exact configured identity. It must return `ok`, and the
+last observation must be exactly one less than the malformed terminal
+record claimed. That result establishes the remaining comments as an authentic verifying prefix
+within the journal's bounded, unkeyed threat model.
+
+After that verification, delete only the terminal malformed comment and rerun the affected CI
+evaluation. The evaluator derives the round again from the current pull request, checks and
+authorizations, and the round is then re-recorded as the next observation. If the malformed
+record is not terminal, the remaining prefix does not verify, or the claimed observation cannot
+be established, do not delete anything: restore the missing evidence or escalate to the
+maintainer. Deleting a non-terminal record leaves a surviving descendant whose predecessor link
+cannot verify and does not recover the pull request.
+
 ## How an entry is cleared
 
 A stall is the maintainer's to resolve, and there are exactly three exits:
