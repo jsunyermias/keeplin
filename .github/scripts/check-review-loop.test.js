@@ -38,6 +38,8 @@ const PULL_NUMBER = 200;
 const DIFF = diffSignatureFromFiles([
   { filename: "keeplin-core/src/format.rs", status: "modified", sha: "aaaa111" },
 ]);
+const FAILED_DISPOSITION_REFUSAL_ANCHOR =
+  "Failed-disposition refusal anchor: stop recovery and escalate to the maintainer.";
 
 function ledger(findingRows, roundRows, extra = "") {
   return `## Review ledger
@@ -68,6 +70,23 @@ function failedDispositionRefusal(markdown) {
     /terminal-malformed legacy record from\s+a failed disposition/i,
     "the failed-disposition refusal",
   );
+}
+
+function failedDispositionRefusalWithExactAnchor(markdown) {
+  const refusal = failedDispositionRefusal(markdown);
+  const anchoredRefusal = `${refusal}\n\n${FAILED_DISPOSITION_REFUSAL_ANCHOR}\n\n`;
+  const refusalOffset = markdown.indexOf(refusal);
+  const exactAnchorLines = markdown
+    .split("\n")
+    .filter((line) => line === FAILED_DISPOSITION_REFUSAL_ANCHOR);
+
+  assert.equal(exactAnchorLines.length, 1, "the refusal anchor must occur once as an exact standalone line");
+  assert.equal(
+    markdown.slice(refusalOffset, refusalOffset + anchoredRefusal.length),
+    anchoredRefusal,
+    "the exact standalone refusal anchor must immediately follow the failed-disposition refusal paragraph",
+  );
+  return refusal;
 }
 
 function round(number, openReifiedIds, redChecks, blocking) {
@@ -863,7 +882,7 @@ test("terminal_malformed_recovery_documentation_is_executable_and_identifies_con
   assert.match(deletionGate, /exit(?:s| status).*zero/is);
 });
 
-test("terminal_malformed_recovery_documentation_pins_raw_snapshot_and_legacy_escalation", () => {
+test("terminal_malformed_recovery_documentation_pins_raw_snapshot_and_exact_failed_disposition_refusal_anchor", () => {
   const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
   const stalls = fs.readFileSync(path.join(repositoryRoot, "docs/review-stalls.md"), "utf8");
   const snapshot = paragraphContaining(
@@ -871,7 +890,7 @@ test("terminal_malformed_recovery_documentation_pins_raw_snapshot_and_legacy_esc
     /Before deletion,\s+restore the pull request's current review ledger/i,
     "the pre-deletion snapshot source",
   );
-  const refusal = failedDispositionRefusal(stalls);
+  const refusal = failedDispositionRefusalWithExactAnchor(stalls);
   const deletionGate = paragraphContaining(
     stalls,
     /Do not delete anything unless the verifier exits zero/i,
@@ -882,13 +901,12 @@ test("terminal_malformed_recovery_documentation_pins_raw_snapshot_and_legacy_esc
   assert.match(refusal, /legacy candidate without `ledgerFindings`.*projected values/is);
   assert.match(refusal, /failed disposition is not recoverable.*verifier must\s+refuse it/is);
   assert.match(refusal, /Do not keep rewriting or refetching the ledger.*escalate.*maintainer/is);
-  assert.doesNotMatch(refusal, /(?<!not )(?<!never )\b(?:keep|continue) (?:rewriting|restoring|refetching)/i);
   assert.match(deletionGate, /zero exit.*current ledger.*identified by `findingsSource`/is);
   assert.doesNotMatch(stalls, /reified`, which is derived deterministically from\s+`reifiedBy`/i);
   assert.doesNotMatch(stalls, /preserves every candidate\s+finding exactly/i);
 });
 
-test("legacy_recovery_documentation_matches_fallback_output_and_parser", () => {
+test("legacy_recovery_documentation_matches_fallback_output_and_pins_exact_refusal_anchor", () => {
   const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
   const stalls = fs.readFileSync(path.join(repositoryRoot, "docs/review-stalls.md"), "utf8");
   const scriptReadme = fs.readFileSync(path.join(repositoryRoot, ".github/scripts/README.md"), "utf8");
@@ -899,11 +917,10 @@ test("legacy_recovery_documentation_matches_fallback_output_and_parser", () => {
   assert.match(replay.error, /open but names no failing check/i);
   assert.equal(recovery.ok, false, "the documented Markdown replay cannot reproduce the legacy projection");
   for (const runbook of [stalls, scriptReadme]) {
-    const refusal = failedDispositionRefusal(runbook);
+    const refusal = failedDispositionRefusalWithExactAnchor(runbook);
     assert.match(refusal, /failed disposition is not recoverable by this procedure/is);
     assert.match(refusal, /legacy (?:candidate.*projected values|evaluator\s+projection)/is);
     assert.match(refusal, /escalate.*maintainer|maintainer escalation/is);
-    assert.doesNotMatch(refusal, /(?<!not )(?<!never )\b(?:keep|continue) (?:rewriting|restoring|refetching)/i);
   }
 });
 

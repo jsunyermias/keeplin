@@ -90,6 +90,11 @@ refuse it. Do not keep rewriting or refetching the ledger; leave the comment in 
 the permanently unreachable recovery candidate to the maintainer. No non-whitespace content may
 follow the recovered frame.
 
+Failed-disposition refusal anchor: stop recovery and escalate to the maintainer.
+
+That exact standalone line is the entire mechanically checked refusal contract. The documentation
+test does not and cannot prove that the surrounding prose is free of contradictory retry advice.
+
 The downloaded comment array must be chronological by both `created_at` and comment ID. When the
 API provides nested `performed_via_github_app` attribution, it is authoritative; a conflicting
 top-level `app_slug` or `app_id` is refused. These checks harden the operator gate's input

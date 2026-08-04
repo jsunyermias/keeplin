@@ -102,7 +102,14 @@ than a raw snapshot. A parser-reachable legacy projection may be replayed direct
 terminal-malformed legacy record from a failed disposition is not recoverable by this procedure:
 its non-reifying `reifiedBy` cannot parse back to the projected `reified: true` / `state: open`
 combination. The verifier refuses it without attempting an inverse mapping; leave the comment in
-place and escalate to the maintainer. For records with `ledgerFindings`, the command labels
+place and escalate to the maintainer.
+
+Failed-disposition refusal anchor: stop recovery and escalate to the maintainer.
+
+That exact standalone line is the entire mechanically checked refusal contract. The documentation
+test does not and cannot prove that the surrounding prose is free of contradictory retry advice.
+
+For records with `ledgerFindings`, the command labels
 `findings` as `raw pre-projection ledger snapshot`. The candidate frame must have no non-whitespace
 suffix. Recovery input must be chronological by `created_at` and comment ID. The API's nested
 `performed_via_github_app` attribution is authoritative when present, and conflicting top-level
