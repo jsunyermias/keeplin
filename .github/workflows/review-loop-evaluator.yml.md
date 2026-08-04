@@ -59,14 +59,18 @@ For an unchanged `resolved` disposition, the recorded authorization reference ID
 digest remain pinned while the check-run ID and name are read from the current ledger and proved
 again against the current evaluator run.
 
-The job alone receives `issues: write` and `checks: write`, used to append one digest-chained
-journal comment and create the current result check. Contents, actions and pull-request access
-are read-only. `publishEvaluation` owns the journal eligibility decision: `history-unverifiable`
-and `fork-refused` append no journal comment because their history cannot be trusted, but each
-still creates a failing `Review loop converged` check whose summary is the evaluator's actual
-reason before failing the workflow. Every other result must journal unless that workflow run
-attempt is already recorded. Forks deliberately fail closed because the policy refuses partial
-evidence.
+The job alone receives the exact permission set declared by the workflow. `actions: read` lists
+the triggering run's jobs and verifies workflow-run identities. `checks: write` reads check-run
+evidence and creates the current result check. `contents: read` fetches the evaluator from the
+default branch and the candidate stall record from the pull-request head. `issues: write`
+authorizes the issue-comment API used for the digest-chained journal, while
+`pull-requests: write` is also required because that API call targets a pull request; the latter
+also covers reading pull-request metadata, files and reviews. No other permission is granted.
+`publishEvaluation` owns the journal eligibility decision: `history-unverifiable` and
+`fork-refused` append no journal comment because their history cannot be trusted, but each still
+creates a failing `Review loop converged` check whose summary is the evaluator's actual reason
+before failing the workflow. Every other result must journal unless that workflow run attempt is
+already recorded. Forks deliberately fail closed because the policy refuses partial evidence.
 
 Workflow concurrency is grouped by pull-request number with cancellation disabled and
 `queue: max`, so delivered runs for one pull request cannot append sibling observations from the
