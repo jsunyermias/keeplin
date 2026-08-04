@@ -51,8 +51,10 @@ synthetic open, reified `GENESIS` blocker to the evaluation and loop-state hash.
 journaling continue with their real state; only convergence is withheld. Once the existing
 verified-authorization path accepts the genesis directive, the next record carries `false` and
 the blocker closes. Legacy records without the field retain their existing authorized-anchor
-interpretation. `GENESIS` stays outside `findingIds`, `findings`, and `ledgerFindings`, whose
-strict `F-\d{3,}` and tri-surface consistency contracts are unchanged.
+interpretation: omission is read as authenticated. That is correct for genuine legacy records;
+the only guard against a forged omission is the App-identity digest boundary whose limitation ADR
+0011 already concedes. `GENESIS` stays outside `findingIds`, `findings`, and `ledgerFindings`,
+whose strict `F-\d{3,}` and tri-surface consistency contracts are unchanged.
 For an unchanged `resolved` disposition, the recorded authorization reference ID, author and body
 digest remain pinned while the check-run ID and name are read from the current ledger and proved
 again against the current evaluator run.

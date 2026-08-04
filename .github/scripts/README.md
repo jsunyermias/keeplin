@@ -124,9 +124,10 @@ For records with `ledgerFindings`, the command labels
 `findings` as `raw pre-projection ledger snapshot`. The candidate frame must have no non-whitespace
 suffix. Recovery input must be chronological by `created_at` and comment ID. The API's nested
 `performed_via_github_app` attribution is authoritative when present, and conflicting top-level
-attribution is refused. The command also reports the candidate's `unauthenticatedAnchor` value;
-the verifier accepts either boolean value as digest-bound historical state and refuses a present
-non-boolean value before comparing ledger findings.
+attribution is refused. The command always reports the candidate's `unauthenticatedAnchor` value;
+it emits `null` for a legacy candidate that omits the field. The verifier accepts either boolean
+value as digest-bound historical state and refuses a present non-boolean value before comparing
+ledger findings.
 
 The App comment journal's guarantees are bounded: its unkeyed digest chain detects accidental
 corruption and casual editing that does not rebuild the chain. It does not authenticate records

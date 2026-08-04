@@ -145,9 +145,10 @@ response supplies the current ledger, and the paginated issue-comment API suppli
 comment history. The command's `findingsSource` labels `findings` as either the candidate's
 `raw pre-projection ledger snapshot` (records with `ledgerFindings`) or its `legacy evaluator
 projection` (records without it); `projectedFindings` is the evaluator output kept separately for
-diagnosis, and `unauthenticatedAnchor` reports whether the recovered record's genesis anchor was
-still unauthenticated. The flag is digest-bound historical state, not a Markdown ledger field, so
-it is preserved in recovery output but excluded from the `ledgerFindings` semantic comparison.
+diagnosis. The command always reports the candidate's `unauthenticatedAnchor` value and emits
+`null` for a legacy candidate that omits the field. The flag is digest-bound historical state, not
+a Markdown ledger field, so it is preserved in recovery output but excluded from the
+`ledgerFindings` semantic comparison.
 For a raw snapshot, if the command reports that the ledger is not semantically
 identical, restore every raw finding from `findings` in the pull-request ledger and fetch
 `pull.json` again. A failed-disposition legacy projection is the permanently unreachable case

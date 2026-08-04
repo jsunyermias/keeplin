@@ -671,6 +671,30 @@ test("ledgerFindings mutation is rejected by the journal digest while the intact
   assert.match(tamperedResult.message, /content does not match its carried digest/i);
 });
 
+test("unauthenticatedAnchor is digest-bound in both boolean directions", () => {
+  for (const [recorded, tampered] of [[true, false], [false, true]]) {
+    const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "ccc", stateHash: "one", blocking: recorded ? 1 : 0, unauthenticatedAnchor: recorded, findingIds: [], findings: [], ledgerFindings: [] });
+    const intactComment = journalComment(record, TRUST);
+    const tamperedComment = {
+      ...intactComment,
+      body: intactComment.body.replace(
+        `"unauthenticatedAnchor":${recorded}`,
+        `"unauthenticatedAnchor":${tampered}`,
+      ),
+    };
+
+    assert.notEqual(tamperedComment.body, intactComment.body, "the fixture must flip the serialized flag");
+    const rejected = trusted({ journalComments: [tamperedComment] });
+    assert.equal(rejected.state, "history-unverifiable");
+    assert.match(rejected.message, /content does not match its carried digest/i);
+
+    const subsequent = trusted({ journalComments: [intactComment] });
+    assert.equal(subsequent.unauthenticatedAnchor, recorded);
+    assert.equal(subsequent.state, recorded ? "converging" : "converged");
+    assert.equal(subsequent.syntheticFindings.some((finding) => finding.id === "GENESIS"), recorded);
+  }
+});
+
 test("middle-deleted journal record is history-unverifiable", () => {
   const comments = journalFixture();
   comments.splice(1, 1);
@@ -738,6 +762,13 @@ test("pre_fix_raw_comment_terminator_recovery_is_terminal_only_and_documented", 
   assert.match(stalls, /malformed record must be\s+terminal/i);
   assert.match(stalls, /authentic verifying prefix/i);
   assert.match(stalls, /re-recorded/i);
+  const legacyAnchorClaim = paragraphContaining(
+    workflowCompanion,
+    /Legacy records without the field/i,
+    "the absent unauthenticated-anchor interpretation",
+  );
+  assert.match(legacyAnchorClaim, /omission is read as authenticated/i);
+  assert.match(legacyAnchorClaim, /App-identity digest boundary.*ADR\s+0011/is);
 });
 
 test("terminal_malformed_recovery_preserves_candidate_findings", () => {
@@ -1073,6 +1104,16 @@ test("recovery_command_labels_raw_and_legacy_findings_sources", (context) => {
   assert.deepEqual(legacyOutput.projectedFindings, [projectedFinding]);
   assert.deepEqual(rawOutput.projectedFindings, [projectedFinding]);
   assert.notDeepEqual(rawOutput.findings, rawOutput.projectedFindings);
+  assert.equal(legacyOutput.unauthenticatedAnchor, null);
+  for (const runbookPath of [".github/scripts/README.md", "docs/review-stalls.md"]) {
+    const runbook = fs.readFileSync(runbookPath, "utf8");
+    const outputClaim = paragraphContaining(
+      runbook,
+      /reports the candidate's `unauthenticatedAnchor`/i,
+      `${runbookPath} recovery output contract`,
+    );
+    assert.match(outputClaim, /null.*legacy candidate/is);
+  }
 });
 
 test("recovery_command_prefers_nested_app_attribution_and_rejects_conflicting_top_level_values", (context) => {
@@ -1917,6 +1958,53 @@ test("a later verified genesis authorization authenticates an existing unauthent
   assert.equal(result.state, "converged");
   assert.equal(result.unauthenticatedAnchor, false);
   assert.deepEqual(result.syntheticFindings, []);
+});
+
+function stagnantUnauthenticatedJournal() {
+  const records = [];
+  let priorDigest = null;
+  for (let observation = 1; observation <= DEFAULT_STAGNATION_LIMIT; observation += 1) {
+    const record = makeJournalRecord({
+      ...TRUST,
+      observation,
+      headSha: `head-${observation}`,
+      stateHash: `progress-free-${observation}`,
+      blocking: 1,
+      priorDigest,
+      unauthenticatedAnchor: true,
+      findingIds: [],
+      findings: [],
+      ledgerFindings: [],
+    });
+    records.push(journalComment(record, TRUST));
+    priorDigest = record.digest;
+  }
+  return records;
+}
+
+test("a stalled unauthenticated chain accepts a stall record naming GENESIS", () => {
+  const result = trusted({
+    journalComments: stagnantUnauthenticatedJournal(),
+    changedFiles: [STALLS_PATH],
+    stallsContent: `## Open\n\n| Detected | Pull request | Stuck on |\n|---|---|---|\n| 2026-08-04 | ${REPOSITORY}#${PULL_NUMBER} | GENESIS |\n`,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.state, "converging", result.message);
+  assert.equal(result.unauthenticatedAnchor, true);
+  assert.deepEqual(result.syntheticFindings.map((finding) => finding.id), ["GENESIS"]);
+});
+
+test("a stalled unauthenticated chain rejects a stall record omitting GENESIS", () => {
+  const result = trusted({
+    journalComments: stagnantUnauthenticatedJournal(),
+    changedFiles: [STALLS_PATH],
+    stallsContent: `## Open\n\n| Detected | Pull request | Stuck on |\n|---|---|---|\n| 2026-08-04 | ${REPOSITORY}#${PULL_NUMBER} | F-001 |\n`,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.state, "escalated");
+  assert.match(result.message, /missing GENESIS/i);
 });
 
 test("genesis may evaluate unauthenticated while tombstones still require verified authorization", () => {

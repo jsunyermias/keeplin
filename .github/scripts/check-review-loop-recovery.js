@@ -78,7 +78,7 @@ function main() {
     observation: result.record.observation,
     priorDigest: result.record.priorDigest,
     digest: result.record.digest,
-    unauthenticatedAnchor: result.record.unauthenticatedAnchor,
+    unauthenticatedAnchor: result.record.unauthenticatedAnchor ?? null,
     findingsSource: result.record.ledgerFindings === undefined
       ? "legacy evaluator projection"
       : "raw pre-projection ledger snapshot",
