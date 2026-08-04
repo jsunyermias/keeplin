@@ -40,6 +40,19 @@ const DIFF = diffSignatureFromFiles([
 ]);
 const FAILED_DISPOSITION_REFUSAL_ANCHOR =
   "Failed-disposition refusal anchor: stop recovery and escalate to the maintainer.";
+const STALLS_FAILED_DISPOSITION_DISCLOSURE =
+  "The refusal anchor check guarantees the anchor's exact text, uniqueness, and position " +
+  "immediately after the failed-disposition refusal paragraph. Positive prose assertions also " +
+  "require that paragraph to identify the legacy candidate's projected values, state that the " +
+  "failed disposition is not recoverable and the verifier must refuse it, forbid continued ledger " +
+  "rewriting or refetching, and require maintainer escalation. They do not exclude contradictory " +
+  "retry advice inside that paragraph.";
+const SCRIPT_README_FAILED_DISPOSITION_DISCLOSURE =
+  "The refusal anchor check guarantees the anchor's exact text, uniqueness, and position " +
+  "immediately after the failed-disposition refusal paragraph. Positive prose assertions also " +
+  "require that paragraph to identify the legacy evaluator projection, state that the failed " +
+  "disposition is not recoverable by this procedure, and require maintainer escalation. They do " +
+  "not exclude contradictory retry advice inside that paragraph.";
 
 function ledger(findingRows, roundRows, extra = "") {
   return `## Review ledger
@@ -896,11 +909,17 @@ test("terminal_malformed_recovery_documentation_pins_raw_snapshot_and_exact_fail
     /Do not delete anything unless the verifier exits zero/i,
     "the zero-exit deletion gate",
   );
+  const disclosure = paragraphContaining(
+    stalls,
+    /The refusal anchor check guarantees the anchor's exact text/i,
+    "the exact scope of the failed-disposition documentation checks",
+  );
 
   assert.match(snapshot, /raw pre-projection ledger.*ledgerFindings/is);
   assert.match(refusal, /legacy candidate without `ledgerFindings`.*projected values/is);
   assert.match(refusal, /failed disposition is not recoverable.*verifier must\s+refuse it/is);
   assert.match(refusal, /Do not keep rewriting or refetching the ledger.*escalate.*maintainer/is);
+  assert.equal(disclosure.replaceAll("\n", " "), STALLS_FAILED_DISPOSITION_DISCLOSURE);
   assert.match(deletionGate, /zero exit.*current ledger.*identified by `findingsSource`/is);
   assert.doesNotMatch(stalls, /reified`, which is derived deterministically from\s+`reifiedBy`/i);
   assert.doesNotMatch(stalls, /preserves every candidate\s+finding exactly/i);
@@ -922,6 +941,18 @@ test("legacy_recovery_documentation_matches_fallback_output_and_pins_exact_refus
     assert.match(refusal, /legacy (?:candidate.*projected values|evaluator\s+projection)/is);
     assert.match(refusal, /escalate.*maintainer|maintainer escalation/is);
   }
+  const stallsDisclosure = paragraphContaining(
+    stalls,
+    /The refusal anchor check guarantees the anchor's exact text/i,
+    "the review-stalls scope of the failed-disposition documentation checks",
+  );
+  const scriptReadmeDisclosure = paragraphContaining(
+    scriptReadme,
+    /The refusal anchor check guarantees the anchor's exact text/i,
+    "the script README scope of the failed-disposition documentation checks",
+  );
+  assert.equal(stallsDisclosure.replaceAll("\n", " "), STALLS_FAILED_DISPOSITION_DISCLOSURE);
+  assert.equal(scriptReadmeDisclosure.replaceAll("\n", " "), SCRIPT_README_FAILED_DISPOSITION_DISCLOSURE);
 });
 
 test("trusted_workflow_journals_raw_pre_projection_findings_for_recovery", async () => {

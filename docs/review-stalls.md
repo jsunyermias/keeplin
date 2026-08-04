@@ -92,8 +92,12 @@ follow the recovered frame.
 
 Failed-disposition refusal anchor: stop recovery and escalate to the maintainer.
 
-That exact standalone line is the entire mechanically checked refusal contract. The documentation
-test does not and cannot prove that the surrounding prose is free of contradictory retry advice.
+The refusal anchor check guarantees the anchor's exact text, uniqueness, and position immediately
+after the failed-disposition refusal paragraph. Positive prose assertions also require that
+paragraph to identify the legacy candidate's projected values, state that the failed disposition
+is not recoverable and the verifier must refuse it, forbid continued ledger rewriting or
+refetching, and require maintainer escalation. They do not exclude contradictory retry advice
+inside that paragraph.
 
 The downloaded comment array must be chronological by both `created_at` and comment ID. When the
 API provides nested `performed_via_github_app` attribution, it is authoritative; a conflicting

@@ -106,8 +106,11 @@ place and escalate to the maintainer.
 
 Failed-disposition refusal anchor: stop recovery and escalate to the maintainer.
 
-That exact standalone line is the entire mechanically checked refusal contract. The documentation
-test does not and cannot prove that the surrounding prose is free of contradictory retry advice.
+The refusal anchor check guarantees the anchor's exact text, uniqueness, and position immediately
+after the failed-disposition refusal paragraph. Positive prose assertions also require that
+paragraph to identify the legacy evaluator projection, state that the failed disposition is not
+recoverable by this procedure, and require maintainer escalation. They do not exclude
+contradictory retry advice inside that paragraph.
 
 For records with `ledgerFindings`, the command labels
 `findings` as `raw pre-projection ledger snapshot`. The candidate frame must have no non-whitespace
