@@ -65,13 +65,20 @@ every completion. Journal append is idempotent for each delivered workflow run I
 retry republishes its success or failure result and a blocked retry fails the workflow without
 appending again. Every journal marker occurrence in a configured-App comment is parsed, so a
 malformed second payload fails closed instead of disappearing. Every ID observed in surviving history remains
-reserved after retirement, including IDs first recorded as advisory. Tombstone and ledger IDs
-are validated before they can enter evaluator messages. Once authorization evidence
+reserved after retirement, including IDs first recorded as advisory. The evaluator checks every
+surviving adjacent observation, so a historical absence followed by the ID's return is rejected
+rather than hidden by a currently present tail record. Tombstone and ledger IDs are validated
+before they can enter evaluator messages. Once authorization evidence
 has been written for the latest disposition, later evaluations of that same disposition bind to
 the recorded identity, author and body digest rather than an author-editable replacement in the
 current ledger. After any intervening disposition, a later change requires a directive whose API
 creation/submission time is after the first journal observation of the intervening disposition;
 unchanged observations in that same disposition do not move the freshness boundary.
+An observation where the ID is absent is itself an intervening disposition, so a
+`dismissed -> absent -> dismissed` sequence cannot be collapsed into one dismissal run. Because
+GitHub timestamps have one-second granularity, the directive must be strictly after the boundary:
+a directive issued in the same second as the intervening observation is rejected. Reissue the
+directive in a later second.
 For an unchanged `resolved` disposition, only the authorization reference ID, author and body
 digest remain pinned to the journal. Its check-run ID and name come from the current ledger and
 must prove the resolution again against the current evaluator run.
@@ -82,6 +89,9 @@ before the App persists the comment. This closes the wedge for records written a
 A record written before this change that already contains a raw `-->` in its serialized JSON
 still fails closed; the terminal-record recovery procedure is in
 [`docs/review-stalls.md`](../../docs/review-stalls.md#recovering-a-terminal-malformed-journal-record).
+That procedure uses `check-review-loop-recovery.js` from the default branch to recover and verify
+the candidate record mechanically before deletion, including predecessor continuity and exact
+candidate-finding preservation in the replay ledger.
 
 The App comment journal's guarantees are bounded: its unkeyed digest chain detects accidental
 corruption and casual editing that does not rebuild the chain. It does not authenticate records

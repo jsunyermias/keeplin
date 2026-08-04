@@ -143,27 +143,104 @@ function verifyJournal(comments, config) {
   return { ok: true, records };
 }
 
+function recoverCompleteJournalRecord(comment, config) {
+  if (!comment || comment.app_slug !== config.appSlug || comment.app_id !== config.appId) {
+    return { ok: false, message: "Recovery candidate was not authored by the configured App." };
+  }
+  const source = String(comment.body || "");
+  const markerStart = source.indexOf(JOURNAL_MARKER);
+  if (markerStart < 0) return { ok: false, message: "Recovery candidate carries no journal marker." };
+  const ordinary = markedJsonPayloads(source, JOURNAL_MARKER);
+  if (!ordinary.malformed || ordinary.payloads.length > 0) {
+    return { ok: false, message: "Recovery candidate is not one terminal record made unreadable by a raw comment terminator." };
+  }
+  const payloadStart = markerStart + JOURNAL_MARKER.length;
+  let delimiter = source.indexOf(" -->", payloadStart);
+  let record;
+  let frameEnd = -1;
+  while (delimiter >= 0) {
+    try {
+      record = JSON.parse(source.slice(payloadStart, delimiter));
+      frameEnd = delimiter + 4;
+      break;
+    } catch {
+      delimiter = source.indexOf(" -->", delimiter + 4);
+    }
+  }
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    return { ok: false, message: "Recovery candidate does not contain one recoverable complete JSON record." };
+  }
+  if (source.indexOf(JOURNAL_MARKER, frameEnd) >= 0) {
+    return { ok: false, message: "Recovery candidate carries another journal marker after the recoverable record." };
+  }
+  if (record.schema !== JOURNAL_SCHEMA || record.repositoryId !== config.repositoryId || record.workflowId !== config.workflowId || record.appSlug !== config.appSlug || record.appId !== config.appId) {
+    return { ok: false, message: "Recovery candidate producer, repository, workflow or schema does not match configuration." };
+  }
+  const digest = sha256(canonicalJson({ ...record, digest: undefined }));
+  if (record.digest !== digest) return { ok: false, message: "Recovery candidate content does not match its carried digest." };
+  const shape = journalPayloadError(record);
+  if (shape) return { ok: false, message: `Recovery candidate is authentic but unreadable: ${shape}.` };
+  return { ok: true, record: { ...record, commentId: comment.id, commentCreatedAt: comment.created_at } };
+}
+
+function normalizedFindings(findings) {
+  return [...findings].sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+}
+
+function verifyTerminalMalformedRecovery({ comments, candidateCommentId, config, replayFindings }) {
+  if (!Array.isArray(comments)) return { ok: false, message: "Recovery requires the complete issue-comment list." };
+  const candidateIndex = comments.findIndex((comment) => String(comment && comment.id) === String(candidateCommentId));
+  if (candidateIndex < 0) return { ok: false, message: "Recovery candidate comment is absent from the complete issue-comment list." };
+  const candidate = comments[candidateIndex];
+  const laterJournal = comments.slice(candidateIndex + 1).find((comment) => comment && comment.app_slug === config.appSlug && comment.app_id === config.appId && String(comment.body || "").includes(JOURNAL_MARKER));
+  if (laterJournal) return { ok: false, message: "Recovery candidate is not the terminal configured-App journal comment." };
+  const prefix = verifyJournal(comments.filter((_, index) => index !== candidateIndex), config);
+  if (!prefix.ok) return { ok: false, message: `The surviving prefix does not verify: ${prefix.message}` };
+  const recovered = recoverCompleteJournalRecord(candidate, config);
+  if (!recovered.ok) return recovered;
+  const prior = prefix.records[prefix.records.length - 1];
+  const expectedObservation = prefix.records.length + 1;
+  if (recovered.record.observation !== expectedObservation) {
+    return { ok: false, message: `Recovery candidate observation ${recovered.record.observation} does not immediately follow verified observation ${expectedObservation - 1}.` };
+  }
+  const expectedPriorDigest = prior ? prior.digest : null;
+  if (recovered.record.priorDigest !== expectedPriorDigest) {
+    return { ok: false, message: "Recovery candidate priorDigest does not match the verified surviving head digest." };
+  }
+  if (!Array.isArray(replayFindings)) return { ok: false, message: "Recovery requires the current replay ledger findings." };
+  const replayShape = journalPayloadError({ findingIds: replayFindings.map((finding) => finding && finding.id), findings: replayFindings });
+  if (replayShape) return { ok: false, message: `Current replay ledger findings are unreadable: ${replayShape}.` };
+  const candidateFindings = recovered.record.findings || [];
+  if (canonicalJson(normalizedFindings(replayFindings)) !== canonicalJson(normalizedFindings(candidateFindings))) {
+    const candidateIds = candidateFindings.map((finding) => finding.id).join(", ") || "none";
+    return { ok: false, message: `Current replay ledger is not semantically identical to the recovered candidate findings (${candidateIds}).` };
+  }
+  return { ok: true, prefixRecords: prefix.records, record: recovered.record };
+}
+
 function recordedDispositionContext(records, findingId, targetState) {
   const observations = [];
+  let observed = false;
   for (let index = 0; index < records.length; index += 1) {
     const findings = records[index].findings;
-    if (!Array.isArray(findings)) continue;
-    const finding = findings.find((item) => item && item.id === findingId);
-    if (!finding) continue;
+    const finding = Array.isArray(findings) ? findings.find((item) => item && item.id === findingId) : undefined;
+    if (!observed && !finding) continue;
+    observed = true;
     observations.push({ finding, changedAt: records[index].commentCreatedAt });
   }
   if (observations.length === 0) return { evidence: undefined, changedAt: null };
   const latest = observations[observations.length - 1];
-  const evidence = latest.finding.state === targetState
+  const latestState = latest.finding ? latest.finding.state : null;
+  const evidence = latestState === targetState
     ? latest.finding.evidence && typeof latest.finding.evidence === "object" && !Array.isArray(latest.finding.evidence) ? latest.finding.evidence : {}
     : undefined;
   let runStart = observations.length - 1;
-  while (runStart > 0 && observations[runStart - 1].finding.state === latest.finding.state) runStart -= 1;
-  if (latest.finding.state !== targetState) return { evidence, changedAt: observations[runStart].changedAt };
+  while (runStart > 0 && (observations[runStart - 1].finding ? observations[runStart - 1].finding.state : null) === latestState) runStart -= 1;
+  if (latestState !== targetState) return { evidence, changedAt: observations[runStart].changedAt };
   if (runStart === 0) return { evidence, changedAt: null };
-  const interveningState = observations[runStart - 1].finding.state;
+  const interveningState = observations[runStart - 1].finding ? observations[runStart - 1].finding.state : null;
   let interveningStart = runStart - 1;
-  while (interveningStart > 0 && observations[interveningStart - 1].finding.state === interveningState) {
+  while (interveningStart > 0 && (observations[interveningStart - 1].finding ? observations[interveningStart - 1].finding.state : null) === interveningState) {
     interveningStart -= 1;
   }
   return { evidence, changedAt: observations[interveningStart].changedAt };
@@ -192,7 +269,21 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
   if (vanished.length > 0) return { ok: false, state: "history-unverifiable", message: `Finding IDs vanished without authorized tombstones: ${vanished.join(", ")}.` };
   const observedIds = new Set(journal.records.flatMap((record) => record.findingIds || []));
   const priorIds = new Set((priorRecord && priorRecord.findingIds) || []);
-  const reused = findings.filter((finding) => observedIds.has(finding.id) && !priorIds.has(finding.id)).map((finding) => finding.id);
+  const historicallyReused = new Set();
+  const historicallyObserved = new Set();
+  let priorHistoricalIds = new Set();
+  for (const record of journal.records) {
+    const recordIds = new Set(record.findingIds || []);
+    for (const id of recordIds) {
+      if (historicallyObserved.has(id) && !priorHistoricalIds.has(id)) historicallyReused.add(id);
+      historicallyObserved.add(id);
+    }
+    priorHistoricalIds = recordIds;
+  }
+  const reused = [...new Set([
+    ...historicallyReused,
+    ...findings.filter((finding) => observedIds.has(finding.id) && !priorIds.has(finding.id)).map((finding) => finding.id),
+  ])];
   if (reused.length > 0) return { ok: false, state: "history-unverifiable", message: `Retired finding IDs cannot be reused: ${reused.join(", ")}.` };
   const specialAuthorizations = [
     ...(journal.records.length === 0 ? [{ id: "GENESIS", state: "genesis", evidence: genesisEvidence }] : []),
@@ -799,4 +890,5 @@ module.exports = {
   sha256,
   verifyAuthorization,
   verifyJournal,
+  verifyTerminalMalformedRecovery,
 };

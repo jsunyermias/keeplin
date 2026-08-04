@@ -34,6 +34,9 @@ marker inside the persisted App comment. This closes the wedge for records writt
 change. A record written before this change that already contains a raw `-->` in its serialized
 JSON still fails closed; operators must use the terminal-record recovery procedure in
 [`docs/review-stalls.md`](../../docs/review-stalls.md#recovering-a-terminal-malformed-journal-record).
+Its default-branch recovery verifier requires an authentic terminal candidate, continuity with
+the surviving head, and a current ledger semantically identical to the candidate findings before
+the operator may delete the malformed comment.
 For an unchanged `resolved` disposition, the recorded authorization reference ID, author and body
 digest remain pinned while the check-run ID and name are read from the current ledger and proved
 again against the current evaluator run.

@@ -67,10 +67,51 @@ the fix is forward-only and does not rewrite existing issue comments.
 The malformed record must be terminal. It must be the newest review-loop journal comment and no
 surviving descendant may name its digest. Before deleting it, pass every earlier configured-App
 journal comment, excluding only the candidate, through the default-branch evaluator's
-`verifyJournal` with the repository's exact configured identity. It must return `ok`, and the
-last observation must be exactly one less than the malformed terminal
-record claimed. That result establishes the remaining comments as an authentic verifying prefix
-within the journal's bounded, unkeyed threat model.
+`verifyJournal` with the repository's exact configured identity. Recover the candidate's complete
+JSON record as well: its carried digest must verify, its observation must immediately follow the
+surviving head, and its declared `priorDigest` must equal that head's digest. Before deletion,
+restore the pull request's current review ledger to the exact findings asserted by that recovered
+record. This carries forward findings introduced only by the malformed record rather than losing
+them during replay.
+
+The default-branch `check-review-loop-recovery.js` performs all of those checks mechanically. Use
+a clean temporary directory, substitute the repository, pull request and candidate issue-comment
+ID, and run exactly:
+
+```sh
+recovery_repo=jsunyermias/keeplin
+recovery_pull=198
+recovery_candidate_comment=123456789
+recovery_dir=$(mktemp -d)
+recovery_default=$(gh api "repos/$recovery_repo" --jq .default_branch)
+recovery_repository_id=$(gh api "repos/$recovery_repo" --jq .id)
+recovery_workflow_id=$(gh variable get CI_WORKFLOW_ID --repo "$recovery_repo")
+gh api --method GET "repos/$recovery_repo/contents/.github/scripts/check-review-loop.js" -f ref="$recovery_default" --jq .content | base64 --decode > "$recovery_dir/check-review-loop.js"
+gh api --method GET "repos/$recovery_repo/contents/.github/scripts/check-review-loop-recovery.js" -f ref="$recovery_default" --jq .content | base64 --decode > "$recovery_dir/check-review-loop-recovery.js"
+gh api "repos/$recovery_repo/pulls/$recovery_pull" > "$recovery_dir/pull.json"
+gh api --paginate --slurp "repos/$recovery_repo/issues/$recovery_pull/comments?per_page=100" | jq 'add' > "$recovery_dir/comments.json"
+node "$recovery_dir/check-review-loop-recovery.js" \
+  --pull "$recovery_dir/pull.json" \
+  --comments "$recovery_dir/comments.json" \
+  --candidate-comment-id "$recovery_candidate_comment" \
+  --repository-id "$recovery_repository_id" \
+  --workflow-id "$recovery_workflow_id" \
+  --app-slug github-actions \
+  --app-id 15368
+```
+
+`repositoryId` comes from the repository API's `id`; `workflowId` comes from the repository's
+`CI_WORKFLOW_ID` variable. `appSlug` (`github-actions`) and `appId` (`15368`) come from the
+`config` object in the default-branch `.github/workflows/review-loop-evaluator.yml`; if that
+configuration changes, use its exact current values rather than the literals above. The pull API
+response supplies the current ledger, and the paginated issue-comment API supplies the complete
+comment history. If the command reports that the ledger is not semantically identical, restore
+every recovered finding in the pull-request ledger and fetch `pull.json` again.
+
+Do not delete anything unless the verifier exits zero. A zero exit establishes the remaining
+comments as an authentic verifying prefix within the journal's bounded, unkeyed threat model,
+establishes predecessor continuity, and proves that the current ledger preserves every candidate
+finding exactly. Keep its JSON output with the recovery evidence.
 
 After that verification, delete only the terminal malformed comment and rerun the affected CI
 evaluation. The evaluator derives the round again from the current pull request, checks and
@@ -79,6 +120,10 @@ record is not terminal, the remaining prefix does not verify, or the claimed obs
 be established, do not delete anything: restore the missing evidence or escalate to the
 maintainer. Deleting a non-terminal record leaves a surviving descendant whose predecessor link
 cannot verify and does not recover the pull request.
+
+Disposition authorizations have a separate strict time boundary. GitHub's API timestamps have
+one-second granularity, and a directive issued in the same second as the intervening observation
+is not strictly after it, so the evaluator rejects it. Reissue the directive in a later second.
 
 ## How an entry is cleared
 
