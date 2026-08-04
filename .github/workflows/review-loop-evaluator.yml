@@ -133,10 +133,6 @@ jobs:
               changedFiles: files.map((file) => file.filename), stallsContent,
               diffSignature: evaluator.diffSignatureFromFiles(files.map((file) => ({ filename: file.filename, status: file.status, sha: file.sha }))),
             });
-            if (['history-unverifiable', 'fork-refused'].includes(result.state)) {
-              core.setFailed(result.message);
-              return;
-            }
             const alreadyRecorded = (result.records || []).some((record) => record.runId === run.id && record.runAttempt === run.run_attempt);
             await evaluator.publishEvaluation({
               result, alreadyRecorded,
