@@ -51,8 +51,12 @@ workflow, repository, pull-request and schema identity; collaborator authorizati
 and body digests; and,
 for `resolved`, a successful named check bound to the evaluated head, workflow and App. Missing,
 changed, dismissed or unreachable evidence reopens the finding. Genesis and tombstones use the
-same authorization path. A previously reified finding also cannot become advisory without that
-verified authorization, and reification is remembered across every surviving record rather than
+same `verifyAuthorization` path, but keeplin ADR 0013 changes only the empty-journal outcome: an
+unreachable genesis directive creates a synthetic open, reified `GENESIS` blocker and evaluation
+continues, while an unreachable tombstone directive still makes history unverifiable. A verified
+genesis directive disposes that synthetic blocker through the existing authorization mechanism.
+A previously reified finding also cannot become advisory without that verified authorization,
+and reification is remembered across every surviving record rather than
 only the newest one, so retiring an ID with an authorized tombstone does not let it return
 unreified. A finding that names a mechanical check cannot simultaneously use `advisory` state.
 Forks deliberately fail closed.
@@ -91,8 +95,12 @@ still fails closed; the terminal-record recovery procedure is in
 [`docs/review-stalls.md`](../../docs/review-stalls.md#recovering-a-terminal-malformed-journal-record).
 That procedure uses `check-review-loop-recovery.js` from the default branch to recover and verify
 the candidate record mechanically before deletion, including predecessor continuity and exact
-raw-ledger preservation. Each new journal record carries `ledgerFindings`, the digest-bound raw
-pre-projection ledger beside the evaluator's `findings` projection. Recovery compares the current
+raw-ledger preservation. Each new journal record carries `unauthenticatedAnchor`, a digest-bound
+boolean stating whether its evaluation still lacked a verified genesis directive, and
+`ledgerFindings`, the digest-bound raw pre-projection ledger beside the evaluator's `findings`
+projection. `GENESIS` is not a Markdown ledger ID: it participates in the open/reified blocking
+set and state hash, while the boolean carries its anchor state without weakening the `F-\d{3,}`
+identifier grammar or the three ledger-ID surfaces. Recovery compares the current
 ledger directly with that raw snapshot across `id`, `round`, `reifiedBy`, parser-derived
 `reified`, `state` and `resolution`; it never infers a raw state from a projected shape or from
 operator-written replay data. Parsed `evidence` remains represented by `resolution`, so no ledger
@@ -116,7 +124,9 @@ For records with `ledgerFindings`, the command labels
 `findings` as `raw pre-projection ledger snapshot`. The candidate frame must have no non-whitespace
 suffix. Recovery input must be chronological by `created_at` and comment ID. The API's nested
 `performed_via_github_app` attribution is authoritative when present, and conflicting top-level
-attribution is refused.
+attribution is refused. The command also reports the candidate's `unauthenticatedAnchor` value;
+the verifier accepts either boolean value as digest-bound historical state and refuses a present
+non-boolean value before comparing ledger findings.
 
 The App comment journal's guarantees are bounded: its unkeyed digest chain detects accidental
 corruption and casual editing that does not rebuild the chain. It does not authenticate records

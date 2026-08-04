@@ -93,6 +93,7 @@ function journalPayloadError(record) {
   const hasIds = record.findingIds !== undefined;
   const hasFindings = record.findings !== undefined;
   const hasLedgerFindings = record.ledgerFindings !== undefined;
+  if (record.unauthenticatedAnchor !== undefined && typeof record.unauthenticatedAnchor !== "boolean") return "unauthenticatedAnchor is present but is not a boolean";
   if (!hasIds && !hasFindings && !hasLedgerFindings) return null;
   if (hasIds && !Array.isArray(record.findingIds)) return "findingIds is present but is not an array";
   if (hasFindings && !Array.isArray(record.findings)) return "findings is present but is not an array";
@@ -304,11 +305,19 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
     ...findings.filter((finding) => observedIds.has(finding.id) && !priorIds.has(finding.id)).map((finding) => finding.id),
   ])];
   if (reused.length > 0) return { ok: false, state: "history-unverifiable", message: `Retired finding IDs cannot be reused: ${reused.join(", ")}.` };
-  const specialAuthorizations = [
-    ...(journal.records.length === 0 ? [{ id: "GENESIS", state: "genesis", evidence: genesisEvidence }] : []),
-    ...tombstones.map((entry) => ({ ...entry, state: "tombstone" })),
-  ];
-  for (const special of specialAuthorizations) {
+  const anchorRequiresAuthentication = journal.records.length === 0 || priorRecord.unauthenticatedAnchor === true;
+  let unauthenticatedAnchor = false;
+  let syntheticFindings = [];
+  if (anchorRequiresAuthentication) {
+    const genesis = { id: "GENESIS", state: "genesis", evidence: genesisEvidence };
+    const reference = references.find((item) => String(item.id) === String(genesis.evidence && genesis.evidence.referenceId));
+    const authorization = verifyAuthorization({ finding: genesis, reference, pullAuthor: pull.author, targetState: genesis.state, repositoryId: config.repositoryId, pullNumber: pull.number });
+    if (!authorization.ok) {
+      unauthenticatedAnchor = true;
+      syntheticFindings = [{ id: "GENESIS", round: journal.records.length + 1, reifiedBy: "verified genesis authorization", reified: true, state: "open", resolution: "", disposalError: authorization.reason }];
+    }
+  }
+  for (const special of tombstones.map((entry) => ({ ...entry, state: "tombstone" }))) {
     const reference = references.find((item) => String(item.id) === String(special.evidence && special.evidence.referenceId));
     const authorization = verifyAuthorization({ finding: special, reference, pullAuthor: pull.author, targetState: special.state, repositoryId: config.repositoryId, pullNumber: pull.number });
     if (!authorization.ok) return { ok: false, state: "history-unverifiable", message: `${special.id} lacks verified authorization: ${authorization.reason}.` };
@@ -355,26 +364,28 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
     }
     return { ...finding, evidence: { ...currentEvidence, ...authorizationEvidence } };
   });
-  const open = projected.filter((finding) => finding.reified && finding.state === "open");
+  const open = [...projected.filter((finding) => finding.reified && finding.state === "open"), ...syntheticFindings];
   const blockingNames = [...open.map((finding) => finding.id), ...requiredFailures].sort();
   const blocking = blockingNames.length;
   const currentHash = loopStateHash({ diffSignature, openReifiedIds: open.map((finding) => finding.id), redChecks: requiredFailures });
   const rounds = [...journal.records.map((record) => ({ round: record.observation, hash: record.stateHash, blocking: record.blocking })), { round: journal.records.length + 1, hash: currentHash, blocking }];
   const stalled = journal.records.length > 0 && blocking > 0 ? stagnationReason(rounds, currentHash, stagnationLimit) : "";
   if (stalled) {
-    if (!changedFiles.includes(STALLS_PATH)) return { ok: false, state: "escalated", projectedFindings: projected, records: journal.records, currentHash, blocking, message: `Review loop stalled: ${stalled}. Record every blocker in ${STALLS_PATH}. The unkeyed chain detects accidental corruption and casual edits, not a repository workflow that rebuilds it with the same App identity; such a workflow can manufacture convergence.` };
+    if (!changedFiles.includes(STALLS_PATH)) return { ok: false, state: "escalated", projectedFindings: projected, syntheticFindings, unauthenticatedAnchor, records: journal.records, currentHash, blocking, message: `Review loop stalled: ${stalled}. Record every blocker in ${STALLS_PATH}. The unkeyed chain detects accidental corruption and casual edits, not a repository workflow that rebuilds it with the same App identity; such a workflow can manufacture convergence.` };
     const record = stallRecordsBlockers(stallsContent, config.repository, pull.number, blockingNames);
-    if (!record.ok) return { ok: false, state: "escalated", projectedFindings: projected, records: journal.records, currentHash, blocking, message: `Review loop stalled: ${record.reason}. The unkeyed chain detects accidental corruption and casual edits, not a repository workflow that rebuilds it with the same App identity; such a workflow can manufacture convergence.` };
+    if (!record.ok) return { ok: false, state: "escalated", projectedFindings: projected, syntheticFindings, unauthenticatedAnchor, records: journal.records, currentHash, blocking, message: `Review loop stalled: ${record.reason}. The unkeyed chain detects accidental corruption and casual edits, not a repository workflow that rebuilds it with the same App identity; such a workflow can manufacture convergence.` };
   }
   const ok = blocking === 0;
   return {
     ok,
     state: ok ? "converged" : "converging",
     projectedFindings: projected,
+    syntheticFindings,
+    unauthenticatedAnchor,
     records: journal.records,
     currentHash,
     blocking,
-    message: `${ok ? "Review loop converged" : "Review loop has not converged"}. The unkeyed chain detects accidental corruption and casual edits, not a repository workflow that rebuilds it with the same App identity; such a workflow can manufacture convergence. An actor with repository write access can also truncate the journal, and terminal truncation is not detected.`,
+    message: `${ok ? "Review loop converged" : `Review loop has not converged: ${blockingNames.join(", ")} ${blockingNames.length === 1 ? "blocks" : "block"}`}. The unkeyed chain detects accidental corruption and casual edits, not a repository workflow that rebuilds it with the same App identity; such a workflow can manufacture convergence. An actor with repository write access can also truncate the journal, and terminal truncation is not detected.`,
   };
 }
 
