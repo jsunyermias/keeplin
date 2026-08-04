@@ -45,7 +45,16 @@ The workflow journals that raw snapshot beside the evaluator's `findings` projec
 does not infer a ledger state from lossy projection diagnostics or operator-written replay data.
 Legacy records without the snapshot recover only by direct projection replay; ambiguous inverse
 mapping to advisory is refused. Evaluator-only projection diagnostics are not Markdown ledger
-fields.
+fields. Each newly appended record also carries a digest-bound `unauthenticatedAnchor` boolean.
+On an empty journal, a missing or invalid genesis authorization sets it to `true` and adds a
+synthetic open, reified `GENESIS` blocker to the evaluation and loop-state hash. Evaluation and
+journaling continue with their real state; only convergence is withheld. Once the existing
+verified-authorization path accepts the genesis directive, the next record carries `false` and
+the blocker closes. Legacy records without the field retain their existing authorized-anchor
+interpretation: omission is read as authenticated. That is correct for genuine legacy records;
+the only guard against a forged omission is the App-identity digest boundary whose limitation ADR
+0011 already concedes. `GENESIS` stays outside `findingIds`, `findings`, and `ledgerFindings`,
+whose strict `F-\d{3,}` and tri-surface consistency contracts are unchanged.
 For an unchanged `resolved` disposition, the recorded authorization reference ID, author and body
 digest remain pinned while the check-run ID and name are read from the current ledger and proved
 again against the current evaluator run.

@@ -138,7 +138,7 @@ jobs:
               result, alreadyRecorded,
               appendJournal: async () => {
                 const prior = result.records && result.records[result.records.length - 1];
-                const record = evaluator.makeJournalRecord({ ...config, observation: prior ? prior.observation + 1 : 1, priorDigest: prior ? prior.digest : null, headSha: pull.head.sha, findingIds: (result.projectedFindings || []).map((finding) => finding.id), findings: result.projectedFindings || [], ledgerFindings: findings, stateHash: result.currentHash, blocking: result.blocking });
+                const record = evaluator.makeJournalRecord({ ...config, observation: prior ? prior.observation + 1 : 1, priorDigest: prior ? prior.digest : null, headSha: pull.head.sha, unauthenticatedAnchor: result.unauthenticatedAnchor, findingIds: (result.projectedFindings || []).map((finding) => finding.id), findings: result.projectedFindings || [], ledgerFindings: findings, stateHash: result.currentHash, blocking: result.blocking });
                 await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: pull.number, body: evaluator.journalComment(record, config, result.message).body });
               },
               reportCheck: async (conclusion) => github.rest.checks.create({ owner: context.repo.owner, repo: context.repo.repo, name: 'Review loop converged', head_sha: pull.head.sha, status: 'completed', conclusion, output: { title: result.state, summary: result.message } }),

@@ -20,6 +20,12 @@ reified finding IDs and non-successful required job names. A stall is either of:
 - **No monotonic progress.** The blocking set `{red required checks} ∪ {open reified
   findings}` has not shrunk strictly for `REVIEW_LOOP_STAGNATION_LIMIT` rounds (3 by default).
 
+For a journal that began without verified genesis authorization, synthetic `GENESIS` is one open
+reified finding in that set. Its state is persisted separately from Markdown ledger findings as
+the digest-bound `unauthenticatedAnchor` boolean on each new journal record. This special ID does
+not enter the ledger's `F-\d{3,}` namespace or its retired-ID reservation; a verified genesis
+directive closes it through the ordinary authorization verifier.
+
 The brake measures state, not elapsed time or token budget. A slow round that shrinks the
 blocking set is progress; a fast round that does not is not.
 
@@ -139,7 +145,11 @@ response supplies the current ledger, and the paginated issue-comment API suppli
 comment history. The command's `findingsSource` labels `findings` as either the candidate's
 `raw pre-projection ledger snapshot` (records with `ledgerFindings`) or its `legacy evaluator
 projection` (records without it); `projectedFindings` is the evaluator output kept separately for
-diagnosis. For a raw snapshot, if the command reports that the ledger is not semantically
+diagnosis. The command always reports the candidate's `unauthenticatedAnchor` value and emits
+`null` for a legacy candidate that omits the field. The flag is digest-bound historical state, not
+a Markdown ledger field, so it is preserved in recovery output but excluded from the
+`ledgerFindings` semantic comparison.
+For a raw snapshot, if the command reports that the ledger is not semantically
 identical, restore every raw finding from `findings` in the pull-request ledger and fetch
 `pull.json` again. A failed-disposition legacy projection is the permanently unreachable case
 described above, so repeated restoration cannot make it pass and requires maintainer escalation.
