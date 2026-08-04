@@ -51,8 +51,9 @@ available, so these relationships are authored inference rather than refreshed e
 ## Related files
 
 - `scripts/check-docs.sh` — runs the checker.
-- `scripts/tests/test_bounded_history.py` — exact-anchor, enrolment, failure, and old-bypass tests.
+- `scripts/tests/test_bounded_history.py` — exact-anchor, raw-enrolment, concealment, and failure tests.
 - `AGENTS.md`, `.github/scripts/README.md`, `docs/review-stalls.md` — the unchanged three-surface
   enrolment.
 - `docs/adr/0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md` — accepted
-  decision whose terminal-truncation bound the anchor keeps visible.
+  decision whose terminal-truncation bound the raw anchor line enrolls without asserting rendered
+  visibility.

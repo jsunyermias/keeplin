@@ -92,9 +92,11 @@ function verifyResolvedCheck({ finding, checks, headSha, config }) {
 function journalPayloadError(record) {
   const hasIds = record.findingIds !== undefined;
   const hasFindings = record.findings !== undefined;
-  if (!hasIds && !hasFindings) return null;
+  const hasLedgerFindings = record.ledgerFindings !== undefined;
+  if (!hasIds && !hasFindings && !hasLedgerFindings) return null;
   if (hasIds && !Array.isArray(record.findingIds)) return "findingIds is present but is not an array";
   if (hasFindings && !Array.isArray(record.findings)) return "findings is present but is not an array";
+  if (hasLedgerFindings && !Array.isArray(record.ledgerFindings)) return "ledgerFindings is present but is not an array";
   const ids = record.findingIds || [];
   const entries = record.findings || [];
   for (const id of ids) {
@@ -112,6 +114,10 @@ function journalPayloadError(record) {
   if (entrySet.size !== entries.length) return "findings repeats an ID";
   for (const id of idSet) if (!entrySet.has(id)) return `findingIds names ${id} but findings does not describe it`;
   for (const id of entrySet) if (!idSet.has(id)) return `findings describes ${id} but findingIds omits it`;
+  if (hasLedgerFindings) {
+    const ledgerShape = journalPayloadError({ findingIds: ids, findings: record.ledgerFindings });
+    if (ledgerShape) return `ledgerFindings does not match findingIds: ${ledgerShape}`;
+  }
   return null;
 }
 
@@ -186,29 +192,16 @@ function recoverCompleteJournalRecord(comment, config) {
   return { ok: true, record: { ...record, commentId: comment.id, commentCreatedAt: comment.created_at } };
 }
 
-function normalizedLedgerFindings(findings, failedDeclassificationIds = new Set()) {
-  // Compare the complete restorable Markdown representation. A failed evaluator declassification
-  // is the one projection whose forced `reified` and `state` values contradict `reifiedBy`; only
-  // an ID proven from the surviving prefix and replay to lack an authorization reference can map
-  // that exact projection back to its raw advisory pair. Every ledger field, including the
-  // restored state and parser-derived reification, remains in the comparison.
+function normalizedLedgerFindings(findings) {
   return findings
-    .map((finding) => {
-      const failedDeclassification = failedDeclassificationIds.has(finding.id)
-        && typeof finding.reifiedBy === "string"
-        && !isReified(finding.reifiedBy)
-        && finding.reified === true
-        && finding.state === "open"
-        && finding.disposalError === "authorization reference is unreachable";
-      return {
-        id: finding.id,
-        round: finding.round,
-        reifiedBy: finding.reifiedBy,
-        reified: failedDeclassification ? false : finding.reified,
-        state: failedDeclassification ? ADVISORY : finding.state,
-        resolution: finding.resolution,
-      };
-    })
+    .map((finding) => ({
+      id: finding.id,
+      round: finding.round,
+      reifiedBy: finding.reifiedBy,
+      reified: finding.reified,
+      state: finding.state,
+      resolution: finding.resolution,
+    }))
     .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
 }
 
@@ -236,19 +229,12 @@ function verifyTerminalMalformedRecovery({ comments, candidateCommentId, config,
   const replayShape = journalPayloadError({ findingIds: replayFindings.map((finding) => finding && finding.id), findings: replayFindings });
   if (replayShape) return { ok: false, message: `Current replay ledger findings are unreadable: ${replayShape}.` };
   const candidateFindings = recovered.record.findings || [];
-  const everReified = new Set(prefix.records.flatMap((record) => (record.findings || []).filter((finding) => finding && finding.reified).map((finding) => finding.id)));
-  const failedDeclassificationIds = new Set(replayFindings.filter((finding) => {
-    if (!everReified.has(finding.id) || finding.reified || finding.state !== ADVISORY) return false;
-    const disposition = recordedDispositionContext(prefix.records, finding.id, ADVISORY);
-    const currentEvidence = finding.evidence && typeof finding.evidence === "object" && !Array.isArray(finding.evidence) ? finding.evidence : {};
-    const recordedAuthorization = disposition.evidence === undefined ? currentEvidence : disposition.evidence;
-    return recordedAuthorization.referenceId === undefined || recordedAuthorization.referenceId === null;
-  }).map((finding) => finding.id));
-  if (canonicalJson(normalizedLedgerFindings(replayFindings, failedDeclassificationIds)) !== canonicalJson(normalizedLedgerFindings(candidateFindings, failedDeclassificationIds))) {
+  const restorableFindings = recovered.record.ledgerFindings === undefined ? candidateFindings : recovered.record.ledgerFindings;
+  if (canonicalJson(normalizedLedgerFindings(replayFindings)) !== canonicalJson(normalizedLedgerFindings(restorableFindings))) {
     const candidateIds = candidateFindings.map((finding) => finding.id).join(", ") || "none";
     return { ok: false, message: `Current replay ledger is not semantically identical to the recovered candidate findings (${candidateIds}).` };
   }
-  return { ok: true, prefixRecords: prefix.records, record: recovered.record };
+  return { ok: true, prefixRecords: prefix.records, record: recovered.record, restorableFindings };
 }
 
 function recordedDispositionContext(records, findingId, targetState) {

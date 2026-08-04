@@ -605,7 +605,7 @@ test("terminal_malformed_recovery_accepts_safe_replay_of_evaluator_projected_fai
   assert.equal(projected.reified, true);
   assert.equal(projected.state, "open");
   assert.match(projected.disposalError, /authorization reference is unreachable/i);
-  const candidateRecord = makeJournalRecord({ ...TRUST, observation: 2, headSha: "ccc", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: [projected.id], findings: [projected] });
+  const candidateRecord = makeJournalRecord({ ...TRUST, observation: 2, headSha: "ccc", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: [projected.id], findings: [projected], ledgerFindings: [replayFinding] });
   const candidate = { id: 1301, app_slug: TRUST.appSlug, app_id: TRUST.appId, created_at: "2026-08-03T00:02:00Z", body: `${JOURNAL_MARKER}${JSON.stringify(candidateRecord)} -->` };
 
   const recovered = verifyTerminalMalformedRecovery({ comments: [prefix, candidate], candidateCommentId: 1301, config: TRUST, replayFindings: [replayFinding] });
@@ -620,13 +620,53 @@ test("terminal_malformed_recovery_refuses_semantically_different_failed_declassi
   const replayFinding = { id: "F-300", round: 4, reifiedBy: "advisory", reified: false, state: "advisory", resolution: "literal --> remains journal data" };
   const evaluated = trusted({ journalComments: [prefix], findings: [replayFinding], references: [] });
   const projected = evaluated.projectedFindings[0];
-  const candidateRecord = makeJournalRecord({ ...TRUST, observation: 2, headSha: "ccc", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: [projected.id], findings: [projected] });
+  const candidateRecord = makeJournalRecord({ ...TRUST, observation: 2, headSha: "ccc", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: [projected.id], findings: [projected], ledgerFindings: [replayFinding] });
   const candidate = { id: 1301, app_slug: TRUST.appSlug, app_id: TRUST.appId, created_at: "2026-08-03T00:02:00Z", body: `${JOURNAL_MARKER}${JSON.stringify(candidateRecord)} -->` };
 
   const refused = verifyTerminalMalformedRecovery({ comments: [prefix, candidate], candidateCommentId: 1301, config: TRUST, replayFindings: [{ ...replayFinding, state: "dismissed" }] });
 
   assert.equal(refused.ok, false);
   assert.match(refused.message, /not semantically identical.*F-300/i);
+});
+
+test("terminal_malformed_recovery_refuses_dismissed_candidate_replayed_as_advisory", () => {
+  const priorFinding = { id: "F-400", round: 3, reifiedBy: "mechanical check", reified: true, state: "open", resolution: "" };
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "bbb", stateHash: "one", blocking: 1, findingIds: [priorFinding.id], findings: [priorFinding] });
+  const prefix = { ...journalComment(first, TRUST), id: 1400, created_at: "2026-08-03T00:01:00Z" };
+  const dismissedFinding = { id: "F-400", round: 4, reifiedBy: "advisory", reified: false, state: "dismissed", resolution: "literal --> remains journal data" };
+  const evaluated = trusted({ journalComments: [prefix], findings: [dismissedFinding], references: [] });
+  const projected = evaluated.projectedFindings[0];
+  assert.equal(projected.reified, true);
+  assert.equal(projected.state, "open");
+  assert.match(projected.disposalError, /authorization reference is unreachable/i);
+  const candidateRecord = makeJournalRecord({ ...TRUST, observation: 2, headSha: "ccc", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: [projected.id], findings: [projected], ledgerFindings: [dismissedFinding] });
+  const candidate = { id: 1401, app_slug: TRUST.appSlug, app_id: TRUST.appId, created_at: "2026-08-03T00:02:00Z", body: `${JOURNAL_MARKER}${JSON.stringify(candidateRecord)} -->` };
+  const advisoryReplay = { ...dismissedFinding, state: "advisory" };
+
+  const recovered = verifyTerminalMalformedRecovery({ comments: [prefix, candidate], candidateCommentId: 1401, config: TRUST, replayFindings: [advisoryReplay] });
+
+  assert.equal(recovered.ok, false);
+  assert.match(recovered.message, /not semantically identical.*F-400/i);
+});
+
+test("terminal_malformed_recovery_excludes_authorized_advisory_from_failed_declassification_recovery", () => {
+  const priorFinding = { id: "F-403", round: 3, reifiedBy: "mechanical check", reified: true, state: "open", resolution: "" };
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "bbb", stateHash: "one", blocking: 1, findingIds: [priorFinding.id], findings: [priorFinding] });
+  const prefix = { ...journalComment(first, TRUST), id: 1430, created_at: "2026-08-03T00:01:00Z" };
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-403", state: "advisory", reason: "maintainer declassification" })} -->`;
+  const advisoryFinding = { id: "F-403", round: 4, reifiedBy: "advisory", reified: false, state: "advisory", resolution: "authorized --> declassification", evidence: { referenceId: 403, author: "maintainer", bodyDigest: sha256(body) } };
+  const reference = { id: 403, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", body, created_at: "2026-08-03T00:02:00Z" };
+  const evaluated = trusted({ journalComments: [prefix], findings: [advisoryFinding], references: [reference] });
+  const projected = evaluated.projectedFindings[0];
+  assert.equal(projected.reified, false);
+  assert.equal(projected.state, "advisory");
+  assert.equal(projected.disposalError, undefined);
+  const candidateRecord = makeJournalRecord({ ...TRUST, observation: 2, headSha: "ccc", stateHash: "two", blocking: 0, priorDigest: first.digest, findingIds: [projected.id], findings: [projected], ledgerFindings: [advisoryFinding] });
+  const candidate = { id: 1431, app_slug: TRUST.appSlug, app_id: TRUST.appId, created_at: "2026-08-03T00:03:00Z", body: `${JOURNAL_MARKER}${JSON.stringify(candidateRecord)} -->` };
+
+  const recovered = verifyTerminalMalformedRecovery({ comments: [prefix, candidate], candidateCommentId: 1431, config: TRUST, replayFindings: [advisoryFinding] });
+
+  assert.equal(recovered.ok, true, recovered.message);
 });
 
 test("terminal_malformed_recovery_rejects_unaccounted_suffix_and_accepts_whitespace", () => {
@@ -667,6 +707,24 @@ test("terminal_malformed_recovery_documentation_is_executable_and_identifies_con
   assert.match(stalls, /workflowId.*CI_WORKFLOW_ID/is);
   assert.match(stalls, /appSlug.*appId.*default-branch.*review-loop-evaluator\.yml/is);
   assert.match(stalls, /exit(?:s| status).*zero/is);
+});
+
+test("terminal_malformed_recovery_documentation_describes_failed_declassification_inverse_map", () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const stalls = fs.readFileSync(path.join(repositoryRoot, "docs/review-stalls.md"), "utf8");
+
+  assert.match(stalls, /raw pre-projection ledger.*ledgerFindings/is);
+  assert.match(stalls, /ambiguous legacy.*without.*ledgerFindings.*refus/is);
+  assert.match(stalls, /zero exit.*current ledger.*recorded raw ledger snapshot/is);
+  assert.doesNotMatch(stalls, /reified`, which is derived deterministically from\s+`reifiedBy`/i);
+  assert.doesNotMatch(stalls, /preserves every candidate\s+finding exactly/i);
+});
+
+test("trusted_workflow_journals_raw_pre_projection_findings_for_recovery", () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const workflow = fs.readFileSync(path.join(repositoryRoot, ".github/workflows/review-loop-evaluator.yml"), "utf8");
+
+  assert.match(workflow, /findings:\s*result\.projectedFindings\s*\|\|\s*\[\],\s*ledgerFindings:\s*findings/);
 });
 
 test("terminal_malformed_recovery_command_executes_the_mechanical_check", (context) => {

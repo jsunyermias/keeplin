@@ -78,7 +78,8 @@ function main() {
     observation: result.record.observation,
     priorDigest: result.record.priorDigest,
     digest: result.record.digest,
-    findings: result.record.findings || [],
+    findings: result.restorableFindings,
+    projectedFindings: result.record.findings || [],
   }, null, 2)}\n`);
 }
 

@@ -91,17 +91,17 @@ still fails closed; the terminal-record recovery procedure is in
 [`docs/review-stalls.md`](../../docs/review-stalls.md#recovering-a-terminal-malformed-journal-record).
 That procedure uses `check-review-loop-recovery.js` from the default branch to recover and verify
 the candidate record mechanically before deletion, including predecessor continuity and exact
-candidate-finding preservation in the replay ledger. Recovery compares the restorable raw ledger
-representation: `id`, `round`, `reifiedBy`, parser-derived `reified`, `state` and `resolution`.
-For the one evaluator-only failed-declassification projection, the surviving prefix and its
-parser-unreified `reifiedBy` classification, forced `reified: true` / `state: open`, and
-the exact unreachable-authorization `disposalError` map back to the raw `reified: false` /
-`state: advisory` pair only when the replay and surviving prefix carry no authorization reference.
-All six fields are then compared. Parsed
-`evidence` remains represented by `resolution`; no ledger field is dropped. The candidate frame
-must have no non-whitespace suffix. Recovery input must be chronological by `created_at` and
-comment ID. The API's nested `performed_via_github_app` attribution is authoritative when
-present, and conflicting top-level attribution is refused.
+raw-ledger preservation. Each new journal record carries `ledgerFindings`, the digest-bound raw
+pre-projection ledger beside the evaluator's `findings` projection. Recovery compares the current
+ledger directly with that raw snapshot across `id`, `round`, `reifiedBy`, parser-derived
+`reified`, `state` and `resolution`; it never infers a raw state from a projected shape or from
+operator-written replay data. Parsed `evidence` remains represented by `resolution`, so no ledger
+field is dropped. A legacy candidate without `ledgerFindings` can be recovered only by replaying
+its projection directly; the verifier refuses to map an ambiguous failed-disposition
+`reified: true` / `state: open` projection back to advisory. The candidate frame must have no
+non-whitespace suffix. Recovery input must be chronological by `created_at` and comment ID. The
+API's nested `performed_via_github_app` attribution is authoritative when present, and conflicting
+top-level attribution is refused.
 
 The App comment journal's guarantees are bounded: its unkeyed digest chain detects accidental
 corruption and casual editing that does not rebuild the chain. It does not authenticate records

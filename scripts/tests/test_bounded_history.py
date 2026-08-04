@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(os.environ.get("BOUNDED_HISTORY_REPO", Path(__file__).resolve().parents[2])).resolve()
 CHECK = Path(
     os.environ.get("BOUNDED_HISTORY_CHECK", REPO / "scripts" / "check-bounded-history.py")
 ).resolve()
@@ -100,6 +100,14 @@ class BoundedHistoryCheck(unittest.TestCase):
         changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
         self.assertIn("scripts/check-bounded-history.py", changelog)
         self.assertNotIn("scripts/check-bounded-history.sh", changelog)
+
+    def test_bounded_history_companion_states_raw_enrolment_without_visibility_claim(self):
+        companion = (REPO / "scripts" / "check-bounded-history.py.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("raw enrolment", companion)
+        self.assertNotIn("old-bypass tests", companion)
+        self.assertNotIn("keeps visible", companion)
 
 
 if __name__ == "__main__":

@@ -36,9 +36,13 @@ JSON still fails closed; operators must use the terminal-record recovery procedu
 [`docs/review-stalls.md`](../../docs/review-stalls.md#recovering-a-terminal-malformed-journal-record).
 Its default-branch recovery verifier requires an authentic terminal candidate, continuity with
 the surviving head, no unaccounted frame suffix, chronologically ordered API input with
-authoritative nested App attribution, and a current ledger identical in every ledger-representable
-finding field before the operator may delete the malformed comment. Evaluator-only projection
-diagnostics are not Markdown ledger fields.
+authoritative nested App attribution, and a current ledger identical to the digest-bound raw
+pre-projection `ledgerFindings` snapshot before the operator may delete the malformed comment.
+The workflow journals that raw snapshot beside the evaluator's `findings` projection, so recovery
+does not infer a ledger state from lossy projection diagnostics or operator-written replay data.
+Legacy records without the snapshot recover only by direct projection replay; ambiguous inverse
+mapping to advisory is refused. Evaluator-only projection diagnostics are not Markdown ledger
+fields.
 For an unchanged `resolved` disposition, the recorded authorization reference ID, author and body
 digest remain pinned while the check-run ID and name are read from the current ledger and proved
 again against the current evaluator run.

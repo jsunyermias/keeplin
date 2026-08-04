@@ -72,16 +72,18 @@ journal comment, excluding only the candidate, through the default-branch evalua
 `verifyJournal` with the repository's exact configured identity. Recover the candidate's complete
 JSON record as well: its carried digest must verify, its observation must immediately follow the
 surviving head, and its declared `priorDigest` must equal that head's digest. Before deletion,
-restore the pull request's current review ledger to the exact findings asserted by that recovered
-record. This carries forward findings introduced only by the malformed record rather than losing
-them during replay.
+restore the pull request's current review ledger to the raw pre-projection ledger recorded in the
+candidate's digest-bound `ledgerFindings` field. This carries forward findings introduced only by
+the malformed record without asking the recovery verifier to invert the evaluator's lossy
+projection.
 
-The exact comparison covers the fields the Markdown ledger represents: `id`, `round`,
-`reifiedBy`, `state`, `resolution`, and `reified`, which is derived deterministically from
-`reifiedBy`. The adapter derives `evidence` by parsing `resolution`, so the resolution comparison
-pins the evidence the ledger can carry. `disposalError` is added only by evaluator projection and
-cannot be restored as a ledger column, so it is not compared separately. No non-whitespace
-content may follow the recovered frame.
+The comparison covers the fields the Markdown ledger represents: `id`, `round`, `reifiedBy`,
+parser-derived `reified`, `state`, and `resolution`. The adapter derives `evidence` by parsing
+`resolution`, so the resolution comparison pins the evidence the ledger can carry.
+`disposalError` exists only in the separate evaluator `findings` projection and is not a Markdown
+ledger column. An ambiguous legacy candidate without `ledgerFindings` may be replayed only as its
+projected values; the verifier refuses any inverse mapping of `reified: true` / `state: open` to
+advisory. No non-whitespace content may follow the recovered frame.
 
 The downloaded comment array must be chronological by both `created_at` and comment ID. When the
 API provides nested `performed_via_github_app` attribution, it is authoritative; a conflicting
@@ -120,13 +122,15 @@ node "$recovery_dir/check-review-loop-recovery.js" \
 `config` object in the default-branch `.github/workflows/review-loop-evaluator.yml`; if that
 configuration changes, use its exact current values rather than the literals above. The pull API
 response supplies the current ledger, and the paginated issue-comment API supplies the complete
-comment history. If the command reports that the ledger is not semantically identical, restore
-every recovered finding in the pull-request ledger and fetch `pull.json` again.
+comment history. The command's `findings` output is the candidate's recorded raw ledger snapshot;
+`projectedFindings` is the evaluator output kept separately for diagnosis. If the command reports
+that the ledger is not semantically identical, restore every raw finding from `findings` in the
+pull-request ledger and fetch `pull.json` again.
 
-Do not delete anything unless the verifier exits zero. A zero exit establishes the remaining
-comments as an authentic verifying prefix within the journal's bounded, unkeyed threat model,
-establishes predecessor continuity, and proves that the current ledger preserves every candidate
-finding exactly. Keep its JSON output with the recovery evidence.
+Do not delete anything unless the verifier exits zero. A zero exit proves that the current ledger
+matches the recorded raw ledger snapshot, establishes an authentic verifying prefix from the
+remaining comments within the journal's bounded, unkeyed threat model, and establishes
+predecessor continuity. Keep its JSON output with the recovery evidence.
 
 After that verification, delete only the terminal malformed comment and rerun the affected CI
 evaluation. The evaluator derives the round again from the current pull request, checks and

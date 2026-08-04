@@ -18,6 +18,7 @@ the same three manually enrolled paths as the repositories.
 | `test_every_surface_is_checked_independently` | `1` | every enrolled path is required independently |
 | `test_enrolment_remains_the_same_fixed_three_surfaces` | `0` | an unenrolled `CHANGELOG.md` does not widen the whitelist |
 | `test_changelog_names_the_real_bounded_history_checker` | n/a | documentation names the checked-in `.py` executable |
+| `test_bounded_history_companion_states_raw_enrolment_without_visibility_claim` | n/a | the checker companion describes raw enrolment without the retired visibility wording |
 
 The two concealment fixtures put the actual anchor line inside a multi-line HTML comment and an
 ordinary margin fence. Both pass deliberately: the decided interim contract is raw enrolment,
@@ -36,8 +37,9 @@ name, and positive-fixture coverage remain because those contracts did not chang
 
 ## Harness and old-code measurement
 
-`BOUNDED_HISTORY_CHECK` points the suite at a preserved checker in a scratch worktree. This is how
-the concealment contract is measured without editing the old implementation.
+`BOUNDED_HISTORY_CHECK` points the suite at a preserved checker in a scratch worktree, while
+`BOUNDED_HISTORY_REPO` points documentation assertions at that preserved repository. This is how
+the concealment and companion contracts are measured without editing the old implementation.
 
 ## Run
 
