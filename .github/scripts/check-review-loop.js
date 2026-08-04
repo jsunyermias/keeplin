@@ -38,14 +38,6 @@ function canonicalJson(value) {
   return JSON.stringify(value);
 }
 
-function markedJson(body, marker) {
-  const start = String(body || "").indexOf(marker);
-  if (start < 0) return null;
-  const end = String(body).indexOf(" -->", start);
-  if (end < 0) return null;
-  try { return JSON.parse(String(body).slice(start + marker.length, end)); } catch { return null; }
-}
-
 function markedJsonPayloads(body, marker) {
   const source = String(body || "");
   const payloads = [];
@@ -73,8 +65,9 @@ function verifyAuthorization({ finding, reference, pullAuthor, targetState, repo
   if (!AUTHORIZING_ASSOCIATIONS.has(association)) return { ok: false, reason: "reference author is not authorized" };
   if (!login || login.toLowerCase() === String(pullAuthor || "").toLowerCase()) return { ok: false, reason: "pull-request author cannot authorize disposal" };
   if (reference.kind === "review" && String(reference.state || "").toUpperCase() === "DISMISSED") return { ok: false, reason: "authorization review was dismissed" };
-  const directive = markedJson(reference.body, DIRECTIVE_MARKER);
-  if (!directive || directive.finding !== finding.id || directive.state !== targetState || typeof directive.reason !== "string" || !directive.reason.trim()) {
+  const marked = markedJsonPayloads(reference.body, DIRECTIVE_MARKER);
+  const directive = marked.malformed ? null : marked.payloads.find((candidate) => candidate && candidate.finding === finding.id && candidate.state === targetState && typeof candidate.reason === "string" && candidate.reason.trim());
+  if (!directive) {
     return { ok: false, reason: "reference has no matching machine-readable directive" };
   }
   const digest = sha256(reference.body || "");
@@ -139,7 +132,7 @@ function verifyJournal(comments, config) {
       // silently discard the reification history that authorized disposal depends on.
       const shape = journalPayloadError(record);
       if (shape) return { ok: false, state: "history-unverifiable", message: `Journal record ${record.observation} is authentic but unreadable: ${shape}.` };
-      records.push({ ...record, commentId: comment.id });
+      records.push({ ...record, commentId: comment.id, commentCreatedAt: comment.created_at });
     }
   }
   records.sort((a, b) => a.observation - b.observation);
@@ -150,21 +143,31 @@ function verifyJournal(comments, config) {
   return { ok: true, records };
 }
 
-function recordedDispositionEvidence(records, findingId, targetState) {
+function recordedDispositionContext(records, findingId, targetState) {
   for (let index = records.length - 1; index >= 0; index -= 1) {
     const findings = records[index].findings;
     if (!Array.isArray(findings)) continue;
     const finding = findings.find((item) => item && item.id === findingId);
     if (!finding) continue;
-    if (finding.state !== targetState) return null;
-    if (finding.evidence && typeof finding.evidence === "object" && !Array.isArray(finding.evidence)) return finding.evidence;
-    return null;
+    if (finding.state === targetState) {
+      const evidence = finding.evidence && typeof finding.evidence === "object" && !Array.isArray(finding.evidence) ? finding.evidence : {};
+      return { evidence, reopenedAt: null };
+    }
+    return { evidence: undefined, reopenedAt: finding.state === "open" ? records[index].commentCreatedAt : null };
   }
-  return null;
+  return { evidence: undefined, reopenedAt: null };
+}
+
+function referenceIssuedAt(reference) {
+  const value = reference && (reference.submitted_at || reference.created_at);
+  const timestamp = Date.parse(value || "");
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
 function evaluateTrustedReviewLoop({ pull, findings = [], references = [], checks = [], journalComments = [], jobs = [], tombstones = [], genesisEvidence, changedFiles = [], stallsContent = "", diffSignature = "", stagnationLimit = DEFAULT_STAGNATION_LIMIT, config }) {
   if (pull.headRepositoryId !== pull.baseRepositoryId) return { ok: false, state: "fork-refused", message: "Fork pull requests deliberately fail closed: partial evidence is not evaluated." };
+  if (!Array.isArray(findings) || findings.some((finding) => !finding || typeof finding !== "object" || typeof finding.id !== "string" || !FINDING_ID.test(finding.id))) return { ok: false, state: "history-unverifiable", message: "Review ledger contains an invalid finding identifier." };
+  if (!Array.isArray(tombstones) || tombstones.some((entry) => !entry || typeof entry !== "object" || typeof entry.id !== "string" || !FINDING_ID.test(entry.id))) return { ok: false, state: "history-unverifiable", message: "Trusted metadata contains an invalid tombstone identifier." };
   const unreifiedOpen = findings.find((finding) => finding.state === "open" && !finding.reified);
   if (unreifiedOpen) return { ok: false, state: "history-unverifiable", message: `Review ledger: finding ${unreifiedOpen.id} is open but names no failing check.` };
   const reifiedAdvisory = findings.find((finding) => finding.state === ADVISORY && finding.reified);
@@ -209,10 +212,16 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
     // reifying record still allows an advisory classification to converge.
     const declassified = everReified.has(finding.id) && (!finding.reified || finding.state === ADVISORY);
     if (!["resolved", "dismissed"].includes(finding.state) && !declassified) return finding;
-    const evidence = recordedDispositionEvidence(journal.records, finding.id, finding.state) || finding.evidence || {};
+    const disposition = recordedDispositionContext(journal.records, finding.id, finding.state);
+    const evidence = disposition.evidence === undefined ? finding.evidence || {} : disposition.evidence;
     const reference = references.find((item) => String(item.id) === String(evidence.referenceId));
     const authorization = verifyAuthorization({ finding, reference, pullAuthor: pull.author, targetState: finding.state, repositoryId: config.repositoryId, pullNumber: pull.number, evidence });
     if (!authorization.ok) return { ...finding, reified: true, state: "open", disposalError: authorization.reason };
+    if (disposition.reopenedAt !== null) {
+      const reopenedAt = Date.parse(disposition.reopenedAt || "");
+      const issuedAt = referenceIssuedAt(reference);
+      if (!Number.isFinite(reopenedAt) || issuedAt === null || issuedAt <= reopenedAt) return { ...finding, reified: true, state: "open", disposalError: "authorization was not issued after the finding was reopened" };
+    }
     if (finding.state === "resolved") {
       const proof = verifyResolvedCheck({ finding: { ...finding, evidence }, checks, headSha: pull.headSha, config });
       if (!proof.ok) return { ...finding, state: "open", disposalError: proof.reason };
@@ -248,8 +257,10 @@ function makeJournalRecord(fields) {
   return record;
 }
 
-function journalComment(record, identity) {
-  return { id: record.observation, app_slug: identity.appSlug, app_id: identity.appId, body: `${JOURNAL_MARKER}${JSON.stringify(record)} -->` };
+function journalComment(record, identity, message = "") {
+  const serialized = JSON.stringify(record).replaceAll("<", "\\u003c");
+  const suffix = message ? `\n\n${String(message).replaceAll("<!--", "&lt;!--")}` : "";
+  return { id: record.observation, app_slug: identity.appSlug, app_id: identity.appId, body: `${JOURNAL_MARKER}${serialized} -->${suffix}` };
 }
 
 async function publishEvaluation({ result, alreadyRecorded, appendJournal, reportCheck, setFailed, info }) {

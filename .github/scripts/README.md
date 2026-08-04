@@ -65,10 +65,15 @@ every completion. Journal append is idempotent for each delivered workflow run I
 retry republishes its success or failure result and a blocked retry fails the workflow without
 appending again. Every journal marker occurrence in a configured-App comment is parsed, so a
 malformed second payload fails closed instead of disappearing. Every ID observed in surviving history remains
-reserved after retirement, including IDs first recorded as advisory. Once authorization evidence
+reserved after retirement, including IDs first recorded as advisory. Tombstone and ledger IDs
+are validated before they can enter evaluator messages. Once authorization evidence
 has been written for the latest disposition, later evaluations of that same disposition bind to
 the recorded identity, author and body digest rather than an author-editable replacement in the
-current ledger. If a finding is subsequently reopened, a later disposition uses fresh evidence.
+current ledger. If a finding is subsequently reopened, a later disposition requires a directive
+whose API creation/submission time is after the journal comment that recorded the reopening.
+Every marked payload in an authorization comment is parsed before any matching directive is
+accepted. Journal serialization escapes marker text inside record fields, and marker text in the
+human-readable message is neutralized before the App persists the comment.
 
 The App comment journal's guarantees are bounded: its unkeyed digest chain detects accidental
 corruption and casual editing that does not rebuild the chain. It does not authenticate records

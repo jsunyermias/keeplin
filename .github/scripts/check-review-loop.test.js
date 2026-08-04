@@ -645,6 +645,28 @@ test("edited_authorization_cannot_regain_force_by_updating_head_digest", () => {
   assert.match(result.projectedFindings[0].disposalError, /body digest does not match/i);
 });
 
+test("reopened_finding_rejects_stale_authorization_for_prior_disposition", () => {
+  const originalBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-905", state: "dismissed", reason: "original priority decision" })} -->`;
+  const originalEvidence = { referenceId: 905, author: "maintainer", bodyDigest: sha256(originalBody) };
+  const dismissed = { id: "F-905", reified: true, state: "dismissed", evidence: originalEvidence };
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: ["F-905"], findings: [dismissed] });
+  const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: ["F-905"], findings: [{ id: "F-905", reified: true, state: "open" }] });
+  const comments = [
+    { ...journalComment(first, TRUST), created_at: "2026-08-03T00:01:00Z" },
+    { ...journalComment(second, TRUST), created_at: "2026-08-03T00:02:00Z" },
+  ];
+  const reference = { id: 905, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", created_at: "2026-08-03T00:00:00Z", body: originalBody };
+  const result = trusted({
+    journalComments: comments,
+    findings: [{ ...dismissed, evidence: originalEvidence }],
+    references: [reference],
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.projectedFindings[0].state, "open");
+  assert.match(result.projectedFindings[0].disposalError, /after the finding was reopened/i);
+});
+
 test("reopened_finding_accepts_fresh_authorization_for_new_disposition", () => {
   const dismissedBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-905", state: "dismissed", reason: "original priority decision" })} -->`;
   const dismissed = { id: "F-905", reified: true, state: "dismissed", evidence: { referenceId: 905, author: "maintainer", bodyDigest: sha256(dismissedBody) } };
@@ -652,16 +674,41 @@ test("reopened_finding_accepts_fresh_authorization_for_new_disposition", () => {
   const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: ["F-905"], findings: [{ id: "F-905", reified: true, state: "open" }] });
   const resolvedBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-905", state: "resolved", reason: "reopened defect now passes" })} -->`;
   const resolved = { id: "F-905", reified: true, state: "resolved", evidence: { referenceId: 906, author: "maintainer", bodyDigest: sha256(resolvedBody), checkRunId: 6, checkName: "Check, Test & Lint" } };
-  const reference = { id: 906, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", body: resolvedBody };
+  const reference = { id: 906, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", created_at: "2026-08-03T00:03:00Z", body: resolvedBody };
   const check = { id: 6, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
   const result = trusted({
-    journalComments: [first, second].map((record) => journalComment(record, TRUST)),
+    journalComments: [
+      { ...journalComment(first, TRUST), created_at: "2026-08-03T00:01:00Z" },
+      { ...journalComment(second, TRUST), created_at: "2026-08-03T00:02:00Z" },
+    ],
     findings: [resolved], references: [reference], checks: [check],
   });
 
   assert.equal(result.ok, true, result.message);
   assert.equal(result.state, "converged");
   assert.equal(result.projectedFindings[0].state, "resolved");
+});
+
+test("authorization_comment_with_second_malformed_directive_is_refused", () => {
+  const valid = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-906", state: "dismissed", reason: "authorized" })} -->`;
+  const body = `${valid}\n${DIRECTIVE_MARKER}{not-json} -->`;
+  const finding = { id: "F-906", reified: true, state: "dismissed", evidence: { referenceId: 906, author: "maintainer", bodyDigest: sha256(body) } };
+  const reference = { id: 906, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", body };
+  const result = trusted({ findings: [finding], references: [reference] });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.projectedFindings[0].state, "open");
+  assert.match(result.projectedFindings[0].disposalError, /machine-readable directive/i);
+});
+
+test("authorization_comment_with_multiple_valid_directives_is_accepted", () => {
+  const matching = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-906", state: "dismissed", reason: "authorized" })} -->`;
+  const unrelated = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-907", state: "dismissed", reason: "separate finding" })} -->`;
+  const body = `${matching}\n${unrelated}`;
+  const finding = { id: "F-906", reified: true, state: "dismissed", evidence: { referenceId: 906, author: "maintainer", bodyDigest: sha256(body) } };
+  const reference = { id: 906, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", body };
+
+  assert.equal(trusted({ findings: [finding], references: [reference] }).state, "converged");
 });
 
 test("disposal_reference_from_another_pull_request_or_repository_is_refused", () => {
@@ -710,6 +757,35 @@ test("trusted_adapter_paginates_checks_and_fails_closed_on_malformed_metadata_or
   assert.match(workflow, /github\.paginate\(github\.rest\.checks\.listForRef/);
   assert.match(workflow, /Malformed trusted review-loop metadata/);
   assert.match(workflow, /Unable to verify workflow identity for check run/);
+});
+
+test("invalid_tombstone_identifier_is_refused_without_echoing_a_journal_marker", () => {
+  const maliciousId = `F-999 ${JOURNAL_MARKER}{\"forged\":true} -->`;
+  const result = trusted({ tombstones: [{ id: maliciousId, evidence: { referenceId: 999 } }] });
+
+  assert.equal(result.state, "history-unverifiable");
+  assert.doesNotMatch(result.message, /keeplin-review-loop-journal/);
+  assert.match(result.message, /invalid tombstone identifier/i);
+});
+
+test("journal_comment_neutralizes_markers_in_messages_before_persistence", () => {
+  const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 1, findingIds: ["F-999"], findings: [{ id: "F-999", reified: true, state: "open", resolution: `record ${JOURNAL_MARKER}7 -->` }] });
+  const message = `Blocked ${JOURNAL_MARKER}{\"forged\":true} -->`;
+  const body = journalComment(record, TRUST, message).body;
+
+  assert.equal(body.split(JOURNAL_MARKER).length - 1, 1);
+  assert.match(body, /Blocked/);
+  assert.match(body, /forged/);
+  assert.doesNotMatch(body.slice(body.indexOf(" -->") + 4), /<!-- keeplin-review-loop-/);
+  const workflow = fs.readFileSync(".github/workflows/review-loop-evaluator.yml", "utf8");
+  assert.match(workflow, /body: evaluator\.journalComment\(record, config, result\.message\)\.body/);
+});
+
+test("journal_comment_preserves_an_ordinary_message_verbatim", () => {
+  const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0 });
+  const message = "Review loop converged.";
+
+  assert.ok(journalComment(record, TRUST, message).body.endsWith(`\n\n${message}`));
 });
 
 test("trusted_workflow_ignores_push_runs", () => {
@@ -765,9 +841,9 @@ test("genesis and tombstones require the same verified authorization", () => {
   const evidence = { referenceId: 93, author: "maintainer", bodyDigest: sha256(body) };
   assert.equal(trusted({ journalComments: [], genesisEvidence: evidence, references: [reference] }).state, "converged");
   assert.equal(trusted({ journalComments: [], genesisEvidence: evidence, references: [] }).state, "history-unverifiable");
-  const tombstoneBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-OLD", state: "tombstone", reason: "duplicate ID" })} -->`;
+  const tombstoneBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-094", state: "tombstone", reason: "duplicate ID" })} -->`;
   const tombstoneReference = { id: 94, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", body: tombstoneBody };
-  const tombstone = { id: "F-OLD", evidence: { referenceId: 94, author: "maintainer", bodyDigest: sha256(tombstoneBody) } };
+  const tombstone = { id: "F-094", evidence: { referenceId: 94, author: "maintainer", bodyDigest: sha256(tombstoneBody) } };
   assert.equal(trusted({ tombstones: [tombstone], references: [tombstoneReference] }).state, "converged");
   assert.equal(trusted({ tombstones: [tombstone], references: [] }).state, "history-unverifiable");
 });
