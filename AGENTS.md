@@ -211,7 +211,9 @@ success evidence when resolved. Fork pull requests deliberately fail closed.
   open.** "The reviewer is satisfied" is not a convergence condition and is not accepted as
   one anywhere in the pipeline. Green means positive evidence: a check that has not finished
   is not a green check, which is why the `Review loop converged` job runs only after every
-  required job has completed.
+  required job has completed. Under keeplin ADR 0013, an empty journal evaluates immediately
+  with a digest-bound unauthenticated anchor, but synthetic `GENESIS` remains open and reified
+  until the ordinary verified-authorization path authenticates it; only convergence is withheld.
 - Every finding is recorded in the pull request's **review ledger** with a stable ID and one
   state: `open`, `resolved`, `dismissed` or `advisory`. A `dismissed` finding cites its reason
   — a priority decision or an accepted ADR — and re-raising it does not reopen it and does not
