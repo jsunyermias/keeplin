@@ -198,7 +198,11 @@ entry to Cleared with the exit that was taken and a link to it.
 
 | Detected | Pull request | Stuck on | Rounds without progress | Exit taken |
 |---|---|---|---|---|
-| 2026-08-04 | [keeplin#203](https://github.com/jsunyermias/keeplin/pull/203) | GENESIS<br>Unauthenticated genesis anchor: no procedure for authorizing a genesis directive exists in either repository, so the author has no available exit. | 3 | |
+| 2026-08-04 | [keeplin#203](https://github.com/jsunyermias/keeplin/pull/203) | GENESIS | 3 | |
+
+For [keeplin#203](https://github.com/jsunyermias/keeplin/pull/203), `GENESIS` is the
+unauthenticated genesis anchor. No procedure for authorizing a genesis directive exists in either
+repository, so this stall has no exit available to the author.
 
 ## Cleared
 
