@@ -9,7 +9,8 @@
 - Acceptance PR: [keeplin#201](https://github.com/jsunyermias/keeplin/pull/201)
 - Supersedes: none. Amends the genesis-authorization consequence of
   [0008](0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md)
-- Superseded by: none
+- Superseded by: [0014](0014-correct-the-empty-journal-decision-record.md) on its threat-model
+  statement, its compatibility claim and its deletion claim only; the decision itself stands
 
 ## Context and problem
 
