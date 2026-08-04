@@ -1,13 +1,12 @@
 # 0011 — Bound the review journal's authenticity claim
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-08-03
 - Decision owners: maintainer of `jsunyermias/keeplin` and `jsunyermias/keeplin-srv`
 - Scope: cross-repo
 - Issue: none — round-12 review findings on
   [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198)
-- Acceptance PR: pending maintainer acceptance; proposed on
-  [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198), with
+- Acceptance PR: [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198), with
   [keeplin-srv#104](https://github.com/jsunyermias/keeplin-srv/pull/104) as its companion
 - Supersedes: [0008](0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md)
   on its journal-authenticity claim only

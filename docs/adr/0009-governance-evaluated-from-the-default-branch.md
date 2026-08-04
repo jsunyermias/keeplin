@@ -1,6 +1,6 @@
 # 0009 — Review governance is evaluated from the default branch
 
-- Status: accepted
+- Status: superseded
 - Date: 2026-08-03
 - Decision owners: maintainer of `jsunyermias/keeplin` and `jsunyermias/keeplin-srv`
 - Scope: cross-repo
