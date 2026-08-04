@@ -56,6 +56,20 @@ ${extra}
 `;
 }
 
+function paragraphContaining(markdown, pattern, description) {
+  const paragraph = markdown.split(/\n\s*\n/).find((candidate) => pattern.test(candidate));
+  assert.ok(paragraph, `documentation must contain ${description} in one paragraph`);
+  return paragraph;
+}
+
+function failedDispositionRefusal(markdown) {
+  return paragraphContaining(
+    markdown,
+    /terminal-malformed legacy record from\s+a failed disposition/i,
+    "the failed-disposition refusal",
+  );
+}
+
 function round(number, openReifiedIds, redChecks, blocking) {
   const hash = loopStateHash({ diffSignature: DIFF, openReifiedIds, redChecks });
   return `| ${number} | ${hash} | ${blocking} |`;
@@ -664,8 +678,12 @@ test("pre_fix_raw_comment_terminator_recovery_is_terminal_only_and_documented", 
   const stalls = fs.readFileSync("docs/review-stalls.md", "utf8");
 
   for (const claim of [scriptReadme, workflowCompanion]) {
-    assert.match(claim, /records written after this\s+change/i);
-    assert.match(claim, /record written before this\s+change.*fails closed/is);
+    const compatibilityClaim = paragraphContaining(
+      claim,
+      /records written after this\s+change/i,
+      "the forward-only delimiter compatibility claim",
+    );
+    assert.match(compatibilityClaim, /record written before this\s+change.*fails closed/is);
   }
   assert.match(stalls, /malformed record must be\s+terminal/i);
   assert.match(stalls, /authentic verifying prefix/i);
@@ -826,23 +844,46 @@ test("terminal_malformed_recovery_rejects_forked_predecessor_and_accepts_continu
 
 test("terminal_malformed_recovery_documentation_is_executable_and_identifies_configuration_sources", () => {
   const stalls = fs.readFileSync("docs/review-stalls.md", "utf8");
+  const configuration = paragraphContaining(
+    stalls,
+    /`repositoryId` comes from the repository API/i,
+    "the recovery configuration sources",
+  );
+  const deletionGate = paragraphContaining(
+    stalls,
+    /Do not delete anything unless the verifier exits zero/i,
+    "the zero-exit deletion gate",
+  );
 
   assert.match(stalls, /check-review-loop-recovery\.js/);
   assert.match(stalls, /gh api --paginate/);
-  assert.match(stalls, /repositoryId.*repository API/is);
-  assert.match(stalls, /workflowId.*CI_WORKFLOW_ID/is);
-  assert.match(stalls, /appSlug.*appId.*default-branch.*review-loop-evaluator\.yml/is);
-  assert.match(stalls, /exit(?:s| status).*zero/is);
+  assert.match(configuration, /repositoryId.*repository API/is);
+  assert.match(configuration, /workflowId.*CI_WORKFLOW_ID/is);
+  assert.match(configuration, /appSlug.*appId.*default-branch.*review-loop-evaluator\.yml/is);
+  assert.match(deletionGate, /exit(?:s| status).*zero/is);
 });
 
 test("terminal_malformed_recovery_documentation_pins_raw_snapshot_and_legacy_escalation", () => {
   const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
   const stalls = fs.readFileSync(path.join(repositoryRoot, "docs/review-stalls.md"), "utf8");
+  const snapshot = paragraphContaining(
+    stalls,
+    /Before deletion,\s+restore the pull request's current review ledger/i,
+    "the pre-deletion snapshot source",
+  );
+  const refusal = failedDispositionRefusal(stalls);
+  const deletionGate = paragraphContaining(
+    stalls,
+    /Do not delete anything unless the verifier exits zero/i,
+    "the zero-exit deletion gate",
+  );
 
-  assert.match(stalls, /raw pre-projection ledger.*ledgerFindings/is);
-  assert.match(stalls, /legacy candidate without `ledgerFindings`.*projected values/is);
-  assert.match(stalls, /failed disposition is not recoverable.*escalate/is);
-  assert.match(stalls, /zero exit.*current ledger.*identified by `findingsSource`/is);
+  assert.match(snapshot, /raw pre-projection ledger.*ledgerFindings/is);
+  assert.match(refusal, /legacy candidate without `ledgerFindings`.*projected values/is);
+  assert.match(refusal, /failed disposition is not recoverable.*verifier must\s+refuse it/is);
+  assert.match(refusal, /Do not keep rewriting or refetching the ledger.*escalate.*maintainer/is);
+  assert.doesNotMatch(refusal, /(?<!not )(?<!never )\b(?:keep|continue) (?:rewriting|restoring|refetching)/i);
+  assert.match(deletionGate, /zero exit.*current ledger.*identified by `findingsSource`/is);
   assert.doesNotMatch(stalls, /reified`, which is derived deterministically from\s+`reifiedBy`/i);
   assert.doesNotMatch(stalls, /preserves every candidate\s+finding exactly/i);
 });
@@ -858,9 +899,11 @@ test("legacy_recovery_documentation_matches_fallback_output_and_parser", () => {
   assert.match(replay.error, /open but names no failing check/i);
   assert.equal(recovery.ok, false, "the documented Markdown replay cannot reproduce the legacy projection");
   for (const runbook of [stalls, scriptReadme]) {
-    assert.match(runbook, /failed disposition is not recoverable by this procedure/is);
-    assert.match(runbook, /legacy evaluator\s+projection/is);
-    assert.match(runbook, /escalate.*maintainer|maintainer escalation/is);
+    const refusal = failedDispositionRefusal(runbook);
+    assert.match(refusal, /failed disposition is not recoverable by this procedure/is);
+    assert.match(refusal, /legacy (?:candidate.*projected values|evaluator\s+projection)/is);
+    assert.match(refusal, /escalate.*maintainer|maintainer escalation/is);
+    assert.doesNotMatch(refusal, /(?<!not )(?<!never )\b(?:keep|continue) (?:rewriting|restoring|refetching)/i);
   }
 });
 
@@ -911,20 +954,32 @@ test("terminal_malformed_recovery_command_executes_the_mechanical_check", (conte
 });
 
 test("recovery_command_labels_raw_and_legacy_findings_sources", (context) => {
-  const finding = { id: "F-504", round: 2, reifiedBy: "output source", reified: true, state: "open", resolution: "source --> label" };
+  const projectedFinding = { id: "F-504", round: 2, reifiedBy: "projected output source", reified: true, state: "open", resolution: "projected --> payload" };
+  const rawFinding = { id: "F-504", round: 2, reifiedBy: "raw output source", reified: true, state: "open", resolution: "raw --> payload" };
   const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: [], findings: [] });
   const prefix = { ...journalComment(first, TRUST), id: 1540, created_at: "2026-08-03T00:01:00Z" };
-  const fields = { ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: [finding.id], findings: [finding] };
+  const fields = { ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: [projectedFinding.id], findings: [projectedFinding] };
   const legacy = makeJournalRecord(fields);
-  const raw = makeJournalRecord({ ...fields, ledgerFindings: [finding] });
+  const raw = makeJournalRecord({ ...fields, ledgerFindings: [rawFinding] });
   const candidate = (id, record) => ({ id, app_slug: TRUST.appSlug, app_id: TRUST.appId, created_at: "2026-08-03T00:02:00Z", body: `${JOURNAL_MARKER}${JSON.stringify(record)} -->` });
-  const legacyCommand = runRecoveryCommand(context, [prefix, candidate(1541, legacy)], finding, 1541);
-  const rawCommand = runRecoveryCommand(context, [prefix, candidate(1542, raw)], finding, 1542);
+  const legacyCommand = runRecoveryCommand(context, [prefix, candidate(1541, legacy)], projectedFinding, 1541);
+  const rawCommand = runRecoveryCommand(context, [prefix, candidate(1542, raw)], rawFinding, 1542);
 
   assert.equal(legacyCommand.status, 0, legacyCommand.stderr);
   assert.equal(rawCommand.status, 0, rawCommand.stderr);
-  assert.equal(JSON.parse(legacyCommand.stdout).findingsSource, "legacy evaluator projection");
-  assert.equal(JSON.parse(rawCommand.stdout).findingsSource, "raw pre-projection ledger snapshot");
+  const legacyOutput = JSON.parse(legacyCommand.stdout);
+  const rawOutput = JSON.parse(rawCommand.stdout);
+  assert.deepEqual(
+    { findingsSource: legacyOutput.findingsSource, findings: legacyOutput.findings },
+    { findingsSource: "legacy evaluator projection", findings: [projectedFinding] },
+  );
+  assert.deepEqual(
+    { findingsSource: rawOutput.findingsSource, findings: rawOutput.findings },
+    { findingsSource: "raw pre-projection ledger snapshot", findings: [rawFinding] },
+  );
+  assert.deepEqual(legacyOutput.projectedFindings, [projectedFinding]);
+  assert.deepEqual(rawOutput.projectedFindings, [projectedFinding]);
+  assert.notDeepEqual(rawOutput.findings, rawOutput.projectedFindings);
 });
 
 test("recovery_command_prefers_nested_app_attribution_and_rejects_conflicting_top_level_values", (context) => {
@@ -967,9 +1022,13 @@ test("same_second_disposition_authorization_boundary_is_documented", () => {
   const stalls = fs.readFileSync("docs/review-stalls.md", "utf8");
 
   for (const claim of [scriptReadme, stalls]) {
-    assert.match(claim, /same\s+second/i);
-    assert.match(claim, /strictly\s+after/i);
-    assert.match(claim, /reissue/i);
+    const boundary = paragraphContaining(
+      claim,
+      /same\s+second/i,
+      "the same-second authorization boundary",
+    );
+    assert.match(boundary, /strictly\s+after/i);
+    assert.match(boundary, /reissue/i);
   }
 });
 
