@@ -23,10 +23,13 @@ Malformed ledger data fails before evaluation. Comment and review references are
 the API request's repository and pull-request coordinates, then those coordinates are verified
 again inside the evaluator.
 
-Check-run listing is paginated. Workflow-run identity lookup failures are represented as
-unverifiable evidence and explicitly fail when the affected check is cited for resolution, rather
-than aborting the adapter with an uncaught exception. A present but malformed trusted-metadata
-marker also fails explicitly; absence alone retains the empty-metadata default.
+Job and check-run listings are paginated through Octokit's normalized page arrays. An empty page
+is legitimate and contributes no items. A non-array page or a non-object job or check-run item is
+malformed API evidence, so the adapter fails explicitly instead of treating the missing evidence
+as an empty green result. Workflow-run identity lookup failures are represented as unverifiable
+evidence and explicitly fail when the affected check is cited for resolution, rather than
+aborting the adapter with an uncaught exception. A present but malformed trusted-metadata marker
+also fails explicitly; absence alone retains the empty-metadata default.
 The evaluator's journal helper escapes HTML comment delimiters inside serialized record fields
 without changing their decoded values and neutralizes marker text in the appended human-readable
 message, so pull-request data cannot terminate the payload comment or create a second parseable
