@@ -81,9 +81,14 @@ The comparison covers the fields the Markdown ledger represents: `id`, `round`, 
 parser-derived `reified`, `state`, and `resolution`. The adapter derives `evidence` by parsing
 `resolution`, so the resolution comparison pins the evidence the ledger can carry.
 `disposalError` exists only in the separate evaluator `findings` projection and is not a Markdown
-ledger column. An ambiguous legacy candidate without `ledgerFindings` may be replayed only as its
-projected values; the verifier refuses any inverse mapping of `reified: true` / `state: open` to
-advisory. No non-whitespace content may follow the recovered frame.
+ledger column. A legacy candidate without `ledgerFindings` exposes only its projected values. A
+parser-reachable projection may be replayed directly, but a terminal-malformed legacy record from
+a failed disposition is not recoverable by this procedure: its projected `reified: true` /
+`state: open` values retain a non-reifying `reifiedBy`, while the Markdown parser derives
+`reified` from `reifiedBy` and therefore can never reproduce that combination. The verifier must
+refuse it. Do not keep rewriting or refetching the ledger; leave the comment in place and escalate
+the permanently unreachable recovery candidate to the maintainer. No non-whitespace content may
+follow the recovered frame.
 
 The downloaded comment array must be chronological by both `created_at` and comment ID. When the
 API provides nested `performed_via_github_app` attribution, it is authoritative; a conflicting
@@ -122,15 +127,19 @@ node "$recovery_dir/check-review-loop-recovery.js" \
 `config` object in the default-branch `.github/workflows/review-loop-evaluator.yml`; if that
 configuration changes, use its exact current values rather than the literals above. The pull API
 response supplies the current ledger, and the paginated issue-comment API supplies the complete
-comment history. The command's `findings` output is the candidate's recorded raw ledger snapshot;
-`projectedFindings` is the evaluator output kept separately for diagnosis. If the command reports
-that the ledger is not semantically identical, restore every raw finding from `findings` in the
-pull-request ledger and fetch `pull.json` again.
+comment history. The command's `findingsSource` labels `findings` as either the candidate's
+`raw pre-projection ledger snapshot` (records with `ledgerFindings`) or its `legacy evaluator
+projection` (records without it); `projectedFindings` is the evaluator output kept separately for
+diagnosis. For a raw snapshot, if the command reports that the ledger is not semantically
+identical, restore every raw finding from `findings` in the pull-request ledger and fetch
+`pull.json` again. A failed-disposition legacy projection is the permanently unreachable case
+described above, so repeated restoration cannot make it pass and requires maintainer escalation.
 
 Do not delete anything unless the verifier exits zero. A zero exit proves that the current ledger
-matches the recorded raw ledger snapshot, establishes an authentic verifying prefix from the
-remaining comments within the journal's bounded, unkeyed threat model, and establishes
-predecessor continuity. Keep its JSON output with the recovery evidence.
+matches the candidate snapshot identified by `findingsSource` and establishes an authentic verifying prefix.
+It proves that prefix from the remaining comments only within the journal's bounded, unkeyed
+threat model, and also establishes predecessor continuity. Keep its JSON output with the recovery
+evidence.
 
 After that verification, delete only the terminal malformed comment and rerun the affected CI
 evaluation. The evaluator derives the round again from the current pull request, checks and

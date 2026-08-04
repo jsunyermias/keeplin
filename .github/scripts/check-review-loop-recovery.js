@@ -78,6 +78,9 @@ function main() {
     observation: result.record.observation,
     priorDigest: result.record.priorDigest,
     digest: result.record.digest,
+    findingsSource: result.record.ledgerFindings === undefined
+      ? "legacy evaluator projection"
+      : "raw pre-projection ledger snapshot",
     findings: result.restorableFindings,
     projectedFindings: result.record.findings || [],
   }, null, 2)}\n`);

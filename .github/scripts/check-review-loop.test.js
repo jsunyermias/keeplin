@@ -24,6 +24,7 @@ const {
   evaluateTrustedReviewLoop,
   journalComment,
   makeJournalRecord,
+  parseFindings,
   publishEvaluation,
   recordedDispositionContext,
   requireParsedFindings,
@@ -466,6 +467,93 @@ function trusted(overrides = {}) {
   });
 }
 
+function trustedWorkflowScript(repositoryRoot) {
+  const workflow = fs.readFileSync(path.join(repositoryRoot, ".github/workflows/review-loop-evaluator.yml"), "utf8");
+  const lines = workflow.split("\n");
+  const marker = lines.findIndex((line) => line.trim() === "script: |");
+  assert.notEqual(marker, -1, "trusted evaluator workflow must contain an embedded script");
+  const indentation = lines[marker].match(/^\s*/)[0].length + 2;
+  return lines.slice(marker + 1)
+    .map((line) => line.trim() === "" ? "" : line.slice(indentation))
+    .join("\n");
+}
+
+async function executeTrustedWorkflow(repositoryRoot, pullBody, comments) {
+  const endpoints = {
+    associatedPulls: async () => {},
+    comments: async () => {},
+    reviews: async () => {},
+    jobs: async () => {},
+    checks: async () => {},
+    files: async () => {},
+  };
+  let postedBody;
+  const github = {
+    paginate: async (endpoint) => {
+      if (endpoint === endpoints.associatedPulls) return [{ number: 200, state: "open", head: { sha: "ccc" } }];
+      if (endpoint === endpoints.comments) return comments;
+      if (endpoint === endpoints.reviews || endpoint === endpoints.checks || endpoint === endpoints.files) return [];
+      if (endpoint === endpoints.jobs) return [
+        { name: "Check, Test & Lint", status: "completed", conclusion: "success" },
+        { name: "Knowledge graph up to date", status: "completed", conclusion: "success" },
+      ];
+      throw new Error("unexpected paginated endpoint");
+    },
+    rest: {
+      repos: {
+        getContent: async ({ path: requestedPath }) => ({ data: { content: Buffer.from(
+          requestedPath === ".github/scripts/check-review-loop.js"
+            ? fs.readFileSync(path.join(repositoryRoot, requestedPath), "utf8")
+            : "",
+        ).toString("base64") } }),
+        listPullRequestsAssociatedWithCommit: endpoints.associatedPulls,
+      },
+      pulls: {
+        get: async () => ({ data: {
+          number: 200,
+          body: pullBody,
+          user: { login: "author" },
+          head: { sha: "ccc", repo: { id: 7 } },
+          base: { repo: { id: 7 } },
+        } }),
+        listReviews: endpoints.reviews,
+        listFiles: endpoints.files,
+      },
+      issues: {
+        listComments: endpoints.comments,
+        createComment: async ({ body }) => { postedBody = body; },
+      },
+      actions: {
+        listJobsForWorkflowRun: endpoints.jobs,
+        getWorkflowRun: async () => { throw new Error("no check lookup expected"); },
+      },
+      checks: {
+        listForRef: endpoints.checks,
+        create: async () => {},
+      },
+    },
+  };
+  const context = {
+    repo: { owner: "jsunyermias", repo: "keeplin" },
+    payload: {
+      repository: { id: 7, full_name: "jsunyermias/keeplin", default_branch: "main" },
+      workflow_run: { id: 77, run_attempt: 1, event: "pull_request", workflow_id: 88, head_sha: "ccc" },
+    },
+  };
+  const core = { info: () => {}, setFailed: () => {} };
+  const priorWorkflowId = process.env.CI_WORKFLOW_ID;
+  process.env.CI_WORKFLOW_ID = "88";
+  try {
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    await new AsyncFunction("github", "context", "core", "require", trustedWorkflowScript(repositoryRoot))(github, context, core, require);
+  } finally {
+    if (priorWorkflowId === undefined) delete process.env.CI_WORKFLOW_ID;
+    else process.env.CI_WORKFLOW_ID = priorWorkflowId;
+  }
+  assert.ok(postedBody, "trusted workflow must append a journal observation");
+  return journalRecord({ body: postedBody });
+}
+
 function runRecoveryCommand(context, comments, finding, candidateCommentId) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "keeplin-recovery-input-"));
   context.after(() => fs.rmSync(directory, { recursive: true, force: true }));
@@ -485,12 +573,38 @@ function runRecoveryCommand(context, comments, finding, candidateCommentId) {
   ], { encoding: "utf8" });
 }
 
+function legacyFailedDispositionFixture() {
+  const priorFinding = { id: "F-300", round: 3, reifiedBy: "mechanical check", reified: true, state: "open", resolution: "" };
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "bbb", stateHash: "one", blocking: 1, findingIds: [priorFinding.id], findings: [priorFinding] });
+  const prefix = { ...journalComment(first, TRUST), id: 1300, created_at: "2026-08-03T00:01:00Z" };
+  const ledgerFinding = { id: "F-300", round: 4, reifiedBy: "advisory", reified: false, state: "advisory", resolution: "failed --> declassification" };
+  const evaluated = trusted({ journalComments: [prefix], findings: [ledgerFinding], references: [] });
+  const projected = evaluated.projectedFindings[0];
+  const candidateRecord = makeJournalRecord({ ...TRUST, observation: 2, headSha: "ccc", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: [projected.id], findings: [projected] });
+  const candidate = { id: 1301, app_slug: TRUST.appSlug, app_id: TRUST.appId, created_at: "2026-08-03T00:02:00Z", body: `${JOURNAL_MARKER}${JSON.stringify(candidateRecord)} -->` };
+  const replay = parseFindings(`| ID | Round | Reified by | State | Resolution |\n|---|---|---|---|---|\n| ${projected.id} | ${projected.round} | \`${projected.reifiedBy}\` | ${projected.state} | ${projected.resolution} |`);
+  const parserDerivedReplay = [{ id: projected.id, round: projected.round, reifiedBy: projected.reifiedBy, reified: false, state: projected.state, resolution: projected.resolution }];
+  return { prefix, candidate, projected, replay, parserDerivedReplay };
+}
+
 test("journal accepts the shared intact fixture", () => assert.equal(trusted().state, "converged"));
 
 test("edited journal record is history-unverifiable", () => {
   const comments = journalFixture();
   comments[1].body = comments[1].body.replace('"two"', '"changed"');
   assert.equal(trusted({ journalComments: comments }).state, "history-unverifiable");
+});
+
+test("ledgerFindings mutation is rejected by the journal digest while the intact record verifies", () => {
+  const finding = { id: "F-502", round: 1, reifiedBy: "digest mutation", reified: true, state: "open", resolution: "intact raw snapshot" };
+  const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "ccc", stateHash: "one", blocking: 1, findingIds: [finding.id], findings: [finding], ledgerFindings: [finding] });
+  const tampered = { ...record, ledgerFindings: [{ ...finding, resolution: "tampered raw snapshot" }] };
+  const intactResult = trusted({ journalComments: [journalComment(record, TRUST)], findings: [finding] });
+  const tamperedResult = trusted({ journalComments: [journalComment(tampered, TRUST)], findings: [finding] });
+
+  assert.notEqual(intactResult.state, "history-unverifiable", intactResult.message);
+  assert.equal(tamperedResult.state, "history-unverifiable");
+  assert.match(tamperedResult.message, /content does not match its carried digest/i);
 });
 
 test("middle-deleted journal record is history-unverifiable", () => {
@@ -593,6 +707,18 @@ test("terminal_malformed_recovery_accepts_safe_replay_of_evaluator_projected_ope
   assert.equal(safe.ok, true, safe.message);
   assert.equal(changedResolution.ok, false);
   assert.match(changedResolution.message, /not semantically identical.*F-200/i);
+});
+
+test("legacy_failed_disposition_candidate_is_refused_when_markdown_cannot_reproduce_its_projection", () => {
+  const { prefix, candidate, projected, replay, parserDerivedReplay } = legacyFailedDispositionFixture();
+
+  assert.equal(projected.reifiedBy, "advisory");
+  assert.equal(projected.reified, true);
+  assert.equal(projected.state, "open");
+  assert.match(replay.error, /open but names no failing check/i);
+  const refused = verifyTerminalMalformedRecovery({ comments: [prefix, candidate], candidateCommentId: 1301, config: TRUST, replayFindings: parserDerivedReplay });
+  assert.equal(refused.ok, false);
+  assert.match(refused.message, /not semantically identical.*F-300/i);
 });
 
 test("terminal_malformed_recovery_accepts_safe_replay_of_evaluator_projected_failed_declassification", () => {
@@ -709,22 +835,48 @@ test("terminal_malformed_recovery_documentation_is_executable_and_identifies_con
   assert.match(stalls, /exit(?:s| status).*zero/is);
 });
 
-test("terminal_malformed_recovery_documentation_describes_failed_declassification_inverse_map", () => {
+test("terminal_malformed_recovery_documentation_pins_raw_snapshot_and_legacy_escalation", () => {
   const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
   const stalls = fs.readFileSync(path.join(repositoryRoot, "docs/review-stalls.md"), "utf8");
 
   assert.match(stalls, /raw pre-projection ledger.*ledgerFindings/is);
-  assert.match(stalls, /ambiguous legacy.*without.*ledgerFindings.*refus/is);
-  assert.match(stalls, /zero exit.*current ledger.*recorded raw ledger snapshot/is);
+  assert.match(stalls, /legacy candidate without `ledgerFindings`.*projected values/is);
+  assert.match(stalls, /failed disposition is not recoverable.*escalate/is);
+  assert.match(stalls, /zero exit.*current ledger.*identified by `findingsSource`/is);
   assert.doesNotMatch(stalls, /reified`, which is derived deterministically from\s+`reifiedBy`/i);
   assert.doesNotMatch(stalls, /preserves every candidate\s+finding exactly/i);
 });
 
-test("trusted_workflow_journals_raw_pre_projection_findings_for_recovery", () => {
+test("legacy_recovery_documentation_matches_fallback_output_and_parser", () => {
   const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
-  const workflow = fs.readFileSync(path.join(repositoryRoot, ".github/workflows/review-loop-evaluator.yml"), "utf8");
+  const stalls = fs.readFileSync(path.join(repositoryRoot, "docs/review-stalls.md"), "utf8");
+  const scriptReadme = fs.readFileSync(path.join(repositoryRoot, ".github/scripts/README.md"), "utf8");
+  const { prefix, candidate, projected, replay, parserDerivedReplay } = legacyFailedDispositionFixture();
+  const recovery = verifyTerminalMalformedRecovery({ comments: [prefix, candidate], candidateCommentId: 1301, config: TRUST, replayFindings: parserDerivedReplay });
 
-  assert.match(workflow, /findings:\s*result\.projectedFindings\s*\|\|\s*\[\],\s*ledgerFindings:\s*findings/);
+  assert.equal(projected.reified, true);
+  assert.match(replay.error, /open but names no failing check/i);
+  assert.equal(recovery.ok, false, "the documented Markdown replay cannot reproduce the legacy projection");
+  for (const runbook of [stalls, scriptReadme]) {
+    assert.match(runbook, /failed disposition is not recoverable by this procedure/is);
+    assert.match(runbook, /legacy evaluator\s+projection/is);
+    assert.match(runbook, /escalate.*maintainer|maintainer escalation/is);
+  }
+});
+
+test("trusted_workflow_journals_raw_pre_projection_findings_for_recovery", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const priorFinding = { id: "F-501", round: 1, reifiedBy: "mechanical check", reified: true, state: "open", resolution: "" };
+  const priorRecord = makeJournalRecord({ ...TRUST, runId: 76, runAttempt: 1, observation: 1, headSha: "bbb", stateHash: "prior", blocking: 1, findingIds: [priorFinding.id], findings: [priorFinding] });
+  const comments = [{ ...journalComment(priorRecord, TRUST), id: 1501, created_at: "2026-08-03T00:01:00Z", performed_via_github_app: { slug: TRUST.appSlug, id: TRUST.appId } }];
+  const pullBody = `## Review ledger\n\n| ID | Round | Reified by | State | Resolution |\n|---|---|---|---|---|\n| F-501 | 2 | \`advisory\` | advisory | failed declassification |\n\n### Round log\n`;
+  const record = await executeTrustedWorkflow(repositoryRoot, pullBody, comments);
+
+  assert.deepEqual(record.ledgerFindings, [{ id: "F-501", round: 2, reifiedBy: "advisory", reified: false, state: "advisory", resolution: "failed declassification" }]);
+  assert.equal(record.findings[0].id, "F-501");
+  assert.equal(record.findings[0].reified, true);
+  assert.equal(record.findings[0].state, "open");
+  assert.notDeepEqual(record.ledgerFindings, record.findings, "workflow must journal the raw parser result, not the lossy evaluator projection");
 });
 
 test("terminal_malformed_recovery_command_executes_the_mechanical_check", (context) => {
@@ -753,7 +905,26 @@ test("terminal_malformed_recovery_command_executes_the_mechanical_check", (conte
   ], { encoding: "utf8" });
 
   assert.equal(command.status, 0, command.stderr);
-  assert.deepEqual(JSON.parse(command.stdout).findings, [finding]);
+  const output = JSON.parse(command.stdout);
+  assert.equal(output.findingsSource, "legacy evaluator projection");
+  assert.deepEqual(output.findings, [finding]);
+});
+
+test("recovery_command_labels_raw_and_legacy_findings_sources", (context) => {
+  const finding = { id: "F-504", round: 2, reifiedBy: "output source", reified: true, state: "open", resolution: "source --> label" };
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: [], findings: [] });
+  const prefix = { ...journalComment(first, TRUST), id: 1540, created_at: "2026-08-03T00:01:00Z" };
+  const fields = { ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: [finding.id], findings: [finding] };
+  const legacy = makeJournalRecord(fields);
+  const raw = makeJournalRecord({ ...fields, ledgerFindings: [finding] });
+  const candidate = (id, record) => ({ id, app_slug: TRUST.appSlug, app_id: TRUST.appId, created_at: "2026-08-03T00:02:00Z", body: `${JOURNAL_MARKER}${JSON.stringify(record)} -->` });
+  const legacyCommand = runRecoveryCommand(context, [prefix, candidate(1541, legacy)], finding, 1541);
+  const rawCommand = runRecoveryCommand(context, [prefix, candidate(1542, raw)], finding, 1542);
+
+  assert.equal(legacyCommand.status, 0, legacyCommand.stderr);
+  assert.equal(rawCommand.status, 0, rawCommand.stderr);
+  assert.equal(JSON.parse(legacyCommand.stdout).findingsSource, "legacy evaluator projection");
+  assert.equal(JSON.parse(rawCommand.stdout).findingsSource, "raw pre-projection ledger snapshot");
 });
 
 test("recovery_command_prefers_nested_app_attribution_and_rejects_conflicting_top_level_values", (context) => {
