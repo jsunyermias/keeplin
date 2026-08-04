@@ -671,6 +671,30 @@ test("ledgerFindings mutation is rejected by the journal digest while the intact
   assert.match(tamperedResult.message, /content does not match its carried digest/i);
 });
 
+test("unauthenticatedAnchor is digest-bound in both boolean directions", () => {
+  for (const [recorded, tampered] of [[true, false], [false, true]]) {
+    const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "ccc", stateHash: "one", blocking: recorded ? 1 : 0, unauthenticatedAnchor: recorded, findingIds: [], findings: [], ledgerFindings: [] });
+    const intactComment = journalComment(record, TRUST);
+    const tamperedComment = {
+      ...intactComment,
+      body: intactComment.body.replace(
+        `"unauthenticatedAnchor":${recorded}`,
+        `"unauthenticatedAnchor":${tampered}`,
+      ),
+    };
+
+    assert.notEqual(tamperedComment.body, intactComment.body, "the fixture must flip the serialized flag");
+    const rejected = trusted({ journalComments: [tamperedComment] });
+    assert.equal(rejected.state, "history-unverifiable");
+    assert.match(rejected.message, /content does not match its carried digest/i);
+
+    const subsequent = trusted({ journalComments: [intactComment] });
+    assert.equal(subsequent.unauthenticatedAnchor, recorded);
+    assert.equal(subsequent.state, recorded ? "converging" : "converged");
+    assert.equal(subsequent.syntheticFindings.some((finding) => finding.id === "GENESIS"), recorded);
+  }
+});
+
 test("middle-deleted journal record is history-unverifiable", () => {
   const comments = journalFixture();
   comments.splice(1, 1);
@@ -738,6 +762,13 @@ test("pre_fix_raw_comment_terminator_recovery_is_terminal_only_and_documented", 
   assert.match(stalls, /malformed record must be\s+terminal/i);
   assert.match(stalls, /authentic verifying prefix/i);
   assert.match(stalls, /re-recorded/i);
+  const legacyAnchorClaim = paragraphContaining(
+    workflowCompanion,
+    /Legacy records without the field/i,
+    "the absent unauthenticated-anchor interpretation",
+  );
+  assert.match(legacyAnchorClaim, /omission is read as authenticated/i);
+  assert.match(legacyAnchorClaim, /App-identity digest boundary.*ADR\s+0011/is);
 });
 
 test("terminal_malformed_recovery_preserves_candidate_findings", () => {
@@ -755,6 +786,33 @@ test("terminal_malformed_recovery_preserves_candidate_findings", () => {
   assert.match(dropped.message, /not semantically identical.*F-101/i);
   assert.equal(preserved.ok, true, preserved.message);
   assert.deepEqual(preserved.record.findings, [finding]);
+});
+
+test("terminal_malformed_recovery_reports_an_unauthenticated_anchor", (context) => {
+  const finding = { id: "F-102", round: 1, reifiedBy: "anchor recovery", reified: true, state: "open", resolution: "literal --> remains journal data" };
+  const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "ccc", stateHash: "one", blocking: 2, unauthenticatedAnchor: true, findingIds: [finding.id], findings: [finding], ledgerFindings: [finding] });
+  const candidate = { id: 1012, app_slug: TRUST.appSlug, app_id: TRUST.appId, created_at: "2026-08-03T00:01:00Z", body: `${JOURNAL_MARKER}${JSON.stringify(record)} -->` };
+  const recovered = verifyTerminalMalformedRecovery({ comments: [candidate], candidateCommentId: 1012, config: TRUST, replayFindings: [finding] });
+  const command = runRecoveryCommand(context, [candidate], finding, 1012);
+
+  assert.equal(recovered.ok, true, recovered.message);
+  assert.equal(recovered.record.unauthenticatedAnchor, true);
+  assert.equal(command.status, 0, command.stderr);
+  assert.equal(JSON.parse(command.stdout).unauthenticatedAnchor, true);
+});
+
+test("a_non_boolean_unauthenticated_anchor_is_unreadable_in_evaluation_and_recovery", () => {
+  const finding = { id: "F-103", round: 1, reifiedBy: "anchor shape", reified: true, state: "open", resolution: "literal --> remains journal data" };
+  const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "ccc", stateHash: "one", blocking: 2, unauthenticatedAnchor: "yes", findingIds: [finding.id], findings: [finding], ledgerFindings: [finding] });
+  const ordinary = journalComment(record, TRUST);
+  const candidate = { id: 1013, app_slug: TRUST.appSlug, app_id: TRUST.appId, created_at: "2026-08-03T00:01:00Z", body: `${JOURNAL_MARKER}${JSON.stringify(record)} -->` };
+  const evaluation = trusted({ journalComments: [ordinary], findings: [finding] });
+  const recovery = verifyTerminalMalformedRecovery({ comments: [candidate], candidateCommentId: 1013, config: TRUST, replayFindings: [finding] });
+
+  assert.equal(evaluation.state, "history-unverifiable");
+  assert.match(evaluation.message, /unauthenticatedAnchor.*boolean/i);
+  assert.equal(recovery.ok, false);
+  assert.match(recovery.message, /unauthenticatedAnchor.*boolean/i);
 });
 
 test("terminal_malformed_recovery_accepts_safe_replay_of_evaluator_projected_open_finding", () => {
@@ -1046,6 +1104,16 @@ test("recovery_command_labels_raw_and_legacy_findings_sources", (context) => {
   assert.deepEqual(legacyOutput.projectedFindings, [projectedFinding]);
   assert.deepEqual(rawOutput.projectedFindings, [projectedFinding]);
   assert.notDeepEqual(rawOutput.findings, rawOutput.projectedFindings);
+  assert.equal(legacyOutput.unauthenticatedAnchor, null);
+  for (const runbookPath of [".github/scripts/README.md", "docs/review-stalls.md"]) {
+    const runbook = fs.readFileSync(runbookPath, "utf8");
+    const outputClaim = paragraphContaining(
+      runbook,
+      /reports the candidate's `unauthenticatedAnchor`/i,
+      `${runbookPath} recovery output contract`,
+    );
+    assert.match(outputClaim, /null.*legacy candidate/is);
+  }
 });
 
 test("recovery_command_prefers_nested_app_attribution_and_rejects_conflicting_top_level_values", (context) => {
@@ -1741,18 +1809,20 @@ test("existing_failed_run_attempt_appends_nothing_reports_failure_and_sets_faile
 for (const refusal of [
   {
     state: "history-unverifiable",
-    reason: "GENESIS lacks verified authorization: authorization reference is unreachable.",
+    reason: "Configured App journal comment carries a malformed marker or JSON payload.",
+    comments: [{ id: 999, body: `${JOURNAL_MARKER}{not-json} -->`, performed_via_github_app: { slug: TRUST.appSlug, id: TRUST.appId } }],
     options: {},
   },
   {
     state: "fork-refused",
     reason: "Fork pull requests deliberately fail closed: partial evidence is not evaluated.",
+    comments: [],
     options: { headRepositoryId: 8 },
   },
 ]) {
   test(`trusted workflow reports ${refusal.state} without journaling`, async () => {
     const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
-    const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+    const outcome = await executeTrustedWorkflow(repositoryRoot, "", refusal.comments, {
       expectJournal: false,
       ...refusal.options,
     });
@@ -1825,17 +1895,159 @@ test("only named required jobs with positive success converge; forks fail closed
   assert.equal(trusted({ pull: { author: "author", headSha: "ccc", headRepositoryId: 8, baseRepositoryId: 7 } }).state, "fork-refused");
 });
 
-test("genesis and tombstones require the same verified authorization", () => {
+test("an empty journal without genesis authorization evaluates instead of refusing", () => {
+  const result = trusted({ journalComments: [] });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.state, "converging");
+  assert.notEqual(result.state, "history-unverifiable");
+  assert.equal(result.unauthenticatedAnchor, true);
+});
+
+test("an unauthenticated genesis is an open reified blocker and cannot converge", () => {
+  const result = trusted({ journalComments: [] });
+
+  assert.equal(result.blocking, 1);
+  assert.deepEqual(result.syntheticFindings, [{
+    id: "GENESIS",
+    round: 1,
+    reifiedBy: "verified genesis authorization",
+    reified: true,
+    state: "open",
+    resolution: "",
+    disposalError: "authorization reference is unreachable",
+  }]);
+  assert.equal(result.currentHash, loopStateHash({ diffSignature: "", openReifiedIds: ["GENESIS"], redChecks: [] }));
+  assert.match(result.message, /GENESIS/);
+});
+
+test("synthetic GENESIS does not enter the ledger finding ID namespace", () => {
+  const parsed = parseFindings("| ID | Round | Reified by | State | Resolution |\n|---|---|---|---|---|\n| GENESIS | 1 | anchor | open | |");
+  const invalidRecord = makeJournalRecord({ ...TRUST, observation: 1, headSha: "ccc", stateHash: "one", blocking: 1, unauthenticatedAnchor: true, findingIds: ["GENESIS"], findings: [{ id: "GENESIS", reified: true, state: "open" }], ledgerFindings: [] });
+  const invalidHistory = trusted({ journalComments: [journalComment(invalidRecord, TRUST)] });
+  const empty = trusted({ journalComments: [] });
+
+  assert.match(parsed.error, /not a stable finding ID/i);
+  assert.equal(invalidHistory.state, "history-unverifiable");
+  assert.match(invalidHistory.message, /not a finding ID/i);
+  assert.deepEqual(empty.projectedFindings, []);
+  assert.equal(empty.syntheticFindings[0].id, "GENESIS");
+});
+
+test("verified genesis authorization closes the synthetic blocker and permits convergence", () => {
   const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "GENESIS", state: "genesis", reason: "migrate this PR" })} -->`;
   const reference = { id: 93, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "COLLABORATOR", body };
   const evidence = { referenceId: 93, author: "maintainer", bodyDigest: sha256(body) };
-  assert.equal(trusted({ journalComments: [], genesisEvidence: evidence, references: [reference] }).state, "converged");
-  assert.equal(trusted({ journalComments: [], genesisEvidence: evidence, references: [] }).state, "history-unverifiable");
+  const result = trusted({ journalComments: [], genesisEvidence: evidence, references: [reference] });
+
+  assert.equal(result.state, "converged");
+  assert.equal(result.unauthenticatedAnchor, false);
+  assert.deepEqual(result.syntheticFindings, []);
+  assert.equal(result.blocking, 0);
+});
+
+test("a later verified genesis authorization authenticates an existing unauthenticated chain", () => {
+  const firstEvaluation = trusted({ journalComments: [] });
+  const firstRecord = makeJournalRecord({ ...TRUST, observation: 1, headSha: "bbb", stateHash: firstEvaluation.currentHash, blocking: firstEvaluation.blocking, unauthenticatedAnchor: firstEvaluation.unauthenticatedAnchor, findingIds: [], findings: [], ledgerFindings: [] });
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "GENESIS", state: "genesis", reason: "authenticate the existing chain" })} -->`;
+  const reference = { id: 193, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
+  const evidence = { referenceId: 193, author: "maintainer", bodyDigest: sha256(body) };
+  const result = trusted({ journalComments: [journalComment(firstRecord, TRUST)], genesisEvidence: evidence, references: [reference] });
+
+  assert.equal(firstEvaluation.unauthenticatedAnchor, true);
+  assert.equal(result.state, "converged");
+  assert.equal(result.unauthenticatedAnchor, false);
+  assert.deepEqual(result.syntheticFindings, []);
+});
+
+function stagnantUnauthenticatedJournal() {
+  const records = [];
+  let priorDigest = null;
+  for (let observation = 1; observation <= DEFAULT_STAGNATION_LIMIT; observation += 1) {
+    const record = makeJournalRecord({
+      ...TRUST,
+      observation,
+      headSha: `head-${observation}`,
+      stateHash: `progress-free-${observation}`,
+      blocking: 1,
+      priorDigest,
+      unauthenticatedAnchor: true,
+      findingIds: [],
+      findings: [],
+      ledgerFindings: [],
+    });
+    records.push(journalComment(record, TRUST));
+    priorDigest = record.digest;
+  }
+  return records;
+}
+
+test("a stalled unauthenticated chain accepts a stall record naming GENESIS", () => {
+  const result = trusted({
+    journalComments: stagnantUnauthenticatedJournal(),
+    changedFiles: [STALLS_PATH],
+    stallsContent: `## Open\n\n| Detected | Pull request | Stuck on |\n|---|---|---|\n| 2026-08-04 | ${REPOSITORY}#${PULL_NUMBER} | GENESIS |\n`,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.state, "converging", result.message);
+  assert.equal(result.unauthenticatedAnchor, true);
+  assert.deepEqual(result.syntheticFindings.map((finding) => finding.id), ["GENESIS"]);
+});
+
+test("a stalled unauthenticated chain rejects a stall record omitting GENESIS", () => {
+  const result = trusted({
+    journalComments: stagnantUnauthenticatedJournal(),
+    changedFiles: [STALLS_PATH],
+    stallsContent: `## Open\n\n| Detected | Pull request | Stuck on |\n|---|---|---|\n| 2026-08-04 | ${REPOSITORY}#${PULL_NUMBER} | F-001 |\n`,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.state, "escalated");
+  assert.match(result.message, /missing GENESIS/i);
+});
+
+test("genesis may evaluate unauthenticated while tombstones still require verified authorization", () => {
+  assert.equal(trusted({ journalComments: [] }).state, "converging");
   const tombstoneBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-094", state: "tombstone", reason: "duplicate ID" })} -->`;
   const tombstoneReference = { id: 94, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", body: tombstoneBody };
   const tombstone = { id: "F-094", evidence: { referenceId: 94, author: "maintainer", bodyDigest: sha256(tombstoneBody) } };
   assert.equal(trusted({ tombstones: [tombstone], references: [tombstoneReference] }).state, "converged");
   assert.equal(trusted({ tombstones: [tombstone], references: [] }).state, "history-unverifiable");
+});
+
+test("the embedded adapter journals an unauthenticated anchor and its real blocking state", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], { expectJournal: false });
+
+  assert.ok(outcome.postedBody, "an unauthenticated empty journal must still receive its genesis observation");
+  const record = journalRecord({ body: outcome.postedBody });
+  assert.equal(record.unauthenticatedAnchor, true);
+  assert.deepEqual(record.findingIds, []);
+  assert.deepEqual(record.findings, []);
+  assert.deepEqual(record.ledgerFindings, []);
+  assert.equal(record.blocking, 1);
+  assert.equal(outcome.reportedCheck.output.title, "converging");
+  assert.equal(outcome.reportedCheck.conclusion, "failure");
+  assert.deepEqual(outcome.failures, [outcome.reportedCheck.output.summary]);
+  assert.match(outcome.reportedCheck.output.summary, /GENESIS/);
+});
+
+test("the embedded adapter journals an authenticated genesis symmetrically", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "GENESIS", state: "genesis", reason: "anchor this PR" })} -->`;
+  const evidence = { referenceId: 193, author: "maintainer", bodyDigest: sha256(body) };
+  const pullBody = `<!-- keeplin-review-loop-metadata ${JSON.stringify({ genesisEvidence: evidence })} -->`;
+  const reference = { id: 193, user: { login: "maintainer" }, author_association: "OWNER", body };
+  const outcome = await executeTrustedWorkflow(repositoryRoot, pullBody, [reference], { expectJournal: false });
+
+  assert.ok(outcome.postedBody, "an authenticated empty journal must receive its genesis observation");
+  const record = journalRecord({ body: outcome.postedBody });
+  assert.equal(record.unauthenticatedAnchor, false);
+  assert.equal(record.blocking, 0);
+  assert.deepEqual(outcome.failures, []);
+  assert.equal(outcome.reportedCheck.output.title, "converged");
+  assert.equal(outcome.reportedCheck.conclusion, "success");
 });
 
 test("trusted workflow cannot execute or interpolate pull-request-head content", () => {

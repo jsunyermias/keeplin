@@ -69,7 +69,10 @@ and `bodyDigest`; `resolved` also contains `checkRunId` and one exact required `
 The referenced review/comment body must carry a `keeplin-review-loop-authorize` HTML comment
 whose JSON names the exact `finding`, target `state` and non-empty `reason`. Its author must be
 an independent MEMBER, OWNER or COLLABORATOR. Genesis and tombstones use states `genesis` and
-`tombstone` in the metadata object below.
+`tombstone` in the metadata object below. An empty journal may evaluate without
+`genesisEvidence`, but its digest-bound `unauthenticatedAnchor` remains true and synthetic
+`GENESIS` remains open and reified; convergence requires the same verified directive this field
+records.
 
 <!-- keeplin-review-loop-metadata {"genesisEvidence":null,"tombstones":[]} -->
 
