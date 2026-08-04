@@ -497,6 +497,27 @@ test("configured_app_comment_with_second_malformed_marker_is_history_unverifiabl
   assert.match(result.message, /malformed marker or JSON/i);
 });
 
+test("journal_field_containing_comment_terminator_round_trips_safely", () => {
+  const finding = { id: "F-908", reified: true, state: "open", resolution: "literal --> remains journal data" };
+  const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "ccc", stateHash: "one", blocking: 1, findingIds: [finding.id], findings: [finding] });
+  const comment = journalComment(record, TRUST);
+  const result = trusted({ journalComments: [comment], findings: [finding] });
+
+  assert.notEqual(result.state, "history-unverifiable", result.message);
+  assert.equal(comment.body.split(" -->").length - 1, 1, "only the framing delimiter may terminate the HTML comment");
+  assert.equal(result.records[0].findings[0].resolution, finding.resolution);
+});
+
+test("raw_comment_terminator_inside_journal_json_still_fails_closed", () => {
+  const finding = { id: "F-908", reified: true, state: "open", resolution: "literal --> remains journal data" };
+  const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "ccc", stateHash: "one", blocking: 1, findingIds: [finding.id], findings: [finding] });
+  const unsafe = { id: 1, app_slug: TRUST.appSlug, app_id: TRUST.appId, body: `${JOURNAL_MARKER}${JSON.stringify(record)} -->` };
+  const result = trusted({ journalComments: [unsafe], findings: [finding] });
+
+  assert.equal(result.state, "history-unverifiable");
+  assert.match(result.message, /malformed marker or JSON/i);
+});
+
 test("limitation_F002_terminal_truncation_undetected", () => {
   const extendedJournal = journalFixture();
   const genuinelyTwoRecordJournal = journalFixture(2);
@@ -687,6 +708,91 @@ test("reopened_finding_accepts_fresh_authorization_for_new_disposition", () => {
   assert.equal(result.ok, true, result.message);
   assert.equal(result.state, "converged");
   assert.equal(result.projectedFindings[0].state, "resolved");
+});
+
+test("stale_directive_cannot_return_after_intervening_non_open_disposition", () => {
+  const dismissedBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-909", state: "dismissed", reason: "original priority decision" })} -->`;
+  const dismissedEvidence = { referenceId: 909, author: "maintainer", bodyDigest: sha256(dismissedBody) };
+  const dismissed = { id: "F-909", reified: true, state: "dismissed", evidence: dismissedEvidence };
+  const resolved = { id: "F-909", reified: true, state: "resolved", evidence: { referenceId: 910, author: "maintainer", bodyDigest: "recorded-resolution" } };
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: [dismissed.id], findings: [dismissed] });
+  const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 0, priorDigest: first.digest, findingIds: [resolved.id], findings: [resolved] });
+  const reference = { id: 909, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", created_at: "2026-08-03T00:00:00Z", body: dismissedBody };
+  const result = trusted({
+    journalComments: [
+      { ...journalComment(first, TRUST), created_at: "2026-08-03T00:01:00Z" },
+      { ...journalComment(second, TRUST), created_at: "2026-08-03T00:02:00Z" },
+    ],
+    findings: [dismissed], references: [reference],
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.projectedFindings[0].state, "open");
+  assert.match(result.projectedFindings[0].disposalError, /disposition changed/i);
+});
+
+test("fresh_directive_after_intervening_non_open_disposition_is_accepted", () => {
+  const originalBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-909", state: "dismissed", reason: "original priority decision" })} -->`;
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: ["F-909"], findings: [{ id: "F-909", reified: true, state: "dismissed", evidence: { referenceId: 909, author: "maintainer", bodyDigest: sha256(originalBody) } }] });
+  const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 0, priorDigest: first.digest, findingIds: ["F-909"], findings: [{ id: "F-909", reified: true, state: "resolved", evidence: { referenceId: 910, author: "maintainer", bodyDigest: "recorded-resolution" } }] });
+  const freshBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-909", state: "dismissed", reason: "new priority decision" })} -->`;
+  const freshEvidence = { referenceId: 911, author: "maintainer", bodyDigest: sha256(freshBody) };
+  const reference = { id: 911, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", created_at: "2026-08-03T00:03:00Z", body: freshBody };
+  const result = trusted({
+    journalComments: [
+      { ...journalComment(first, TRUST), created_at: "2026-08-03T00:01:00Z" },
+      { ...journalComment(second, TRUST), created_at: "2026-08-03T00:02:00Z" },
+    ],
+    findings: [{ id: "F-909", reified: true, state: "dismissed", evidence: freshEvidence }], references: [reference],
+  });
+
+  assert.equal(result.ok, true, result.message);
+  assert.equal(result.projectedFindings[0].state, "dismissed");
+});
+
+test("fresh_directive_after_reopening_survives_later_open_observations", () => {
+  const dismissed = { id: "F-910", reified: true, state: "dismissed", evidence: { referenceId: 912, author: "maintainer", bodyDigest: "recorded-dismissal" } };
+  const open = { id: "F-910", reified: true, state: "open" };
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: [dismissed.id], findings: [dismissed] });
+  const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: [open.id], findings: [open] });
+  const third = makeJournalRecord({ ...TRUST, observation: 3, headSha: "ccc", stateHash: "three", blocking: 1, priorDigest: second.digest, findingIds: [open.id], findings: [open] });
+  const freshBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-910", state: "dismissed", reason: "fresh decision after reopening" })} -->`;
+  const freshEvidence = { referenceId: 913, author: "maintainer", bodyDigest: sha256(freshBody) };
+  const reference = { id: 913, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", created_at: "2026-08-03T00:03:00Z", body: freshBody };
+  const result = trusted({
+    journalComments: [
+      { ...journalComment(first, TRUST), created_at: "2026-08-03T00:01:00Z" },
+      { ...journalComment(second, TRUST), created_at: "2026-08-03T00:02:00Z" },
+      { ...journalComment(third, TRUST), created_at: "2026-08-03T00:04:00Z" },
+    ],
+    findings: [{ id: "F-910", reified: true, state: "dismissed", evidence: freshEvidence }], references: [reference],
+  });
+
+  assert.equal(result.ok, true, result.message);
+  assert.equal(result.projectedFindings[0].state, "dismissed");
+});
+
+test("stale_directive_before_reopening_remains_stale_after_later_open_observations", () => {
+  const dismissed = { id: "F-910", reified: true, state: "dismissed", evidence: { referenceId: 912, author: "maintainer", bodyDigest: "recorded-dismissal" } };
+  const open = { id: "F-910", reified: true, state: "open" };
+  const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: [dismissed.id], findings: [dismissed] });
+  const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: [open.id], findings: [open] });
+  const third = makeJournalRecord({ ...TRUST, observation: 3, headSha: "ccc", stateHash: "three", blocking: 1, priorDigest: second.digest, findingIds: [open.id], findings: [open] });
+  const staleBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-910", state: "dismissed", reason: "decision issued before reopening" })} -->`;
+  const staleEvidence = { referenceId: 914, author: "maintainer", bodyDigest: sha256(staleBody) };
+  const reference = { id: 914, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", created_at: "2026-08-03T00:01:30Z", body: staleBody };
+  const result = trusted({
+    journalComments: [
+      { ...journalComment(first, TRUST), created_at: "2026-08-03T00:01:00Z" },
+      { ...journalComment(second, TRUST), created_at: "2026-08-03T00:02:00Z" },
+      { ...journalComment(third, TRUST), created_at: "2026-08-03T00:04:00Z" },
+    ],
+    findings: [{ id: "F-910", reified: true, state: "dismissed", evidence: staleEvidence }], references: [reference],
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.projectedFindings[0].state, "open");
+  assert.match(result.projectedFindings[0].disposalError, /after the finding was reopened/i);
 });
 
 test("authorization_comment_with_second_malformed_directive_is_refused", () => {

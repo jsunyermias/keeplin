@@ -69,11 +69,13 @@ reserved after retirement, including IDs first recorded as advisory. Tombstone a
 are validated before they can enter evaluator messages. Once authorization evidence
 has been written for the latest disposition, later evaluations of that same disposition bind to
 the recorded identity, author and body digest rather than an author-editable replacement in the
-current ledger. If a finding is subsequently reopened, a later disposition requires a directive
-whose API creation/submission time is after the journal comment that recorded the reopening.
+current ledger. After any intervening disposition, a later change requires a directive whose API
+creation/submission time is after the first journal observation of the intervening disposition;
+unchanged observations in that same disposition do not move the freshness boundary.
 Every marked payload in an authorization comment is parsed before any matching directive is
-accepted. Journal serialization escapes marker text inside record fields, and marker text in the
-human-readable message is neutralized before the App persists the comment.
+accepted. Journal serialization escapes HTML comment delimiters inside record fields without
+changing their decoded values, and marker text in the human-readable message is neutralized
+before the App persists the comment.
 
 The App comment journal's guarantees are bounded: its unkeyed digest chain detects accidental
 corruption and casual editing that does not rebuild the chain. It does not authenticate records

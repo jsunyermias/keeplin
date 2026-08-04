@@ -27,9 +27,10 @@ Check-run listing is paginated. Workflow-run identity lookup failures are repres
 unverifiable evidence and explicitly fail when the affected check is cited for resolution, rather
 than aborting the adapter with an uncaught exception. A present but malformed trusted-metadata
 marker also fails explicitly; absence alone retains the empty-metadata default.
-The evaluator's journal helper escapes marker text inside serialized record fields and
-neutralizes marker text in the appended human-readable message, so pull-request data cannot
-create a second parseable marker inside the persisted App comment.
+The evaluator's journal helper escapes HTML comment delimiters inside serialized record fields
+without changing their decoded values and neutralizes marker text in the appended human-readable
+message, so pull-request data cannot terminate the payload comment or create a second parseable
+marker inside the persisted App comment.
 
 The job alone receives `issues: write` and `checks: write`, used to append one digest-chained
 journal comment and create the current result check. Contents, actions and pull-request access

@@ -144,18 +144,24 @@ function verifyJournal(comments, config) {
 }
 
 function recordedDispositionContext(records, findingId, targetState) {
+  let latestState;
+  let changedAt = null;
   for (let index = records.length - 1; index >= 0; index -= 1) {
     const findings = records[index].findings;
     if (!Array.isArray(findings)) continue;
     const finding = findings.find((item) => item && item.id === findingId);
     if (!finding) continue;
-    if (finding.state === targetState) {
-      const evidence = finding.evidence && typeof finding.evidence === "object" && !Array.isArray(finding.evidence) ? finding.evidence : {};
-      return { evidence, reopenedAt: null };
+    if (latestState === undefined) {
+      latestState = finding.state;
     }
-    return { evidence: undefined, reopenedAt: finding.state === "open" ? records[index].commentCreatedAt : null };
+    if (latestState === targetState) {
+      const evidence = finding.evidence && typeof finding.evidence === "object" && !Array.isArray(finding.evidence) ? finding.evidence : {};
+      return { evidence, changedAt: null };
+    }
+    if (finding.state !== latestState) break;
+    changedAt = records[index].commentCreatedAt;
   }
-  return { evidence: undefined, reopenedAt: null };
+  return { evidence: undefined, changedAt };
 }
 
 function referenceIssuedAt(reference) {
@@ -217,10 +223,10 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
     const reference = references.find((item) => String(item.id) === String(evidence.referenceId));
     const authorization = verifyAuthorization({ finding, reference, pullAuthor: pull.author, targetState: finding.state, repositoryId: config.repositoryId, pullNumber: pull.number, evidence });
     if (!authorization.ok) return { ...finding, reified: true, state: "open", disposalError: authorization.reason };
-    if (disposition.reopenedAt !== null) {
-      const reopenedAt = Date.parse(disposition.reopenedAt || "");
+    if (disposition.changedAt !== null) {
+      const changedAt = Date.parse(disposition.changedAt || "");
       const issuedAt = referenceIssuedAt(reference);
-      if (!Number.isFinite(reopenedAt) || issuedAt === null || issuedAt <= reopenedAt) return { ...finding, reified: true, state: "open", disposalError: "authorization was not issued after the finding was reopened" };
+      if (!Number.isFinite(changedAt) || issuedAt === null || issuedAt <= changedAt) return { ...finding, reified: true, state: "open", disposalError: "authorization was not issued after the finding was reopened or its disposition changed" };
     }
     if (finding.state === "resolved") {
       const proof = verifyResolvedCheck({ finding: { ...finding, evidence }, checks, headSha: pull.headSha, config });
@@ -258,7 +264,7 @@ function makeJournalRecord(fields) {
 }
 
 function journalComment(record, identity, message = "") {
-  const serialized = JSON.stringify(record).replaceAll("<", "\\u003c");
+  const serialized = JSON.stringify(record).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
   const suffix = message ? `\n\n${String(message).replaceAll("<!--", "&lt;!--")}` : "";
   return { id: record.observation, app_slug: identity.appSlug, app_id: identity.appId, body: `${JOURNAL_MARKER}${serialized} -->${suffix}` };
 }
