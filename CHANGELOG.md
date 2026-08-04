@@ -10,6 +10,92 @@ version and the wire protocol version move independently.
 
 ## [Unreleased]
 
+### Trusted review-loop evaluation (keeplin ADR 0008)
+
+- The authoritative evaluator now runs from a default-branch `workflow_run` workflow with no
+  checkout or shell execution of pull-request content. Pull-request CI is explicitly read-only
+  and proves its token receives 403 when attempting to patch a check run.
+- Finding disposal now requires an independent MEMBER/OWNER/COLLABORATOR directive whose ID,
+  author and body digest are reverified. Resolved findings additionally require a successful
+  named check bound to the evaluated commit, configured workflow and App. Genesis and tombstones
+  use the same authorization.
+- The App comment journal is digest-linked, but the implementation does not detect edits
+  unconditionally. In the Round 13 reproduction, corrupting one record made it disappear from
+  parsing; the evaluator observed one of the two records and returned `converged`. Terminal
+  truncation remains undetected and is pinned by `limitation_F002_terminal_truncation_undetected`;
+  F-002 is dismissed by ADR 0008 and the option-C platform probes are tracked in
+  `docs/review-loop-spike.md`. F-008 and F-013 are closed.
+- **Round 9 (Codex) found that an authorized tombstone retires a finding ID without reserving
+  it (F-023).** The evaluator looked for a finding's earlier state only in the newest journal
+  record, so once a post-tombstone record existed the ID could return as `advisory`, meet no
+  contradicting prior state, request no authorization and converge. Reification is now
+  remembered across every surviving record. The truncation bound is unchanged and still
+  applies. F-024 bounds the stall protocol's reclassification "only", and `check-docs.sh`
+  check 12 fails if any mandated surface states the journal guarantee without its bound.
+- **Round 10 (GPT-5.6 Sol and Kimi K3) rejected the round-9 fix round and both were right.**
+  F-027: the evaluator skipped a journal record whose findings payload was digest-consistent but not an
+  array, silently discarding the reification history the F-023 fix had just been built on — an
+  unreadable digest-consistent record now fails closed in `verifyJournal`, and the two lists must
+  agree. F-028: check 12 required only the substrings `truncat`, `reifi` and `advisory` anywhere
+  in each file, which a one-line glossary satisfies with the bounded-history prose deleted. It is
+  now has an exact standalone anchor enforced by `scripts/check-bounded-history.py`, whose own
+  ability to fail is tested by `scripts/tests/test_bounded_history.py`. F-029: a missing surface
+  was skipped rather than failing. F-030 and F-031 bound two overclaims — branch protection is
+  not verified by anything here, and ADR 0009 moves the governance *rules* out of the head's
+  reach but not the *evidence* they read.
+- **F-025 is dismissed against accepted ADR 0009.** The maintainer accepted the decision to move
+  governance into the default-branch evaluator. The mechanism is unchanged until ADR 0009 is
+  implemented in its own dedicated pull request: `check-review-governance.js` still runs inside
+  the head-controlled `ci.yml`, so the documented conjunction remains policy, not mechanism.
+
+### Deterministic convergence for the review loop (keeplin ADR 0004)
+
+- **The implementation↔review loop now terminates on a computed condition.** Previously the
+  only mechanical gate was `.github/scripts/check-review-governance.js`, which never inspected
+  findings: what stood for "the loop finished" was the pull-request checkbox `Blocking findings
+  are resolved and conversations are closed`, an assertion by the agents inside the loop. No
+  repository state held finding identity, round count or round-to-round comparison, so settled
+  findings returned as new and a stalled loop was indistinguishable from a progressing one.
+- **New `.github/scripts/check-review-loop.js`**, now driven by the default-branch trusted evaluator. A finding blocks only when *reified* — named as a
+  test, property, contract assertion or `check-docs` check that fails; anything not reducible
+  to a failing check is `advisory`, recorded but not blocking. Convergence is required checks
+  green **and** zero open reified findings.
+- **Findings are identified and durable.** The new `## Review ledger` section of
+  `.github/pull_request_template.md` carries a stable ID and one state per finding (`open` /
+  `resolved` / `dismissed` / `advisory`). A `dismissed` finding cites the priority decision or
+  accepted ADR that settles it and does not reopen when re-raised, which is what stops a
+  memoryless reviewer from restarting a settled loop.
+- **The stagnation brake measures state, not a clock.** The loop-state hash is
+  `sha256(normalized diff ‖ open reified finding IDs ‖ red check names)`. A repeated hash, or a
+  blocking set that has not shrunk for `REVIEW_LOOP_STAGNATION_LIMIT` rounds (3), escalates to
+  the maintainer naming the exact stuck item and demands an entry in the new
+  `docs/review-stalls.md`. Iterating past a stall without that record fails CI.
+- **The old checkbox became falsifiable rather than removed**: ticking "Blocking findings are
+  resolved" while a reified finding is open now fails the check.
+- **Independent review found decision-independent evaluator defects that are now fixed.**
+  Convergence runs in its own `converge` job gated on
+  `needs: [test, graph]`, because a step inside `Check, Test & Lint` asserted "required checks
+  are green" before `cargo test`, Clippy, audit and the graph job had run. The job receives
+  explicit `needs.test.result` and `needs.graph.result` values and requires `success`; skipped,
+  neutral, absent and unknown block while optional checks do not. A body with
+  no ledger section is round zero per the ADR's migration contract, not malformed. A stall
+  record names every blocker as an explicit token in `Stuck on`, so `F-0010` cannot satisfy
+  `F-001`. Canonical JSON frames hash fields and lists, preventing delimiter collisions.
+  Markdown table parsing implements CommonMark backslash parity for pipes.
+- **Historical limitation resolved by ADR 0008:** ADR 0004 read history from the editable PR
+  body. ADR 0008 replaces that evaluator and honestly bounds the remaining terminal-truncation
+  limitation; the older deliberately-red F-002 test is retired.
+- **ADR 0005 is rejected and ADR 0006 is superseded by ADR 0008.** The implemented design keeps
+  the default-branch evaluator and an unkeyed digest-linked comment journal. It does not
+  authenticate history: in the Round 13 reproduction, a repository workflow declared
+  `issues: write`, received a token for the same `github-actions` App identity, and could
+  recompute records, successors and their unkeyed digests.
+- Independent review is untouched: convergence never ticks the review boxes, and a converged
+  pull request with no independent reviewer is still unmergeable. That conjunction is required by
+  policy and intended to be enforced by branch protection, which nothing here verifies; it is not
+  evaluator-verified — see F-025 above. `ci.yml`
+  reads only its explicit required dependency results.
+
 ### Graphify graph moved to a CI artifact (keeplin#148)
 
 - `graphify-out/` is no longer versioned. CI generates it with `graphifyy==0.9.25`,

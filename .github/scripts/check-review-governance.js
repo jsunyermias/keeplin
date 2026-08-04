@@ -130,6 +130,7 @@ function evaluateReviewGovernance({ body, changedFiles, debtContent, repository,
 
 module.exports = {
   DEBT_PATH,
+  checked,
   debtMentionsPull,
   evaluateReviewGovernance,
   meaningful,

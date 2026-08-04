@@ -11,6 +11,7 @@ on:
     types: [opened, synchronize, reopened, edited, ready_for_review]
 
 permissions:
+  checks: read
   contents: read
   pull-requests: read
 
@@ -26,8 +27,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Test pull-request governance check
-        run: node --test .github/scripts/check-review-governance.test.js
+      - name: Prove pull-request token cannot rewrite check runs
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECKS_URL: ${{ github.api_url }}/repos/${{ github.repository }}/commits/${{ github.event.pull_request.head.sha }}/check-runs
+        run: |
+          get_status=$(curl --silent --show-error --output /tmp/check-runs-response --write-out '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${CHECKS_URL}")
+          test "${get_status}" = 200
+          check_id=$(jq -r '.check_runs[] | select(.name == "Check, Test & Lint") | .id' /tmp/check-runs-response | head -n1)
+          test -n "${check_id}"
+          status=$(curl --silent --output /tmp/check-patch-response --write-out '%{http_code}' \
+            -X PATCH \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Content-Type: application/json" \
+            "${CHECKS_URL%/commits/*}/check-runs/${check_id}" \
+            -d '{"output":{"title":"permission canary","summary":"must be forbidden"}}')
+          test "${status}" = 403
 
       - name: Check pull-request review governance
         if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
@@ -111,6 +131,14 @@ jobs:
 
       - name: Audit dependencies
         run: cargo audit
+
+      # Runs last on purpose: a governance regression should not abort the job before
+      # docs, cargo and audit have reported what else is green.
+      - name: Test pull-request governance checks
+        run: |
+          node --test \
+            .github/scripts/check-review-governance.test.js \
+            .github/scripts/check-review-loop.test.js
 
   graph:
     # This name is the branch-protection required-check identifier. Renaming it

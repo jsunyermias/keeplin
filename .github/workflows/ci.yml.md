@@ -14,9 +14,12 @@ start with `claude/`.
 | `push` | `main`, `claude/**` |
 | `pull_request` | target branch: `main`; events `opened`, `synchronize`, `reopened`, `edited`, `ready_for_review` |
 
-The workflow has read-only access to repository contents and pull-request metadata. Body
-edits retrigger it so completing or removing review evidence is reflected in the required
-check without a new commit.
+The workflow explicitly has read-only access to checks, repository contents and pull-request
+metadata. `checks: read` lets the canary locate its own check run but grants no mutation ability.
+The canary separately requires a successful GET and a non-empty check ID, then attempts to patch
+that run and requires exactly HTTP 403; a failed lookup cannot masquerade as a passing denial, and
+any successful PATCH fails CI. The separate default-branch `review-loop-evaluator.yml` consumes
+completed runs.
 
 ## Environment variables
 
@@ -34,7 +37,7 @@ Runs on `ubuntu-latest`.
 | Step | Action / Command | Purpose |
 |------|-----------------|---------|
 | Checkout | `actions/checkout@v4` | Clones the repository at the triggering commit |
-| Test pull-request governance check | `node --test .github/scripts/check-review-governance.test.js` | Exercises the reviewed and maintainer-waiver paths, including negative cases |
+| Prove pull-request token cannot rewrite check runs | API `GET` plus `PATCH` canary (pull requests only) | Requires a successful check-run lookup and HTTP 403 from the mutation attempt; lookup failure, missing ID, or successful mutation fails CI |
 | Check pull-request review governance | `actions/github-script@v7` (non-draft pull requests only) | Requires either an independent review with evidence, or a complete maintainer waiver whose exact PR is recorded in the changed `docs/review-debt.md` |
 | Install Python | `actions/setup-python@v5` (`3.12`) | Provides the standard-library runtime used by the deterministic companion checks |
 | Check companion docs | `./scripts/check-docs.sh` | Enforces structure, exact source↔fence fidelity and the generated context manifest (the two-layer navigation model) |
@@ -48,6 +51,7 @@ Runs on `ubuntu-latest`.
 | cargo clippy | `cargo clippy --workspace --all-targets -- -D warnings` | Lints the entire workspace **including test and bench code** (matching the command the README tells contributors to run) and treats every warning as an error. Also fully subsumes the type-checking a separate `cargo check` step used to provide. |
 | Install cargo-audit | `taiki-e/install-action@v2` (`tool: cargo-audit`) | Downloads a prebuilt `cargo-audit` binary; compiling it from source with `cargo install` added minutes to every run for no additional coverage |
 | cargo audit | `cargo audit` | Checks `Cargo.lock` against the RustSec advisory database |
+| Test pull-request governance checks | `node --test` over `check-review-governance.test.js` and `check-review-loop.test.js` | Exercises governance, trusted-evaluator isolation, verified disposal, required-job and bounded-journal behavior |
 
 ### `graph` — Knowledge graph up to date
 
@@ -62,6 +66,17 @@ validating its focused corpus and reproducibility, and publishing the ignored ou
 | Install graphify | `python -m pip install "graphifyy==0.9.25"` | Installs the pinned extractor used for every CI artifact |
 | Generate and validate knowledge graph | `./scripts/check-graph.sh` (env `GRAPHIFY_REQUIRED=1`) | Builds twice, verifies same-tree reproducibility, corpus exclusions, cross-file edges, domain hubs, and report quality |
 | Publish knowledge graph | `actions/upload-artifact@v4` | Publishes the complete `graphify-out/` directory as `knowledge-graph-<commit SHA>` for 14 days, including hidden Graphify metadata |
+
+### Trusted convergence
+
+The former head-controlled `converge` job is removed. The default-branch
+[`review-loop-evaluator.yml`](review-loop-evaluator.yml) workflow is the authoritative evaluator
+after this unprivileged workflow completes. Only `Check, Test & Lint` and
+`Knowledge graph up to date` count, and each must positively report `success`.
+
+The trusted evaluator remains a floor beneath review governance, never a substitute for an
+independent reviewer. Fork pull requests deliberately fail closed rather than evaluate partial
+journal evidence.
 
 ## Caching strategy
 
@@ -86,6 +101,11 @@ rebuilt from scratch.
 
 ## Related files
 
+- `.github/scripts/check-review-loop.js` — the convergence and stagnation evaluator
+- `.github/scripts/check-review-governance.js` — the independent-review and waiver evaluator
+- `docs/adr/0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md` — accepted decision
+- `.github/workflows/review-loop-evaluator.yml` — default-branch authoritative evaluator
+- `docs/review-stalls.md` — the durable record of escalated loops
 - `.github/workflows/` — directory containing all GitHub Actions workflow files
 - `keeplin-daemon/build.rs` — the build script that requires `protoc`
 - `keeplin-daemon/proto/keeplin.proto` — compiled by `protoc` during the build

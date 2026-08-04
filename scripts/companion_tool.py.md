@@ -43,6 +43,25 @@ exactly one `sql` fence with the entire file verbatim. Synchronization only upda
 fence in the companion and never writes the migration. Unsupported source types are not
 discovered, preventing new false positives.
 
+## Reader-visible Markdown subset
+
+`reader_visible_markdown` exposes the fenced- and indented-code state machine that originated
+in the review-debt registry checker so other documentation gates do not grow a second grammar.
+It recognizes backtick or tilde fences with up to three leading spaces, closes them with the
+same marker at least as long as the opener, and recognizes code indented by four spaces or one
+tab whenever no paragraph is open. It also recognizes fences after one blockquote marker, ends
+a quoted fence when that blockquote ends, preserves rendered paragraph/heading/blockquote
+boundaries, removes HTML comments outside code and same-line backtick code spans, and removes
+simple single-line link-reference definitions only when their label and destination are both
+nonempty.
+
+This helper is a declared subset, not a CommonMark parser. It does not parse blockquotes deeper
+than one level; list-item continuation indentation or code blocks nested in list items; raw
+inline or block HTML other than `<!-- -->` comments; reference definitions split across lines;
+multiline inline-code spans; or inline link/image destinations and titles. Callers must state
+that content hidden in those constructs is neither guaranteed to count nor guaranteed to be
+ignored.
+
 ## Context metadata
 
 Manifest schema 2 records paired paths and markers as `EXTRACTED`. Purpose, tests, risk
@@ -120,6 +139,9 @@ HTTP(S) link, an altered column header, a missing section, fenced and indented e
 paragraph-interrupting indented tables, offline URL-shape validation, displaced rows,
 late separator-like rows, unanswered placeholder cells, and
 the empty-section placeholder both alone and beside real entries.
+The Markdown-subset behavior is covered by `scripts/tests/test_companion_tool.py`. The
+bounded-history checker no longer consumes this helper; it requires exact raw-line equality for
+an explicit anchor.
 
 ## Related files
 

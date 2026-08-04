@@ -26,7 +26,10 @@
 #      one complete verbatim sql fence, unsupported formats are ignored, and sync never
 #      writes source SQL or bytes outside valid companion fences.
 #  10. the generated context manifest is current.
-#  11. the review-debt registry stays actionable: both sections present with their
+#  11. review-ledger rows use exactly one of the four states defined by AGENTS.md.
+#  12. the three manually enrolled journal-policy surfaces carry the exact bounded-history
+#      anchor as a standalone line (delegated to scripts/check-bounded-history.py).
+#  13. the review-debt registry stays actionable: both sections present with their
 #      exact headers, every row complete, every Change containing a pull-request
 #      URL of the expected shape, every cleared entry linking the review that
 #      cleared it, and no pull request duplicated or both open and cleared.
@@ -108,7 +111,22 @@ if ! ./scripts/context-pack manifest --check; then
   fail=1
 fi
 
-# 11. A waived review is only recoverable while its registry entry stays complete.
+while IFS= read -r row; do
+  state=$(awk -F'|' '{ value=$5; gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); print tolower(value) }' <<<"$row")
+  case "$state" in
+    open|resolved|dismissed|advisory) ;;
+    *) err "INVALID review-ledger state '$state' (allowed: open, resolved, dismissed, advisory): $row" ;;
+  esac
+done < <(grep -RhsE '^\|[[:space:]]*F-[0-9]{3,}[[:space:]]*\|' --include='*.md' . \
+  --exclude-dir=.git --exclude-dir=graphify-out --exclude-dir=target || true)
+
+# 12. The three manually enrolled journal-policy surfaces must carry the exact anchor.
+#     Delegated so the fixed enrolment and line-equality rule can be exercised against fixtures.
+if ! ./scripts/check-bounded-history.py; then
+  fail=1
+fi
+
+# 13. A waived review is only recoverable while its registry entry stays complete.
 if ! python3 scripts/companion_tool.py review-debt; then
   fail=1
 fi
@@ -160,7 +178,14 @@ For every `.rs` file in the repo (pruning `target/`, `graphify-out/`, `.git/`), 
    raw fence-body ranges only, preserving mixed EOL and all bytes outside valid fences.
 9. **Generated context index** — `context-pack manifest --check` fails if
    `docs/context-manifest.json` no longer matches the source/companion corpus.
-10. **Review-debt registry** — `companion_tool.py review-debt` fails if
+10. **Ledger state vocabulary** — every Markdown ledger row whose ID has the `F-001`
+    shape uses exactly `open`, `resolved`, `dismissed` or `advisory`; a fifth state fails.
+11. **Bounded-history consistency** — the three surfaces manually enrolled in
+    `check-bounded-history.py` (`AGENTS.md`, `.github/scripts/README.md` and
+    `docs/review-stalls.md`) must each carry the exact bounded-history anchor as a standalone
+    line. The whitelist is fixed, and the checker uses raw line equality rather than parsing
+    Markdown or inferring meaning.
+12. **Review-debt registry** — `companion_tool.py review-debt` fails if
    `docs/review-debt.md` loses either section or its exact column header, carries a row
    with an unanswered or missing cell (`—`, `-`, `TBD` and `pendiente` are unanswered),
    places a table row under any other level-two heading, uses a separator-like row anywhere
