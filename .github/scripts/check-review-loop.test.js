@@ -19,6 +19,7 @@ const {
   requiredChecksFromNeeds,
   splitTableRow,
   stallRecordsBlockers,
+  AUTHORIZING_ASSOCIATIONS,
   AUTHORIZING_TRANSITIONS,
   DIRECTIVE_MARKER,
   JOURNAL_MARKER,
@@ -1636,47 +1637,68 @@ test("pull_request_author_directive_disposes_and_is_recorded_on_first_evaluation
 test("unknown_principal_enumeration_refuses_the_authorizing_transition_product", () => {
   const principalEnumeration = { ok: false, reason: "enumeration unavailable" };
   const explicitPull = { number: 200, author: "maintainer", headSha: "ccc", headRepositoryId: 7, baseRepositoryId: 7 };
-  const directive = ({ id, state, referenceId, author, kind }) => {
+  const directive = ({ id, state, referenceId, author, association, kind }) => {
     const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: id, state, reason: `authorize ${state}` })} -->`;
     const evidence = { referenceId, author, bodyDigest: sha256(body) };
-    const reference = { id: referenceId, kind, state: kind === "review" ? "APPROVED" : undefined, repositoryId: 7, pullNumber: 200, user: { login: author }, author_association: author === explicitPull.author ? "OWNER" : "COLLABORATOR", body };
+    const reference = { id: referenceId, kind, state: kind === "review" ? "APPROVED" : undefined, repositoryId: 7, pullNumber: 200, user: { login: author }, author_association: association, body };
     return { evidence, reference };
   };
   const validResolutionCheck = { id: 31, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
   const ids = { resolved: "F-931", dismissed: "F-932", advisory: "F-933", tombstone: "F-934", genesis: "GENESIS" };
   const referenceIds = { resolved: 931, dismissed: 932, advisory: 933, tombstone: 934, genesis: 935 };
 
+  assert.deepEqual(AUTHORIZING_TRANSITIONS, [
+    { state: "resolved", path: "finding" },
+    { state: "dismissed", path: "finding" },
+    { state: "advisory", path: "finding" },
+    { state: "tombstone", path: "special" },
+    { state: "genesis", path: "special" },
+  ]);
+
   for (const transition of AUTHORIZING_TRANSITIONS) {
     for (const author of [explicitPull.author, "second-principal"]) {
-      for (const kind of ["comment", "review"]) {
-        const authorization = directive({ id: ids[transition.state], state: transition.state, referenceId: referenceIds[transition.state], author, kind });
-        let result;
-        let rejection;
-        if (transition.state === "resolved") {
-          result = trusted({ pull: explicitPull, findings: [{ id: ids.resolved, reified: true, state: "resolved", evidence: { ...authorization.evidence, checkRunId: 31, checkName: "Check, Test & Lint" } }], references: [authorization.reference], checks: [validResolutionCheck], principalEnumeration });
-          rejection = result.projectedFindings[0];
-        } else if (transition.state === "dismissed") {
-          result = trusted({ pull: explicitPull, findings: [{ id: ids.dismissed, reified: true, state: "dismissed", evidence: authorization.evidence }], references: [authorization.reference], principalEnumeration });
-          rejection = result.projectedFindings[0];
-        } else if (transition.state === "advisory") {
-          authorization.reference.created_at = "2026-08-03T00:02:00Z";
-          const prior = { id: ids.advisory, reified: true, state: "open" };
-          const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "bbb", stateHash: "one", blocking: 1, findingIds: [prior.id], findings: [prior] });
-          result = trusted({ pull: explicitPull, journalComments: [{ ...journalComment(record, TRUST), created_at: "2026-08-03T00:01:00Z" }], findings: [{ id: ids.advisory, reified: false, state: "advisory", evidence: authorization.evidence }], references: [authorization.reference], principalEnumeration });
-          rejection = result.projectedFindings[0];
-        } else if (transition.state === "tombstone") {
-          result = trusted({ pull: explicitPull, tombstones: [{ id: ids.tombstone, evidence: authorization.evidence }], references: [authorization.reference], principalEnumeration });
-          rejection = { state: result.state, disposalError: result.message };
-        } else {
-          result = trusted({ pull: explicitPull, journalComments: [], genesisEvidence: authorization.evidence, references: [authorization.reference], principalEnumeration });
-          rejection = result.syntheticFindings[0] || {};
+      for (const association of AUTHORIZING_ASSOCIATIONS) {
+        for (const kind of ["comment", "review"]) {
+          const authorization = directive({ id: ids[transition.state], state: transition.state, referenceId: referenceIds[transition.state], author, association, kind });
+          let result;
+          let rejection;
+          if (transition.state === "resolved") {
+            result = trusted({ pull: explicitPull, findings: [{ id: ids.resolved, reified: true, state: "resolved", evidence: { ...authorization.evidence, checkRunId: 31, checkName: "Check, Test & Lint" } }], references: [authorization.reference], checks: [validResolutionCheck], principalEnumeration });
+            rejection = result.projectedFindings[0];
+          } else if (transition.state === "dismissed") {
+            result = trusted({ pull: explicitPull, findings: [{ id: ids.dismissed, reified: true, state: "dismissed", evidence: authorization.evidence }], references: [authorization.reference], principalEnumeration });
+            rejection = result.projectedFindings[0];
+          } else if (transition.state === "advisory") {
+            authorization.reference.created_at = "2026-08-03T00:02:00Z";
+            const prior = { id: ids.advisory, reified: true, state: "open" };
+            const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "bbb", stateHash: "one", blocking: 1, findingIds: [prior.id], findings: [prior] });
+            result = trusted({ pull: explicitPull, journalComments: [{ ...journalComment(record, TRUST), created_at: "2026-08-03T00:01:00Z" }], findings: [{ id: ids.advisory, reified: false, state: "advisory", evidence: authorization.evidence }], references: [authorization.reference], principalEnumeration });
+            rejection = result.projectedFindings[0];
+          } else if (transition.state === "tombstone") {
+            result = trusted({ pull: explicitPull, tombstones: [{ id: ids.tombstone, evidence: authorization.evidence }], references: [authorization.reference], principalEnumeration });
+            rejection = { state: result.state, disposalError: result.message };
+          } else {
+            result = trusted({ pull: explicitPull, journalComments: [], genesisEvidence: authorization.evidence, references: [authorization.reference], principalEnumeration });
+            rejection = result.syntheticFindings[0] || {};
+          }
+          const cell = `${transition.state}/${author === explicitPull.author ? "self" : "third-party"}/${association}/${kind}`;
+          assert.equal(rejection.state, transition.path === "special" && transition.state === "tombstone" ? "history-unverifiable" : "open", `${cell} must be rejected`);
+          assert.match(rejection.disposalError, /enumeration is unknown/i, `${cell} must fail on unknown enumeration`);
         }
-        const cell = `${transition.state}/${author === explicitPull.author ? "self" : "third-party"}/${kind}`;
-        assert.equal(rejection.state, transition.path === "special" && transition.state === "tombstone" ? "history-unverifiable" : "open", `${cell} must be rejected`);
-        assert.match(rejection.disposalError, /enumeration is unknown/i, `${cell} must fail on unknown enumeration`);
       }
     }
   }
+});
+
+test("authorization_refuses_a_target_state_outside_the_transition_registry", () => {
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-936", state: "closed", reason: "completed outside the contract" })} -->`;
+  const finding = { id: "F-936", reified: true, state: "closed", evidence: { referenceId: 936, author: "maintainer", bodyDigest: sha256(body) } };
+  const reference = { id: 936, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
+
+  const result = verifyAuthorization({ finding, reference, pullAuthor: "different-author", targetState: "closed", repositoryId: 7, pullNumber: 200, maintainerLogin: "maintainer", principalEnumeration: COMPLETE_PRINCIPAL_ENUMERATION });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /not an authorizing transition/i);
 });
 
 test("repository_principal_enumeration_follows_next_links_and_fails_closed", async () => {
