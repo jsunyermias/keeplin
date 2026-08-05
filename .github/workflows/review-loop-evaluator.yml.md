@@ -23,6 +23,14 @@ Malformed ledger data fails before evaluation. Comment and review references are
 the API request's repository and pull-request coordinates, then those coordinates are verified
 again inside the evaluator.
 
+Before evaluating any directive, the adapter enumerates repository collaborators with the same
+workflow `GITHUB_TOKEN`, `affiliation=all`, and explicit traversal of every `Link: rel="next"`.
+The resulting exhaustive set is supplied to every authorization verification. Unreadable,
+rate-limited, forbidden, failed, or non-exhaustive enumeration is unknown and refuses each
+disposition; it is never interpreted as zero or one principal. Owner self-authorization is
+available only when the set contains no different login, regardless of whether the endpoint
+includes the owner itself.
+
 Job and check-run listings are paginated through Octokit's normalized page arrays. An empty page
 is legitimate and contributes no items. A non-array page or a non-object job or check-run item is
 malformed API evidence, so the adapter fails explicitly instead of treating the missing evidence

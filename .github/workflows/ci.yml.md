@@ -51,7 +51,7 @@ Runs on `ubuntu-latest`.
 | cargo clippy | `cargo clippy --workspace --all-targets -- -D warnings` | Lints the entire workspace **including test and bench code** (matching the command the README tells contributors to run) and treats every warning as an error. Also fully subsumes the type-checking a separate `cargo check` step used to provide. |
 | Install cargo-audit | `taiki-e/install-action@v2` (`tool: cargo-audit`) | Downloads a prebuilt `cargo-audit` binary; compiling it from source with `cargo install` added minutes to every run for no additional coverage |
 | cargo audit | `cargo audit` | Checks `Cargo.lock` against the RustSec advisory database |
-| Test pull-request governance checks | `node --test` over `check-review-governance.test.js` and `check-review-loop.test.js` | Exercises governance, trusted-evaluator isolation, verified disposal, required-job and bounded-journal behavior |
+| Test pull-request governance checks | `node --test` over `check-review-governance.test.js` and `check-review-loop.test.js`, with the job's read-only `GITHUB_TOKEN` | Exercises governance, trusted-evaluator isolation, verified disposal, required-job and bounded-journal behavior, plus a real exhaustive collaborator enumeration with the evaluator credential |
 
 ### `graph` — Knowledge graph up to date
 

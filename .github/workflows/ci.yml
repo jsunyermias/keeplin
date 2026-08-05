@@ -135,6 +135,8 @@ jobs:
       # Runs last on purpose: a governance regression should not abort the job before
       # docs, cargo and audit have reported what else is green.
       - name: Test pull-request governance checks
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           node --test \
             .github/scripts/check-review-governance.test.js \

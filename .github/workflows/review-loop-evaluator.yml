@@ -55,6 +55,9 @@ jobs:
             const open = pulls.filter((pull) => pull.state === 'open' && pull.head.sha === run.head_sha);
             if (open.length !== 1) return core.info('No unique open pull request matches the completed run; nothing was written.');
             const pull = (await github.rest.pulls.get({ owner: context.repo.owner, repo: context.repo.repo, pull_number: open[0].number })).data;
+            const principalEnumeration = await evaluator.enumerateRepositoryPrincipals({
+              request: (url) => github.request(url), owner: context.repo.owner, repo: context.repo.repo,
+            });
             const comments = await github.paginate(github.rest.issues.listComments, { owner: context.repo.owner, repo: context.repo.repo, issue_number: pull.number, per_page: 100 });
             const reviews = await github.paginate(github.rest.pulls.listReviews, { owner: context.repo.owner, repo: context.repo.repo, pull_number: pull.number, per_page: 100 });
             let paginationError = null;
@@ -124,10 +127,10 @@ jobs:
               core.setFailed('A referenced resolution check does not match the configured CI_WORKFLOW_ID repository variable.');
               return;
             }
-            const config = { repositoryId: repository.id, repository: repository.full_name, pullNumber: pull.number, workflowId: configuredCiWorkflowId, runId: run.id, runAttempt: run.run_attempt, appSlug: 'github-actions', appId: 15368 };
+            const config = { repositoryId: repository.id, repository: repository.full_name, pullNumber: pull.number, maintainerLogin: repository.owner.login, workflowId: configuredCiWorkflowId, runId: run.id, runAttempt: run.run_attempt, appSlug: 'github-actions', appId: 15368 };
             const result = evaluator.evaluateTrustedReviewLoop({
               pull: { number: pull.number, author: pull.user.login, headSha: pull.head.sha, headRepositoryId: pull.head.repo.id, baseRepositoryId: pull.base.repo.id },
-              findings, references, checks: mappedChecks,
+              findings, references, checks: mappedChecks, principalEnumeration,
               journalComments: comments.map((item) => ({ ...item, app_slug: item.performed_via_github_app && item.performed_via_github_app.slug, app_id: item.performed_via_github_app && item.performed_via_github_app.id })), jobs,
               tombstones: trustedMetadata.tombstones || [], genesisEvidence: trustedMetadata.genesisEvidence, config,
               changedFiles: files.map((file) => file.filename), stallsContent,

@@ -21,6 +21,7 @@ const {
   stallRecordsBlockers,
   DIRECTIVE_MARKER,
   JOURNAL_MARKER,
+  enumerateRepositoryPrincipals,
   evaluateTrustedReviewLoop,
   journalComment,
   makeJournalRecord,
@@ -491,7 +492,8 @@ test("F-001: unrelated optional checks are outside the explicit required-job set
   );
 });
 
-const TRUST = { repositoryId: 7, repository: "jsunyermias/keeplin", pullNumber: 200, workflowId: 88, runId: 77, appSlug: "github-actions", appId: 15368 };
+const TRUST = { repositoryId: 7, repository: "jsunyermias/keeplin", pullNumber: 200, maintainerLogin: "maintainer", workflowId: 88, runId: 77, appSlug: "github-actions", appId: 15368 };
+const COMPLETE_PRINCIPAL_ENUMERATION = { ok: true, principals: ["maintainer"] };
 function journalFixture(length = 3) {
   const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 3 });
   const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 2, priorDigest: first.digest });
@@ -509,7 +511,7 @@ function trusted(overrides = {}) {
     jobs: [
       { name: "Check, Test & Lint", status: "completed", conclusion: "success" },
       { name: "Knowledge graph up to date", status: "completed", conclusion: "success" },
-    ], config: TRUST, ...overrides,
+    ], principalEnumeration: COMPLETE_PRINCIPAL_ENUMERATION, config: TRUST, ...overrides,
   });
 }
 
@@ -536,6 +538,7 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments, option
   let postedBody;
   let reportedCheck;
   const github = {
+    request: async () => ({ status: 200, data: [{ login: "maintainer" }], headers: {} }),
     paginate: async (endpoint, _parameters, mapPage) => {
       if (endpoint === endpoints.associatedPulls) return [{ number: 200, state: "open", head: { sha: "ccc" } }];
       if (endpoint === endpoints.comments) return comments;
@@ -597,7 +600,7 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments, option
   const context = {
     repo: { owner: "jsunyermias", repo: "keeplin" },
     payload: {
-      repository: { id: 7, full_name: "jsunyermias/keeplin", default_branch: "main" },
+      repository: { id: 7, full_name: "jsunyermias/keeplin", default_branch: "main", owner: { login: "maintainer" } },
       workflow_run: { id: 77, run_attempt: 1, event: "pull_request", workflow_id: 88, head_sha: "ccc" },
     },
   };
@@ -1598,12 +1601,93 @@ test("authorization_comment_with_multiple_valid_directives_is_accepted", () => {
   assert.equal(trusted({ findings: [finding], references: [reference] }).state, "converged");
 });
 
+test("self_authorization_refuses_a_second_principal_with_owner_present_or_absent", () => {
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-930", state: "dismissed", reason: "maintainer decision" })} -->`;
+  const finding = { id: "F-930", reified: true, state: "dismissed", evidence: { referenceId: 930, author: "maintainer", bodyDigest: sha256(body) } };
+  const reference = { id: 930, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
+  for (const principals of [["maintainer", "second-principal"], ["second-principal"]]) {
+    const result = trusted({ pull: { number: 200, author: "maintainer", headSha: "ccc", headRepositoryId: 7, baseRepositoryId: 7 }, findings: [finding], references: [reference], principalEnumeration: { ok: true, principals } });
+    assert.equal(result.projectedFindings[0].state, "open");
+    assert.match(result.projectedFindings[0].disposalError, /another repository principal/i);
+  }
+});
+
+test("pull_request_author_directive_disposes_and_is_recorded_on_first_evaluation", async () => {
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-929", state: "dismissed", reason: "accepted priority decision" })} -->`;
+  const evidence = { referenceId: 929, author: "maintainer", bodyDigest: sha256(body) };
+  const finding = { id: "F-929", reified: true, state: "dismissed", evidence };
+  const reference = { id: 929, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
+  const result = trusted({ pull: { number: 200, author: "maintainer", headSha: "ccc", headRepositoryId: 7, baseRepositoryId: 7 }, findings: [finding], references: [reference] });
+  assert.equal(result.state, "converged");
+  assert.deepEqual(result.projectedFindings[0].evidence, evidence);
+
+  let persisted;
+  await publishEvaluation({
+    result,
+    appendJournal: async () => {
+      persisted = makeJournalRecord({ ...TRUST, observation: 4, priorDigest: result.records[2].digest, headSha: "ccc", findingIds: [finding.id], findings: result.projectedFindings, stateHash: result.currentHash, blocking: result.blocking });
+    },
+    reportCheck: async () => {}, setFailed: () => {}, info: () => {},
+  });
+  assert.deepEqual(persisted.findings[0].evidence, evidence);
+});
+
+test("unknown_principal_enumeration_refuses_each_directive_verification", () => {
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-931", state: "dismissed", reason: "maintainer decision" })} -->`;
+  const finding = { id: "F-931", reified: true, state: "dismissed", evidence: { referenceId: 931, author: "maintainer", bodyDigest: sha256(body) } };
+  const reference = { id: 931, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
+  for (const principalEnumeration of [
+    { ok: false, reason: "HTTP 403" },
+    { ok: false, reason: "rate limited" },
+    { ok: false, reason: "transport failure" },
+    { ok: false, reason: "pagination not exhausted" },
+  ]) {
+    const result = trusted({ pull: { number: 200, author: "maintainer", headSha: "ccc", headRepositoryId: 7, baseRepositoryId: 7 }, findings: [finding], references: [reference], principalEnumeration });
+    assert.equal(result.projectedFindings[0].state, "open");
+    assert.match(result.projectedFindings[0].disposalError, /enumeration is unknown/i);
+  }
+});
+
+test("repository_principal_enumeration_follows_next_links_and_fails_closed", async () => {
+  const requests = [];
+  const complete = await enumerateRepositoryPrincipals({
+    owner: "jsunyermias", repo: "keeplin",
+    request: async (url) => {
+      requests.push(url);
+      if (requests.length === 1) return { status: 200, data: [{ login: "maintainer" }], headers: { link: '<https://api.github.test/page/2>; rel="next"' } };
+      return { status: 200, data: [{ login: "second-principal" }], headers: {} };
+    },
+  });
+  assert.deepEqual(complete, { ok: true, principals: ["maintainer", "second-principal"] });
+  assert.equal(requests.length, 2);
+
+  for (const request of [
+    async () => { const error = new Error("forbidden"); error.status = 403; throw error; },
+    async () => { const error = new Error("rate limited"); error.status = 429; throw error; },
+    async () => { throw new Error("transport"); },
+    async () => ({ status: 200, data: [], headers: { link: 'not-a-url; rel="next"' } }),
+  ]) assert.equal((await enumerateRepositoryPrincipals({ request, owner: "jsunyermias", repo: "keeplin" })).ok, false);
+});
+
+test("evaluator_GITHUB_TOKEN_really_enumerates_the_expected_repository_principals", { skip: process.env.CI !== "true" || !process.env.GITHUB_TOKEN }, async () => {
+  const repository = process.env.GITHUB_REPOSITORY || "jsunyermias/keeplin";
+  const [owner, repo] = repository.split("/");
+  const result = await enumerateRepositoryPrincipals({
+    owner, repo,
+    request: async (url) => {
+      const response = await fetch(url, { headers: { accept: "application/vnd.github+json", authorization: `Bearer ${process.env.GITHUB_TOKEN}`, "x-github-api-version": "2022-11-28" } });
+      return { status: response.status, data: await response.json(), headers: { link: response.headers.get("link") } };
+    },
+  });
+  assert.deepEqual(result, { ok: true, principals: ["jsunyermias"] });
+});
+
 test("disposal_reference_from_another_pull_request_or_repository_is_refused", () => {
   const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-013", state: "dismissed", reason: "authorized" })} -->`;
   const finding = { id: "F-013", reified: true, state: "dismissed", evidence: { referenceId: 91, author: "maintainer", bodyDigest: sha256(body) } };
   const reference = { id: 91, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", body };
   for (const mutation of [{ repositoryId: 8 }, { pullNumber: 201 }]) {
-    const result = verifyAuthorization({ finding, reference: { ...reference, ...mutation }, pullAuthor: "author", targetState: "dismissed", repositoryId: 7, pullNumber: 200 });
+    const result = verifyAuthorization({ finding, reference: { ...reference, ...mutation }, pullAuthor: "author", targetState: "dismissed", repositoryId: 7, pullNumber: 200, maintainerLogin: "maintainer", principalEnumeration: COMPLETE_PRINCIPAL_ENUMERATION });
     assert.equal(result.ok, false);
     assert.match(result.reason, /repository and pull request/);
   }
