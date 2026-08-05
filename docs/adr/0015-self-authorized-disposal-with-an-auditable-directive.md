@@ -143,13 +143,14 @@ of 0008 and 0011 and are unchanged.
 
 **The honest statement of what is being given up.** In a repository whose only principal is the
 maintainer, the author/authorizer separation defends against *the maintainer's own agents acting
-without the maintainer*, not against a second human. Option A below removes it and replaces it
-with an explicit, attributable act by the maintainer. That is a real reduction in defence against
-adversary 1, and it is the cost this decision accepts.
+without the maintainer*, not against a second human. Options A and C below both remove it — A
+unconditionally, C while the single-principal premise holds — and replace it with an explicit,
+attributable act by the maintainer. That is a real reduction in defence against adversary 1, and
+it is the cost either of them accepts.
 
 ## Options considered
 
-### Option A — Self-authorization with an auditable directive *(recommended)*
+### Option A — Self-authorization with an auditable directive
 
 The pull request author may authorize disposal of a finding on their own pull request, provided
 the directive is recorded as a first-class, machine-readable artifact bound to that pull request
@@ -162,10 +163,11 @@ and finding.
   reduction: an agent operating with the maintainer's credentials could issue the directive. The
   mitigation is attribution and reviewability, not prevention.
 - **A cost earlier drafts of this ADR omitted.** They claimed Option A needs "no new credential".
-  That was wrong once the second-principal guard became part of the decision: listing collaborators
-  requires privileges the evaluator's `GITHUB_TOKEN` does not hold, so acceptance must elevate it
-  or add a read-only credential. *Decision* prices this and explains why it narrows rather than
-  closes the gap to Option B.
+  That claim was never verified and is withdrawn. Whether the evaluator's existing token can list
+  collaborators is genuinely unsettled — *Decision* records both readings of the documentation and
+  makes one real call a precondition of acceptance. **Option C carries exactly the same
+  requirement**, since it performs the same enumeration; the credential is not a difference
+  between them.
 - **Failure modes.** A maintainer who authorizes without reading disposes of findings by habit.
   The directive's audit trail makes that visible after the fact; nothing prevents it.
 - **What would change the assessment.** A second human principal joining the project, which would
@@ -206,14 +208,17 @@ sufficient association.
   state. That is **not a new API dependency** — an earlier draft claimed it was, wrongly: the
   evaluator already reads `author_association` from the API on this very path. It is a further
   call of the same class, with its own failure mode and the policy complexity of deciding what
-  happens when it fails.
-- **How it really compares to Option A — narrower than an earlier draft claimed.** That draft said
-  Option A "reaches the same outcome without it". It does not: *Decision* gives Option A a live
-  collaborator lookup too, for the second-principal check. The surviving distinction is **where
-  the lookup sits**. Option C's is on the authorization path, so a `403` or a rate limit blocks or
-  wrongly permits an *individual disposal*, and the policy for that failure has to be designed.
-  Option A's is off it, so the same failure blocks the gate and nothing else. The difference is a
-  blast radius, not the presence or absence of an API call.
+  happens when it fails. **The enumeration carries the same credential requirement as Option A's
+  guard** — same endpoint, same unsettled question recorded under *Decision*. The surviving
+  distinction is placement, not cost.
+- **How it really compares to Option A — and the comparison moved twice.** An early draft said
+  Option A "reaches the same outcome without it". It does not: the second-principal check gives
+  Option A a live collaborator lookup too. A later draft then argued the surviving distinction —
+  **where the lookup sits** — settled it for A, because C's failure could wrongly permit an
+  individual disposal. **That argument is also withdrawn.** *Wrongly permitted* is not inherent to
+  placing the lookup on the authorization path; it is a consequence of designing C fail-open, and
+  the `unknown ⇒ refuse` rule this ADR already decides removes it at no extra machinery. What
+  remains is one refused disposal, retryable, against a blocked gate. **The smaller radius is C's.**
 - **Where C is genuinely better, and it is not nothing.** The two options behave differently at
   the moment that matters most — when the premise decays. Under C the precondition is evaluated at
   authorization time, so a second principal makes the exception **lapse on its own** and the
@@ -221,10 +226,11 @@ sufficient association.
   because a second qualifying principal now exists. Under A the guard **blocks the gate** until
   someone intervenes. Lapsing safely and failing loudly are different outcomes, and this one
   favours C. An earlier draft wrote "for the same result", which papered over it.
-- **Assessment.** Reasonable, and closer than earlier drafts of this ADR admitted. A is preferred
-  for the operational reasons above, not because C costs more for an identical outcome. A
-  maintainer who weighs self-lapsing behaviour highly should choose C, and this ADR would not call
-  that choice wrong.
+- **Assessment.** A genuine peer of Option A, not a costlier route to the same place. On the two
+  failure events this ADR treats as decisive — a transient lookup failure, and decay of the
+  single-principal premise — C is equal or better. Its cost is a live lookup on the authorization
+  path and a per-disposal failure policy to design. *Decision* records why this ADR therefore
+  stops short of recommending between them.
 
 ### Option D — Pre-seeded genesis anchor
 
@@ -246,11 +252,44 @@ Seed the journal on the default branch so it is never empty.
 
 ## Decision and justification
 
-> `proposed`. The maintainer has indicated Option A as the intended direction; that is a
-> statement of intent recorded here, not an approval. Implementation remains blocked until this
-> ADR is `accepted`.
+> `proposed`. The maintainer indicated Option A as the intended direction; that is a statement of
+> intent recorded here, not an approval. Implementation remains blocked until this ADR is
+> `accepted`.
 
-**Recommend Option A.** The pull request author may authorize disposal of a finding on their own
+**This ADR decides a mechanism and does not decide the policy choice between Options A and C.
+The `recommended` label an earlier draft carried on Option A has been withdrawn, and the reason is
+recorded rather than quietly dropped.**
+
+Six review rounds removed, one at a time, most of what distinguished A from C. A was said to need
+no live lookup — it does. A was said to need no credential — it does. A was said to reach the same
+detectability more cheaply — it does not; the surviving difference is where the lookup sits. When
+the last of those fell, an independent reviewer showed that the remaining difference does not
+favour A either: against a Option C specified with the same `unknown ⇒ refuse` rule this ADR
+already decides for A, C's failure refuses **one disposal**, which is retryable, while A's failure
+blocks **the whole gate**; and when the premise decays, C lapses back into the original separation
+on its own — which works again precisely because a second qualifying principal now exists — where
+A blocks until someone intervenes. In both events this ADR treats as decisive, C is equal or
+better.
+
+The other reviewer read the same text and held that the recommendation survived, thinned to its
+real argument. **They disagreed, and this ADR does not paper over it.** What both readings agree
+on is narrower and is what gets decided here: the *mechanism* — the directive, its conditions, and
+the guard on the single-principal premise — is common to A and C. Only the placement of the
+premise check differs, and that placement is a policy trade the maintainer owns:
+
+- **Option A** relaxes the author condition unconditionally and checks the premise off the
+  authorization path. Simpler on that path; larger blast radius on failure; requires deliberate
+  action when the premise decays.
+- **Option C** relaxes it only while the premise holds, checking at authorization time with
+  `unknown ⇒ refuse`. Smaller blast radius; self-lapsing on decay; adds a live lookup to the
+  authorization path and a per-disposal failure policy to design.
+
+Choosing A remains defensible. What is no longer defensible is presenting A as the *result* of the
+comparison written above. A maintainer who still prefers A should record that preference as a
+preference; the acceptance pull request implements whichever is chosen, and everything below
+applies to both unless it says otherwise.
+
+**The mechanism.** The pull request author may authorize disposal of a finding on their own
 pull request when the authorization is carried by a directive satisfying **all** of the following.
 This list is deliberately **not** offered as a transcription of `verifyAuthorization`: an earlier
 draft said "when, and only when" and then proved incomplete, so exhaustiveness is left to the code
@@ -284,8 +323,10 @@ and the items below are grouped by what each one actually governs.
 The only condition removed is the requirement that the directive's author differ from the pull
 request author. Everything else that `verifyAuthorization` binds stays bound.
 
-**The premise this relaxation rests on, and how it is kept honest.** Option A is justified by
-"one human", so the decision also fixes the guard that fails when that stops being true. An
+**The premise this relaxation rests on, and how it is kept honest.** The relaxation — under
+either A or C — is justified by "one human", so the decision also fixes the guard that fails when
+that stops being true. Under A the guard is the separate check specified below; under C the same
+enumeration is consulted at authorization time instead. The contract is the same either way. An
 earlier draft named the guard and left its design to the acceptance pull request; a reviewer
 showed that this was not merely incomplete but unsound, because "it ships in the acceptance pull
 request" says nothing about what *re-runs* it afterwards. A check that enumerates principals once,
@@ -319,16 +360,31 @@ the guard is decided here:
   sequence whose termination cannot be established yields `unknown` — never zero, never one. The
   check fails on `unknown`. Under-permissioning therefore fails closed rather than silently
   reporting an empty repository, which is the specific defect this wording exists to exclude.
-- **Credentials — a cost this ADR did not price until now.** The endpoint requires write, maintain
-  or admin privileges on the repository, and `administration` is **not** a valid key in a
-  workflow's `permissions:` block, so it cannot be granted to `GITHUB_TOKEN` at all. An earlier
-  draft specified `metadata: read` plus `administration: read` and was simply unimplementable at
-  the locus it named. The evaluator runs today with `contents: read` and no write. **The acceptance
-  pull request must therefore either elevate that token or carry a separate read-only credential,
-  and either is a real operational cost Option A was not previously charged with.** It narrows the
-  gap to Option B without closing it: B's credential *authorizes disposals*, so its compromise
-  buys arbitrary authorization; this one only *reads membership*, so its compromise buys nothing
-  but the ability to blind a guard — which still fails closed when the read does not succeed.
+- **Credentials — undecided, and deliberately left so.** One thing is settled: `administration` is
+  **not** a valid key in a workflow's `permissions:` block, so an earlier draft specifying
+  `metadata: read` plus `administration: read` was unimplementable at the locus it named. What is
+  *not* settled is whether the evaluator's existing `GITHUB_TOKEN` can call the endpoint at all,
+  and this ADR declines to assert either answer because **the two readings of GitHub's
+  documentation available to its author disagree**:
+
+  - The endpoint page states that *the authenticated user must have write, maintain or admin
+    privileges on the repository*. The evaluator runs with `contents: read` and no write, so on
+    this reading acceptance must add a credential.
+  - A reviewer reports that the same page also carries a fine-grained block admitting **GitHub App
+    installation access tokens** with repository `Metadata: read`, and `GITHUB_TOKEN` **is** an
+    installation access token — on which reading no new credential is needed and the existing one
+    suffices.
+
+  A previous draft of this ADR asserted the first reading as fact and derived from it that
+  acceptance "must either elevate that token or carry a separate read-only credential". **Both
+  halves of that were wrong**: no `permissions:` key grants a repository role, so "elevate" names
+  nothing; and the underlying claim was never verified. **The question is cheap to settle and
+  expensive to guess: one call to the endpoint with the evaluator's real `GITHUB_TOKEN` decides
+  it.** Making that call is implementation, so it does not happen here. It is instead a
+  **precondition of acceptance**: this ADR must not be accepted until that call has been made and
+  its result recorded, and the credential decision follows from the result rather than preceding
+  it. Whatever the answer, the *cost comparison* already stands corrected — Option A's old claim
+  of needing no credential is withdrawn either way, because it was asserted without evidence.
 - **Locus.** In the default-branch evaluator workflow, alongside `check-review-loop.js` and
   **not** on the authorization path. Its failure blocks the gate; it never decides an individual
   disposal. This is the distinction that keeps the comparison with Option C honest, and it is
@@ -358,11 +414,11 @@ than deferred because the acceptance pull request cannot be reviewed against an 
   provides authenticity against a workflow sharing the App identity, nor detection of terminal
   truncation.
 
-**Why this over the alternatives.** Option D is insufficient for the reason recorded above: it
+**Why the field narrows to A and C.** Option D is insufficient for the reason recorded above: it
 removes at most the synthetic blocker. Option E leaves a rule that is routed around, which is
 worse than a rule honestly relaxed.
 
-Option B is the serious alternative, and this recommendation does **not** rest on dismissing it.
+Option B is the serious third alternative, and ruling it out does **not** rest on dismissing it.
 Its capability boundary is real: a credential the agent cannot reach is materially different from
 Option A, and compromising it does not by itself converge anything — the required jobs must still
 be green, and a `resolved` still needs its success check bound to head, workflow, run and App. The
@@ -374,11 +430,19 @@ because it *looks* like independent authorization. **That is a design judgement 
 project, not a measured finding**, and a maintainer who weighs the operational cost differently
 should choose B.
 
-Option C reaches the same place as A through an additional live lookup on the authorization path
-— not a new class of dependency, since the evaluator already reads `author_association` there.
-The reason to prefer A is **not** that A avoids the lookup: the second-principal check decided
-above gives A one as well. It is that A's lookup sits off the authorization path, so its failure
-mode is a blocked gate rather than a disposal wrongly permitted or wrongly refused.
+**A against C — where this ADR stops.** C places the same live lookup on the authorization path,
+which is not a new class of dependency since the evaluator already reads `author_association`
+there. An earlier draft argued that this settled it for A, because A's failure mode is "a blocked
+gate rather than a disposal wrongly permitted or wrongly refused". That argument does not hold and
+is withdrawn. *Wrongly permitted* only arises if C is designed fail-open, and nothing forces that:
+applying the `unknown ⇒ refuse` rule already decided above gives C a fail-closed lookup at no extra
+machinery. What is left is *wrongly refused* against *blocked gate* — one disposal versus the whole
+gate — and the smaller radius is C's. Add the decay behaviour, where C lapses safely and A does
+not, and the written comparison favours C on both counts.
+
+The honest summary: **A is simpler on the authorization path and worse in both failure events; C is
+the reverse.** This ADR does not convert that into a recommendation, for the reason given at the
+top of this section.
 
 **What now defends against an agent self-disposing — stated precisely, because an earlier draft
 overstated it.**
@@ -436,8 +500,9 @@ What remains is a record and a requirement, and neither is enforced by the evalu
   [0012](0012-default-branch-review-governance.md) already records as weakenable by a head.
 
 So the honest formulation is: the defence moves from a mechanism to a convention, and the
-convention's own enforcement is known to be incomplete. That is the cost of Option A, and the
-maintainer is accepting it knowingly or not at all.
+convention's own enforcement is known to be incomplete. That is the cost of relaxing the author
+condition at all — it falls on A and C alike — and the maintainer is accepting it knowingly or not
+at all.
 
 ## Consequences and risks
 
@@ -493,10 +558,12 @@ this; whether it ships in the acceptance PR is the maintainer's call, and it is 
 fails, and fails closed, when the repository gains another principal with sufficient association
 while self-authorization is enabled. The *Forces* section requires this relaxation to "fail
 loudly", and that force is unmet without it, so it belongs to the change rather than after it.
-Its counted set, source, failure predicate, completeness rule, credential, locus and cadence are
-decided under *Decision*,
-so the acceptance pull request implements a stated contract rather than inventing one; verification
-item 9 states the three tests it must pass, including the one for the scheduled trigger.
+Its counted set, source, failure predicate and completeness rule are decided under *Decision*, so
+the acceptance pull request implements a stated contract rather than inventing one; verification
+item 9 states the four tests it must pass. **Under Option C the same enumeration is consulted at
+authorization time instead of by a separate check**, so the locus and cadence bullets apply to A
+and the rest applies to both. The credential is the one thing *Decision* deliberately leaves open,
+and item 9's fourth test is what closes it.
 
 **Follow-up work — genuinely later work only.**
 
@@ -591,8 +658,15 @@ yet — and is grouped here because it too fails on its own behaviour rather tha
    pagination truncated, `403`, rate-limited, or any response the check cannot prove exhaustive —
    counts as *unknown*, never as zero principals. The check's counted set, source, failure
    predicate, completeness rule, credential, locus and cadence are specified under *Decision*; this
-   item tests them. **Two of
-   the three tests:** a second principal present, and an inaccessible or partial response.
+   item tests them. **The first two tests:** a second principal present, and an inaccessible or
+   partial response.
+
+   **The first test is parameterised over both enumeration shapes** — owner present and owner
+   absent — with a second principal in each, asserting failure in both. The predicate excludes the
+   maintainer *by identity* rather than by a count, which is what makes it safe; the
+   parameterisation is what proves an implementation actually did that, instead of hardcoding a
+   threshold read off whichever shape its fixture happened to capture. Without it, the exact
+   fail-open the predicate exists to exclude merges with the suite green.
 
    **Third test — the cadence, which two earlier drafts got wrong in opposite directions.** The
    first ran the check only in the acceptance pull request's CI, proving the state of that day and
@@ -600,21 +674,27 @@ yet — and is grouped here because it too fails on its own behaviour rather tha
    still reaches the check" — **which no CI can assert**: it is an operational property of a
    scheduled trigger GitHub may disable or drop, not a mechanical one. This test is therefore
    scoped to what is actually assertable: that the workflow declares **both** triggers, that the
-   guard runs on the per-evaluation path rather than only on the scheduled one, and that the
-   workflow holds the credential the check needs. An implementation that fires only on `schedule`
-   has put the guarantee on the leg that can silently stop.
+   guard runs on the per-evaluation path rather than only on the scheduled one. An implementation
+   that fires only on `schedule` has put the guarantee on the leg that can silently stop.
+
+   **Fourth test — the credential actually enumerates.** A static assertion that the workflow
+   "holds a credential" proves nothing: it passes for a credential that returns `403` on every
+   call, and the guard then blocks every evaluation forever. This test performs the real paginated
+   enumeration with the credential the workflow will use and asserts the expected set comes back.
+   It is also what settles the open question *Decision* records: acceptance cannot claim a
+   credential decision it has not exercised.
 
    **A tension this creates, stated rather than buried.** An *earlier draft* of *Options
    considered* charged Option C with needing a live lookup and credited Option A with reaching the
    same detectability without one; **the current text does neither**, and this paragraph asserted
    otherwise for one revision after that section was corrected. Adopting this check gives Option A
    a live lookup too. The
-   distinction that keeps the comparison honest is narrow and must be held: **Option C's lookup
-   sits on the authorization path**, so its failure blocks or wrongly permits an individual
-   disposal; **this check does not**, so its failure blocks the gate instead. *Decision* makes that
-   placement binding rather than advisory: if an implementation puts the lookup on the
-   authorization path, Option C's cost analysis applies to A and the comparison in this ADR no
-   longer holds.
+   distinction is narrow and must be held: **Option C's lookup sits on the authorization path**, so
+   its failure refuses an individual disposal; **Option A's does not**, so its failure blocks the
+   gate. *Decision* records that this comparison does **not** favour A — one disposal is a smaller
+   radius than the whole gate — and therefore makes the placement a property of whichever option is
+   chosen rather than an argument for either. Under A the lookup must stay off the authorization
+   path; under C it must sit on it with `unknown ⇒ refuse`.
 
 **Group 3 — deployment symmetry.** Byte-identity alone proves symmetry, not policy: if both
 repositories reverted the change together it would still pass. It is therefore paired with a
