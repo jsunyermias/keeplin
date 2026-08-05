@@ -755,13 +755,23 @@ yet — and is grouped here because it too fails on its own behaviour rather tha
    that fires only on `schedule` has put the guarantee on the leg that can silently stop.
 
    **Fourth test — the credential actually enumerates.**
+   Test named
+   `evaluator_GITHUB_TOKEN_really_enumerates_the_expected_repository_principals` in
+   `.github/scripts/check-review-loop.test.js` is the original implementation of this test and
+   has been present since this ADR was accepted. In each CI execution it performs the real
+   paginated enumeration with that run's `GITHUB_TOKEN` against the worktree copy of the
+   enumerator and asserts the repository-specific literal `["jsunyermias"]`; locally it skips
+   when CI or the token is absent. Its failure belongs to the required `Check, Test & Lint` job.
+
    [`.github/workflows/adr-0015-verification.yml`](../../.github/workflows/adr-0015-verification.yml)
-   implements this test. A static assertion that the workflow
-   "holds a credential" proves nothing: it passes for a credential that returns `403` on every
-   call, and the guard then blocks every evaluation forever. This test performs the real paginated
-   enumeration with the credential the workflow will use and asserts the expected set comes back.
-   It is also what settles the open question *Decision* records: acceptance cannot claim a
-   credential decision it has not exercised.
+   adds a push-to-default-branch, daily scheduled, and manually dispatched probe, so the same
+   credential property is checked daily even when repository activity does not start CI. It
+   derives the expected singleton from `repository.owner.login` and exercises the enumerator
+   fetched from the API-reported default branch, the same source used by the evaluator. Its
+   failure belongs to its own job outside the required-job set. A static assertion that either
+   runner "holds a credential" proves nothing: it passes for a credential that returns `403` on
+   every call. The live calls assert that the expected set comes back and settle the open question
+   *Decision* records: acceptance cannot claim a credential decision it has not exercised.
 
    **A tension this creates, stated rather than buried.** An *earlier draft* of *Options
    considered* charged Option C with needing a live lookup and credited Option A with reaching the

@@ -2,10 +2,20 @@
 
 ## Purpose
 
-This workflow implements the fourth test in verification item 9 of
-[ADR 0015](../../docs/adr/0015-self-authorized-disposal-with-an-auditable-directive.md).
-It proves that the evaluator's actual `GITHUB_TOKEN` can exhaustively enumerate the repository
-principals and that the single-principal premise for Option C still holds.
+The original implementation of the fourth test in verification item 9 of
+[ADR 0015](../../docs/adr/0015-self-authorized-disposal-with-an-auditable-directive.md) is the test
+named `evaluator_GITHUB_TOKEN_really_enumerates_the_expected_repository_principals` in
+`.github/scripts/check-review-loop.test.js`. On each CI execution, that test uses the run's actual
+`GITHUB_TOKEN`, exercises the worktree copy of the enumerator, compares the result with the
+repository-specific literal `["jsunyermias"]`, and reports failure through the required
+`Check, Test & Lint` job. It skips locally when CI or the token is absent.
+
+This workflow adds a probe that runs on pushes to `main`, on a daily schedule even when repository
+activity does not start CI, and by manual dispatch. It derives the expected singleton from
+`repository.owner.login`, exercises evaluator code fetched from the API-reported default branch,
+and reports failure through its own job outside the required-job set. It proves that the
+evaluator's actual `GITHUB_TOKEN` can exhaustively enumerate the repository principals and that
+the single-principal premise for Option C still holds.
 
 It runs on every push to `main`, is scheduled to run daily at 06:17 UTC, and supports manual
 dispatch. The push trigger makes the merge that introduces this workflow exercise its final
