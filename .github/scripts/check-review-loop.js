@@ -24,6 +24,13 @@ const JOURNAL_SCHEMA = "keeplin.review-loop/v1";
 const JOURNAL_MARKER = "<!-- keeplin-review-loop-journal ";
 const DIRECTIVE_MARKER = "<!-- keeplin-review-loop-authorize ";
 const AUTHORIZING_ASSOCIATIONS = new Set(["MEMBER", "OWNER", "COLLABORATOR"]);
+const AUTHORIZING_TRANSITIONS = Object.freeze([
+  Object.freeze({ state: "resolved", path: "finding" }),
+  Object.freeze({ state: "dismissed", path: "finding" }),
+  Object.freeze({ state: ADVISORY, path: "finding" }),
+  Object.freeze({ state: "tombstone", path: "special" }),
+  Object.freeze({ state: "genesis", path: "special" }),
+]);
 const REQUIRED_JOBS = ["Check, Test & Lint", "Knowledge graph up to date"];
 
 function nextPageUrl(linkHeader) {
@@ -93,6 +100,7 @@ function markedJsonPayloads(body, marker) {
 }
 
 function verifyAuthorization({ finding, reference, pullAuthor, targetState, repositoryId, pullNumber, maintainerLogin, principalEnumeration, evidence = finding.evidence || {} }) {
+  if (!AUTHORIZING_TRANSITIONS.some((transition) => transition.state === targetState)) return { ok: false, reason: "finding state is not an authorizing transition" };
   if (!reference) return { ok: false, reason: "authorization reference is unreachable" };
   if (reference.repositoryId !== repositoryId || reference.pullNumber !== pullNumber) return { ok: false, reason: "authorization reference is not bound to this repository and pull request" };
   const login = reference.user && reference.user.login;
@@ -951,6 +959,7 @@ module.exports = {
   stallMentionsPull,
   stallRecordsBlockers,
   AUTHORIZING_ASSOCIATIONS,
+  AUTHORIZING_TRANSITIONS,
   DIRECTIVE_MARKER,
   JOURNAL_MARKER,
   JOURNAL_SCHEMA,
