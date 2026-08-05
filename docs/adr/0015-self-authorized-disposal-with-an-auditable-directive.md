@@ -5,7 +5,7 @@
 - Decision owners: `jsunyermias`
 - Scope: cross-repo
 - Issue: [keeplin#206](https://github.com/jsunyermias/keeplin/issues/206)
-- Acceptance PR: link once the ADR is accepted
+- Acceptance PR: [keeplin#217](https://github.com/jsunyermias/keeplin/pull/217)
 - Supersedes: none. Amends the authorization precondition that
   [0008](0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md) established and
   [0013](0013-genesis-anchor-on-an-empty-journal.md) applied to genesis
