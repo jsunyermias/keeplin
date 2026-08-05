@@ -497,9 +497,10 @@ needs no new principal with a sufficient association.
 **These are two different growth events, and conflating them would be a mistake.** An earlier
 draft called them "the same condition". They are not. Condition 1 guards the second row
 permanently and needs no check to do it: an outside contributor's directive is refused because of
-their association, whatever else changes. The second-principal check guards something else — the
-*single-human justification* for relaxing the author/authorizer separation in the first place —
-and fires only when a principal with a sufficient association appears. A reader who believed the
+their association, whatever else changes. The premise check — a separate guard under Option A, the
+authorization-time enumeration under Option C — guards something else: the *single-human
+justification* for relaxing the author/authorizer separation in the first place. It fires only
+when a principal with a sufficient association appears. A reader who believed the
 check covered outside contributors would relax their vigilance over condition 1, which is the one
 thing still doing that work.
 
@@ -572,9 +573,9 @@ from prevention to after-the-fact detection. An earlier draft said "no new signa
 which contradicted the sentence that followed it. A counter on each journal record would close
 this; whether it ships in the acceptance PR is the maintainer's call, and it is not assumed here.
 
-**Part of the acceptance pull request, not follow-up.** The second-principal check — one that
-fails, and fails closed, when the repository gains another principal with sufficient association
-while self-authorization is enabled. The *Forces* section requires this relaxation to "fail
+**Part of the acceptance pull request, not follow-up.** The premise check — one that refuses, and
+fails closed, when the repository gains another principal with sufficient association while
+self-authorization is enabled. The *Forces* section requires this relaxation to "fail
 loudly", and that force is unmet without it, so it belongs to the change rather than after it.
 Its counted set, source, failure predicate and completeness rule are decided under *Decision*, so
 the acceptance pull request implements a stated contract rather than inventing one; verification
@@ -671,8 +672,10 @@ yet — and is grouped here because it too fails on its own behaviour rather tha
    to `reified: true, state: "open"` with its `disposalError`, exactly as today.
 
 9. **Negative — the exception cannot outlive its premise.** With a second principal holding a
-   sufficient association present, and self-authorization still enabled, the second-principal
-   check fails. **And it fails closed**: an enumeration that is not demonstrably complete —
+   sufficient association present, and self-authorization still enabled, **the exception is
+   refused** — by the separate guard failing under Option A, by the authorization-time enumeration
+   refusing the disposal under Option C. **And it fails closed**: an enumeration that is not
+   demonstrably complete —
    pagination truncated, `403`, rate-limited, or any response the check cannot prove exhaustive —
    counts as *unknown*, never as zero principals. The check's counted set, source, failure
    predicate and completeness rule are specified under *Decision*; this item tests them. The
@@ -684,12 +687,20 @@ yet — and is grouped here because it too fails on its own behaviour rather tha
    reviewer showed that test 3, read literally, would force a C implementation to build A's
    separate guard. The mapping:
 
-   | Test | Under A | Under C |
-   |---|---|---|
-   | 1 | the separate check fails | the authorization-time enumeration refuses the disposal |
-   | 2 | unchanged | unchanged |
-   | 3 | both triggers declared, guard on the per-evaluation leg | every directive verification consults the enumeration with `unknown ⇒ refuse`; scheduled and per-evaluation runs become optional early warning |
-   | 4 | unchanged | unchanged |
+   The stimulus is the same in every row; **what differs is the observable**, and writing
+   "unchanged" where only the stimulus is unchanged is what a reviewer caught here.
+
+   | Test | Stimulus | Observable under A | Observable under C |
+   |---|---|---|---|
+   | 1 | a second qualifying principal exists | the separate guard fails and the gate blocks | the authorization-time enumeration refuses the disposal |
+   | 2 | `403`, rate limit, transport failure, or non-exhaustive pagination | the separate guard yields `unknown` and the gate blocks | the authorization-time enumeration yields `unknown` and refuses **that disposal**; `verifyAuthorization` must not treat it as zero or one |
+   | 3 | the workflow as configured | both triggers declared, guard on the per-evaluation leg | every directive verification consults the enumeration with `unknown ⇒ refuse`; scheduled and per-evaluation runs become optional early warning |
+   | 4 | a real paginated call with the chosen credential | the expected set comes back | identical |
+
+   **Row 2 is the one that must not be read loosely.** An implementation that chose C and kept a
+   separate guard job merely to satisfy row 2 literally would prove that *the guard* fails on
+   `403` while never proving that `verifyAuthorization` refuses the disposal — leaving C's
+   authorization path free to treat `unknown` as zero and self-dispose with the suite green.
 
    **The first test is parameterised over both enumeration shapes** — owner present and owner
    absent — with a second principal in each, asserting failure in both. The predicate excludes the
