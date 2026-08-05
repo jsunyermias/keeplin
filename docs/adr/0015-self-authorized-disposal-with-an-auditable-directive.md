@@ -201,9 +201,16 @@ sufficient association.
   state. That is **not a new API dependency** — an earlier draft claimed it was, wrongly: the
   evaluator already reads `author_association` from the API on this very path. It is a further
   call of the same class, with its own failure mode and the policy complexity of deciding what
-  happens when it fails. Option A reaches the same outcome without it and can carry the same
-  detectability as a declared condition.
-- **Assessment.** Reasonable; strictly more machinery than Option A for the same result.
+  happens when it fails.
+- **How it really compares to Option A — narrower than an earlier draft claimed.** That draft said
+  Option A "reaches the same outcome without it". It does not: *Decision* gives Option A a live
+  collaborator lookup too, for the second-principal check. The surviving distinction is **where
+  the lookup sits**. Option C's is on the authorization path, so a `403` or a rate limit blocks or
+  wrongly permits an *individual disposal*, and the policy for that failure has to be designed.
+  Option A's is off it, so the same failure blocks the gate and nothing else. The difference is a
+  blast radius, not the presence or absence of an API call.
+- **Assessment.** Reasonable; more machinery than Option A on the path where machinery is most
+  expensive, for the same result.
 
 ### Option D — Pre-seeded genesis anchor
 
@@ -263,6 +270,42 @@ and the items below are grouped by what each one actually governs.
 The only condition removed is the requirement that the directive's author differ from the pull
 request author. Everything else that `verifyAuthorization` binds stays bound.
 
+**The premise this relaxation rests on, and how it is kept honest.** Option A is justified by
+"one human", so the decision also fixes the guard that fails when that stops being true. An
+earlier draft named the guard and left its design to the acceptance pull request; a reviewer
+showed that this was not merely incomplete but unsound, because "it ships in the acceptance pull
+request" says nothing about what *re-runs* it afterwards. A check that enumerates principals once,
+during that pull request's CI, records the state of that day and then never fires again. The
+premise would decay silently — exactly the failure the *Forces* requirement exists to prevent. So
+the guard is decided here:
+
+- **The set being counted.** Principals who could satisfy condition 1: those whose
+  `author_association` on this repository would be `OWNER`, `MEMBER` or `COLLABORATOR`. The guard
+  counts the same population condition 1 admits, so it cannot drift away from what it guards.
+- **Authoritative source.** The repository collaborators API, `affiliation=all`, read for
+  permission level and paginated to exhaustion by following `Link: rel="next"`. Repository
+  metadata is the authority on who holds access; the pull request payload is not, because it
+  reports only the associations of principals who happen to have acted.
+- **Completeness, and what happens without it.** The count is trustworthy only from an enumeration
+  the check can show exhausted. A `403`, a rate-limited response, a transport failure, or a page
+  sequence whose termination cannot be established yields `unknown` — never zero, never one. The
+  check fails on `unknown`. Under-permissioning therefore fails closed rather than silently
+  reporting an empty repository, which is the specific defect this wording exists to exclude.
+- **Least privilege.** Repository `metadata: read` plus the `administration: read` that
+  collaborator listing requires. Nothing on the write side, and no organization-level scope.
+- **Locus.** In the default-branch evaluator workflow, alongside `check-review-loop.js` and
+  **not** on the authorization path. Its failure blocks the gate; it never decides an individual
+  disposal. This is the distinction that keeps the comparison with Option C honest, and it is
+  binding: an implementation that consults this count while verifying a directive has adopted
+  Option C's cost and invalidated that comparison.
+- **Cadence.** Two triggers, because one is demonstrably insufficient. Every evaluator run, so a
+  repository that gains a principal is caught by the next pull request; **and** a scheduled run on
+  the default branch, so a membership change is caught even while no pull request is open. The
+  scheduled run is what makes the guard survive its own acceptance pull request.
+
+This is a decision about a check that does not exist yet, and it is recorded as a decision rather
+than deferred because the acceptance pull request cannot be reviewed against an unstated contract.
+
 **Invariants this establishes.**
 
 - Disposal remains an explicit act with a named reason, never an inference from a table edit.
@@ -290,8 +333,10 @@ project, not a measured finding**, and a maintainer who weighs the operational c
 should choose B.
 
 Option C reaches the same place as A through an additional live lookup on the authorization path
-— not a new class of dependency, since the evaluator already reads `author_association` there —
-and A can carry the same detectability as a declared condition.
+— not a new class of dependency, since the evaluator already reads `author_association` there.
+The reason to prefer A is **not** that A avoids the lookup: the second-principal check decided
+above gives A one as well. It is that A's lookup sits off the authorization path, so its failure
+mode is a blocked gate rather than a disposal wrongly permitted or wrongly refused.
 
 **What now defends against an agent self-disposing — stated precisely, because an earlier draft
 overstated it.**
@@ -323,8 +368,17 @@ So the accurate statement is bounded:
   stops an outside contributor self-disposing findings on their own pull request.
 
 The subset in the second row is empty in these repositories today, because one principal opens
-every pull request. It will not stay empty if the project grows, which is the same condition the
-*Forces* section already asks the relaxation to fail loudly on.
+every pull request. It stops being empty the moment any outside contributor opens one, and that
+needs no new principal with a sufficient association.
+
+**These are two different growth events, and conflating them would be a mistake.** An earlier
+draft called them "the same condition". They are not. Condition 1 guards the second row
+permanently and needs no check to do it: an outside contributor's directive is refused because of
+their association, whatever else changes. The second-principal check guards something else — the
+*single-human justification* for relaxing the author/authorizer separation in the first place —
+and fires only when a principal with a sufficient association appears. A reader who believed the
+check covered outside contributors would relax their vigilance over condition 1, which is the one
+thing still doing that work.
 
 What remains is a record and a requirement, and neither is enforced by the evaluator:
 
@@ -347,8 +401,13 @@ maintainer is accepting it knowingly or not at all.
 
 **Positive.** Pull requests become able to converge, and findings become recordable as closed.
 
-**Negative.** Against adversary 1 the technical control is eliminated, not reduced, for the reason
-given under *Decision*: agents here act with the maintainer's credentials as a matter of course.
+**Negative.** Against adversary 1 **as this repository instantiates it** — an agent acting through
+the maintainer's qualifying identity — the technical control is eliminated, not reduced, for the
+reason given under *Decision*: agents here act with the maintainer's credentials as a matter of
+course. The qualifier is load-bearing and an earlier draft of this section dropped it: against
+adversary 1 *without* a qualifying association, condition 1 still refuses the directive and this
+decision changes nothing. Anyone quoting this line as "eliminated against adversary 1" is quoting
+it wrong.
 
 **Negative — branch protection cuts both ways.** Making `Review loop converged` a required check
 becomes possible, and an earlier draft listed only that upside. The risk is the other half: it
@@ -360,10 +419,13 @@ effect of the gate finally being openable.
 **Residual risks.**
 
 - The relaxation persists silently if a second principal joins and nobody revisits it. **Mitigated
-  by the second-principal check, which this ADR places in the acceptance pull request** — so the
-  mitigation is a mechanism, not deferred work. An earlier draft called it follow-up here and a
-  requirement elsewhere, leaving the acceptance boundary ambiguous. If the maintainer moves it out
-  of acceptance, this risk returns unmitigated and the *Forces* requirement should be struck
+  by the second-principal check, which this ADR both specifies under *Decision* and places in the
+  acceptance pull request** — so the mitigation is a mechanism with a stated contract, not deferred
+  work and not a named aspiration. Two earlier drafts fell short of that: the first called it
+  follow-up here and a requirement elsewhere, leaving the acceptance boundary ambiguous; the second
+  fixed the boundary but left the mechanism itself undecided, so this bullet claimed a mitigation
+  while the verification plan admitted the check was not implementable. If the maintainer moves it
+  out of acceptance, this risk returns unmitigated and the *Forces* requirement should be struck
   rather than left nominally satisfied.
 - Directive fatigue: disposing of fourteen findings on one pull request requires fourteen
   directives. If that friction leads to batch-authorizing without reading, the audit trail records
@@ -389,7 +451,9 @@ this; whether it ships in the acceptance PR is the maintainer's call, and it is 
 fails, and fails closed, when the repository gains another principal with sufficient association
 while self-authorization is enabled. The *Forces* section requires this relaxation to "fail
 loudly", and that force is unmet without it, so it belongs to the change rather than after it.
-Verification item 9 states what the acceptance pull request must still decide about it.
+Its set, source, completeness rule, permissions, locus and cadence are decided under *Decision*,
+so the acceptance pull request implements a stated contract rather than inventing one; verification
+item 9 states the three tests it must pass, including the one for the scheduled trigger.
 
 **Follow-up work — genuinely later work only.**
 
@@ -402,6 +466,14 @@ Verification item 9 states what the acceptance pull request must still decide ab
 - A defined post-merge route for already-merged pull requests carrying undisposed findings, so
   keeplin-srv#114's stall row has an exit.
 - Clearing `docs/review-stalls.md` on both repositories through that exit.
+- **The aggregate self-authorization counter, if the acceptance pull request does not carry it.**
+  *Observability* leaves that to the maintainer rather than assuming it. Listed here so the option
+  has a home either way; if it ships in acceptance, this entry is struck rather than left open.
+- **A documentation anchor for the 1–5 / 6 distinction in `scripts/check-docs.sh`.** A reviewer
+  asked for one and it is not in this pull request, because adding a mechanical check is
+  implementation and this pull request implements nothing. Verification item 1 defends the
+  distinction in prose; the anchor would defend it against a future edit. Recorded so the request
+  is declined visibly rather than dropped.
 
 ## Compatibility, migration, and rollback
 
@@ -410,8 +482,9 @@ protocol, `PROTOCOL_VERSION`, the `Change` model, format limits, the encryption 
 persistent store. `keeplin-core` is unaffected and its pin does not move.
 
 **Journal compatibility.** The journal record schema is unchanged by the decision itself. If the
-follow-up counter is added, it is a new digest-bound field on new records only; existing records
-remain verifiable, exactly as `unauthenticatedAnchor` was introduced under 0013.
+aggregate counter of *Observability* is added — in acceptance or later, which this ADR leaves to
+the maintainer rather than prejudging — it is a new digest-bound field on new records only;
+existing records remain verifiable, exactly as `unauthenticatedAnchor` was introduced under 0013.
 
 **Migration.** None. Directives issued after acceptance apply to findings already in a ledger; no
 stored data is rewritten.
@@ -473,24 +546,26 @@ yet — and is grouped here because it too fails on its own behaviour rather tha
    sufficient association present, and self-authorization still enabled, the second-principal
    check fails. **And it fails closed**: an enumeration that is not demonstrably complete —
    pagination truncated, `403`, rate-limited, or any response the check cannot prove exhaustive —
-   counts as *unknown*, never as zero principals. Tests for both: a second principal present, and
-   an inaccessible or partial response.
+   counts as *unknown*, never as zero principals. The check's set, source, completeness rule,
+   permissions, locus and cadence are specified under *Decision*; this item tests them. **Two of
+   the three tests:** a second principal present, and an inaccessible or partial response.
 
-   **This item is not implementable until the ADR decides four things, and it does not decide
-   them here.** Where the check runs, what its authoritative source of principals is, what
-   permissions it needs, and its cadence. Recording that honestly rather than leaving item 9 as an
-   aspiration: **the acceptance pull request must settle them**, and until it does the *Forces*
-   requirement that the relaxation "fail loudly" has a named verifier but not yet a specified
-   mechanism.
+   **Third test — the cadence, which is the part an earlier draft got wrong.** A check that runs
+   only in the acceptance pull request's CI proves the state of that day and nothing after it.
+   The scheduled default-branch trigger decided under *Decision* must therefore be verified as
+   such: assert that the workflow declares it, and that a membership change with **no pull request
+   open** still reaches the check. An implementation passing tests one and two while firing only on
+   pull request events satisfies the letter of this item and leaves the premise free to decay.
 
    **A tension this creates, stated rather than buried.** *Options considered* charges Option C
    with needing a live lookup and its failure mode, and credits Option A with reaching the same
    detectability without one. Adopting this check gives Option A a live lookup too. The
    distinction that keeps the comparison honest is narrow and must be held: **Option C's lookup
    sits on the authorization path**, so its failure blocks or wrongly permits an individual
-   disposal; **this check does not**, so its failure blocks the acceptance gate instead. If an
-   implementation puts it on the authorization path, Option C's cost analysis applies to A and the
-   comparison in this ADR no longer holds.
+   disposal; **this check does not**, so its failure blocks the gate instead. *Decision* makes that
+   placement binding rather than advisory: if an implementation puts the lookup on the
+   authorization path, Option C's cost analysis applies to A and the comparison in this ADR no
+   longer holds.
 
 **Group 3 — deployment symmetry.** Byte-identity alone proves symmetry, not policy: if both
 repositories reverted the change together it would still pass. It is therefore paired with a
