@@ -31,7 +31,8 @@ its exhaustive collaborator enumeration finds no principal other than the reposi
 6. For an ordinary finding whose disposition was reopened or changed, issue the directive after
    that boundary. GitHub timestamps have one-second granularity, so a directive in the same second
    is rejected; post a fresh directive in a later second.
-7. Trigger a new CI evaluation by committing the ledger update or editing the pull-request body.
+7. Trigger a new CI evaluation by pushing a commit or editing the pull-request body. Updating the
+   ledger means editing that body and therefore triggers the same evaluation.
    Do not add a secret: the default-branch evaluator uses its existing `GITHUB_TOKEN` to enumerate
    collaborators with `affiliation=all` and follows every `Link: rel="next"` page.
 8. Inspect the authoritative `Review loop converged` check. A `403`, rate limit, transport error,

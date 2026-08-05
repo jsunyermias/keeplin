@@ -1636,6 +1636,15 @@ test("unknown_principal_enumeration_refuses_each_directive_verification", () => 
   const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-931", state: "dismissed", reason: "maintainer decision" })} -->`;
   const finding = { id: "F-931", reified: true, state: "dismissed", evidence: { referenceId: 931, author: "maintainer", bodyDigest: sha256(body) } };
   const reference = { id: 931, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
+  const thirdPartyBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-932", state: "dismissed", reason: "collaborator decision" })} -->`;
+  const thirdPartyFinding = { id: "F-932", reified: true, state: "dismissed", evidence: { referenceId: 932, author: "second-principal", bodyDigest: sha256(thirdPartyBody) } };
+  const thirdPartyReference = { id: 932, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "second-principal" }, author_association: "COLLABORATOR", body: thirdPartyBody };
+  const tombstoneBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-933", state: "tombstone", reason: "retire finding ID" })} -->`;
+  const tombstone = { id: "F-933", evidence: { referenceId: 933, author: "second-principal", bodyDigest: sha256(tombstoneBody) } };
+  const tombstoneReference = { id: 933, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "second-principal" }, author_association: "COLLABORATOR", body: tombstoneBody };
+  const genesisBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "GENESIS", state: "genesis", reason: "authenticate history" })} -->`;
+  const genesisEvidence = { referenceId: 934, author: "second-principal", bodyDigest: sha256(genesisBody) };
+  const genesisReference = { id: 934, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "second-principal" }, author_association: "COLLABORATOR", body: genesisBody };
   for (const principalEnumeration of [
     { ok: false, reason: "HTTP 403" },
     { ok: false, reason: "rate limited" },
@@ -1645,6 +1654,18 @@ test("unknown_principal_enumeration_refuses_each_directive_verification", () => 
     const result = trusted({ pull: { number: 200, author: "maintainer", headSha: "ccc", headRepositoryId: 7, baseRepositoryId: 7 }, findings: [finding], references: [reference], principalEnumeration });
     assert.equal(result.projectedFindings[0].state, "open");
     assert.match(result.projectedFindings[0].disposalError, /enumeration is unknown/i);
+
+    const thirdPartyResult = trusted({ findings: [thirdPartyFinding], references: [thirdPartyReference], principalEnumeration });
+    assert.equal(thirdPartyResult.projectedFindings[0].state, "open");
+    assert.match(thirdPartyResult.projectedFindings[0].disposalError, /enumeration is unknown/i);
+
+    const tombstoneResult = trusted({ tombstones: [tombstone], references: [tombstoneReference], principalEnumeration });
+    assert.equal(tombstoneResult.state, "history-unverifiable");
+    assert.match(tombstoneResult.message, /enumeration is unknown/i);
+
+    const genesisResult = trusted({ journalComments: [], genesisEvidence, references: [genesisReference], principalEnumeration });
+    assert.equal(genesisResult.syntheticFindings[0].state, "open");
+    assert.match(genesisResult.syntheticFindings[0].disposalError, /enumeration is unknown/i);
   }
 });
 
