@@ -199,10 +199,17 @@ entry to Cleared with the exit that was taken and a link to it.
 | Detected | Pull request | Stuck on | Rounds without progress | Exit taken |
 |---|---|---|---|---|
 | 2026-08-04 | [keeplin#203](https://github.com/jsunyermias/keeplin/pull/203) | GENESIS | 3 | |
+| 2026-08-05 | [keeplin#215](https://github.com/jsunyermias/keeplin/pull/215) | GENESIS | 3 | |
 
 For [keeplin#203](https://github.com/jsunyermias/keeplin/pull/203), `GENESIS` is the
 unauthenticated genesis anchor. No procedure for authorizing a genesis directive exists in either
 repository, so this stall has no exit available to the author.
+
+[keeplin#215](https://github.com/jsunyermias/keeplin/pull/215) is stuck on the same
+`GENESIS` anchor and for the same reason. The pull request proposes
+[ADR 0015](adr/0015-self-authorized-disposal-with-an-auditable-directive.md), which decides how a
+genesis directive may be authorized; until that ADR is accepted and implemented, the exit it
+describes does not yet exist, so this stall likewise has no exit available to the author.
 
 ## Cleared
 
