@@ -765,13 +765,14 @@ yet — and is grouped here because it too fails on its own behaviour rather tha
 
    [`.github/workflows/adr-0015-verification.yml`](../../.github/workflows/adr-0015-verification.yml)
    adds a push-to-default-branch, daily scheduled, and manually dispatched probe, so the same
-   credential property is checked daily even when repository activity does not start CI. It
-   derives the expected singleton from `repository.owner.login` and exercises the enumerator
-   fetched from the API-reported default branch, the same source used by the evaluator. Its
-   failure belongs to its own job outside the required-job set. A static assertion that either
-   runner "holds a credential" proves nothing: it passes for a credential that returns `403` on
-   every call. The live calls assert that the expected set comes back and settle the open question
-   *Decision* records: acceptance cannot claim a credential decision it has not exercised.
+   credential property is checked daily even when repository activity does not start CI, within
+   the roughly 60-day inactivity window before GitHub disables the schedule. It derives the
+   expected singleton from `repository.owner.login` and exercises the enumerator fetched from the
+   API-reported default branch. Its failure belongs to its own job outside the required-job set. A
+   static assertion that either runner "holds a credential" proves nothing: it passes for a
+   credential that returns `403` on every call. The live calls assert that the expected set comes
+   back and settle the open question *Decision* records: acceptance cannot claim a credential
+   decision it has not exercised.
 
    **A tension this creates, stated rather than buried.** An *earlier draft* of *Options
    considered* charged Option C with needing a live lookup and credited Option A with reaching the

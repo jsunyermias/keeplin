@@ -11,20 +11,21 @@ repository-specific literal `["jsunyermias"]`, and reports failure through the r
 `Check, Test & Lint` job. It skips locally when CI or the token is absent.
 
 This workflow adds a probe that runs on pushes to `main`, on a daily schedule even when repository
-activity does not start CI, and by manual dispatch. It derives the expected singleton from
+activity does not start CI (within the roughly 60-day inactivity window before GitHub disables the
+schedule), and by manual dispatch. It derives the expected singleton from
 `repository.owner.login`, exercises evaluator code fetched from the API-reported default branch,
 and reports failure through its own job outside the required-job set. It proves that the
 evaluator's actual `GITHUB_TOKEN` can exhaustively enumerate the repository principals and that
 the single-principal premise for Option C still holds.
 
-It runs on every push to `main`, is scheduled to run daily at 06:17 UTC, and supports manual
-dispatch. The push trigger makes the merge that introduces this workflow exercise its final
-assertion and makes later failures visible on the affected default-branch commit. The off-hour
-minute avoids concentrating the scheduled request at the start of an hour, when GitHub warns that
-scheduled runs can be delayed. Scheduled workflows are best-effort and GitHub automatically
-disables them after 60 days without repository activity. The schedule is an early warning only:
-the evaluator independently enumerates principals on every authorization path and refuses the
-affected disposition when enumeration is unknown or the single-principal premise is false.
+The daily run is scheduled for 06:17 UTC. Its off-hour minute avoids concentrating the request at
+the start of an hour, when GitHub warns that scheduled runs can be delayed. The push trigger makes
+the merge that introduces this workflow exercise its final assertion and makes later failures
+visible on the affected default-branch commit. Scheduled workflows are best-effort and GitHub
+automatically disables them after 60 days without repository activity. The schedule is an early
+warning only: the evaluator independently enumerates principals on every authorization path and
+refuses the affected disposition when enumeration is unknown or the single-principal premise is
+false.
 
 ## Execution contract
 
