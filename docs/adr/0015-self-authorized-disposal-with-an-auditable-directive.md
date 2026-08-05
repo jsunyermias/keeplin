@@ -155,12 +155,17 @@ The pull request author may authorize disposal of a finding on their own pull re
 the directive is recorded as a first-class, machine-readable artifact bound to that pull request
 and finding.
 
-- **Benefits.** Opens the gate with no new credential and no new principal. Keeps every disposal
-  an explicit, dated, attributable act rather than an implicit consequence of editing a table.
-  Preserves the evaluator's refusal to accept prose.
+- **Benefits.** Opens the gate with **no new principal**, and with no credential *on the
+  authorization path*. Keeps every disposal an explicit, dated, attributable act rather than an
+  implicit consequence of editing a table. Preserves the evaluator's refusal to accept prose.
 - **Costs.** Removes the author/authorizer separation. Against adversary 1 this is a genuine
   reduction: an agent operating with the maintainer's credentials could issue the directive. The
   mitigation is attribution and reviewability, not prevention.
+- **A cost earlier drafts of this ADR omitted.** They claimed Option A needs "no new credential".
+  That was wrong once the second-principal guard became part of the decision: listing collaborators
+  requires privileges the evaluator's `GITHUB_TOKEN` does not hold, so acceptance must elevate it
+  or add a read-only credential. *Decision* prices this and explains why it narrows rather than
+  closes the gap to Option B.
 - **Failure modes.** A maintainer who authorizes without reading disposes of findings by habit.
   The directive's audit trail makes that visible after the fact; nothing prevents it.
 - **What would change the assessment.** A second human principal joining the project, which would
@@ -209,8 +214,17 @@ sufficient association.
   wrongly permits an *individual disposal*, and the policy for that failure has to be designed.
   Option A's is off it, so the same failure blocks the gate and nothing else. The difference is a
   blast radius, not the presence or absence of an API call.
-- **Assessment.** Reasonable; more machinery than Option A on the path where machinery is most
-  expensive, for the same result.
+- **Where C is genuinely better, and it is not nothing.** The two options behave differently at
+  the moment that matters most — when the premise decays. Under C the precondition is evaluated at
+  authorization time, so a second principal makes the exception **lapse on its own** and the
+  repository falls back to the original author/authorizer separation, which works again precisely
+  because a second qualifying principal now exists. Under A the guard **blocks the gate** until
+  someone intervenes. Lapsing safely and failing loudly are different outcomes, and this one
+  favours C. An earlier draft wrote "for the same result", which papered over it.
+- **Assessment.** Reasonable, and closer than earlier drafts of this ADR admitted. A is preferred
+  for the operational reasons above, not because C costs more for an identical outcome. A
+  maintainer who weighs self-lapsing behaviour highly should choose C, and this ADR would not call
+  that choice wrong.
 
 ### Option D — Pre-seeded genesis anchor
 
@@ -279,29 +293,57 @@ during that pull request's CI, records the state of that day and then never fire
 premise would decay silently — exactly the failure the *Forces* requirement exists to prevent. So
 the guard is decided here:
 
-- **The set being counted.** Principals who could satisfy condition 1: those whose
-  `author_association` on this repository would be `OWNER`, `MEMBER` or `COLLABORATOR`. The guard
-  counts the same population condition 1 admits, so it cannot drift away from what it guards.
-- **Authoritative source.** The repository collaborators API, `affiliation=all`, read for
-  permission level and paginated to exhaustion by following `Link: rel="next"`. Repository
-  metadata is the authority on who holds access; the pull request payload is not, because it
-  reports only the associations of principals who happen to have acted.
+- **The set being counted, and the limit of the enumeration.** Principals who could satisfy
+  condition 1: those whose `author_association` on this repository would be `OWNER`, `MEMBER` or
+  `COLLABORATOR`. An earlier draft claimed the collaborators API "counts the same population
+  condition 1 admits, so it cannot drift". **That equivalence is false in general and is
+  withdrawn.** `author_association` describes a principal's relationship to the repository's owner;
+  the collaborators endpoint enumerates repository access. In an organization-owned repository an
+  organization member receives `MEMBER` on a comment without appearing as a collaborator, so the
+  guard would count one while a second principal could satisfy condition 1. **The enumeration is
+  therefore sound only for a personally-owned repository, which is what both repositories are
+  today.** If either moves to an organization, this guard stops being sufficient and the decision
+  must be revisited before it is relied on — recorded here rather than discovered later.
+- **Authoritative source.** The repository collaborators API, `affiliation=all`, paginated to
+  exhaustion by following `Link: rel="next"`. Repository metadata is the authority on who holds
+  access; the pull request payload is not, because it reports only the associations of principals
+  who happen to have acted.
+- **The failure predicate.** The check fails when the enumeration contains any qualifying principal
+  beyond the maintainer. Whether the owner appears in the enumeration must be **established against
+  the API rather than assumed**, and the threshold derived from that fact: a guard that assumes the
+  owner is listed, on an endpoint that does not list them, would sit at one principal when the
+  second arrives and pass. That is the fail-open direction, and stating the predicate is what
+  excludes it.
 - **Completeness, and what happens without it.** The count is trustworthy only from an enumeration
   the check can show exhausted. A `403`, a rate-limited response, a transport failure, or a page
   sequence whose termination cannot be established yields `unknown` — never zero, never one. The
   check fails on `unknown`. Under-permissioning therefore fails closed rather than silently
   reporting an empty repository, which is the specific defect this wording exists to exclude.
-- **Least privilege.** Repository `metadata: read` plus the `administration: read` that
-  collaborator listing requires. Nothing on the write side, and no organization-level scope.
+- **Credentials — a cost this ADR did not price until now.** The endpoint requires write, maintain
+  or admin privileges on the repository, and `administration` is **not** a valid key in a
+  workflow's `permissions:` block, so it cannot be granted to `GITHUB_TOKEN` at all. An earlier
+  draft specified `metadata: read` plus `administration: read` and was simply unimplementable at
+  the locus it named. The evaluator runs today with `contents: read` and no write. **The acceptance
+  pull request must therefore either elevate that token or carry a separate read-only credential,
+  and either is a real operational cost Option A was not previously charged with.** It narrows the
+  gap to Option B without closing it: B's credential *authorizes disposals*, so its compromise
+  buys arbitrary authorization; this one only *reads membership*, so its compromise buys nothing
+  but the ability to blind a guard — which still fails closed when the read does not succeed.
 - **Locus.** In the default-branch evaluator workflow, alongside `check-review-loop.js` and
   **not** on the authorization path. Its failure blocks the gate; it never decides an individual
   disposal. This is the distinction that keeps the comparison with Option C honest, and it is
   binding: an implementation that consults this count while verifying a directive has adopted
   Option C's cost and invalidated that comparison.
-- **Cadence.** Two triggers, because one is demonstrably insufficient. Every evaluator run, so a
-  repository that gains a principal is caught by the next pull request; **and** a scheduled run on
-  the default branch, so a membership change is caught even while no pull request is open. The
-  scheduled run is what makes the guard survive its own acceptance pull request.
+- **Cadence, and which leg carries the guarantee.** Two triggers. **Every evaluator run** is the
+  load-bearing one: self-authorization can only happen on a pull request, every pull request is
+  evaluated, and so the premise is checked before every opportunity to use the relaxation. **A
+  scheduled run on the default branch** is early warning, not the tripwire — it shortens the time
+  a decayed premise goes unnoticed while no pull request is open. An earlier draft called the
+  scheduled run "what makes the guard survive its own acceptance pull request", which overstated
+  it: GitHub disables scheduled workflows in a public repository after 60 days without activity,
+  and may delay or drop scheduled runs under load. A disabled schedule is still declared in the
+  YAML, so its absence is not self-announcing. Nothing here fails closed when the job never starts
+  — which is exactly why the guarantee is placed on the per-evaluation leg instead.
 
 This is a decision about a check that does not exist yet, and it is recorded as a decision rather
 than deferred because the acceptance pull request cannot be reviewed against an unstated contract.
@@ -451,7 +493,8 @@ this; whether it ships in the acceptance PR is the maintainer's call, and it is 
 fails, and fails closed, when the repository gains another principal with sufficient association
 while self-authorization is enabled. The *Forces* section requires this relaxation to "fail
 loudly", and that force is unmet without it, so it belongs to the change rather than after it.
-Its set, source, completeness rule, permissions, locus and cadence are decided under *Decision*,
+Its counted set, source, failure predicate, completeness rule, credential, locus and cadence are
+decided under *Decision*,
 so the acceptance pull request implements a stated contract rather than inventing one; verification
 item 9 states the three tests it must pass, including the one for the scheduled trigger.
 
@@ -546,20 +589,26 @@ yet — and is grouped here because it too fails on its own behaviour rather tha
    sufficient association present, and self-authorization still enabled, the second-principal
    check fails. **And it fails closed**: an enumeration that is not demonstrably complete —
    pagination truncated, `403`, rate-limited, or any response the check cannot prove exhaustive —
-   counts as *unknown*, never as zero principals. The check's set, source, completeness rule,
-   permissions, locus and cadence are specified under *Decision*; this item tests them. **Two of
+   counts as *unknown*, never as zero principals. The check's counted set, source, failure
+   predicate, completeness rule, credential, locus and cadence are specified under *Decision*; this
+   item tests them. **Two of
    the three tests:** a second principal present, and an inaccessible or partial response.
 
-   **Third test — the cadence, which is the part an earlier draft got wrong.** A check that runs
-   only in the acceptance pull request's CI proves the state of that day and nothing after it.
-   The scheduled default-branch trigger decided under *Decision* must therefore be verified as
-   such: assert that the workflow declares it, and that a membership change with **no pull request
-   open** still reaches the check. An implementation passing tests one and two while firing only on
-   pull request events satisfies the letter of this item and leaves the premise free to decay.
+   **Third test — the cadence, which two earlier drafts got wrong in opposite directions.** The
+   first ran the check only in the acceptance pull request's CI, proving the state of that day and
+   nothing after it. The second asserted that "a membership change with **no pull request open**
+   still reaches the check" — **which no CI can assert**: it is an operational property of a
+   scheduled trigger GitHub may disable or drop, not a mechanical one. This test is therefore
+   scoped to what is actually assertable: that the workflow declares **both** triggers, that the
+   guard runs on the per-evaluation path rather than only on the scheduled one, and that the
+   workflow holds the credential the check needs. An implementation that fires only on `schedule`
+   has put the guarantee on the leg that can silently stop.
 
-   **A tension this creates, stated rather than buried.** *Options considered* charges Option C
-   with needing a live lookup and its failure mode, and credits Option A with reaching the same
-   detectability without one. Adopting this check gives Option A a live lookup too. The
+   **A tension this creates, stated rather than buried.** An *earlier draft* of *Options
+   considered* charged Option C with needing a live lookup and credited Option A with reaching the
+   same detectability without one; **the current text does neither**, and this paragraph asserted
+   otherwise for one revision after that section was corrected. Adopting this check gives Option A
+   a live lookup too. The
    distinction that keeps the comparison honest is narrow and must be held: **Option C's lookup
    sits on the authorization path**, so its failure blocks or wrongly permits an individual
    disposal; **this check does not**, so its failure blocks the gate instead. *Decision* makes that
