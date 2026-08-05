@@ -198,9 +198,14 @@ is the standing decision, superseding
 [`docs/adr/0004-review-loop-convergence.md`](docs/adr/0004-review-loop-convergence.md) through
 0006; `.github/scripts/check-review-loop.js` enforces it on every non-draft pull request.
 
-A default-branch `workflow_run` evaluator is authoritative, and disposal
-requires independently authored, machine-readable authorization plus commit/workflow/App-bound
-success evidence when resolved. Fork pull requests deliberately fail closed.
+A default-branch `workflow_run` evaluator is authoritative, and disposal requires a verified,
+machine-readable authorization plus commit/workflow/App-bound success evidence when resolved.
+Under accepted ADR 0015 Option C, the pull-request author may issue that authorization only while
+the authorization-time exhaustive collaborator enumeration proves the single-principal premise;
+unknown membership refuses the disposition. Fork pull requests deliberately fail closed.
+The step-by-step procedure for issuing and recording a disposal directive is
+[`docs/review-directives.md`](docs/review-directives.md); follow it instead of reconstructing the
+comment format from evaluator code.
 
 - A finding **blocks** only if it is *reified*: expressed as something that fails
   mechanically — a test, a property, a contract assertion, or a `scripts/check-docs.sh`

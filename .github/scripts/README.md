@@ -48,7 +48,14 @@ workflow dependency list and branch protection agree. It deliberately makes no b
 The default-branch `workflow_run` workflow is authoritative. It rejects malformed ledger
 parses and open findings without a named mechanical check. It verifies App, configured CI
 workflow, repository, pull-request and schema identity; collaborator authorization directives
-and body digests; and,
+and body digests. Every directive verification consumes an exhaustive repository-collaborator
+enumeration fetched with the evaluator's existing `GITHUB_TOKEN`, `affiliation=all`, and explicit
+`Link: rel="next"` traversal. An unreadable or non-exhaustive enumeration refuses that disposition.
+The pull-request author may authorize only while no enumerated principal other than the repository
+owner exists; the owner is excluded by login identity, whether or not the endpoint lists it. A
+distinct qualifying principal remains able to authorize after the exception lapses. The operator
+procedure and exact directive format are in
+[`docs/review-directives.md`](../../docs/review-directives.md). The evaluator also verifies,
 for `resolved`, a successful named check bound to the evaluated head, workflow and App. Missing,
 changed, dismissed or unreachable evidence reopens the finding. Genesis and tombstones use the
 same `verifyAuthorization` path, but keeplin ADR 0013 changes only the empty-journal outcome: an

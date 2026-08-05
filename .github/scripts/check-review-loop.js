@@ -24,7 +24,49 @@ const JOURNAL_SCHEMA = "keeplin.review-loop/v1";
 const JOURNAL_MARKER = "<!-- keeplin-review-loop-journal ";
 const DIRECTIVE_MARKER = "<!-- keeplin-review-loop-authorize ";
 const AUTHORIZING_ASSOCIATIONS = new Set(["MEMBER", "OWNER", "COLLABORATOR"]);
+const AUTHORIZING_TRANSITIONS = Object.freeze([
+  Object.freeze({ state: "resolved", path: "finding" }),
+  Object.freeze({ state: "dismissed", path: "finding" }),
+  Object.freeze({ state: ADVISORY, path: "finding" }),
+  Object.freeze({ state: "tombstone", path: "special" }),
+  Object.freeze({ state: "genesis", path: "special" }),
+]);
 const REQUIRED_JOBS = ["Check, Test & Lint", "Knowledge graph up to date"];
+
+function nextPageUrl(linkHeader) {
+  if (!linkHeader) return null;
+  for (const part of String(linkHeader).split(",")) {
+    const match = part.trim().match(/^<([^>]+)>;\s*rel="([^"]+)"$/);
+    if (match && match[2].split(/\s+/).includes("next")) return match[1];
+  }
+  return /rel="next"/.test(String(linkHeader)) ? undefined : null;
+}
+
+async function enumerateRepositoryPrincipals({ request, owner, repo }) {
+  if (typeof request !== "function" || !owner || !repo) return { ok: false, reason: "repository principal enumeration is unavailable" };
+  const principals = [];
+  const visited = new Set();
+  let url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/collaborators?affiliation=all&per_page=100`;
+  try {
+    while (url) {
+      if (visited.has(url)) return { ok: false, reason: "repository principal pagination did not exhaust" };
+      visited.add(url);
+      const response = await request(url);
+      if (!response || response.status !== 200 || !Array.isArray(response.data)) return { ok: false, reason: "repository principal enumeration returned an unreadable response" };
+      for (const principal of response.data) {
+        if (!principal || typeof principal.login !== "string" || !principal.login) return { ok: false, reason: "repository principal enumeration returned an unreadable principal" };
+        principals.push(principal.login);
+      }
+      const next = nextPageUrl(response.headers && response.headers.link);
+      if (next === undefined) return { ok: false, reason: "repository principal pagination could not be proven exhaustive" };
+      url = next;
+    }
+  } catch (error) {
+    const status = error && (error.status || (error.response && error.response.status));
+    return { ok: false, reason: status ? `repository principal enumeration failed with HTTP ${status}` : "repository principal enumeration failed" };
+  }
+  return { ok: true, principals: [...new Set(principals.map((login) => login.toLowerCase()))] };
+}
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -57,13 +99,20 @@ function markedJsonPayloads(body, marker) {
   return { payloads, malformed: false };
 }
 
-function verifyAuthorization({ finding, reference, pullAuthor, targetState, repositoryId, pullNumber, evidence = finding.evidence || {} }) {
+function verifyAuthorization({ finding, reference, pullAuthor, targetState, repositoryId, pullNumber, maintainerLogin, principalEnumeration, evidence = finding.evidence || {} }) {
+  if (!AUTHORIZING_TRANSITIONS.some((transition) => transition.state === targetState)) return { ok: false, reason: "finding state is not an authorizing transition" };
   if (!reference) return { ok: false, reason: "authorization reference is unreachable" };
   if (reference.repositoryId !== repositoryId || reference.pullNumber !== pullNumber) return { ok: false, reason: "authorization reference is not bound to this repository and pull request" };
   const login = reference.user && reference.user.login;
   const association = String(reference.author_association || "").toUpperCase();
   if (!AUTHORIZING_ASSOCIATIONS.has(association)) return { ok: false, reason: "reference author is not authorized" };
-  if (!login || login.toLowerCase() === String(pullAuthor || "").toLowerCase()) return { ok: false, reason: "pull-request author cannot authorize disposal" };
+  if (!principalEnumeration || principalEnumeration.ok !== true || !Array.isArray(principalEnumeration.principals)) return { ok: false, reason: "repository principal enumeration is unknown" };
+  if (!login) return { ok: false, reason: "reference author is not authorized" };
+  if (login.toLowerCase() === String(pullAuthor || "").toLowerCase()) {
+    const maintainer = String(maintainerLogin || "").toLowerCase();
+    if (!maintainer || login.toLowerCase() !== maintainer) return { ok: false, reason: "pull-request author cannot authorize disposal" };
+    if (principalEnumeration.principals.some((principal) => String(principal).toLowerCase() !== maintainer)) return { ok: false, reason: "self-authorization is unavailable while another repository principal exists" };
+  }
   if (reference.kind === "review" && String(reference.state || "").toUpperCase() === "DISMISSED") return { ok: false, reason: "authorization review was dismissed" };
   const marked = markedJsonPayloads(reference.body, DIRECTIVE_MARKER);
   const directive = marked.malformed ? null : marked.payloads.find((candidate) => candidate && candidate.finding === finding.id && candidate.state === targetState && typeof candidate.reason === "string" && candidate.reason.trim());
@@ -272,7 +321,7 @@ function referenceIssuedAt(reference) {
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
-function evaluateTrustedReviewLoop({ pull, findings = [], references = [], checks = [], journalComments = [], jobs = [], tombstones = [], genesisEvidence, changedFiles = [], stallsContent = "", diffSignature = "", stagnationLimit = DEFAULT_STAGNATION_LIMIT, config }) {
+function evaluateTrustedReviewLoop({ pull, findings = [], references = [], checks = [], journalComments = [], jobs = [], tombstones = [], genesisEvidence, principalEnumeration, changedFiles = [], stallsContent = "", diffSignature = "", stagnationLimit = DEFAULT_STAGNATION_LIMIT, config }) {
   if (pull.headRepositoryId !== pull.baseRepositoryId) return { ok: false, state: "fork-refused", message: "Fork pull requests deliberately fail closed: partial evidence is not evaluated." };
   if (!Array.isArray(findings) || findings.some((finding) => !finding || typeof finding !== "object" || typeof finding.id !== "string" || !FINDING_ID.test(finding.id))) return { ok: false, state: "history-unverifiable", message: "Review ledger contains an invalid finding identifier." };
   if (!Array.isArray(tombstones) || tombstones.some((entry) => !entry || typeof entry !== "object" || typeof entry.id !== "string" || !FINDING_ID.test(entry.id))) return { ok: false, state: "history-unverifiable", message: "Trusted metadata contains an invalid tombstone identifier." };
@@ -311,7 +360,7 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
   if (anchorRequiresAuthentication) {
     const genesis = { id: "GENESIS", state: "genesis", evidence: genesisEvidence };
     const reference = references.find((item) => String(item.id) === String(genesis.evidence && genesis.evidence.referenceId));
-    const authorization = verifyAuthorization({ finding: genesis, reference, pullAuthor: pull.author, targetState: genesis.state, repositoryId: config.repositoryId, pullNumber: pull.number });
+    const authorization = verifyAuthorization({ finding: genesis, reference, pullAuthor: pull.author, targetState: genesis.state, repositoryId: config.repositoryId, pullNumber: pull.number, maintainerLogin: config.maintainerLogin, principalEnumeration });
     if (!authorization.ok) {
       unauthenticatedAnchor = true;
       syntheticFindings = [{ id: "GENESIS", round: journal.records.length + 1, reifiedBy: "verified genesis authorization", reified: true, state: "open", resolution: "", disposalError: authorization.reason }];
@@ -319,7 +368,7 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
   }
   for (const special of tombstones.map((entry) => ({ ...entry, state: "tombstone" }))) {
     const reference = references.find((item) => String(item.id) === String(special.evidence && special.evidence.referenceId));
-    const authorization = verifyAuthorization({ finding: special, reference, pullAuthor: pull.author, targetState: special.state, repositoryId: config.repositoryId, pullNumber: pull.number });
+    const authorization = verifyAuthorization({ finding: special, reference, pullAuthor: pull.author, targetState: special.state, repositoryId: config.repositoryId, pullNumber: pull.number, maintainerLogin: config.maintainerLogin, principalEnumeration });
     if (!authorization.ok) return { ok: false, state: "history-unverifiable", message: `${special.id} lacks verified authorization: ${authorization.reason}.` };
   }
   const requiredFailures = REQUIRED_JOBS.filter((name) => {
@@ -351,7 +400,7 @@ function evaluateTrustedReviewLoop({ pull, findings = [], references = [], check
       bodyDigest: recordedAuthorization.bodyDigest,
     };
     const reference = references.find((item) => String(item.id) === String(authorizationEvidence.referenceId));
-    const authorization = verifyAuthorization({ finding, reference, pullAuthor: pull.author, targetState: finding.state, repositoryId: config.repositoryId, pullNumber: pull.number, evidence: authorizationEvidence });
+    const authorization = verifyAuthorization({ finding, reference, pullAuthor: pull.author, targetState: finding.state, repositoryId: config.repositoryId, pullNumber: pull.number, maintainerLogin: config.maintainerLogin, principalEnumeration, evidence: authorizationEvidence });
     if (!authorization.ok) return { ...finding, reified: true, state: "open", disposalError: authorization.reason };
     if (disposition.changedAt !== null) {
       const changedAt = Date.parse(disposition.changedAt || "");
@@ -909,12 +958,16 @@ module.exports = {
   splitTableRow,
   stallMentionsPull,
   stallRecordsBlockers,
+  STATES,
+  FAILING_CONCLUSIONS,
   AUTHORIZING_ASSOCIATIONS,
+  AUTHORIZING_TRANSITIONS,
   DIRECTIVE_MARKER,
   JOURNAL_MARKER,
   JOURNAL_SCHEMA,
   REQUIRED_JOBS,
   canonicalJson,
+  enumerateRepositoryPrincipals,
   evaluateTrustedReviewLoop,
   journalComment,
   levelTwoSection,

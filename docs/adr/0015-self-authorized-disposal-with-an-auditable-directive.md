@@ -1,6 +1,6 @@
 # 0015 — Self-authorized disposal with an auditable directive
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-08-05
 - Decision owners: `jsunyermias`
 - Scope: cross-repo
@@ -63,8 +63,10 @@ answer.
 
 ### Evidence of the practical outcome
 
-Two pull requests have now merged above an open stall record rather than through the gate:
-keeplin#203, cited by keeplin#206 itself, and keeplin-srv#114, whose
+Three pull requests have now merged above an open stall record rather than through the gate:
+keeplin#203, cited by keeplin#206 itself; keeplin-srv#114; and **keeplin#215, the pull request that
+proposed this ADR** — which could not open the gate it documents and so went the same way,
+making the argument below about itself. Of these, keeplin-srv#114 is the one whose
 `docs/review-stalls.md` row remains open on `main` with all fifteen blockers named and
 `Exit taken` empty. `AGENTS.md` defines an open row there as an open condition under *Definition
 of done*. The gate that eleven ADRs built is being routed around because it cannot be opened.
@@ -247,8 +249,8 @@ Seed the journal on the default branch so it is never empty.
 ### Option E — Keep the current behaviour
 
 - **Assessment.** The status quo is that pull requests merge above open stall records, and
-  `AGENTS.md` declares the default branch not-done while such a record is open. Two merges have
-  now taken that route. Keeping it means the convergence rule exists only on paper.
+  `AGENTS.md` declares the default branch not-done while such a record is open. Three merges have
+  now taken that route, the most recent being this ADR's own pull request. Keeping it means the convergence rule exists only on paper.
 
 ## Decision and justification
 
@@ -256,15 +258,23 @@ Seed the journal on the default branch so it is never empty.
 > intent recorded here, not an approval. Implementation remains blocked until this ADR is
 > `accepted`.
 >
+> **Accepted with Option C.** After the withdrawal below, the maintainer chose **Option C**: relax
+> the author condition only while the single-principal premise holds, checking it at authorization
+> time with `unknown ⇒ refuse`. Everything this ADR labels *the Option A form* — the locus and
+> cadence bullets, and the A column of verification item 9 — is therefore the **rejected**
+> alternative, kept as the record of what was considered and why it lost, not as a live option.
+>
 > **The maintainer subsequently approved withdrawing the `recommended` label from Option A**, after
 > the two independent reviewers split on whether it still followed from the comparison below. That
 > approval is recorded here rather than left traceable only to a review transcript: without it, a
 > later reader would find a recommendation removed from the option the maintainer had asked for,
 > with nothing in the record saying who decided that.
 
-**This ADR decides a mechanism and does not decide the policy choice between Options A and C.
-The `recommended` label an earlier draft carried on Option A has been withdrawn, and the reason is
-recorded rather than quietly dropped.**
+**As proposed, this ADR decided a mechanism and left the policy choice between Options A and C to
+the maintainer; on acceptance the maintainer chose Option C.** The `recommended` label an earlier
+draft carried on Option A had been withdrawn before that choice, and the reason is recorded rather
+than quietly dropped — the withdrawal is why the choice was the maintainer's to make rather than a
+conclusion this document reached on its own.
 
 Review removed, one at a time, most of what distinguished A from C. A was said to need
 no live lookup — it does. A was said to need no credential — it does. A was said to reach the same
@@ -376,42 +386,46 @@ the guard is decided here:
   sequence whose termination cannot be established yields `unknown` — never zero, never one. The
   check fails on `unknown`. Under-permissioning therefore fails closed rather than silently
   reporting an empty repository, which is the specific defect this wording exists to exclude.
-- **Credentials — undecided, and deliberately left so.** One thing is settled: `administration` is
+- **Credentials — measured, not argued.** One thing was always settled: `administration` is
   **not** a valid key in a workflow's `permissions:` block, so an earlier draft specifying
-  `metadata: read` plus `administration: read` was unimplementable at the locus it named. What is
-  *not* settled is whether the evaluator's existing `GITHUB_TOKEN` can call the endpoint at all,
-  and this ADR declines to assert either answer because **the two readings of GitHub's
-  documentation available to its author disagree**:
+  `metadata: read` plus `administration: read` was unimplementable at the locus it named. What was
+  *not* settled was whether the evaluator's existing `GITHUB_TOKEN` can call the endpoint at all.
+  Two readings of GitHub's documentation disagreed — one requiring *write, maintain or admin*
+  privileges of the authenticated user, the other admitting **GitHub App installation access
+  tokens** with repository `Metadata: read` — and an earlier draft asserted the first as fact and
+  derived a requirement from it without verifying it. That assertion was retracted, and the
+  question was made a precondition of acceptance rather than a better argument.
 
-  - The endpoint page states that *the authenticated user must have write, maintain or admin
-    privileges on the repository*. The evaluator runs with `contents: read` and no write, so on
-    this reading acceptance must add a credential.
-  - A reviewer reports that the same page also carries a fine-grained block admitting **GitHub App
-    installation access tokens** with repository `Metadata: read`, and `GITHUB_TOKEN` **is** an
-    installation access token — on which reading no new credential is needed and the existing one
-    suffices.
+  **It was then measured.** A workflow declaring **the same five permissions as the evaluator**
+  called the endpoint with `affiliation=all`, paginating to exhaustion
+  ([keeplin#216](https://github.com/jsunyermias/keeplin/pull/216), run
+  [31019731470](https://github.com/jsunyermias/keeplin/actions/runs/31019731470)):
 
-  A previous draft of this ADR asserted the first reading as fact and derived from it that
-  acceptance "must either elevate that token or carry a separate read-only credential". **Both
-  halves of that were wrong**: no `permissions:` key grants a repository role, so "elevate" names
-  nothing; and the underlying claim was never verified. **The question is cheap to settle and
-  expensive to guess: one call to the endpoint with the evaluator's real `GITHUB_TOKEN` decides
-  it.** Making that call is implementation, so it does not happen here. It is instead a
-  **precondition of acceptance**: this ADR must not be accepted until that call has been made and
-  its result recorded, and the credential decision follows from the result rather than preceding
-  it. **The result is recorded by amending this bullet before acceptance**, not only in the
-  acceptance pull request — otherwise the canonical record would go on calling the question
-  unsettled after it was settled, which is the exact defect this ADR criticises elsewhere. The ADR
-  is still `proposed`, so amending it is cheap. Whatever the answer, the *cost comparison* already
-  stands corrected — Option A's old claim of needing no credential is withdrawn either way,
-  because it was asserted without evidence.
-- **Locus.** In the default-branch evaluator workflow, alongside `check-review-loop.js` and
+  ```
+  HTTP status: 200
+  Pagination exhausted: true
+  Principals returned: 1
+  ```
+
+  **The evaluator's existing `GITHUB_TOKEN` suffices. No new credential is required.** The second
+  reading is the correct one: `GITHUB_TOKEN` is an installation access token, and the
+  write/maintain/admin sentence governs the authenticated-*user* path. `Principals returned: 1`
+  independently corroborates this ADR's answer to acceptance criterion 0 of keeplin#206.
+
+  **What this does not establish.** It measures *this repository's configuration on the date of
+  acceptance*. It is not a guarantee that survives a permissions change to the evaluator workflow,
+  a repository transfer, or a move to an organization. That is precisely why verification item 9's
+  fourth test performs the enumeration on every run instead of trusting this result — the same
+  reasoning that moved the cadence guarantee off the scheduled leg. Under Option C the stake is
+  higher than it was under A: the enumeration sits on the authorization path, so a credential that
+  stops working refuses disposals rather than merely blocking a gate.
+- **Locus — the *rejected* Option A form; see the status note.** In the default-branch evaluator workflow, alongside `check-review-loop.js` and
   **not** on the authorization path. Its failure blocks the gate; it never decides an individual
   disposal. **This bullet is the Option A form.** It is binding *under A*: an implementation that
   chose A and then consulted this count while verifying a directive has built C's placement under
   A's name, and the *Options considered* comparison no longer describes what was built. Under C
   that placement is the decision, not a defect.
-- **Cadence, and which leg carries the guarantee — also the Option A form.** Two triggers. **Every evaluator run** is the
+- **Cadence, and which leg carries the guarantee — also the *rejected* Option A form.** Two triggers. **Every evaluator run** is the
   load-bearing one: self-authorization can only happen on a pull request, every pull request is
   evaluated, and so the premise is checked before every opportunity to use the relaxation. **A
   scheduled run on the default branch** is early warning, not the tripwire — it shortens the time
@@ -548,6 +562,13 @@ while independent review — the control that actually replaces it — remains p
 unenforced. If the maintainer adds it, that asymmetry should be a conscious choice, not a side
 effect of the gate finally being openable.
 
+  **Decided at acceptance: not now.** The maintainer considered making `Review loop converged` a
+  required check and declined for this reason — independent review, the control that actually
+  replaces the separation, is still procedural, and `check-review-governance.js` runs inside the
+  head-controlled `ci.yml` that [0012](0012-default-branch-review-governance.md) records as
+  weakenable by a head. Recorded so a later reader knows the asymmetry was weighed rather than
+  overlooked, and so revisiting it is a decision rather than a discovery.
+
 **Residual risks.**
 
 - The relaxation persists silently if a second principal joins and nobody revisits it. **Mitigated
@@ -593,7 +614,9 @@ and item 9's fourth test is what closes it.
 
 **Follow-up work — genuinely later work only.**
 
-- A procedure, step by step, for issuing and recording a directive, linked from `AGENTS.md`.
+- ~~A procedure, step by step, for issuing and recording a directive, linked from `AGENTS.md`.~~
+  **Moved into the acceptance pull request** by maintainer decision: without it, whoever has to
+  use the mechanism would deduce it from the code.
 - **Correcting `AGENTS.md`.** Its sentence "the ledger is part of the diff the independent reviewer
   examines" is imprecise in the same way an earlier draft of this ADR was: the ledger is in the
   pull request body, not the file diff. This ADR flags it rather than editing it, and that flag
@@ -689,10 +712,12 @@ yet — and is grouped here because it too fails on its own behaviour rather tha
    credential is the one thing *Decision* leaves open, and the fourth test below is what closes it.
    **The first two tests:** a second principal present, and an inaccessible or partial response.
 
-   **These tests are written in the Option A form and must be remapped under Option C**, because
-   the verification plan must not decide the policy choice *Decision* deliberately leaves open. A
-   reviewer showed that test 3, read literally, would force a C implementation to build A's
-   separate guard. The mapping:
+   **These tests were written in the Option A form and are remapped under Option C**, which is the
+   policy the maintainer chose on acceptance. The mapping below is therefore not a menu: **the
+   Option C column is binding and the Option A column is the record of the rejected alternative.**
+   It is kept because a reviewer showed that test 3, read literally in its A form, would force a C
+   implementation to build A's separate guard — the failure this mapping exists to prevent, and
+   which is easier to avoid with both columns visible than with one deleted.
 
    The stimulus is the same in every row; **what differs is the observable**, and writing
    "unchanged" where only the stimulus is unchanged is what a reviewer caught here.
