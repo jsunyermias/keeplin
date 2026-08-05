@@ -143,7 +143,7 @@ of 0008 and 0011 and are unchanged.
 
 **The honest statement of what is being given up.** In a repository whose only principal is the
 maintainer, the author/authorizer separation defends against *the maintainer's own agents acting
-without the maintainer*, not against a second human. Option 1 below removes it and replaces it
+without the maintainer*, not against a second human. Option A below removes it and replaces it
 with an explicit, attributable act by the maintainer. That is a real reduction in defence against
 adversary 1, and it is the cost this decision accepts.
 
@@ -306,12 +306,25 @@ that does establish it: the agent-authored comments on that pull request are att
 `jsunyermias` with `author_association: OWNER`, because the tooling acts through the maintainer's
 GitHub identity. That is the capability Option A stops filtering.
 
-Under the adversary-1 definition used above — an actor able to edit the ledger and the pull
-request body — the capability is implied anyway, since GitHub allows that only to the author or a
-principal with write access. So against adversary 1 as defined, the technical control is
-*eliminated*, not reduced. A comment-only actor with `author_association: NONE` is still refused
-by condition 1, but that actor cannot touch the ledger either, so the residue is not a defence of
-anything this decision protects.
+**How far "eliminated" reaches, and where it stops.** An earlier draft argued that adversary 1's
+defining capability — editing the ledger and the pull request body — implies a qualifying
+identity, since GitHub grants it only to the author or a principal with write access. That
+implication does not close, and the reviewer who caught it was right: **the author of a pull
+request may edit its body whatever their association**, so a contributor opening one from a fork
+with `author_association: NONE` is adversary 1 by the definition, *can* write the ledger, and is
+still refused by condition 1 — which this ADR keeps and does not relax.
+
+So the accurate statement is bounded:
+
+- **Against adversary 1 as this repository instantiates it** — an agent acting through the
+  maintainer's qualifying identity — the technical control is *eliminated*.
+- **Against adversary 1 without a qualifying association** — a fork contributor authoring their
+  own pull request — condition 1 still refuses the directive, and that residue is exactly what
+  stops an outside contributor self-disposing findings on their own pull request.
+
+The subset in the second row is empty in these repositories today, because one principal opens
+every pull request. It will not stay empty if the project grows, which is the same condition the
+*Forces* section already asks the relaxation to fail loudly on.
 
 What remains is a record and a requirement, and neither is enforced by the evaluator:
 
@@ -346,8 +359,12 @@ effect of the gate finally being openable.
 
 **Residual risks.**
 
-- The relaxation persists silently if a second principal joins and nobody revisits it. Mitigated
-  by the follow-up below, not by the mechanism.
+- The relaxation persists silently if a second principal joins and nobody revisits it. **Mitigated
+  by the second-principal check, which this ADR places in the acceptance pull request** — so the
+  mitigation is a mechanism, not deferred work. An earlier draft called it follow-up here and a
+  requirement elsewhere, leaving the acceptance boundary ambiguous. If the maintainer moves it out
+  of acceptance, this risk returns unmitigated and the *Forces* requirement should be struck
+  rather than left nominally satisfied.
 - Directive fatigue: disposing of fourteen findings on one pull request requires fourteen
   directives. If that friction leads to batch-authorizing without reading, the audit trail records
   the act but not the absence of judgement.
@@ -368,15 +385,15 @@ from prevention to after-the-fact detection. An earlier draft said "no new signa
 which contradicted the sentence that followed it. A counter on each journal record would close
 this; whether it ships in the acceptance PR is the maintainer's call, and it is not assumed here.
 
-**Follow-up work.**
+**Part of the acceptance pull request, not follow-up.** The second-principal check — one that
+fails, and fails closed, when the repository gains another principal with sufficient association
+while self-authorization is enabled. The *Forces* section requires this relaxation to "fail
+loudly", and that force is unmet without it, so it belongs to the change rather than after it.
+Verification item 9 states what the acceptance pull request must still decide about it.
+
+**Follow-up work — genuinely later work only.**
 
 - A procedure, step by step, for issuing and recording a directive, linked from `AGENTS.md`.
-- **The second-principal check** — one that fails when the repository gains another principal with
-  sufficient association while self-authorization is enabled, so the exception cannot outlive its
-  premise silently. The *Forces* section requires this relaxation to "fail loudly"; that force is
-  unmet without it. **This ADR proposes that the check ship in the acceptance PR**, not later, and
-  says so rather than leaving the assignment ambiguous. The maintainer may decide otherwise, but
-  then the force should be struck rather than left nominally satisfied.
 - **Correcting `AGENTS.md`.** Its sentence "the ledger is part of the diff the independent reviewer
   examines" is imprecise in the same way an earlier draft of this ADR was: the ledger is in the
   pull request body, not the file diff. This ADR flags it rather than editing it, and that flag
@@ -419,15 +436,23 @@ establishes.
 **Group 1 — regression of the decision itself.** These fail if the self-authorization change is
 reverted.
 
-1. **Positive.** A directive authored by the pull request author, satisfying conditions 1–6,
-   disposes of a reified finding and the blocking set shrinks. Test in
-   `.github/scripts/check-review-loop.test.js`.
+1. **Positive.** A directive authored by the pull request author, satisfying conditions **1–5**,
+   disposes of a reified finding and the blocking set shrinks — **and the evaluation then records
+   it per condition 6**. Condition 6 is a postcondition here, not something the directive can
+   satisfy in advance; an earlier draft of this item said "1–6" and re-flattened the very
+   distinction the Decision section draws. The test must start with **no** such authorization in
+   the journal, take the evidence from the current ledger, assert the projected closure, and
+   capture the record `publishEvaluation` writes. Building it from a prior observation that
+   already carries the authorization would pass without ever exercising the first evaluation this
+   ADR promises. Test named in `.github/scripts/check-review-loop.test.js`.
 2. **End to end.** A real pull request issues a directive and its `Review loop converged` check
    publishes `converged`. keeplin#206's acceptance criterion 3 requires this, and nothing short of
    a real run satisfies it.
 
-**Group 2 — invariants that must survive the change.** These fail when *their own* behaviour is
-reverted, not when self-authorization is. They pin what the decision promises to leave untouched.
+**Group 2 — invariants that must survive the change, and one new guard.** Items 3–8 fail when
+*their own* behaviour is reverted, not when self-authorization is; they pin what the decision
+promises to leave untouched. Item 9 is different in kind — it pins a check that does **not** exist
+yet — and is grouped here because it too fails on its own behaviour rather than on the decision's.
 
 3. **Negative — association.** The same directive from an author with `author_association: NONE`
    is refused. This is the case the chosen policy rejects, and keeplin#206's acceptance criterion 5
@@ -446,9 +471,26 @@ reverted, not when self-authorization is. They pin what the decision promises to
 
 9. **Negative — the exception cannot outlive its premise.** With a second principal holding a
    sufficient association present, and self-authorization still enabled, the second-principal
-   check fails. Without this item the *Forces* requirement that the relaxation "fail loudly" has
-   no verifier, and the acceptance pull request could merge without the check while the plan
-   reported nothing missing.
+   check fails. **And it fails closed**: an enumeration that is not demonstrably complete —
+   pagination truncated, `403`, rate-limited, or any response the check cannot prove exhaustive —
+   counts as *unknown*, never as zero principals. Tests for both: a second principal present, and
+   an inaccessible or partial response.
+
+   **This item is not implementable until the ADR decides four things, and it does not decide
+   them here.** Where the check runs, what its authoritative source of principals is, what
+   permissions it needs, and its cadence. Recording that honestly rather than leaving item 9 as an
+   aspiration: **the acceptance pull request must settle them**, and until it does the *Forces*
+   requirement that the relaxation "fail loudly" has a named verifier but not yet a specified
+   mechanism.
+
+   **A tension this creates, stated rather than buried.** *Options considered* charges Option C
+   with needing a live lookup and its failure mode, and credits Option A with reaching the same
+   detectability without one. Adopting this check gives Option A a live lookup too. The
+   distinction that keeps the comparison honest is narrow and must be held: **Option C's lookup
+   sits on the authorization path**, so its failure blocks or wrongly permits an individual
+   disposal; **this check does not**, so its failure blocks the acceptance gate instead. If an
+   implementation puts it on the authorization path, Option C's cost analysis applies to A and the
+   comparison in this ADR no longer holds.
 
 **Group 3 — deployment symmetry.** Byte-identity alone proves symmetry, not policy: if both
 repositories reverted the change together it would still pass. It is therefore paired with a
