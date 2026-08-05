@@ -677,9 +677,12 @@ reverted.
    capture the record `publishEvaluation` writes. Building it from a prior observation that
    already carries the authorization would pass without ever exercising the first evaluation this
    ADR promises. Test named in `.github/scripts/check-review-loop.test.js`.
-2. **End to end.** A real pull request issues a directive and its `Review loop converged` check
-   publishes `converged`. keeplin#206's acceptance criterion 3 requires this, and nothing short of
-   a real run satisfies it.
+2. **End to end — completed.** [keeplin#216](https://github.com/jsunyermias/keeplin/pull/216)
+   issued repository disposal directive comment
+   [5197775718](https://github.com/jsunyermias/keeplin/pull/216#issuecomment-5197775718), and check
+   run `92457047341` published `converged`. Journal observation 2 recorded
+   `unauthenticatedAnchor: false` and
+   `blocking: 0`. This real execution satisfies keeplin#206's acceptance criterion 3.
 
 **Group 2 — invariants that must survive the change, and one new guard.** Items 3–8 fail when
 *their own* behaviour is reverted, not when self-authorization is; they pin what the decision
@@ -751,7 +754,9 @@ yet — and is grouped here because it too fails on its own behaviour rather tha
    guard runs on the per-evaluation path rather than only on the scheduled one. An implementation
    that fires only on `schedule` has put the guarantee on the leg that can silently stop.
 
-   **Fourth test — the credential actually enumerates.** A static assertion that the workflow
+   **Fourth test — the credential actually enumerates.**
+   [`.github/workflows/adr-0015-verification.yml`](../../.github/workflows/adr-0015-verification.yml)
+   implements this test. A static assertion that the workflow
    "holds a credential" proves nothing: it passes for a credential that returns `403` on every
    call, and the guard then blocks every evaluation forever. This test performs the real paginated
    enumeration with the credential the workflow will use and asserts the expected set comes back.

@@ -1,0 +1,57 @@
+name: ADR 0015 verification item 9
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  checks: write
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  verify-repository-principals:
+    name: Verify ADR 0015 repository principals
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enumerate with the default-branch evaluator
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const vm = require('node:vm');
+            const repository = context.payload.repository;
+            const source = await github.rest.repos.getContent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: '.github/scripts/check-review-loop.js',
+              ref: repository.default_branch,
+            });
+            const module = { exports: {} };
+            vm.runInNewContext(Buffer.from(source.data.content, 'base64').toString('utf8'), {
+              module, exports: module.exports, require, console, Buffer, process,
+            }, { filename: 'default-branch/check-review-loop.js' });
+            const evaluator = module.exports;
+            const result = await evaluator.enumerateRepositoryPrincipals({
+              request: (url) => github.request(url), owner: context.repo.owner, repo: context.repo.repo,
+            });
+            const expected = [repository.owner.login.toLowerCase()];
+            const matches = result.ok === true
+              && JSON.stringify(result.principals) === JSON.stringify(expected);
+
+            await core.summary
+              .addHeading('ADR 0015 verification item 9')
+              .addTable([
+                [{ data: 'Assertion', header: true }, { data: 'Result', header: true }],
+                ['Enumeration completed', String(result.ok === true)],
+                ['Expected principals', JSON.stringify(expected)],
+                ['Returned principals', JSON.stringify(result.principals || [])],
+              ])
+              .write();
+
+            if (!matches) {
+              throw new Error(`Expected exhaustive repository principals ${JSON.stringify(expected)}, received ${JSON.stringify(result)}`);
+            }
