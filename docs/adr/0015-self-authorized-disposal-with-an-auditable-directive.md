@@ -104,6 +104,18 @@ of done*. The gate that eleven ADRs built is being routed around because it cann
 **Asset.** The claim, carried in the journal and the ledger, that a reified finding was disposed
 of deliberately by someone entitled to decide.
 
+**Where the evidence lives, and who can write it.** Stated explicitly because the rest of this
+section cannot be evaluated without it, and because an earlier draft omitted it.
+
+| Artifact | Location | Writer |
+|---|---|---|
+| Review ledger | the pull request **body** | anyone who can edit the pull request |
+| Journal records | pull request **comments** | only the configured App: `verifyJournal` refuses any comment whose `app_slug`/`app_id` do not match `config` |
+| Authorization directive | the **body of a review or comment** it is carried in | its author, whose `author_association` is checked |
+
+**None of the three is in the file diff.** All three are visible on the pull request page. A
+reviewer who reads the pull request sees them; a reviewer who reads only `git diff` does not.
+
 **Trust boundary.** Between anyone who can write to the repository or its workflows, and the
 evaluator running from the default branch.
 
@@ -114,6 +126,12 @@ evaluator running from the default branch.
 2. *An actor with repository write access.* Can add or modify a workflow that runs under the same
    App identity, recompute the unkeyed digest chain, and manufacture convergence on a history in
    which no finding was ever reified. Can also truncate the newest journal record.
+
+Recomputing the chain is not merely a matter of write access to a file: journal records live in
+comments and `verifyJournal` refuses any comment not attributed to the configured App, so
+adversary 1 cannot rewrite history without reaching that identity. The chain's weakness is that
+the App identity is shared with any repository workflow, not that the records are loosely
+writable.
 
 **What the current separation actually buys against each.** Against adversary 1 it is real: an
 agent cannot self-dispose. Against adversary 2 it buys nothing, because that actor controls the
@@ -152,14 +170,25 @@ and finding.
 
 An app or bot account with sufficient association authorizes disposals.
 
-- **Benefits.** Preserves the separation formally.
-- **Costs.** Introduces a credential whose compromise converges any pull request. Because the
-  measurement above shows *every* disposal needs authorization — not only genesis — that principal
-  would have to authorize each one. Either a human drives it, in which case it is Option A with a
-  credential in between, or it does not, in which case it is a rubber stamp that satisfies the
-  check while providing none of the judgement the separation exists to obtain.
-- **Failure modes.** The rubber-stamp outcome is the likely one, and it is worse than Option A
-  because it *looks* like an independent authorization.
+- **Benefits.** Preserves the separation formally, and — this is a real advantage an earlier draft
+  of this ADR collapsed away — creates a **capability boundary**. An agent operating with the
+  maintainer's ordinary credentials could not authorize without also reaching the separate
+  credential. Under Option A it can. A credential held behind an Environment approval, with
+  least privilege and its own revocation and audit trail, is materially different from Option A,
+  not "Option A with a credential in between".
+- **Costs.** Operational burden: a credential to hold, rotate and protect, plus an approval step
+  on a path that runs many times per pull request. Because *every* disposal needs authorization,
+  not only genesis, that step recurs per finding.
+- **Failure modes.** If no human judgement sits behind the step, it becomes a rubber stamp that
+  *looks* like independent authorization and is therefore worse than Option A, which is at least
+  honest about what it is. Whether that is the likely outcome here is a **design judgement, not a
+  measured claim**: this ADR asserts it because the same person would drive both sides, and offers
+  no evidence beyond that.
+- **On compromise.** An earlier draft said compromising the credential "converges any pull
+  request". That is overstated. Convergence still requires the required jobs green and, for
+  `resolved`, a success check bound to the head, workflow, run and App. What compromise actually
+  buys is arbitrary authorization of disposals, which manufactures convergence *when the other
+  conditions already hold*.
 
 ### Option C — Relaxed association for single-principal repositories
 
@@ -169,9 +198,11 @@ sufficient association.
 - **Benefits.** Same effect as Option A, framed as a bounded exception with a detectable
   precondition.
 - **Costs.** The precondition must be evaluated at authorization time against live repository
-  state, which adds an API dependency to the evaluator and a new failure mode when that call
-  fails. Option A achieves the same outcome without that dependency, and can carry the same
-  detectability as a declared condition rather than a runtime query.
+  state. That is **not a new API dependency** — an earlier draft claimed it was, wrongly: the
+  evaluator already reads `author_association` from the API on this very path. It is a further
+  call of the same class, with its own failure mode and the policy complexity of deciding what
+  happens when it fails. Option A reaches the same outcome without it and can carry the same
+  detectability as a declared condition.
 - **Assessment.** Reasonable; strictly more machinery than Option A for the same result.
 
 ### Option D — Pre-seeded genesis anchor
@@ -179,9 +210,12 @@ sufficient association.
 Seed the journal on the default branch so it is never empty.
 
 - **Assessment.** **Insufficient, and the measurement shows why.** It addresses `GENESIS` and
-  leaves the fourteen ledger findings undisposable. It would turn `blocking: 15` into
-  `blocking: 14` and change nothing about the underlying defect. Recorded here so the option is
-  not revisited without that evidence.
+  leaves every ordinary finding undisposable. The durable form of the argument does not depend on
+  the exact count: *pre-seeding removes at most the synthetic blocker and leaves untouched every
+  ordinary blocker whose authorization does not verify.* The specific `blocking: 15` → 14 reading
+  comes from keeplin-srv#114's journal and is **an external result this ADR has not had
+  independently re-derived**; a reviewer should confirm it from the linked journal rather than
+  from this document. Recorded so the option is not revisited without that evidence.
 
 ### Option E — Keep the current behaviour
 
@@ -195,7 +229,7 @@ Seed the journal on the default branch so it is never empty.
 > statement of intent recorded here, not an approval. Implementation remains blocked until this
 > ADR is `accepted`.
 
-**Adopt Option A.** The pull request author may authorize disposal of a finding on their own pull
+**Recommend Option A.** The pull request author may authorize disposal of a finding on their own pull
 request when, and only when, the authorization is carried by a directive that:
 
 1. is authored by a principal whose `author_association` is `MEMBER`, `OWNER` or `COLLABORATOR`
@@ -205,7 +239,11 @@ request when, and only when, the authorization is carried by a directive that:
 4. is issued strictly after the observation that reified or last changed the disposition of that
    finding, preserving the existing same-second comparator;
 5. is recorded in the journal with its reference identity, author and body digest, exactly as a
-   third-party directive is today.
+   third-party directive is today;
+6. is **not** carried by a review whose state is `DISMISSED`. `verifyAuthorization` refuses one
+   today and 0008 established the rule expressly — a dismissed review returns the finding to
+   `open`. An earlier draft of this ADR presented conditions 1–5 as exhaustive with "when, and
+   only when" and omitted this one; the omission is recorded rather than quietly repaired.
 
 The only condition removed is the requirement that the directive's author differ from the pull
 request author. Everything else that `verifyAuthorization` binds stays bound.
@@ -226,21 +264,45 @@ nominal once the same human drives the service principal, and it adds a credenti
 compromise is equivalent to convergence. Option C reaches the same place as A through a runtime
 dependency that A does not need.
 
-**What now defends against an agent self-disposing.** Not the check — the record. A directive is
-dated, attributed and digest-bound, and the ledger row that cites it is part of the diff an
-independent reviewer examines. `AGENTS.md` already requires that reviewer, and this ADR does not
-touch that requirement. The defence moves from prevention to attributable review, and this ADR
-says so rather than implying the protection survives intact.
+**What now defends against an agent self-disposing — stated precisely, because an earlier draft
+overstated it.**
+
+Nothing technical. In this repository's operating model agents routinely act with the maintainer's
+credentials — every commit of keeplin-srv#114 is authored `Claude <noreply@anthropic.com>` — so an
+agent issuing a verifying directive is the **normal case, not an edge case**. After this decision
+the check offers no residual resistance to self-disposal at all. Calling it a "reduction" would be
+too kind: against adversary 1 the technical control is *eliminated*.
+
+What remains is a record and a requirement, and neither is enforced by the evaluator:
+
+- **The record.** A directive is dated, attributed and digest-bound, and the ledger row citing it
+  is in the pull request body. As the table above states, **neither is in the file diff**: a
+  reviewer reading the pull request sees them, a reviewer reading only `git diff` does not.
+  `AGENTS.md` says "the ledger is part of the diff the independent reviewer examines"; that
+  sentence is imprecise in the same way this ADR's earlier draft was, and correcting it belongs to
+  a documentation issue, not here.
+- **The requirement.** `AGENTS.md` requires an independent reviewer and forbids an agent from
+  waiving one. This ADR does not touch that. But it is procedural: **no mechanism enforces it**,
+  and `check-review-governance.js` runs inside the head-controlled `ci.yml`, which
+  [0012](0012-default-branch-review-governance.md) already records as weakenable by a head.
+
+So the honest formulation is: the defence moves from a mechanism to a convention, and the
+convention's own enforcement is known to be incomplete. That is the cost of Option A, and the
+maintainer is accepting it knowingly or not at all.
 
 ## Consequences and risks
 
-**Positive.** Pull requests become able to converge. The fourteen findings of keeplin-srv#114 and
-its `docs/review-stalls.md` row become clearable through a defined exit rather than by merging
-above them. `Review loop converged` becomes a candidate for branch protection — which remains the
-maintainer's step, and only after a pull request has actually reached `converged`.
+**Positive.** Pull requests become able to converge, and findings become recordable as closed.
 
-**Negative.** An agent operating with the maintainer's credentials can issue a directive that
-verifies. This is a real reduction against adversary 1 and is the accepted cost.
+**Negative.** Against adversary 1 the technical control is eliminated, not reduced, for the reason
+given under *Decision*: agents here act with the maintainer's credentials as a matter of course.
+
+**Negative — branch protection cuts both ways.** Making `Review loop converged` a required check
+becomes possible, and an earlier draft listed only that upside. The risk is the other half: it
+would formalize as the sole *enforced* merge control precisely the gate this decision weakens,
+while independent review — the control that actually replaces it — remains procedural and
+unenforced. If the maintainer adds it, that asymmetry should be a conscious choice, not a side
+effect of the gate finally being openable.
 
 **Residual risks.**
 
@@ -249,20 +311,34 @@ verifies. This is a real reduction against adversary 1 and is the accepted cost.
 - Directive fatigue: disposing of fourteen findings on one pull request requires fourteen
   directives. If that friction leads to batch-authorizing without reading, the audit trail records
   the act but not the absence of judgement.
-- This ADR does not make keeplin-srv#114's existing findings retroactively disposable. Its stall
-  row stays open until directives are issued for it under an implementation of this decision.
+- **keeplin-srv#114 is merged, and no mechanism described here clears it.** Directives bind to a
+  pull request number, and nothing in the evaluator defines whether it runs on a closed pull
+  request or how directives issued against one would produce a re-evaluation. Its
+  `docs/review-stalls.md` row therefore stays open, and verification item 10 below is scoped to
+  what the mechanism actually supports rather than asserting an outcome with no path to it.
+  Defining the post-merge route is follow-up work, listed below.
 
-**Observability.** The journal already records each disposal's reference, author and digest. No
-new signal is required. What is missing is a way to see, at a glance, how many disposals were
-self-authorized versus third-party authorized; a counter in the journal record would make the
-relaxation's usage visible and is proposed as follow-up, not required for acceptance.
+**Observability — an explicit non-guarantee.** The journal records each disposal's reference,
+author and digest, so a forensic reconstruction is possible. **Accepting this ADR delivers no
+aggregate observability**: there is no way to see how many disposals were self-authorized versus
+third-party authorized, and therefore no way to notice the relaxation becoming the norm, fatigue
+setting in, or abuse accumulating — precisely the failure modes that matter once the control moves
+from prevention to after-the-fact detection. An earlier draft said "no new signal is required",
+which contradicted the sentence that followed it. A counter on each journal record would close
+this; whether it ships in the acceptance PR is the maintainer's call, and it is not assumed here.
 
 **Follow-up work.**
 
 - A procedure, step by step, for issuing and recording a directive, linked from `AGENTS.md`.
-- A check that fails when the repository gains a second principal with sufficient association
-  while self-authorization is still enabled, so the exception cannot outlive its premise silently.
-- Clearing `docs/review-stalls.md` on both repositories through a defined exit.
+- **The second-principal check** — one that fails when the repository gains another principal with
+  sufficient association while self-authorization is enabled, so the exception cannot outlive its
+  premise silently. The *Forces* section requires this relaxation to "fail loudly"; that force is
+  unmet without it. **This ADR proposes that the check ship in the acceptance PR**, not later, and
+  says so rather than leaving the assignment ambiguous. The maintainer may decide otherwise, but
+  then the force should be struck rather than left nominally satisfied.
+- A defined post-merge route for already-merged pull requests carrying undisposed findings, so
+  keeplin-srv#114's stall row has an exit.
+- Clearing `docs/review-stalls.md` on both repositories through that exit.
 
 ## Compatibility, migration, and rollback
 
@@ -290,29 +366,55 @@ under it.
 
 ## Verification plan
 
-Each item must fail if the corresponding behaviour is reverted.
+An earlier draft claimed "each item must fail if the corresponding behaviour is reverted" for the
+whole list, which was not true of every item. The list is now grouped by what each item actually
+establishes.
 
-1. **Positive.** A directive authored by the pull request author, satisfying conditions 1–5,
+**Group 1 — regression of the decision itself.** These fail if the self-authorization change is
+reverted.
+
+1. **Positive.** A directive authored by the pull request author, satisfying conditions 1–6,
    disposes of a reified finding and the blocking set shrinks. Test in
    `.github/scripts/check-review-loop.test.js`.
-2. **Negative — association.** The same directive from an author with `author_association: NONE`
-   is refused. This is the case the chosen policy rejects, and keeplin#206's acceptance criterion 5
-   requires it to be covered by a named test.
-3. **Negative — binding.** A directive naming a different finding, a different target state, a
-   different pull request or a different repository is refused.
-4. **Negative — ordering.** A directive issued in the same second as, or before, the observation
-   that reified the finding is refused; the existing same-second comparator is unchanged.
-5. **Negative — reification.** A reified finding cannot be moved to `advisory` without a
-   verifying directive, and the retired-ID reservation still refuses a returning ID unreified.
-6. **Failure injection.** With the authorization reference unreachable, the finding projects back
-   to `reified: true, state: "open"` with its `disposalError`, exactly as today.
-7. **Cross-repository.** The governance files remain byte-identical between the two repositories;
-   the existing symmetry check covers this.
-8. **End to end.** A real pull request issues a directive, and its `Review loop converged` check
+2. **End to end.** A real pull request issues a directive and its `Review loop converged` check
    publishes `converged`. keeplin#206's acceptance criterion 3 requires this, and nothing short of
    a real run satisfies it.
-9. **Operational.** `docs/review-stalls.md` rows on both repositories move to `Cleared` naming the
-   exit taken, and keeplin#206's criterion 4 is met.
+
+**Group 2 — invariants that must survive the change.** These fail when *their own* behaviour is
+reverted, not when self-authorization is. They pin what the decision promises to leave untouched.
+
+3. **Negative — association.** The same directive from an author with `author_association: NONE`
+   is refused. This is the case the chosen policy rejects, and keeplin#206's acceptance criterion 5
+   requires it to be covered by a named test.
+4. **Negative — binding.** A directive naming a different finding, a different target state, a
+   different pull request or a different repository is refused.
+5. **Negative — ordering.** A directive issued in the same second as, or before, the observation
+   that reified the finding is refused; the existing same-second comparator is unchanged.
+6. **Negative — reification.** A reified finding cannot be moved to `advisory` without a
+   verifying directive, and the retired-ID reservation still refuses a returning ID unreified.
+7. **Negative — dismissed review.** A self-authorized directive carried by a review later set to
+   `DISMISSED` returns the finding to `open`. This pins condition 6, which an earlier draft of
+   this ADR omitted.
+8. **Failure injection.** With the authorization reference unreachable, the finding projects back
+   to `reified: true, state: "open"` with its `disposalError`, exactly as today.
+
+**Group 3 — deployment symmetry.** Byte-identity alone proves symmetry, not policy: if both
+repositories reverted the change together it would still pass. It is therefore paired with a
+behavioural check.
+
+9. **Cross-repository.** The governance files remain byte-identical between the two repositories,
+   **and** the Group 1 positive test passes when run against each repository's copy of
+   `check-review-loop.js` independently.
+
+**Group 4 — operational closure.** Moving a Markdown row is an administrative act that persists
+whether or not the mechanism still works, so it cannot stand alone as evidence.
+
+10. **Operational.** For each `docs/review-stalls.md` row moved to `Cleared`, a reproducible
+    evaluation of the pull request it names no longer projects its blockers to `open`. The row
+    move is the record of that, not the proof. **Scoped deliberately**: keeplin-srv#114 is merged
+    and no route exists yet for re-evaluating a closed pull request, so this item covers pull
+    requests the evaluator can still evaluate. keeplin#206's criterion 4 is met only once the
+    post-merge route in *Follow-up work* exists.
 
 Not verifiable, and stated rather than omitted: nothing here demonstrates authenticity against a
 repository workflow carrying the same App identity, or detection of terminal truncation. Those
