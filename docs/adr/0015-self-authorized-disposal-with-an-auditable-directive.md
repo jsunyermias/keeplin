@@ -212,7 +212,7 @@ sufficient association.
   guard** — same endpoint, same unsettled question recorded under *Decision*. The surviving
   distinction is placement, not cost.
 - **How it really compares to Option A — and the comparison moved twice.** An early draft said
-  Option A "reaches the same outcome without it". It does not: the second-principal check gives
+  Option A "reaches the same outcome without it". It does not: the premise check gives
   Option A a live collaborator lookup too. A later draft then argued the surviving distinction —
   **where the lookup sits** — settled it for A, because C's failure could wrongly permit an
   individual disposal. **That argument is also withdrawn.** *Wrongly permitted* is not inherent to
@@ -255,6 +255,12 @@ Seed the journal on the default branch so it is never empty.
 > `proposed`. The maintainer indicated Option A as the intended direction; that is a statement of
 > intent recorded here, not an approval. Implementation remains blocked until this ADR is
 > `accepted`.
+>
+> **The maintainer subsequently approved withdrawing the `recommended` label from Option A**, after
+> the two independent reviewers split on whether it still followed from the comparison below. That
+> approval is recorded here rather than left traceable only to a review transcript: without it, a
+> later reader would find a recommendation removed from the option the maintainer had asked for,
+> with nothing in the record saying who decided that.
 
 **This ADR decides a mechanism and does not decide the policy choice between Options A and C.
 The `recommended` label an earlier draft carried on Option A has been withdrawn, and the reason is
@@ -265,7 +271,8 @@ no live lookup — it does. A was said to need no credential — it does. A was 
 detectability more cheaply — it does not; the surviving difference is where the lookup sits. When
 the last of those fell, an independent reviewer showed that the remaining difference does not
 favour A either: against an Option C specified with the same `unknown ⇒ refuse` rule this ADR
-already decides for A, C's failure refuses **one disposal**, which is retryable, while A's failure
+already decides for the enumeration, C's failure refuses **one disposal**, which is retryable,
+while A's failure
 blocks **the whole gate**; and when the premise decays, C lapses back into the original separation
 on its own — which works again precisely because a second qualifying principal now exists — where
 A blocks until someone intervenes. In both events this ADR treats as decisive, C is equal or
