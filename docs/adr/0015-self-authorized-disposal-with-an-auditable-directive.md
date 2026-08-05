@@ -260,11 +260,11 @@ Seed the journal on the default branch so it is never empty.
 The `recommended` label an earlier draft carried on Option A has been withdrawn, and the reason is
 recorded rather than quietly dropped.**
 
-Six review rounds removed, one at a time, most of what distinguished A from C. A was said to need
+Review removed, one at a time, most of what distinguished A from C. A was said to need
 no live lookup — it does. A was said to need no credential — it does. A was said to reach the same
 detectability more cheaply — it does not; the surviving difference is where the lookup sits. When
 the last of those fell, an independent reviewer showed that the remaining difference does not
-favour A either: against a Option C specified with the same `unknown ⇒ refuse` rule this ADR
+favour A either: against an Option C specified with the same `unknown ⇒ refuse` rule this ADR
 already decides for A, C's failure refuses **one disposal**, which is retryable, while A's failure
 blocks **the whole gate**; and when the premise decays, C lapses back into the original separation
 on its own — which works again precisely because a second qualifying principal now exists — where
@@ -326,8 +326,17 @@ request author. Everything else that `verifyAuthorization` binds stays bound.
 **The premise this relaxation rests on, and how it is kept honest.** The relaxation — under
 either A or C — is justified by "one human", so the decision also fixes the guard that fails when
 that stops being true. Under A the guard is the separate check specified below; under C the same
-enumeration is consulted at authorization time instead. The contract is the same either way. An
-earlier draft named the guard and left its design to the acceptance pull request; a reviewer
+enumeration is consulted at authorization time instead.
+
+**What is shared and what is not**, because an earlier draft of this paragraph said "the contract
+is the same either way" and that is not true. Shared by both options: the counted set, the
+authoritative source, the failure predicate, the completeness rule and the unsettled credential
+question. **Not shared: the locus and cadence bullets below, which specify the Option A form.**
+Under C the enumeration sits *on* the authorization path by design, and its load-bearing guarantee
+is the per-disposal check rather than a per-evaluation run — so those two bullets are read as
+"under A" and replaced under C by the mapping in verification item 9.
+
+An earlier draft named the guard and left its design to the acceptance pull request; a reviewer
 showed that this was not merely incomplete but unsound, because "it ships in the acceptance pull
 request" says nothing about what *re-runs* it afterwards. A check that enumerates principals once,
 during that pull request's CI, records the state of that day and then never fires again. The
@@ -383,14 +392,19 @@ the guard is decided here:
   it.** Making that call is implementation, so it does not happen here. It is instead a
   **precondition of acceptance**: this ADR must not be accepted until that call has been made and
   its result recorded, and the credential decision follows from the result rather than preceding
-  it. Whatever the answer, the *cost comparison* already stands corrected — Option A's old claim
-  of needing no credential is withdrawn either way, because it was asserted without evidence.
+  it. **The result is recorded by amending this bullet before acceptance**, not only in the
+  acceptance pull request — otherwise the canonical record would go on calling the question
+  unsettled after it was settled, which is the exact defect this ADR criticises elsewhere. The ADR
+  is still `proposed`, so amending it is cheap. Whatever the answer, the *cost comparison* already
+  stands corrected — Option A's old claim of needing no credential is withdrawn either way,
+  because it was asserted without evidence.
 - **Locus.** In the default-branch evaluator workflow, alongside `check-review-loop.js` and
   **not** on the authorization path. Its failure blocks the gate; it never decides an individual
-  disposal. This is the distinction that keeps the comparison with Option C honest, and it is
-  binding: an implementation that consults this count while verifying a directive has adopted
-  Option C's cost and invalidated that comparison.
-- **Cadence, and which leg carries the guarantee.** Two triggers. **Every evaluator run** is the
+  disposal. **This bullet is the Option A form.** It is binding *under A*: an implementation that
+  chose A and then consulted this count while verifying a directive has built C's placement under
+  A's name, and the *Options considered* comparison no longer describes what was built. Under C
+  that placement is the decision, not a defect.
+- **Cadence, and which leg carries the guarantee — also the Option A form.** Two triggers. **Every evaluator run** is the
   load-bearing one: self-authorization can only happen on a pull request, every pull request is
   evaluated, and so the premise is checked before every opportunity to use the relaxation. **A
   scheduled run on the default branch** is early warning, not the tripwire — it shortens the time
@@ -455,7 +469,10 @@ The precision matters, because an earlier draft offered the wrong evidence. Git 
 nothing about who can publish a review or comment under a qualifying association. The evidence
 that does establish it: the agent-authored comments on that pull request are attributed to
 `jsunyermias` with `author_association: OWNER`, because the tooling acts through the maintainer's
-GitHub identity. That is the capability Option A stops filtering.
+GitHub identity. That is the capability **the relaxation** stops filtering — under Option A
+unconditionally, under Option C while the single-principal premise holds. It is not a capability C
+retains: both options remove the author condition, and C only re-imposes it once the premise
+fails.
 
 **How far "eliminated" reaches, and where it stops.** An earlier draft argued that adversary 1's
 defining capability — editing the ledger and the pull request body — implies a qualifying
@@ -526,8 +543,9 @@ effect of the gate finally being openable.
 **Residual risks.**
 
 - The relaxation persists silently if a second principal joins and nobody revisits it. **Mitigated
-  by the second-principal check, which this ADR both specifies under *Decision* and places in the
-  acceptance pull request** — so the mitigation is a mechanism with a stated contract, not deferred
+  by the premise check, which this ADR both specifies under *Decision* and places in the
+  acceptance pull request** — a separate guard under Option A, the authorization-time enumeration
+  under Option C, with the same counted set, source, predicate and completeness rule either way — so the mitigation is a mechanism with a stated contract, not deferred
   work and not a named aspiration. Two earlier drafts fell short of that: the first called it
   follow-up here and a requirement elsewhere, leaving the acceptance boundary ambiguous; the second
   fixed the boundary but left the mechanism itself undecided, so this bullet claimed a mitigation
@@ -657,9 +675,21 @@ yet — and is grouped here because it too fails on its own behaviour rather tha
    check fails. **And it fails closed**: an enumeration that is not demonstrably complete —
    pagination truncated, `403`, rate-limited, or any response the check cannot prove exhaustive —
    counts as *unknown*, never as zero principals. The check's counted set, source, failure
-   predicate, completeness rule, credential, locus and cadence are specified under *Decision*; this
-   item tests them. **The first two tests:** a second principal present, and an inaccessible or
-   partial response.
+   predicate and completeness rule are specified under *Decision*; this item tests them. The
+   credential is the one thing *Decision* leaves open, and the fourth test below is what closes it.
+   **The first two tests:** a second principal present, and an inaccessible or partial response.
+
+   **These tests are written in the Option A form and must be remapped under Option C**, because
+   the verification plan must not decide the policy choice *Decision* deliberately leaves open. A
+   reviewer showed that test 3, read literally, would force a C implementation to build A's
+   separate guard. The mapping:
+
+   | Test | Under A | Under C |
+   |---|---|---|
+   | 1 | the separate check fails | the authorization-time enumeration refuses the disposal |
+   | 2 | unchanged | unchanged |
+   | 3 | both triggers declared, guard on the per-evaluation leg | every directive verification consults the enumeration with `unknown ⇒ refuse`; scheduled and per-evaluation runs become optional early warning |
+   | 4 | unchanged | unchanged |
 
    **The first test is parameterised over both enumeration shapes** — owner present and owner
    absent — with a second principal in each, asserting failure in both. The predicate excludes the
@@ -668,7 +698,8 @@ yet — and is grouped here because it too fails on its own behaviour rather tha
    threshold read off whichever shape its fixture happened to capture. Without it, the exact
    fail-open the predicate exists to exclude merges with the suite green.
 
-   **Third test — the cadence, which two earlier drafts got wrong in opposite directions.** The
+   **Third test — the cadence *under Option A*; see the mapping above for its Option C form.** Two
+   earlier drafts got this wrong in opposite directions. The
    first ran the check only in the acceptance pull request's CI, proving the state of that day and
    nothing after it. The second asserted that "a membership change with **no pull request open**
    still reaches the check" — **which no CI can assert**: it is an operational property of a
