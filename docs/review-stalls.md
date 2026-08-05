@@ -200,6 +200,7 @@ entry to Cleared with the exit that was taken and a link to it.
 |---|---|---|---|---|
 | 2026-08-04 | [keeplin#203](https://github.com/jsunyermias/keeplin/pull/203) | GENESIS | 3 | |
 | 2026-08-05 | [keeplin#215](https://github.com/jsunyermias/keeplin/pull/215) | GENESIS | 3 | |
+| 2026-08-05 | [keeplin#217](https://github.com/jsunyermias/keeplin/pull/217) | GENESIS | 2 | |
 
 For [keeplin#203](https://github.com/jsunyermias/keeplin/pull/203), `GENESIS` is the
 unauthenticated genesis anchor. No procedure for authorizing a genesis directive exists in either
@@ -210,6 +211,18 @@ repository, so this stall has no exit available to the author.
 [ADR 0015](adr/0015-self-authorized-disposal-with-an-auditable-directive.md), which decides how a
 genesis directive may be authorized; until that ADR is accepted and implemented, the exit it
 describes does not yet exist, so this stall likewise has no exit available to the author.
+
+[keeplin#217](https://github.com/jsunyermias/keeplin/pull/217) is stuck on `GENESIS` too, and it is
+the pull request that **implements** the exit. It escalated on the repeated-state brake rather than
+the non-shrinking one: its second observation carried a loop-state hash byte-identical to its first,
+because a second evaluation ran against an unchanged tree. The blocking set was never going to
+shrink in between.
+
+The reason it cannot open its own gate is mechanical, not a judgement call. The evaluator runs from
+the **default branch**, so the authorization path that would close `GENESIS` is the one on `main` —
+not the one this pull request adds. It becomes available to the *next* pull request once this one
+merges, and to this one never. Recorded here so that a reader who sees an implementation blocked by
+the defect it fixes knows it was understood rather than overlooked.
 
 ## Cleared
 
