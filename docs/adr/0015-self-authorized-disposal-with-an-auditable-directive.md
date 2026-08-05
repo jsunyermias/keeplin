@@ -229,21 +229,36 @@ Seed the journal on the default branch so it is never empty.
 > statement of intent recorded here, not an approval. Implementation remains blocked until this
 > ADR is `accepted`.
 
-**Recommend Option A.** The pull request author may authorize disposal of a finding on their own pull
-request when, and only when, the authorization is carried by a directive that:
+**Recommend Option A.** The pull request author may authorize disposal of a finding on their own
+pull request when the authorization is carried by a directive satisfying **all** of the following.
+This list is deliberately **not** offered as a transcription of `verifyAuthorization`: an earlier
+draft said "when, and only when" and then proved incomplete, so exhaustiveness is left to the code
+and the items below are grouped by what each one actually governs.
 
-1. is authored by a principal whose `author_association` is `MEMBER`, `OWNER` or `COLLABORATOR`
+*Conditions on the reference itself, checked by `verifyAuthorization`:*
+
+1. it is authored by a principal whose `author_association` is `MEMBER`, `OWNER` or `COLLABORATOR`
    — `NONE` is never sufficient, and this is not relaxed;
-2. names the exact finding ID, the exact target state, and a non-empty reason;
-3. is bound to the repository and pull request number it applies to;
-4. is issued strictly after the observation that reified or last changed the disposition of that
-   finding, preserving the existing same-second comparator;
-5. is recorded in the journal with its reference identity, author and body digest, exactly as a
-   third-party directive is today;
-6. is **not** carried by a review whose state is `DISMISSED`. `verifyAuthorization` refuses one
+2. it names the exact finding ID, the exact target state, and a non-empty reason;
+3. it is bound to the repository and pull request number it applies to;
+4. it is **not** carried by a review whose state is `DISMISSED`. `verifyAuthorization` refuses one
    today and 0008 established the rule expressly — a dismissed review returns the finding to
-   `open`. An earlier draft of this ADR presented conditions 1–5 as exhaustive with "when, and
-   only when" and omitted this one; the omission is recorded rather than quietly repaired.
+   `open`. An earlier draft omitted this condition entirely; the omission is recorded rather than
+   quietly repaired.
+
+*A temporal rule of the ordinary-finding path, applied in `evaluateTrustedReviewLoop` and not in
+`verifyAuthorization`:*
+
+5. the directive is issued strictly after the observation that reified or last changed the
+   disposition of that finding, preserving the existing same-second comparator. This rule does
+   **not** apply to `GENESIS` or to tombstones today, and this ADR does not extend it to them.
+
+*Required persistence, an effect of evaluation rather than a precondition of it:*
+
+6. the authorization is recorded in the journal with its reference identity, author and body
+   digest, exactly as a third-party directive is today. A first evaluation may take the evidence
+   from the current ledger, verify it and project the closure before `publishEvaluation` writes
+   the record; the journal is the durable result, not a gate the directive passes through.
 
 The only condition removed is the requirement that the directive's author differ from the pull
 request author. Everything else that `verifyAuthorization` binds stays bound.
@@ -258,20 +273,45 @@ request author. Everything else that `verifyAuthorization` binds stays bound.
   provides authenticity against a workflow sharing the App identity, nor detection of terminal
   truncation.
 
-**Why this over the alternatives.** Option D is measurably insufficient. Option E leaves a rule
-that is routed around, which is worse than a rule honestly relaxed. Option B's separation is
-nominal once the same human drives the service principal, and it adds a credential whose
-compromise is equivalent to convergence. Option C reaches the same place as A through a runtime
-dependency that A does not need.
+**Why this over the alternatives.** Option D is insufficient for the reason recorded above: it
+removes at most the synthetic blocker. Option E leaves a rule that is routed around, which is
+worse than a rule honestly relaxed.
+
+Option B is the serious alternative, and this recommendation does **not** rest on dismissing it.
+Its capability boundary is real: a credential the agent cannot reach is materially different from
+Option A, and compromising it does not by itself converge anything — the required jobs must still
+be green, and a `resolved` still needs its success check bound to head, workflow, run and App. The
+argument against B is narrower than an earlier draft of this ADR claimed, and both independent
+reviewers caught that draft contradicting itself here. The argument is: the approval step recurs
+on **every** disposal, not only genesis; the same person would stand on both sides of it in this
+repository; and a step with no independent judgement behind it is worse than Option A precisely
+because it *looks* like independent authorization. **That is a design judgement about this
+project, not a measured finding**, and a maintainer who weighs the operational cost differently
+should choose B.
+
+Option C reaches the same place as A through an additional live lookup on the authorization path
+— not a new class of dependency, since the evaluator already reads `author_association` there —
+and A can carry the same detectability as a declared condition.
 
 **What now defends against an agent self-disposing — stated precisely, because an earlier draft
 overstated it.**
 
-Nothing technical. In this repository's operating model agents routinely act with the maintainer's
-credentials — every commit of keeplin-srv#114 is authored `Claude <noreply@anthropic.com>` — so an
-agent issuing a verifying directive is the **normal case, not an edge case**. After this decision
-the check offers no residual resistance to self-disposal at all. Calling it a "reduction" would be
-too kind: against adversary 1 the technical control is *eliminated*.
+Nothing technical, **for an agent that controls a qualifying GitHub identity** — and in this
+repository's tooling it does.
+
+The precision matters, because an earlier draft offered the wrong evidence. Git commit authorship
+(`Claude <noreply@anthropic.com>` on every commit of keeplin-srv#114) is Git metadata and proves
+nothing about who can publish a review or comment under a qualifying association. The evidence
+that does establish it: the agent-authored comments on that pull request are attributed to
+`jsunyermias` with `author_association: OWNER`, because the tooling acts through the maintainer's
+GitHub identity. That is the capability Option A stops filtering.
+
+Under the adversary-1 definition used above — an actor able to edit the ledger and the pull
+request body — the capability is implied anyway, since GitHub allows that only to the author or a
+principal with write access. So against adversary 1 as defined, the technical control is
+*eliminated*, not reduced. A comment-only actor with `author_association: NONE` is still refused
+by condition 1, but that actor cannot touch the ledger either, so the residue is not a defence of
+anything this decision protects.
 
 What remains is a record and a requirement, and neither is enforced by the evaluator:
 
@@ -314,14 +354,15 @@ effect of the gate finally being openable.
 - **keeplin-srv#114 is merged, and no mechanism described here clears it.** Directives bind to a
   pull request number, and nothing in the evaluator defines whether it runs on a closed pull
   request or how directives issued against one would produce a re-evaluation. Its
-  `docs/review-stalls.md` row therefore stays open, and verification item 10 below is scoped to
+  `docs/review-stalls.md` row therefore stays open, and verification item 11 below is scoped to
   what the mechanism actually supports rather than asserting an outcome with no path to it.
   Defining the post-merge route is follow-up work, listed below.
 
 **Observability — an explicit non-guarantee.** The journal records each disposal's reference,
-author and digest, so a forensic reconstruction is possible. **Accepting this ADR delivers no
-aggregate observability**: there is no way to see how many disposals were self-authorized versus
-third-party authorized, and therefore no way to notice the relaxation becoming the norm, fatigue
+author and digest, so the self-authorized/third-party split **is** derivable after the fact by
+comparing each directive's recorded author against the pull request author. **What acceptance
+does not deliver is any aggregate, readily visible signal**: nothing surfaces that split without
+reconstructing it by hand, and therefore nothing makes it easy to notice the relaxation becoming the norm, fatigue
 setting in, or abuse accumulating — precisely the failure modes that matter once the control moves
 from prevention to after-the-fact detection. An earlier draft said "no new signal is required",
 which contradicted the sentence that followed it. A counter on each journal record would close
@@ -336,6 +377,11 @@ this; whether it ships in the acceptance PR is the maintainer's call, and it is 
   unmet without it. **This ADR proposes that the check ship in the acceptance PR**, not later, and
   says so rather than leaving the assignment ambiguous. The maintainer may decide otherwise, but
   then the force should be struck rather than left nominally satisfied.
+- **Correcting `AGENTS.md`.** Its sentence "the ledger is part of the diff the independent reviewer
+  examines" is imprecise in the same way an earlier draft of this ADR was: the ledger is in the
+  pull request body, not the file diff. This ADR flags it rather than editing it, and that flag
+  would otherwise be an orphaned obligation — so it is listed here as work to be opened as a
+  documentation issue.
 - A defined post-merge route for already-merged pull requests carrying undisposed findings, so
   keeplin-srv#114's stall row has an exit.
 - Clearing `docs/review-stalls.md` on both repositories through that exit.
@@ -393,23 +439,29 @@ reverted, not when self-authorization is. They pin what the decision promises to
 6. **Negative — reification.** A reified finding cannot be moved to `advisory` without a
    verifying directive, and the retired-ID reservation still refuses a returning ID unreified.
 7. **Negative — dismissed review.** A self-authorized directive carried by a review later set to
-   `DISMISSED` returns the finding to `open`. This pins condition 6, which an earlier draft of
-   this ADR omitted.
+   `DISMISSED` returns the finding to `open`. This pins condition 4, which an earlier draft of
+   this ADR omitted entirely.
 8. **Failure injection.** With the authorization reference unreachable, the finding projects back
    to `reified: true, state: "open"` with its `disposalError`, exactly as today.
+
+9. **Negative — the exception cannot outlive its premise.** With a second principal holding a
+   sufficient association present, and self-authorization still enabled, the second-principal
+   check fails. Without this item the *Forces* requirement that the relaxation "fail loudly" has
+   no verifier, and the acceptance pull request could merge without the check while the plan
+   reported nothing missing.
 
 **Group 3 — deployment symmetry.** Byte-identity alone proves symmetry, not policy: if both
 repositories reverted the change together it would still pass. It is therefore paired with a
 behavioural check.
 
-9. **Cross-repository.** The governance files remain byte-identical between the two repositories,
+10. **Cross-repository.** The governance files remain byte-identical between the two repositories,
    **and** the Group 1 positive test passes when run against each repository's copy of
    `check-review-loop.js` independently.
 
 **Group 4 — operational closure.** Moving a Markdown row is an administrative act that persists
 whether or not the mechanism still works, so it cannot stand alone as evidence.
 
-10. **Operational.** For each `docs/review-stalls.md` row moved to `Cleared`, a reproducible
+11. **Operational.** For each `docs/review-stalls.md` row moved to `Cleared`, a reproducible
     evaluation of the pull request it names no longer projects its blockers to `open`. The row
     move is the record of that, not the proof. **Scoped deliberately**: keeplin-srv#114 is merged
     and no route exists yet for re-evaluating a closed pull request, so this item covers pull
