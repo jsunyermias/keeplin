@@ -21,6 +21,7 @@ const {
   stallRecordsBlockers,
   AUTHORIZING_ASSOCIATIONS,
   AUTHORIZING_TRANSITIONS,
+  REQUIRED_JOBS,
   DIRECTIVE_MARKER,
   JOURNAL_MARKER,
   enumerateRepositoryPrincipals,
@@ -1654,6 +1655,8 @@ test("unknown_principal_enumeration_refuses_the_authorizing_transition_product",
     { state: "tombstone", path: "special" },
     { state: "genesis", path: "special" },
   ]);
+  assert.deepEqual([...AUTHORIZING_ASSOCIATIONS], ["MEMBER", "OWNER", "COLLABORATOR"]);
+  assert.deepEqual(REQUIRED_JOBS, ["Check, Test & Lint", "Knowledge graph up to date"]);
 
   for (const transition of AUTHORIZING_TRANSITIONS) {
     for (const author of [explicitPull.author, "second-principal"]) {
