@@ -958,6 +958,8 @@ module.exports = {
   splitTableRow,
   stallMentionsPull,
   stallRecordsBlockers,
+  STATES,
+  FAILING_CONCLUSIONS,
   AUTHORIZING_ASSOCIATIONS,
   AUTHORIZING_TRANSITIONS,
   DIRECTIVE_MARKER,

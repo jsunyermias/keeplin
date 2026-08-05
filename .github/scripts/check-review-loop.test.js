@@ -19,6 +19,8 @@ const {
   requiredChecksFromNeeds,
   splitTableRow,
   stallRecordsBlockers,
+  STATES,
+  FAILING_CONCLUSIONS,
   AUTHORIZING_ASSOCIATIONS,
   AUTHORIZING_TRANSITIONS,
   REQUIRED_JOBS,
@@ -1635,6 +1637,20 @@ test("pull_request_author_directive_disposes_and_is_recorded_on_first_evaluation
   assert.deepEqual(persisted.findings[0].evidence, evidence);
 });
 
+test("contract constants are pinned", () => {
+  assert.deepStrictEqual([...STATES], ["open", "resolved", "dismissed", "advisory"]);
+  assert.deepStrictEqual([...FAILING_CONCLUSIONS], ["failure", "timed_out", "cancelled", "action_required", "stale"]);
+  assert.deepStrictEqual(AUTHORIZING_TRANSITIONS, [
+    { state: "resolved", path: "finding" },
+    { state: "dismissed", path: "finding" },
+    { state: "advisory", path: "finding" },
+    { state: "tombstone", path: "special" },
+    { state: "genesis", path: "special" },
+  ]);
+  assert.deepStrictEqual([...AUTHORIZING_ASSOCIATIONS], ["MEMBER", "OWNER", "COLLABORATOR"]);
+  assert.deepStrictEqual(REQUIRED_JOBS, ["Check, Test & Lint", "Knowledge graph up to date"]);
+});
+
 test("unknown_principal_enumeration_refuses_the_authorizing_transition_product", () => {
   const principalEnumeration = { ok: false, reason: "enumeration unavailable" };
   const explicitPull = { number: 200, author: "maintainer", headSha: "ccc", headRepositoryId: 7, baseRepositoryId: 7 };
@@ -1647,16 +1663,6 @@ test("unknown_principal_enumeration_refuses_the_authorizing_transition_product",
   const validResolutionCheck = { id: 31, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
   const ids = { resolved: "F-931", dismissed: "F-932", advisory: "F-933", tombstone: "F-934", genesis: "GENESIS" };
   const referenceIds = { resolved: 931, dismissed: 932, advisory: 933, tombstone: 934, genesis: 935 };
-
-  assert.deepEqual(AUTHORIZING_TRANSITIONS, [
-    { state: "resolved", path: "finding" },
-    { state: "dismissed", path: "finding" },
-    { state: "advisory", path: "finding" },
-    { state: "tombstone", path: "special" },
-    { state: "genesis", path: "special" },
-  ]);
-  assert.deepEqual([...AUTHORIZING_ASSOCIATIONS], ["MEMBER", "OWNER", "COLLABORATOR"]);
-  assert.deepEqual(REQUIRED_JOBS, ["Check, Test & Lint", "Knowledge graph up to date"]);
 
   for (const transition of AUTHORIZING_TRANSITIONS) {
     for (const author of [explicitPull.author, "second-principal"]) {
