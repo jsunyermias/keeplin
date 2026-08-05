@@ -21,11 +21,13 @@ its exhaustive collaborator enumeration finds no principal other than the reposi
 4. Post that marker in a comment or review on the same pull request. The author must have
    `OWNER`, `MEMBER`, or `COLLABORATOR` association. A dismissed review is not valid evidence.
 5. Copy the comment or review numeric ID, its author login, and the SHA-256 digest of its complete
-   body into the ledger row's Resolution JSON as `referenceId`, `author`, and `bodyDigest`. Preserve
-   any resolution proof fields required by the target state. For example:
+   body into the ledger row's Resolution JSON as `referenceId`, `author`, and `bodyDigest`. For a
+   `resolved` finding, also add `checkRunId` and `checkName`; `checkName` must be one of the exact
+   required-job names accepted by the evaluator, and `checkRunId` must identify that successful
+   check on the evaluated head. Preserve those proof fields on later evaluations. For example:
 
    ```json
-   {"referenceId":123456789,"author":"jsunyermias","bodyDigest":"64 lowercase hexadecimal characters"}
+   {"referenceId":123456789,"author":"jsunyermias","bodyDigest":"64 lowercase hexadecimal characters","checkRunId":987654321,"checkName":"Check, Test & Lint"}
    ```
 
 6. For an ordinary finding whose disposition was reopened or changed, issue the directive after

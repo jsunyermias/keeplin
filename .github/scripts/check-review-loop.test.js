@@ -1632,40 +1632,60 @@ test("pull_request_author_directive_disposes_and_is_recorded_on_first_evaluation
   assert.deepEqual(persisted.findings[0].evidence, evidence);
 });
 
-test("unknown_principal_enumeration_refuses_each_directive_verification", () => {
-  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-931", state: "dismissed", reason: "maintainer decision" })} -->`;
-  const finding = { id: "F-931", reified: true, state: "dismissed", evidence: { referenceId: 931, author: "maintainer", bodyDigest: sha256(body) } };
-  const reference = { id: 931, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
-  const thirdPartyBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-932", state: "dismissed", reason: "collaborator decision" })} -->`;
-  const thirdPartyFinding = { id: "F-932", reified: true, state: "dismissed", evidence: { referenceId: 932, author: "second-principal", bodyDigest: sha256(thirdPartyBody) } };
-  const thirdPartyReference = { id: 932, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "second-principal" }, author_association: "COLLABORATOR", body: thirdPartyBody };
-  const tombstoneBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-933", state: "tombstone", reason: "retire finding ID" })} -->`;
-  const tombstone = { id: "F-933", evidence: { referenceId: 933, author: "second-principal", bodyDigest: sha256(tombstoneBody) } };
-  const tombstoneReference = { id: 933, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "second-principal" }, author_association: "COLLABORATOR", body: tombstoneBody };
-  const genesisBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "GENESIS", state: "genesis", reason: "authenticate history" })} -->`;
-  const genesisEvidence = { referenceId: 934, author: "second-principal", bodyDigest: sha256(genesisBody) };
-  const genesisReference = { id: 934, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "second-principal" }, author_association: "COLLABORATOR", body: genesisBody };
-  for (const principalEnumeration of [
-    { ok: false, reason: "HTTP 403" },
-    { ok: false, reason: "rate limited" },
-    { ok: false, reason: "transport failure" },
-    { ok: false, reason: "pagination not exhausted" },
-  ]) {
-    const result = trusted({ pull: { number: 200, author: "maintainer", headSha: "ccc", headRepositoryId: 7, baseRepositoryId: 7 }, findings: [finding], references: [reference], principalEnumeration });
-    assert.equal(result.projectedFindings[0].state, "open");
-    assert.match(result.projectedFindings[0].disposalError, /enumeration is unknown/i);
+test("unknown_principal_enumeration_refuses_the_complete_directive_path_matrix", () => {
+  const principalEnumeration = { ok: false, reason: "enumeration unavailable" };
+  const directive = ({ id, state, referenceId }) => {
+    const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: id, state, reason: `authorize ${state}` })} -->`;
+    const evidence = { referenceId, author: "second-principal", bodyDigest: sha256(body) };
+    const reference = { id: referenceId, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "second-principal" }, author_association: "COLLABORATOR", body };
+    return { evidence, reference };
+  };
+  const resolved = directive({ id: "F-931", state: "resolved", referenceId: 931 });
+  const dismissed = directive({ id: "F-932", state: "dismissed", referenceId: 932 });
+  const advisory = directive({ id: "F-933", state: "advisory", referenceId: 933 });
+  advisory.reference.created_at = "2026-08-03T00:02:00Z";
+  const priorAdvisoryFinding = { id: "F-933", reified: true, state: "open" };
+  const priorAdvisoryRecord = makeJournalRecord({ ...TRUST, observation: 1, headSha: "bbb", stateHash: "one", blocking: 1, findingIds: [priorAdvisoryFinding.id], findings: [priorAdvisoryFinding] });
+  const tombstone = directive({ id: "F-934", state: "tombstone", referenceId: 934 });
+  const genesis = directive({ id: "GENESIS", state: "genesis", referenceId: 935 });
+  const validResolutionCheck = { id: 31, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
+  const paths = [
+    {
+      name: "resolved",
+      evaluate: () => trusted({ findings: [{ id: "F-931", reified: true, state: "resolved", evidence: { ...resolved.evidence, checkRunId: 31, checkName: "Check, Test & Lint" } }], references: [resolved.reference], checks: [validResolutionCheck], principalEnumeration }),
+      rejected: (result) => result.projectedFindings[0],
+      expectedState: "open",
+    },
+    {
+      name: "dismissed",
+      evaluate: () => trusted({ findings: [{ id: "F-932", reified: true, state: "dismissed", evidence: dismissed.evidence }], references: [dismissed.reference], principalEnumeration }),
+      rejected: (result) => result.projectedFindings[0],
+      expectedState: "open",
+    },
+    {
+      name: "previously reified advisory",
+      evaluate: () => trusted({ journalComments: [{ ...journalComment(priorAdvisoryRecord, TRUST), created_at: "2026-08-03T00:01:00Z" }], findings: [{ id: "F-933", reified: false, state: "advisory", evidence: advisory.evidence }], references: [advisory.reference], principalEnumeration }),
+      rejected: (result) => result.projectedFindings[0],
+      expectedState: "open",
+    },
+    {
+      name: "tombstone",
+      evaluate: () => trusted({ tombstones: [{ id: "F-934", evidence: tombstone.evidence }], references: [tombstone.reference], principalEnumeration }),
+      rejected: (result) => ({ state: result.state, disposalError: result.message }),
+      expectedState: "history-unverifiable",
+    },
+    {
+      name: "GENESIS",
+      evaluate: () => trusted({ journalComments: [], genesisEvidence: genesis.evidence, references: [genesis.reference], principalEnumeration }),
+      rejected: (result) => result.syntheticFindings[0] || {},
+      expectedState: "open",
+    },
+  ];
 
-    const thirdPartyResult = trusted({ findings: [thirdPartyFinding], references: [thirdPartyReference], principalEnumeration });
-    assert.equal(thirdPartyResult.projectedFindings[0].state, "open");
-    assert.match(thirdPartyResult.projectedFindings[0].disposalError, /enumeration is unknown/i);
-
-    const tombstoneResult = trusted({ tombstones: [tombstone], references: [tombstoneReference], principalEnumeration });
-    assert.equal(tombstoneResult.state, "history-unverifiable");
-    assert.match(tombstoneResult.message, /enumeration is unknown/i);
-
-    const genesisResult = trusted({ journalComments: [], genesisEvidence, references: [genesisReference], principalEnumeration });
-    assert.equal(genesisResult.syntheticFindings[0].state, "open");
-    assert.match(genesisResult.syntheticFindings[0].disposalError, /enumeration is unknown/i);
+  for (const path of paths) {
+    const rejection = path.rejected(path.evaluate());
+    assert.equal(rejection.state, path.expectedState, `${path.name} must be rejected`);
+    assert.match(rejection.disposalError, /enumeration is unknown/i, `${path.name} must fail on unknown enumeration`);
   }
 });
 
