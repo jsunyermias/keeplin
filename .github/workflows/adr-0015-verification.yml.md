@@ -7,7 +7,7 @@ The original implementation of the fourth test in verification item 9 of
 named `evaluator_GITHUB_TOKEN_really_enumerates_the_expected_repository_principals` in
 `.github/scripts/check-review-loop.test.js`. On each CI execution, that test uses the run's actual
 `GITHUB_TOKEN`, exercises the worktree copy of the enumerator, compares the result with the
-repository-specific literal `["jsunyermias"]`, and reports failure through the required
+literal `["jsunyermias"]`, and reports failure through the required
 `Check, Test & Lint` job. It skips locally when CI or the token is absent.
 
 This workflow adds a probe that runs on pushes to `main`, on a daily schedule even when repository
@@ -47,7 +47,7 @@ block unrelated repository changes. It has neither a `pull_request` nor a
 
 There is no checkout and no shell step. The action is pinned to a full commit SHA, and evaluator
 code comes from the default branch. The expected login comes from the repository payload rather
-than a repository-specific literal, but the singleton `[owner.login]` expectation deliberately
+than a literal, but the singleton `[owner.login]` expectation deliberately
 assumes a personally-owned repository. As ADR 0015's Decision records, moving either repository
 to an organization requires revisiting this guard before relying on it. The job name is
 deliberately distinct from the required CI jobs `Check, Test & Lint` and

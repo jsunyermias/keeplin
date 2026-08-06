@@ -760,7 +760,7 @@ yet — and is grouped here because it too fails on its own behaviour rather tha
    `.github/scripts/check-review-loop.test.js` is the original implementation of this test and
    has been present since this ADR was accepted. In each CI execution it performs the real
    paginated enumeration with that run's `GITHUB_TOKEN` against the worktree copy of the
-   enumerator and asserts the repository-specific literal `["jsunyermias"]`; locally it skips
+   enumerator and asserts the literal `["jsunyermias"]`; locally it skips
    when CI or the token is absent. Its failure belongs to the required `Check, Test & Lint` job.
 
    [`.github/workflows/adr-0015-verification.yml`](../../.github/workflows/adr-0015-verification.yml)
