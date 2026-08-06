@@ -5,7 +5,7 @@
 - Decision owners: `jsunyermias`
 - Scope: cross-repo
 - Issue: [keeplin#206](https://github.com/jsunyermias/keeplin/issues/206)
-- Acceptance PR: link once the ADR is accepted
+- Acceptance PR: [keeplin#217](https://github.com/jsunyermias/keeplin/pull/217)
 - Supersedes: none. Amends the authorization precondition that
   [0008](0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md) established and
   [0013](0013-genesis-anchor-on-an-empty-journal.md) applied to genesis
@@ -677,9 +677,12 @@ reverted.
    capture the record `publishEvaluation` writes. Building it from a prior observation that
    already carries the authorization would pass without ever exercising the first evaluation this
    ADR promises. Test named in `.github/scripts/check-review-loop.test.js`.
-2. **End to end.** A real pull request issues a directive and its `Review loop converged` check
-   publishes `converged`. keeplin#206's acceptance criterion 3 requires this, and nothing short of
-   a real run satisfies it.
+2. **End to end — completed.** [keeplin#216](https://github.com/jsunyermias/keeplin/pull/216)
+   issued repository disposal directive comment
+   [5197775718](https://github.com/jsunyermias/keeplin/pull/216#issuecomment-5197775718), and check
+   run `92457047341` published `converged`. Journal observation 2 recorded
+   `unauthenticatedAnchor: false` and
+   `blocking: 0`. This real execution satisfies keeplin#206's acceptance criterion 3.
 
 **Group 2 — invariants that must survive the change, and one new guard.** Items 3–8 fail when
 *their own* behaviour is reverted, not when self-authorization is; they pin what the decision
@@ -751,12 +754,25 @@ yet — and is grouped here because it too fails on its own behaviour rather tha
    guard runs on the per-evaluation path rather than only on the scheduled one. An implementation
    that fires only on `schedule` has put the guarantee on the leg that can silently stop.
 
-   **Fourth test — the credential actually enumerates.** A static assertion that the workflow
-   "holds a credential" proves nothing: it passes for a credential that returns `403` on every
-   call, and the guard then blocks every evaluation forever. This test performs the real paginated
-   enumeration with the credential the workflow will use and asserts the expected set comes back.
-   It is also what settles the open question *Decision* records: acceptance cannot claim a
-   credential decision it has not exercised.
+   **Fourth test — the credential actually enumerates.**
+   Test named
+   `evaluator_GITHUB_TOKEN_really_enumerates_the_expected_repository_principals` in
+   `.github/scripts/check-review-loop.test.js` is the original implementation of this test and
+   has been present since this ADR was accepted. In each CI execution it performs the real
+   paginated enumeration with that run's `GITHUB_TOKEN` against the worktree copy of the
+   enumerator and asserts the literal `["jsunyermias"]`; locally it skips
+   when CI or the token is absent. Its failure belongs to the required `Check, Test & Lint` job.
+
+   [`.github/workflows/adr-0015-verification.yml`](../../.github/workflows/adr-0015-verification.yml)
+   adds a push-to-default-branch, daily scheduled, and manually dispatched probe, so the same
+   credential property is checked daily even when repository activity does not start CI, within
+   the roughly 60-day inactivity window before GitHub disables the schedule. It derives the
+   expected singleton from `repository.owner.login` and exercises the enumerator fetched from the
+   API-reported default branch. Its failure belongs to its own job outside the required-job set. A
+   static assertion that either runner "holds a credential" proves nothing: it passes for a
+   credential that returns `403` on every call. The live calls assert that the expected set comes
+   back and settle the open question *Decision* records: acceptance cannot claim a credential
+   decision it has not exercised.
 
    **A tension this creates, stated rather than buried.** An *earlier draft* of *Options
    considered* charged Option C with needing a live lookup and credited Option A with reaching the
