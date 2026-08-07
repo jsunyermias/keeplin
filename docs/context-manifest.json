@@ -4039,6 +4039,7 @@
           "fn refuses_pre_v8_store_without_touching_legacy_attachment",
           "fn refuses_unparsable_format_stamp_without_relabelling_it",
           "fn refuses_unstamped_store_content_without_device_id",
+          "fn refuses_unstamped_sync_state_without_device_id",
           "fn refuses_to_open_a_newer_format"
         ]
       },

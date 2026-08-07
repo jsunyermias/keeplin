@@ -16,6 +16,7 @@ impl FsBackend {
         let root: PathBuf = root.into();
         let fresh = !root.join(".keeplin").join("format_version").exists()
             && !Self::has_store_content(&root).await?;
+        Self::ensure_format_version(&root, fresh).await?;
 
         for dir in &[
             "notes",
@@ -62,7 +63,13 @@ impl FsBackend {
             global_log_lock: Arc::new(Mutex::new(())),
             note_index: Arc::new(RwLock::new(None)),
         };
-        backend.ensure_format_version(fresh).await?;
+        if fresh {
+            tokio::fs::write(
+                backend.format_version_path(),
+                Self::FORMAT_VERSION.to_string(),
+            )
+            .await?;
+        }
         Ok(backend)
     }
 
@@ -200,15 +207,22 @@ impl FsBackend {
                 Err(err) => return Err(err.into()),
             }
         }
+        match tokio::fs::metadata(root.join(".keeplin/sync_state.ndjson")).await {
+            Ok(_) => return Ok(true),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
         Ok(false)
     }
 
     // md:impl FsBackend > fn ensure_format_version
-    pub(super) async fn ensure_format_version(&self, fresh: bool) -> Result<(), StorageError> {
-        let path = self.format_version_path();
+    pub(super) async fn ensure_format_version(
+        root: &Path,
+        fresh: bool,
+    ) -> Result<(), StorageError> {
+        let path = root.join(".keeplin").join("format_version");
 
         if fresh {
-            tokio::fs::write(&path, Self::FORMAT_VERSION.to_string()).await?;
             return Ok(());
         }
 

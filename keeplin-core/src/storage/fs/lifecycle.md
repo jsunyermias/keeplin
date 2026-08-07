@@ -59,6 +59,7 @@ marker `// md:impl FsBackend > fn new`.
         let root: PathBuf = root.into();
         let fresh = !root.join(".keeplin").join("format_version").exists()
             && !Self::has_store_content(&root).await?;
+        Self::ensure_format_version(&root, fresh).await?;
 
         for dir in &[
             "notes",
@@ -105,17 +106,30 @@ marker `// md:impl FsBackend > fn new`.
             global_log_lock: Arc::new(Mutex::new(())),
             note_index: Arc::new(RwLock::new(None)),
         };
-        backend.ensure_format_version(fresh).await?;
+        if fresh {
+            tokio::fs::write(
+                backend.format_version_path(),
+                Self::FORMAT_VERSION.to_string(),
+            )
+            .await?;
+        }
         Ok(backend)
     }
 ```
 
-**What it does** — Creates the directory tree, sweeps orphaned `*.tmp` files,
+**What it does** — Classifies freshness and validates every non-fresh format stamp before any
+filesystem mutation. Only after that read-only gate succeeds does it create the directory tree, sweep orphaned `*.tmp` files,
 scans for Syncthing `*.sync-conflict-*` copies (reported at **error** level —
 in a single-writer-per-file store they are the signature of a replicated
 `.keeplin/` directory, i.e. two devices sharing one identity; nothing is
-deleted), determines format freshness from the stamp and actual store content,
-loads or creates the device id independently, and runs `ensure_format_version`.
+deleted), load or create the device id independently, and stamp a genuinely fresh store. A refused
+store therefore cannot gain directories or a device id and cannot lose an old `*.tmp` file.
+
+**Dependencies** —
+
+- `Self::has_store_content` and `Self::ensure_format_version` — classify and validate without mutation; expects every refusal to return before directory creation, cleanup, and identity creation.
+- `tokio::fs::create_dir_all` and `tokio::fs::write` — initialize only an accepted store and stamp only the fresh path; expects the metadata directory to exist before the final stamp write.
+- `Self::sweep_orphan_tmp_files`, `Self::scan_sync_conflicts`, and `Self::read_or_create_device_id` — perform startup hygiene and identity setup after validation; expects none to run for a refused format.
 
 **Used by** — `main.rs::build_storage` (default mode); tests everywhere.
 
@@ -319,20 +333,27 @@ one directory, skipping Syncthing temporaries.
                 Err(err) => return Err(err.into()),
             }
         }
+        match tokio::fs::metadata(root.join(".keeplin/sync_state.ndjson")).await {
+            Ok(_) => return Ok(true),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
         Ok(false)
     }
 ```
 
 **What it does** — Reports content only when a known Keeplin data directory
-contains an entry. It covers current note-scoped data, the legacy global
+contains an entry, or when the exact sync-state metadata file exists. It covers current note-scoped data, the legacy global
 `resources` pool, logs, notebooks, tags, note-tag associations, and sync
-offsets. Empty directory scaffolding does not count, including directories
+offsets and `.keeplin/sync_state.ndjson`. Empty directory scaffolding does not count, including directories
 created during backend initialization. Missing directories are empty; other
-directory-read failures abort startup rather than risk classifying content as fresh.
+probe failures abort startup rather than risk classifying content as fresh. A lone device id still
+does not count as format-bearing data.
 
 **Dependencies** —
 
 - `tokio::fs::read_dir` and `ReadDir::next_entry` — probe known data roots without modifying them; expects missing directories to be empty and other I/O failures to remain distinguishable and fatal.
+- `tokio::fs::metadata` — detects the historical/current sync-state sidecar specifically; expects absence to be distinguishable from other I/O errors without treating device identity as store content.
 
 **Used by** — `FsBackend::new`, before it creates the standard directory tree.
 
@@ -348,11 +369,13 @@ directory-read failures abort startup rather than risk classifying content as fr
 
 ```rust
     // md:impl FsBackend > fn ensure_format_version
-    pub(super) async fn ensure_format_version(&self, fresh: bool) -> Result<(), StorageError> {
-        let path = self.format_version_path();
+    pub(super) async fn ensure_format_version(
+        root: &Path,
+        fresh: bool,
+    ) -> Result<(), StorageError> {
+        let path = root.join(".keeplin").join("format_version");
 
         if fresh {
-            tokio::fs::write(&path, Self::FORMAT_VERSION.to_string()).await?;
             return Ok(());
         }
 
@@ -396,13 +419,18 @@ directory-read failures abort startup rather than risk classifying content as fr
     }
 ```
 
-**What it does** — Stamps a genuinely fresh store directly at `FORMAT_VERSION`
-(8). An existing store opens only when its stamp parses and equals the current
-version. A missing, unparsable, or older stamp is refused without writing it;
+**What it does** — Performs a read-only preflight: a genuinely fresh store is accepted for later
+initialization by `new`, while an existing store opens only when its stamp parses and equals the current
+version. A missing, unparsable, or older stamp is refused before any startup mutation;
 the error identifies the stamp state, expected version, and the three recovery
 choices required by ADR 0016. A stamp **newer** than this build retains the
 existing downgrade refusal unchanged. No historical migration dispatcher
 remains because versions 1 through 7 have no authorized data transformation.
+
+**Dependencies** —
+
+- `tokio::fs::read_to_string` — reads an existing stamp without changing it; expects read failures to abort startup.
+- `Self::FORMAT_VERSION` — defines the only accepted version; expects every mismatch to refuse rather than migrate or relabel.
 
 ---
 

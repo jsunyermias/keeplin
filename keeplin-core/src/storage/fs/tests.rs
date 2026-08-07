@@ -486,6 +486,12 @@ async fn refuses_missing_format_stamp_without_creating_one() {
     assert!(message.contains("new store"), "{message}");
     assert!(message.contains("backup"), "{message}");
     assert!(!stamp_path.exists());
+    assert_eq!(
+        tokio::fs::read(metadata_dir.join("device_id"))
+            .await
+            .unwrap(),
+        b"existing-device"
+    );
 }
 
 // md:fn refuses_pre_v8_store_without_touching_legacy_attachment
@@ -505,6 +511,7 @@ async fn refuses_pre_v8_store_without_touching_legacy_attachment() {
     let note_dir = dir.path().join("notes").join(note.id.to_string());
     let resource_dir = dir.path().join("resources").join(resource.id.to_string());
     let attachment_path = resource_dir.join("data");
+    let orphan_path = note_dir.join("preserved.tmp");
 
     tokio::fs::create_dir_all(stamp_path.parent().unwrap())
         .await
@@ -529,15 +536,18 @@ async fn refuses_pre_v8_store_without_touching_legacy_attachment() {
     }))
     .unwrap();
     note_meta.push(b'\n');
-    tokio::fs::write(note_dir.join("meta.ndjson"), note_meta)
+    tokio::fs::write(note_dir.join("meta.ndjson"), &note_meta)
         .await
         .unwrap();
     let mut resource_meta = serde_json::to_vec(&resource).unwrap();
     resource_meta.push(b'\n');
-    tokio::fs::write(resource_dir.join("meta.ndjson"), resource_meta)
+    tokio::fs::write(resource_dir.join("meta.ndjson"), &resource_meta)
         .await
         .unwrap();
     tokio::fs::write(&attachment_path, attachment)
+        .await
+        .unwrap();
+    tokio::fs::write(&orphan_path, b"pre-v8 tmp bytes")
         .await
         .unwrap();
 
@@ -558,7 +568,31 @@ async fn refuses_pre_v8_store_without_touching_legacy_attachment() {
     assert!(message.contains("new store"), "{message}");
     assert!(message.contains("backup"), "{message}");
     assert_eq!(tokio::fs::read(&stamp_path).await.unwrap(), b"7");
+    assert_eq!(
+        tokio::fs::read(stamp_path.parent().unwrap().join("device_id"))
+            .await
+            .unwrap(),
+        b"legacy-device"
+    );
+    assert_eq!(
+        tokio::fs::read(note_dir.join("note.md")).await.unwrap(),
+        note.body.as_bytes()
+    );
+    assert_eq!(
+        tokio::fs::read(note_dir.join("meta.ndjson")).await.unwrap(),
+        note_meta
+    );
+    assert_eq!(
+        tokio::fs::read(resource_dir.join("meta.ndjson"))
+            .await
+            .unwrap(),
+        resource_meta
+    );
     assert_eq!(tokio::fs::read(&attachment_path).await.unwrap(), attachment);
+    assert_eq!(
+        tokio::fs::read(&orphan_path).await.unwrap(),
+        b"pre-v8 tmp bytes"
+    );
 }
 
 // md:fn refuses_unparsable_format_stamp_without_relabelling_it
@@ -596,6 +630,12 @@ async fn refuses_unparsable_format_stamp_without_relabelling_it() {
         tokio::fs::read(&stamp_path).await.unwrap(),
         b"not-a-version"
     );
+    assert_eq!(
+        tokio::fs::read(stamp_path.parent().unwrap().join("device_id"))
+            .await
+            .unwrap(),
+        b"existing-device"
+    );
 }
 
 // md:fn refuses_unstamped_store_content_without_device_id
@@ -624,10 +664,36 @@ async fn refuses_unstamped_store_content_without_device_id() {
     let message = err.to_string().to_lowercase();
     assert!(message.contains("missing"), "{message}");
     assert!(!dir.path().join(".keeplin/format_version").exists());
+    assert!(!dir.path().join(".keeplin/device_id").exists());
     assert_eq!(tokio::fs::read(&note_path).await.unwrap(), b"existing note");
     assert_eq!(
         tokio::fs::read(&attachment_path).await.unwrap(),
         b"existing attachment"
+    );
+}
+
+// md:fn refuses_unstamped_sync_state_without_device_id
+#[tokio::test]
+async fn refuses_unstamped_sync_state_without_device_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let metadata_dir = dir.path().join(".keeplin");
+    let sync_state_path = metadata_dir.join("sync_state.ndjson");
+    tokio::fs::create_dir_all(&metadata_dir).await.unwrap();
+    tokio::fs::write(&sync_state_path, b"existing sync state")
+        .await
+        .unwrap();
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening unstamped sync state without a device id must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string().to_lowercase();
+    assert!(message.contains("missing"), "{message}");
+    assert!(!metadata_dir.join("format_version").exists());
+    assert!(!metadata_dir.join("device_id").exists());
+    assert_eq!(
+        tokio::fs::read(&sync_state_path).await.unwrap(),
+        b"existing sync state"
     );
 }
 

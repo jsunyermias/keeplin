@@ -26,6 +26,7 @@ class FilesystemFormatPolicyCheck(unittest.TestCase):
         self.git("config", "user.name", "Fixture")
         self.git("config", "commit.gpgsign", "false")
         self.write_lifecycle(8, "")
+        self.write(POLICY.POLICY, "initial policy\n")
         self.commit("base")
         self.base = self.git("rev-parse", "HEAD").strip()
 
@@ -84,10 +85,10 @@ class FilesystemFormatPolicyCheck(unittest.TestCase):
         )
         self.assertTrue(self.evaluate(self.commit("version only")))
 
-    def test_accepted_bounded_exception_cited_by_commit_passes(self):
+    def test_accepted_transition_exception_cited_by_commit_passes(self):
         self.write(
             "docs/adr/0017-format-exception.md",
-            "# Exception\n\n- Status: accepted\n\nFORMAT_VERSION bounded exception.\n",
+            "# Exception\n\n- Status: accepted\n\n- Filesystem-format-exception: 8 -> 9\n",
         )
         self.base = self.commit("accept exception")
         self.write_lifecycle(9, "")
@@ -96,7 +97,7 @@ class FilesystemFormatPolicyCheck(unittest.TestCase):
     def test_proposed_exception_does_not_pass(self):
         self.write(
             "docs/adr/0017-format-exception.md",
-            "# Exception\n\n- Status: proposed\n\nFORMAT_VERSION bounded exception.\n",
+            "# Exception\n\n- Status: proposed\n\n- Filesystem-format-exception: 8 -> 9\n",
         )
         self.base = self.commit("propose exception")
         self.write_lifecycle(9, "")
@@ -106,9 +107,33 @@ class FilesystemFormatPolicyCheck(unittest.TestCase):
         self.write_lifecycle(9, "")
         self.write(
             "docs/adr/0017-format-exception.md",
-            "# Exception\n\n- Status: accepted\n\nFORMAT_VERSION bounded exception.\n",
+            "# Exception\n\n- Status: accepted\n\n- Filesystem-format-exception: 8 -> 9\n",
         )
         self.assertTrue(self.evaluate(self.commit("ADR 0017 with bump")))
+
+    def test_adr_0016_does_not_authorize_its_own_exception_mechanism(self):
+        self.write(
+            "docs/adr/0016-refuse-pre-release-filesystem-formats.md",
+            "# Policy\n\n- Status: accepted\n\nFORMAT_VERSION bounded exception.\n",
+        )
+        self.base = self.commit("accept policy")
+        self.write_lifecycle(9, "")
+        self.assertTrue(self.evaluate(self.commit("ADR 0016")))
+
+    def test_exception_for_another_transition_does_not_pass(self):
+        self.write(
+            "docs/adr/0017-format-exception.md",
+            "# Exception\n\n- Status: accepted\n\n- Filesystem-format-exception: 9 -> 10\n",
+        )
+        self.base = self.commit("accept exception")
+        self.write_lifecycle(9, "")
+        self.assertTrue(self.evaluate(self.commit("ADR 0017")))
+
+    def test_moving_format_version_out_of_lifecycle_fails_closed(self):
+        self.write(POLICY.LIFECYCLE, "impl FsBackend {}\n")
+        self.write("keeplin-core/src/storage/fs/version.rs", "const FORMAT_VERSION: u32 = 8;\n")
+        failures = self.evaluate(self.commit("move format version"))
+        self.assertTrue(any("cannot locate" in failure for failure in failures))
 
     def test_latch_can_be_added_once(self):
         self.write(POLICY.LATCH, '{"tag":"v0.1.0"}\n')
@@ -128,6 +153,23 @@ class FilesystemFormatPolicyCheck(unittest.TestCase):
         self.git("add", "-u")
         failures = self.evaluate(self.commit("delete latch"))
         self.assertIn("immutable", failures[0])
+
+    def test_policy_can_be_added_once(self):
+        (self.root / POLICY.POLICY).unlink()
+        self.base = self.commit("base without policy")
+        self.write(POLICY.POLICY, "initial policy\n")
+        self.assertEqual(self.evaluate(self.commit("add policy")), [])
+
+    def test_policy_cannot_be_modified_in_a_later_commit(self):
+        self.write(POLICY.POLICY, "changed policy\n")
+        failures = self.evaluate(self.commit("modify policy"))
+        self.assertTrue(any(POLICY.POLICY in failure for failure in failures))
+
+    def test_policy_cannot_be_deleted(self):
+        (self.root / POLICY.POLICY).unlink()
+        self.git("add", "-u")
+        failures = self.evaluate(self.commit("delete policy"))
+        self.assertTrue(any(POLICY.POLICY in failure for failure in failures))
 
 
 if __name__ == "__main__":

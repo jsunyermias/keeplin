@@ -12,13 +12,19 @@ obligation and is stated in both success and failure output.
 - If `FsBackend::FORMAT_VERSION` changes, `apply_format_migration` must be newly added or have a
   different complete function body and the Rust diff must add a test whose name contains both
   `preserv` and the exact `v<source>_to_v<target>` transition.
+- If the decimal `FORMAT_VERSION` declaration cannot be found in the lifecycle module at either
+  endpoint, evaluation fails closed instead of treating the constant as unchanged.
 - Instead of those two artifacts, the change may cite an ADR from its commit messages or added diff
-  lines. The cited file must already exist as `accepted` at the comparison base and explicitly name
-  both `FORMAT_VERSION` and a `bounded exception`; accepting the exception inside the format-bump
-  change is not "separately accepted" and does not pass.
+  lines. The cited file must already exist as `accepted` at the comparison base and contain the
+  deliberate marker `- Filesystem-format-exception: <source> -> <target>` for the exact transition;
+  policy prose that merely describes exceptions grants nothing, and accepting an exception inside
+  the format-bump change is not "separately accepted" and does not pass.
 - Once `.github/keeplin-release-boundary.json` exists in any commit after the comparison base, every
   subsequent compared commit must retain byte-identical content. This catches deletion or mutation
   even when the latch was first added earlier in the same pull-request branch.
+- Once this policy script exists in any commit after the comparison base, subsequent commits must
+  retain it byte-identically. This repository check detects ordinary deletion or weakening in the
+  same history, but cannot force GitHub to execute itself.
 
 The checker intentionally does not require migrations for versions 1 through 8 and does not create
 the release-boundary latch; those are separate decisions and observations in ADR 0016.

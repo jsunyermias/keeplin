@@ -48,6 +48,13 @@ Repository administrators keep `main` protected in both `jsunyermias/keeplin` an
 - force-pushes and branch deletion disabled;
 - administrator bypass reserved for incident recovery and documented if used.
 
+For `jsunyermias/keeplin`, branch protection must require the `Check, Test & Lint` job that contains
+the `Check filesystem format policy` step. Repository code can detect ordinary modification or
+deletion of that gate after its introducing commit, but cannot ensure the workflow is selected as
+a required check; confirming that setting is a maintainer action. Review of the introducing commit
+must also validate the initial gate and release-latch contents, because immutability only protects
+the bytes that introduction establishes.
+
 Draft PRs are the default during implementation. The maintainer remains the only person who
 performs the final merge in the normal workflow.
 

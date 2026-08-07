@@ -5,8 +5,10 @@
 These tests create isolated temporary Git repositories and call the real evaluator against actual
 commits. They cover unrelated changes, unsupported format bumps, substantive-evidence disclaimers,
 changed and unchanged migration dispatchers, transition-named preservation tests, previously
-accepted, proposed, and same-change exception ADRs, first latch creation, later latch mutation, and
-deletion of a latch already present at the base revision.
+accepted exact-transition markers, proposed and same-change exception ADRs, rejection of ADR 0016's
+own policy prose as authorization, fail-closed constant relocation, first latch creation, later
+latch mutation, and deletion of a latch already present at the base revision. They also prove the
+policy script can be introduced once but cannot subsequently be modified or deleted.
 
 ## Dependencies
 

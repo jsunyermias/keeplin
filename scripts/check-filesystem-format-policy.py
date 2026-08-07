@@ -13,8 +13,13 @@ from typing import Sequence
 
 LIFECYCLE = "keeplin-core/src/storage/fs/lifecycle.rs"
 LATCH = ".github/keeplin-release-boundary.json"
+POLICY = "scripts/check-filesystem-format-policy.py"
 VERSION_RE = re.compile(r"FORMAT_VERSION\s*:\s*u32\s*=\s*(\d+)\s*;")
 ADR_RE = re.compile(r"\bADR[ -]?(\d{4})\b", re.IGNORECASE)
+EXCEPTION_RE = re.compile(
+    r"^- Filesystem-format-exception:\s*(\d+)\s*->\s*(\d+)\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
 
 
 def _git(root: Path, *arguments: str, check: bool = True) -> str:
@@ -62,7 +67,9 @@ def _function(source: str | None, name: str) -> str | None:
     return None
 
 
-def _accepted_exception(root: Path, base: str, head: str) -> bool:
+def _accepted_exception(
+    root: Path, base: str, head: str, old_version: int, new_version: int
+) -> bool:
     references = ADR_RE.findall(_git(root, "log", "--format=%B", f"{base}..{head}"))
     added_lines = _git(root, "diff", "--unified=0", base, head).splitlines()
     references.extend(
@@ -77,11 +84,13 @@ def _accepted_exception(root: Path, base: str, head: str) -> bool:
     for number in set(references):
         path = next((item for item in candidates if f"docs/adr/{number}-" in item), None)
         text = _file_at(root, base, path) if path else None
-        lowered = (text or "").lower()
+        transitions = {
+            (int(match.group(1)), int(match.group(2)))
+            for match in EXCEPTION_RE.finditer(text or "")
+        }
         if (
             re.search(r"^- status:\s*accepted\s*$", text or "", re.MULTILINE | re.IGNORECASE)
-            and "bounded exception" in lowered
-            and "format_version" in lowered
+            and (old_version, new_version) in transitions
         ):
             return True
     return False
@@ -99,21 +108,43 @@ def _latch_is_immutable(root: Path, base: str, head: str) -> bool:
     return True
 
 
+def _policy_is_immutable(root: Path, base: str, head: str) -> bool:
+    revisions = _git(root, "rev-list", "--reverse", f"{base}..{head}").splitlines()
+    for revision in revisions:
+        current = _file_at(root, revision, POLICY)
+        parents = _git(root, "show", "-s", "--format=%P", revision).split()
+        for parent in parents:
+            previous = _file_at(root, parent, POLICY)
+            if previous is not None and current != previous:
+                return False
+    return True
+
+
 def evaluate(root: Path, base: str, head: str) -> list[str]:
     failures: list[str] = []
     if not _latch_is_immutable(root, base, head):
         failures.append(
             f"{LATCH} is an immutable release-boundary latch once committed; it may not be modified or deleted"
         )
+    if not _policy_is_immutable(root, base, head):
+        failures.append(
+            f"{POLICY} is immutable once committed; it may not be modified or deleted"
+        )
 
     old_source = _file_at(root, base, LIFECYCLE)
     new_source = _file_at(root, head, LIFECYCLE)
     old_version = _version(old_source)
     new_version = _version(new_source)
-    if old_version is None or new_version is None or old_version == new_version:
+    if old_version is None:
+        failures.append(f"cannot locate a decimal FORMAT_VERSION declaration in {base}:{LIFECYCLE}")
+        return failures
+    if new_version is None:
+        failures.append(f"cannot locate a decimal FORMAT_VERSION declaration in {head}:{LIFECYCLE}")
+        return failures
+    if old_version == new_version:
         return failures
 
-    exception = _accepted_exception(root, base, head)
+    exception = _accepted_exception(root, base, head, old_version, new_version)
     old_dispatch = _function(old_source, "apply_format_migration")
     new_dispatch = _function(new_source, "apply_format_migration")
     dispatch_changed = new_dispatch is not None and new_dispatch != old_dispatch
