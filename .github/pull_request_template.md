@@ -62,7 +62,7 @@ States: `open` · `resolved` · `dismissed` · `advisory`. An `open` finding mus
 check; leave `Reified by` as `advisory` only for a finding that is not blocking.
 
 IDs are `F-` plus at least three digits and are never reused. `Round` is an integer from 1.
-`State` is exactly `open`, `resolved`, `dismissed` or `advisory`.
+In the ledger table, `State` is exactly `open`, `resolved`, `dismissed` or `advisory`.
 
 | ID | Round | Reified by | State | Resolution |
 |---|---|---|---|---|
