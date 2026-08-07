@@ -497,7 +497,6 @@ async fn current_store_opens_without_rewriting_stamp() {
 async fn refuses_missing_format_stamp_without_creating_one() {
     let dir = tempfile::tempdir().unwrap();
     let metadata_dir = dir.path().join(".keeplin");
-    let stamp_path = metadata_dir.join("format_version");
     tokio::fs::create_dir_all(&metadata_dir).await.unwrap();
     tokio::fs::write(metadata_dir.join("device_id"), "existing-device")
         .await
