@@ -137,9 +137,27 @@ jobs:
 
       - name: Check filesystem format policy
         env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           FORMAT_POLICY_BASE: ${{ steps.format-policy-range.outputs.base }}
           FORMAT_POLICY_HEAD: ${{ steps.format-policy-range.outputs.head }}
-        run: ./scripts/check-filesystem-format-policy.py
+        run: |
+          set -eu
+          policy_path="scripts/check-filesystem-format-policy.py"
+          default_ref="refs/remotes/origin/${DEFAULT_BRANCH}"
+          policy_runner="${RUNNER_TEMP}/check-filesystem-format-policy.py"
+          if git cat-file -e "${default_ref}:${policy_path}" 2>/dev/null; then
+            git show "${default_ref}:${policy_path}" > "${policy_runner}"
+            echo "Using filesystem-format policy from ${default_ref}."
+          else
+            if git cat-file -e "${FORMAT_POLICY_BASE}:${policy_path}" 2>/dev/null; then
+              echo "Default branch lacks the filesystem-format policy although the comparison base contains it; refusing non-bootstrap fallback." >&2
+              exit 1
+            fi
+            test -f "${policy_path}"
+            cp "${policy_path}" "${policy_runner}"
+            echo "BOOTSTRAP: default branch has no filesystem-format policy; executing the introducing head copy."
+          fi
+          python3 "${policy_runner}"
 
       # Contractual docs: every .rs has a companion .md and every companion
       # carries a `## Graph context` section (the two-layer navigation model).

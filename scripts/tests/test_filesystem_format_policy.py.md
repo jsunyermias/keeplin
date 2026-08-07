@@ -9,7 +9,9 @@ accepted exact-transition markers, proposed and same-change exception ADRs, reje
 own policy prose as authorization, and fail-closed constant relocation. For both the release latch
 and policy script they pin the endpoint rule: a file absent at base may be created and revised in
 the compared history, while a file present at base must be byte-identical at head and cannot be
-modified or deleted.
+modified or deleted. Structural workflow tests additionally pin both loader states: steady-state
+execution copies the policy from the default branch, while bootstrap falls back to the checked-out
+copy only after proving the comparison base lacks the policy and rejects a base-present mismatch.
 
 ## Dependencies
 

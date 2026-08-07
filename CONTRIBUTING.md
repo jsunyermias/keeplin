@@ -58,6 +58,12 @@ the bytes that introduction establishes.
 Draft PRs are the default during implementation. The maintainer remains the only person who
 performs the final merge in the normal workflow.
 
+The repository does not currently use GitHub's merge queue. Before enabling it, add a
+`merge_group` trigger to CI and give the filesystem-format policy range resolver a dedicated base
+derivation for that event. A merge queue's synthetic merge commit supplies neither the push
+event's `before` value nor a pull request's base SHA, so the existing derivations are not valid for
+it.
+
 A required check is identified by its job `name` in `.github/workflows/ci.yml`, so that name
 is load-bearing configuration rather than a label. Renaming a required job without updating
 the required-check list in Settings → Branches leaves protection waiting forever for a check

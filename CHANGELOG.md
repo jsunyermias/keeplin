@@ -12,17 +12,21 @@ version and the wire protocol version move independently.
 
 ### Pre-release filesystem format refusal (ADR 0016, #207)
 
-- Existing filesystem stores below format v8, or with a missing or unparsable format stamp, are
-  now refused before any stamp or payload write. The error names the found stamp state, expected
-  version, and the honest choices of retaining the untouched store for manual recovery, starting a
-  new store, or restoring a backup already in v8. Current stores still open, future-format stores
-  retain the downgrade refusal, and genuinely fresh stores are stamped v8.
+- Stamped filesystem stores below format v8, and directories with a missing or unparsable format
+  stamp that contain anything beyond the directory scaffolding and optional device id created
+  during fresh initialization, are now refused before any stamp or payload write. The error
+  identifies the incompatible stamp or unexpected entry and names the honest choices of retaining
+  the untouched store for manual recovery, starting a new store, or restoring a backup already in
+  v8. Current stores still open, future-format stores retain the downgrade refusal, and only empty
+  or partially initialized fresh directories are stamped v8.
 - The false v2–v8 no-op migration ladder and its success log are removed. No migration or recovery
   tool for those pre-release layouts is implied.
 - CI now requires a future `FORMAT_VERSION` bump to visibly change the migration dispatcher and add
   a preservation test named for its source and target versions, or cite a separately accepted ADR
   for a bounded exception. The gate also makes `.github/keeplin-release-boundary.json` immutable
-  after its first commit and explicitly disclaims judging substantive data preservation.
+  after its first commit and explicitly disclaims judging substantive data preservation. CI loads
+  the enforcing copy from the default branch once available; the introducing change uses its head
+  copy only when neither the default branch nor comparison base contains the gate.
 
 ### Trusted review-loop evaluation (keeplin ADR 0008)
 

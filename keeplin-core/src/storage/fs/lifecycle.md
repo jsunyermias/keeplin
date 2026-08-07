@@ -42,7 +42,7 @@ constants `FORMAT_VERSION = 8`, `NOTE_LOG_COMPACT_THRESHOLD = 256`,
 `GLOBAL_LOG_COMPACT_THRESHOLD = 512`, `GLOBAL_LOG_SOFT_BYTES = 64 KiB`
 (documented with the methods that use them).
 
-**Code** — container: members documented as sub-blocks below: fn new, fn sweep_orphan_tmp_files, fn scan_sync_conflicts, fn sweep_tmp_in_dir, fn format_version_path, fn has_store_content, fn ensure_format_version, fn read_or_create_device_id.
+**Code** — container: members documented as sub-blocks below: fn new, fn sweep_orphan_tmp_files, fn scan_sync_conflicts, fn sweep_tmp_in_dir, fn format_version_path, fn unexpected_fresh_store_entry, fn ensure_format_version, fn read_or_create_device_id.
 
 ---
 
@@ -57,8 +57,21 @@ marker `// md:impl FsBackend > fn new`.
     // md:impl FsBackend > fn new
     pub async fn new(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root: PathBuf = root.into();
-        let fresh = !root.join(".keeplin").join("format_version").exists()
-            && !Self::has_store_content(&root).await?;
+        let has_format_version = root.join(".keeplin").join("format_version").exists();
+        if !has_format_version {
+            if let Some(path) = Self::unexpected_fresh_store_entry(&root).await? {
+                let entry = path.strip_prefix(&root).unwrap_or(&path);
+                return Err(StorageError::InvalidState(format!(
+                    "on-disk format stamp is missing; unexpected entry {} prevents treating this \
+                     directory as a fresh store; expected version {}. Retain the untouched \
+                     directory for manual recovery, choose an empty directory for a new store, \
+                     or restore a backup already in the expected format",
+                    entry.display(),
+                    Self::FORMAT_VERSION
+                )));
+            }
+        }
+        let fresh = !has_format_version;
         Self::ensure_format_version(&root, fresh).await?;
 
         for dir in &[
@@ -127,7 +140,7 @@ store therefore cannot gain directories or a device id and cannot lose an old `*
 
 **Dependencies** —
 
-- `Self::has_store_content` and `Self::ensure_format_version` — classify and validate without mutation; expects every refusal to return before directory creation, cleanup, and identity creation.
+- `Self::unexpected_fresh_store_entry` and `Self::ensure_format_version` — classify and validate without mutation; expects every refusal to return before directory creation, cleanup, and identity creation.
 - `tokio::fs::create_dir_all` and `tokio::fs::write` — initialize only an accepted store and stamp only the fresh path; expects the metadata directory to exist before the final stamp write.
 - `Self::sweep_orphan_tmp_files`, `Self::scan_sync_conflicts`, and `Self::read_or_create_device_id` — perform startup hygiene and identity setup after validation; expects none to run for a refused format.
 
@@ -305,59 +318,79 @@ one directory, skipping Syncthing temporaries.
 
 ---
 
-### fn has_store_content
+### fn unexpected_fresh_store_entry
 
-**Identification** — marker `// md:impl FsBackend > fn has_store_content`.
+**Identification** — marker `// md:impl FsBackend > fn unexpected_fresh_store_entry`.
 
 **Code** — complete and verbatim:
 
 ```rust
-    // md:impl FsBackend > fn has_store_content
-    pub(super) async fn has_store_content(root: &Path) -> Result<bool, StorageError> {
-        for dir in [
+    // md:impl FsBackend > fn unexpected_fresh_store_entry
+    pub(super) async fn unexpected_fresh_store_entry(
+        root: &Path,
+    ) -> Result<Option<PathBuf>, StorageError> {
+        let allowed_root = [
             "notes",
-            "resources",
+            ".keeplin",
             "logs",
             "notebooks",
             "tags",
             "note_tags",
-            ".keeplin/offsets",
-        ] {
-            match tokio::fs::read_dir(root.join(dir)).await {
-                Ok(mut entries) => {
-                    if entries.next_entry().await?.is_some() {
-                        return Ok(true);
+        ];
+        let mut root_entries = match tokio::fs::read_dir(root).await {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        while let Some(entry) = root_entries.next_entry().await? {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !entry.file_type().await?.is_dir() || !allowed_root.contains(&name.as_ref()) {
+                return Ok(Some(entry.path()));
+            }
+            if name == ".keeplin" {
+                let mut metadata_entries = tokio::fs::read_dir(entry.path()).await?;
+                while let Some(metadata_entry) = metadata_entries.next_entry().await? {
+                    let metadata_name = metadata_entry.file_name();
+                    let metadata_type = metadata_entry.file_type().await?;
+                    if metadata_name == "device_id" && metadata_type.is_file() {
+                        continue;
+                    }
+                    if metadata_name != "offsets" || !metadata_type.is_dir() {
+                        return Ok(Some(metadata_entry.path()));
+                    }
+                    let mut offset_entries = tokio::fs::read_dir(metadata_entry.path()).await?;
+                    if let Some(offset_entry) = offset_entries.next_entry().await? {
+                        return Ok(Some(offset_entry.path()));
                     }
                 }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => return Err(err.into()),
+            } else {
+                let mut entries = tokio::fs::read_dir(entry.path()).await?;
+                if let Some(unexpected) = entries.next_entry().await? {
+                    return Ok(Some(unexpected.path()));
+                }
             }
         }
-        match tokio::fs::metadata(root.join(".keeplin/sync_state.ndjson")).await {
-            Ok(_) => return Ok(true),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err.into()),
-        }
-        Ok(false)
+        Ok(None)
     }
 ```
 
-**What it does** — Reports content only when a known Keeplin data directory
-contains an entry, or when the exact sync-state metadata file exists. It covers current note-scoped data, the legacy global
-`resources` pool, logs, notebooks, tags, note-tag associations, and sync
-offsets and `.keeplin/sync_state.ndjson`. Empty directory scaffolding does not count, including directories
-created during backend initialization. Missing directories are empty; other
-probe failures abort startup rather than risk classifying content as fresh. A lone device id still
-does not count as format-bearing data.
+**What it does** — Defines freshness from the bounded output of `new`: a missing root is fresh, as
+is an existing root containing only the empty `notes`, `.keeplin/offsets`, `logs`, `notebooks`,
+`tags`, and `note_tags` directory skeleton plus the regular `.keeplin/device_id` file that `new`
+can write before its final stamp. It returns the first path outside those exact initialization
+outputs, including historical Keeplin files and unrelated user content. I/O failures abort
+classification.
 
 **Dependencies** —
 
-- `tokio::fs::read_dir` and `ReadDir::next_entry` — probe known data roots without modifying them; expects missing directories to be empty and other I/O failures to remain distinguishable and fatal.
-- `tokio::fs::metadata` — detects the historical/current sync-state sidecar specifically; expects absence to be distinguishable from other I/O errors without treating device identity as store content.
+- `tokio::fs::read_dir` and `ReadDir::next_entry` — inspect root and allowed scaffolding without mutation; expects missing root to mean fresh and all other I/O failures to remain fatal.
+- `DirEntry::file_type` — requires allowed entries to be directories; expects files, links, and special entries with allowed names to be rejected.
 
 **Used by** — `FsBackend::new`, before it creates the standard directory tree.
 
-**Repeated context** — Format freshness is independent of device identity.
+**Repeated context** — Freshness is an allowlist of current empty scaffolding, never an enumeration
+of historical store content.
 
 ---
 
@@ -484,7 +517,7 @@ Repo-tooling metadata, not a code block.
 
 - This split does not change the on-disk format; `FsBackend::FORMAT_VERSION` remains 8.
 - The public backend path remains `crate::storage::fs::FsBackend`.
-- A format stamp always identifies an existing format; without one, only a store with no entries in known data directories is fresh.
+- A format stamp always identifies an existing format; without one, only an empty root or the exact directory/device-id outputs created by a partially completed `new` are fresh.
 - Existing filesystem formats below version 8 are refused without relabelling or migration.
 
 ---
@@ -501,6 +534,6 @@ Repo-tooling metadata, not a code block.
 | 5 | `fn scan_sync_conflicts` | `// md:impl FsBackend > fn scan_sync_conflicts` |
 | 6 | `fn sweep_tmp_in_dir` | `// md:impl FsBackend > fn sweep_tmp_in_dir` |
 | 7 | `fn format_version_path` | `// md:impl FsBackend > fn format_version_path` |
-| 8 | `fn has_store_content` | `// md:impl FsBackend > fn has_store_content` |
+| 8 | `fn unexpected_fresh_store_entry` | `// md:impl FsBackend > fn unexpected_fresh_store_entry` |
 | 9 | `fn ensure_format_version` | `// md:impl FsBackend > fn ensure_format_version` |
 | 10 | `fn read_or_create_device_id` | `// md:impl FsBackend > fn read_or_create_device_id` |

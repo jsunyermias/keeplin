@@ -41,7 +41,7 @@ Runs on `ubuntu-latest`.
 | Check pull-request review governance | `actions/github-script@v7` (non-draft pull requests only) | Requires either an independent review with evidence, or a complete maintainer waiver whose exact PR is recorded in the changed `docs/review-debt.md` |
 | Install Python | `actions/setup-python@v5` (`3.12`) | Provides the standard-library runtime used by the deterministic companion checks |
 | Determine filesystem format policy range | Event-aware shell resolver over the checked-out full history | Uses the pull-request base and head for pull requests, the previous and current commits for pushes to the default branch, and the merge base with `origin/<default branch>` plus the pushed commit for working-branch pushes. Missing commits, an unavailable default-branch ref, an all-zero default-branch predecessor, a failed merge-base, and unsupported events fail closed. |
-| Check filesystem format policy | `./scripts/check-filesystem-format-policy.py` over the resolved base and head SHAs | Fails closed if the lifecycle constant disappears; syntactically requires migration-dispatch and source/target-named preservation-test evidence for a `FORMAT_VERSION` bump (or a cited, accepted ADR carrying the exact-transition authorization marker), and makes the tracked release-boundary latch and the gate script immutable after introduction; substantive data preservation remains a review obligation |
+| Check filesystem format policy | Default-branch `scripts/check-filesystem-format-policy.py` over the resolved base and head SHAs | Loads the enforcing script from `origin/<default branch>` once present. During introduction only, if neither that ref nor the comparison base contains it, executes the checked-out head copy with an explicit bootstrap log; a base-present/default-missing mismatch fails. The policy then enforces the format-bump and immutable-latch rules; substantive preservation remains a review obligation. |
 | Check companion docs | `./scripts/check-docs.sh` | Enforces structure, exact source↔fence fidelity and the generated context manifest (the two-layer navigation model) |
 | Test companion tooling | `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` | Exercises syntax fixtures, drift/error detection, fence-only sync and reproducible packs |
 | Install Rust | `dtolnay/rust-toolchain@stable` with `clippy, rustfmt` | Installs the latest stable Rust toolchain including the Clippy linter and `rustfmt` formatter |
@@ -105,6 +105,15 @@ rebuilt from scratch.
   branch to be refined in later commits. A default-branch push is compared with its immediate
   predecessor so the immutable policy still protects direct default-branch history. A pull
   request uses the immutable base and proposed head recorded in its payload.
+- The default-branch policy copy is authoritative after bootstrap, while Python unit tests import
+  the pull request's checked-out copy to exercise proposed policy changes. This prevents a change
+  from replacing the script that judges it; the workflow remains head-controlled, and write access
+  to the default branch remains outside this protection.
+- A rerun of a working-branch push after its head has already merged can produce
+  `merge-base == head`, so the evaluated range is empty and the result is knowingly vacuous. It
+  introduces no code beyond what passed when merged.
+- Merge queues are not enabled. Enabling one first requires a `merge_group` trigger and a dedicated
+  base derivation because its synthetic merge commit has neither `before` nor a pull-request base.
 
 ## Related files
 

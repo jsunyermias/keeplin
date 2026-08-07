@@ -14,8 +14,21 @@ impl FsBackend {
     // md:impl FsBackend > fn new
     pub async fn new(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root: PathBuf = root.into();
-        let fresh = !root.join(".keeplin").join("format_version").exists()
-            && !Self::has_store_content(&root).await?;
+        let has_format_version = root.join(".keeplin").join("format_version").exists();
+        if !has_format_version {
+            if let Some(path) = Self::unexpected_fresh_store_entry(&root).await? {
+                let entry = path.strip_prefix(&root).unwrap_or(&path);
+                return Err(StorageError::InvalidState(format!(
+                    "on-disk format stamp is missing; unexpected entry {} prevents treating this \
+                     directory as a fresh store; expected version {}. Retain the untouched \
+                     directory for manual recovery, choose an empty directory for a new store, \
+                     or restore a backup already in the expected format",
+                    entry.display(),
+                    Self::FORMAT_VERSION
+                )));
+            }
+        }
+        let fresh = !has_format_version;
         Self::ensure_format_version(&root, fresh).await?;
 
         for dir in &[
@@ -186,33 +199,53 @@ impl FsBackend {
         self.root.join(".keeplin").join("format_version")
     }
 
-    // md:impl FsBackend > fn has_store_content
-    pub(super) async fn has_store_content(root: &Path) -> Result<bool, StorageError> {
-        for dir in [
+    // md:impl FsBackend > fn unexpected_fresh_store_entry
+    pub(super) async fn unexpected_fresh_store_entry(
+        root: &Path,
+    ) -> Result<Option<PathBuf>, StorageError> {
+        let allowed_root = [
             "notes",
-            "resources",
+            ".keeplin",
             "logs",
             "notebooks",
             "tags",
             "note_tags",
-            ".keeplin/offsets",
-        ] {
-            match tokio::fs::read_dir(root.join(dir)).await {
-                Ok(mut entries) => {
-                    if entries.next_entry().await?.is_some() {
-                        return Ok(true);
+        ];
+        let mut root_entries = match tokio::fs::read_dir(root).await {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        while let Some(entry) = root_entries.next_entry().await? {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !entry.file_type().await?.is_dir() || !allowed_root.contains(&name.as_ref()) {
+                return Ok(Some(entry.path()));
+            }
+            if name == ".keeplin" {
+                let mut metadata_entries = tokio::fs::read_dir(entry.path()).await?;
+                while let Some(metadata_entry) = metadata_entries.next_entry().await? {
+                    let metadata_name = metadata_entry.file_name();
+                    let metadata_type = metadata_entry.file_type().await?;
+                    if metadata_name == "device_id" && metadata_type.is_file() {
+                        continue;
+                    }
+                    if metadata_name != "offsets" || !metadata_type.is_dir() {
+                        return Ok(Some(metadata_entry.path()));
+                    }
+                    let mut offset_entries = tokio::fs::read_dir(metadata_entry.path()).await?;
+                    if let Some(offset_entry) = offset_entries.next_entry().await? {
+                        return Ok(Some(offset_entry.path()));
                     }
                 }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => return Err(err.into()),
+            } else {
+                let mut entries = tokio::fs::read_dir(entry.path()).await?;
+                if let Some(unexpected) = entries.next_entry().await? {
+                    return Ok(Some(unexpected.path()));
+                }
             }
         }
-        match tokio::fs::metadata(root.join(".keeplin/sync_state.ndjson")).await {
-            Ok(_) => return Ok(true),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err.into()),
-        }
-        Ok(false)
+        Ok(None)
     }
 
     // md:impl FsBackend > fn ensure_format_version

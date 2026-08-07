@@ -3268,7 +3268,7 @@
           {
             "basis": "authored-invariant",
             "origin": "INFERRED",
-            "value": "A format stamp always identifies an existing format; without one, only a store with no entries in known data directories is fresh."
+            "value": "A format stamp always identifies an existing format; without one, only an empty root or the exact directory/device-id outputs created by a partially completed `new` are fresh."
           },
           {
             "basis": "authored-invariant",
@@ -3287,7 +3287,7 @@
           "impl FsBackend > fn scan_sync_conflicts",
           "impl FsBackend > fn sweep_tmp_in_dir",
           "impl FsBackend > fn format_version_path",
-          "impl FsBackend > fn has_store_content",
+          "impl FsBackend > fn unexpected_fresh_store_entry",
           "impl FsBackend > fn ensure_format_version",
           "impl FsBackend > fn read_or_create_device_id"
         ]
@@ -4022,6 +4022,8 @@
         "origin": "EXTRACTED",
         "value": [
           "Overview",
+          "enum TreeEntryKind",
+          "fn snapshot_tree",
           "fn concurrent_same_note_updates_keep_every_log_entry",
           "fn read_does_not_rewrite_projection",
           "fn list_notes_pages_match_full_walk",
@@ -4040,6 +4042,7 @@
           "fn refuses_unparsable_format_stamp_without_relabelling_it",
           "fn refuses_unstamped_store_content_without_device_id",
           "fn refuses_unstamped_sync_state_without_device_id",
+          "fn refuses_unstamped_v6_sync_state_byte_identically",
           "fn refuses_to_open_a_newer_format"
         ]
       },

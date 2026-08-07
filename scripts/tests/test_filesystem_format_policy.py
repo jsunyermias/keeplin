@@ -195,6 +195,23 @@ class FilesystemFormatPolicyCheck(unittest.TestCase):
         self.write("README.md", "unrelated\n")
         self.assertEqual(self.evaluate(self.commit("retain policy")), [])
 
+    def test_ci_loads_the_enforcing_copy_from_the_default_branch(self):
+        workflow = (REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn('git show "${default_ref}:${policy_path}"', workflow)
+        self.assertIn('python3 "${policy_runner}"', workflow)
+        self.assertLess(
+            workflow.index('git show "${default_ref}:${policy_path}"'),
+            workflow.index('python3 "${policy_runner}"'),
+        )
+
+    def test_ci_bootstrap_requires_the_policy_to_be_absent_from_the_base(self):
+        workflow = (REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            'git cat-file -e "${FORMAT_POLICY_BASE}:${policy_path}"', workflow
+        )
+        self.assertIn("refusing non-bootstrap fallback", workflow)
+        self.assertIn('cp "${policy_path}" "${policy_runner}"', workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
