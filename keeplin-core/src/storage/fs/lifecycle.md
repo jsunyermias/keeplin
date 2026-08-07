@@ -42,7 +42,7 @@ constants `FORMAT_VERSION = 8`, `NOTE_LOG_COMPACT_THRESHOLD = 256`,
 `GLOBAL_LOG_COMPACT_THRESHOLD = 512`, `GLOBAL_LOG_SOFT_BYTES = 64 KiB`
 (documented with the methods that use them).
 
-**Code** — container: members documented as sub-blocks below: fn new, fn sweep_orphan_tmp_files, fn scan_sync_conflicts, fn sweep_tmp_in_dir, fn format_version_path, fn ensure_format_version, fn apply_format_migration, fn read_or_create_device_id.
+**Code** — container: members documented as sub-blocks below: fn new, fn sweep_orphan_tmp_files, fn scan_sync_conflicts, fn sweep_tmp_in_dir, fn format_version_path, fn has_store_content, fn ensure_format_version, fn read_or_create_device_id.
 
 ---
 
@@ -57,6 +57,8 @@ marker `// md:impl FsBackend > fn new`.
     // md:impl FsBackend > fn new
     pub async fn new(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root: PathBuf = root.into();
+        let fresh = !root.join(".keeplin").join("format_version").exists()
+            && !Self::has_store_content(&root).await?;
 
         for dir in &[
             "notes",
@@ -95,7 +97,7 @@ marker `// md:impl FsBackend > fn new`.
             );
         }
 
-        let (device_id, fresh) = Self::read_or_create_device_id(&root).await?;
+        let device_id = Self::read_or_create_device_id(&root).await?;
         let backend = Self {
             root,
             device_id,
@@ -112,8 +114,8 @@ marker `// md:impl FsBackend > fn new`.
 scans for Syncthing `*.sync-conflict-*` copies (reported at **error** level —
 in a single-writer-per-file store they are the signature of a replicated
 `.keeplin/` directory, i.e. two devices sharing one identity; nothing is
-deleted), loads or creates the device id, and runs `ensure_format_version`
-(`fresh` = the id was just created).
+deleted), determines format freshness from the stamp and actual store content,
+loads or creates the device id independently, and runs `ensure_format_version`.
 
 **Used by** — `main.rs::build_storage` (default mode); tests everywhere.
 
@@ -289,6 +291,55 @@ one directory, skipping Syncthing temporaries.
 
 ---
 
+### fn has_store_content
+
+**Identification** — marker `// md:impl FsBackend > fn has_store_content`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl FsBackend > fn has_store_content
+    pub(super) async fn has_store_content(root: &Path) -> Result<bool, StorageError> {
+        for dir in [
+            "notes",
+            "resources",
+            "logs",
+            "notebooks",
+            "tags",
+            "note_tags",
+            ".keeplin/offsets",
+        ] {
+            match tokio::fs::read_dir(root.join(dir)).await {
+                Ok(mut entries) => {
+                    if entries.next_entry().await?.is_some() {
+                        return Ok(true);
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
+        Ok(false)
+    }
+```
+
+**What it does** — Reports content only when a known Keeplin data directory
+contains an entry. It covers current note-scoped data, the legacy global
+`resources` pool, logs, notebooks, tags, note-tag associations, and sync
+offsets. Empty directory scaffolding does not count, including directories
+created during backend initialization. Missing directories are empty; other
+directory-read failures abort startup rather than risk classifying content as fresh.
+
+**Dependencies** —
+
+- `tokio::fs::read_dir` and `ReadDir::next_entry` — probe known data roots without modifying them; expects missing directories to be empty and other I/O failures to remain distinguishable and fatal.
+
+**Used by** — `FsBackend::new`, before it creates the standard directory tree.
+
+**Repeated context** — Format freshness is independent of device identity.
+
+---
+
 ### fn ensure_format_version
 
 **Identification** — marker `// md:impl FsBackend > fn ensure_format_version`.
@@ -306,13 +357,22 @@ one directory, skipping Syncthing temporaries.
         }
 
         let current = if path.exists() {
-            tokio::fs::read_to_string(&path)
-                .await?
-                .trim()
-                .parse::<u32>()
-                .unwrap_or(1)
+            let stamp = tokio::fs::read_to_string(&path).await?;
+            stamp.trim().parse::<u32>().map_err(|_| {
+                StorageError::InvalidState(format!(
+                    "on-disk format stamp is unparsable; expected version {}. Retain the \
+                     untouched store for manual recovery, start a new store, or restore a \
+                     backup already in the expected format",
+                    Self::FORMAT_VERSION
+                ))
+            })?
         } else {
-            1
+            return Err(StorageError::InvalidState(format!(
+                "on-disk format stamp is missing (implied version 1); expected version {}. \
+                 Retain the untouched store for manual recovery, start a new store, or restore \
+                 a backup already in the expected format",
+                Self::FORMAT_VERSION
+            )));
         };
 
         if current > Self::FORMAT_VERSION {
@@ -323,54 +383,26 @@ one directory, skipping Syncthing temporaries.
             )));
         }
 
-        for version in (current + 1)..=Self::FORMAT_VERSION {
-            self.apply_format_migration(version).await?;
-            tokio::fs::write(&path, version.to_string()).await?;
-            tracing::info!(version, "Applied filesystem format migration");
+        if current < Self::FORMAT_VERSION {
+            return Err(StorageError::InvalidState(format!(
+                "on-disk format version {current} is older than the expected version {}. Retain \
+                 the untouched store for manual recovery, start a new store, or restore a \
+                 backup already in the expected format",
+                Self::FORMAT_VERSION
+            )));
         }
 
-        tokio::fs::write(&path, Self::FORMAT_VERSION.to_string()).await?;
         Ok(())
     }
 ```
 
-**What it does** — Brings the store up to `FORMAT_VERSION` (8), stamping after
-**each** step so a crash mid-ladder resumes from the last completed step. A
-`fresh` store is stamped directly (no migration over empty data). A missing
-stamp on an existing store means format `1`; a stamp **newer** than this build
-is refused (`InvalidState`) so a downgrade cannot run against a layout it does
-not understand. A final stamp write covers the already-current case.
-
----
-
-### fn apply_format_migration
-
-**Identification** — marker
-`// md:impl FsBackend > fn apply_format_migration`.
-
-**Code** — complete and verbatim:
-
-```rust
-    // md:impl FsBackend > fn apply_format_migration
-    pub(super) async fn apply_format_migration(&self, version: u32) -> Result<(), StorageError> {
-        match version {
-            2..=8 => Ok(()),
-            other => Err(StorageError::InvalidState(format!(
-                "no filesystem migration defined for format version {other}"
-            ))),
-        }
-    }
-```
-
-**What it does** — The per-version step. Every bump so far is a clean break with
-no data transform, so v2–v8 are no-ops that only advance the stamp: v2 =
-`LogEntry` serde aliases; v3/v4 = versioned associations + resource tombstones via
-`serde(default)`; v5 = optional `EpochHeader` + `epoch:offset` cursors (a
-pre-v5 log is epoch 0, a bare-integer cursor is `(0, offset)`); v8 = attachments
-moved from the global `resources/{uuid}/` pool into
-`notes/{note_id}/resources/{hash}.knrs` (issue #127) — the old pool is simply no
-longer read, so no code migrates it. A future breaking change gets a real body
-here.
+**What it does** — Stamps a genuinely fresh store directly at `FORMAT_VERSION`
+(8). An existing store opens only when its stamp parses and equals the current
+version. A missing, unparsable, or older stamp is refused without writing it;
+the error identifies the stamp state, expected version, and the three recovery
+choices required by ADR 0016. A stamp **newer** than this build retains the
+existing downgrade refusal unchanged. No historical migration dispatcher
+remains because versions 1 through 7 have no authorized data transformation.
 
 ---
 
@@ -383,26 +415,23 @@ here.
 
 ```rust
     // md:impl FsBackend > fn read_or_create_device_id
-    pub(super) async fn read_or_create_device_id(
-        root: &Path,
-    ) -> Result<(String, bool), StorageError> {
+    pub(super) async fn read_or_create_device_id(root: &Path) -> Result<String, StorageError> {
         let path = root.join(".keeplin").join("device_id");
         if path.exists() {
             let id = tokio::fs::read_to_string(&path).await?;
-            Ok((id.trim().to_string(), false))
+            Ok(id.trim().to_string())
         } else {
             let id = new_id().to_string();
             tokio::fs::write(&path, &id).await?;
-            Ok((id, true))
+            Ok(id)
         }
     }
 ```
 
-**What it does** — Reads `.keeplin/device_id`, or generates + persists a UUID
-v4. Returns `(id, fresh)` — the file is the first thing written on init, so
-its absence reliably means "never initialised" (used to stamp new stores at
-the current format). The id names this device's log file and is the Argon2id
-salt for `EncryptedBackend`; it must stay stable.
+**What it does** — Reads `.keeplin/device_id`, or generates and persists a UUID
+v4. The id names this device's log file and is the Argon2id salt for
+`EncryptedBackend`; it must stay stable. It does not classify the filesystem
+format or decide whether the store is fresh.
 
 ---
 
@@ -427,7 +456,8 @@ Repo-tooling metadata, not a code block.
 
 - This split does not change the on-disk format; `FsBackend::FORMAT_VERSION` remains 8.
 - The public backend path remains `crate::storage::fs::FsBackend`.
-- Filesystem behavior remains unchanged.
+- A format stamp always identifies an existing format; without one, only a store with no entries in known data directories is fresh.
+- Existing filesystem formats below version 8 are refused without relabelling or migration.
 
 ---
 
@@ -443,6 +473,6 @@ Repo-tooling metadata, not a code block.
 | 5 | `fn scan_sync_conflicts` | `// md:impl FsBackend > fn scan_sync_conflicts` |
 | 6 | `fn sweep_tmp_in_dir` | `// md:impl FsBackend > fn sweep_tmp_in_dir` |
 | 7 | `fn format_version_path` | `// md:impl FsBackend > fn format_version_path` |
-| 8 | `fn ensure_format_version` | `// md:impl FsBackend > fn ensure_format_version` |
-| 9 | `fn apply_format_migration` | `// md:impl FsBackend > fn apply_format_migration` |
+| 8 | `fn has_store_content` | `// md:impl FsBackend > fn has_store_content` |
+| 9 | `fn ensure_format_version` | `// md:impl FsBackend > fn ensure_format_version` |
 | 10 | `fn read_or_create_device_id` | `// md:impl FsBackend > fn read_or_create_device_id` |

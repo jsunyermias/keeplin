@@ -9,8 +9,8 @@ content can be **encrypted at rest** with AES‑256‑GCM.
 
 > **Status:** pre‑release (`0.1.0`). The core is well-tested and solid for **single‑user /
 > self‑hosted offline** use. It is **not yet production‑ready as a multi‑user, server‑backed
-> service** — see [Project status](#project-status). Formats may still change between
-> versions without a migration path.
+> service** — see [Project status](#project-status). Pre-release filesystem formats may
+> still change; incompatible older stores are refused without being relabelled or migrated.
 
 ---
 
@@ -569,9 +569,9 @@ roughly in priority order:
    and real‑time collaborative editing by lines with the note state stored in PostgreSQL
    (covered end‑to‑end by tests driving real `DbBackend`s and by that repo's own suite).
 2. Operability: liveness/readiness probes and Prometheus metrics ship (`GET /api/health`,
-   `/api/ready`, `/api/metrics`), and both backends now carry a **versioned migration path**
-   (`DbBackend` via `PRAGMA user_version`, `FsBackend` via a stamped format ladder, each with
-   a downgrade guard).
+   `/api/ready`, `/api/metrics`), and both backends carry explicit **versioned format handling**
+   (`DbBackend` via `PRAGMA user_version`; `FsBackend` via a format stamp that currently refuses
+   older pre-release layouts under ADR 0016); both retain downgrade guards.
 3. Performance at scale: `FsBackend` note listings are served from a lazily‑built
    in‑memory metadata index (maintained on every write and sync cycle), so they no longer
    re‑merge every note's logs — only the returned page is materialized. Listings reflect

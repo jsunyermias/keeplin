@@ -26,6 +26,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Prove pull-request token cannot rewrite check runs
         if: github.event_name == 'pull_request'
@@ -88,6 +90,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Check filesystem format policy
+        env:
+          FORMAT_POLICY_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          FORMAT_POLICY_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: ./scripts/check-filesystem-format-policy.py
 
       # Contractual docs: every .rs has a companion .md and every companion
       # carries a `## Graph context` section (the two-layer navigation model).

@@ -632,6 +632,95 @@ async fn fresh_store_is_stamped_current_version() {
 
 ---
 
+## fn current_store_opens_without_rewriting_stamp
+
+**Identification** — tokio test; marker
+`// md:fn current_store_opens_without_rewriting_stamp`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn current_store_opens_without_rewriting_stamp
+#[tokio::test]
+async fn current_store_opens_without_rewriting_stamp() {
+    let dir = tempfile::tempdir().unwrap();
+    let stamp_path = {
+        let backend = FsBackend::new(dir.path()).await.unwrap();
+        backend.format_version_path()
+    };
+    let current_with_newline = format!("{}\n", FsBackend::FORMAT_VERSION);
+    tokio::fs::write(&stamp_path, current_with_newline.as_bytes())
+        .await
+        .unwrap();
+
+    FsBackend::new(dir.path()).await.unwrap();
+
+    assert_eq!(
+        tokio::fs::read(&stamp_path).await.unwrap(),
+        current_with_newline.as_bytes()
+    );
+}
+```
+
+**What it does** — Reopens a current-format store and proves the accepted stamp
+is not normalized or rewritten as a side effect.
+
+---
+
+## fn refuses_missing_format_stamp_without_creating_one
+
+**Identification** — tokio test; marker
+`// md:fn refuses_missing_format_stamp_without_creating_one`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn refuses_missing_format_stamp_without_creating_one
+#[tokio::test]
+async fn refuses_missing_format_stamp_without_creating_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let metadata_dir = dir.path().join(".keeplin");
+    let stamp_path = metadata_dir.join("format_version");
+    tokio::fs::create_dir_all(&metadata_dir).await.unwrap();
+    tokio::fs::write(metadata_dir.join("device_id"), "existing-device")
+        .await
+        .unwrap();
+    tokio::fs::create_dir_all(dir.path().join("notes/existing-note"))
+        .await
+        .unwrap();
+    tokio::fs::write(
+        dir.path().join("notes/existing-note/note.md"),
+        "existing note",
+    )
+    .await
+    .unwrap();
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening an existing store with a missing format stamp must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string().to_lowercase();
+    assert!(
+        message.contains("missing"),
+        "error must name missing stamp: {message}"
+    );
+    assert!(
+        message.contains(&FsBackend::FORMAT_VERSION.to_string()),
+        "error must name expected version: {message}"
+    );
+    assert!(message.contains("manual recovery"), "{message}");
+    assert!(message.contains("new store"), "{message}");
+    assert!(message.contains("backup"), "{message}");
+    assert!(!stamp_path.exists());
+}
+```
+
+**What it does** — Treats a device-bearing store without a format stamp as
+existing legacy data, refuses it with every required recovery choice, and
+proves no stamp is invented.
+
+---
+
 ## fn refuses_pre_v8_store_without_touching_legacy_attachment
 
 **Identification** — tokio test; marker
@@ -661,6 +750,12 @@ async fn refuses_pre_v8_store_without_touching_legacy_attachment() {
     tokio::fs::create_dir_all(stamp_path.parent().unwrap())
         .await
         .unwrap();
+    tokio::fs::write(
+        stamp_path.parent().unwrap().join("device_id"),
+        "legacy-device",
+    )
+    .await
+    .unwrap();
     tokio::fs::create_dir_all(&note_dir).await.unwrap();
     tokio::fs::create_dir_all(&resource_dir).await.unwrap();
     tokio::fs::write(&stamp_path, b"7").await.unwrap();
@@ -700,6 +795,9 @@ async fn refuses_pre_v8_store_without_touching_legacy_attachment() {
         message.contains('8'),
         "error must name version 8: {message}"
     );
+    assert!(message.contains("manual recovery"), "{message}");
+    assert!(message.contains("new store"), "{message}");
+    assert!(message.contains("backup"), "{message}");
     assert_eq!(tokio::fs::read(&stamp_path).await.unwrap(), b"7");
     assert_eq!(tokio::fs::read(&attachment_path).await.unwrap(), attachment);
 }
@@ -728,6 +826,12 @@ async fn refuses_unparsable_format_stamp_without_relabelling_it() {
     tokio::fs::create_dir_all(stamp_path.parent().unwrap())
         .await
         .unwrap();
+    tokio::fs::write(
+        stamp_path.parent().unwrap().join("device_id"),
+        "existing-device",
+    )
+    .await
+    .unwrap();
     tokio::fs::write(&stamp_path, b"not-a-version")
         .await
         .unwrap();
@@ -755,6 +859,63 @@ async fn refuses_unparsable_format_stamp_without_relabelling_it() {
 **What it does** — An unparsable format stamp must produce an explicit error
 that names the parsing failure and expected version 8, without rewriting the
 stamp as an invented legacy version.
+
+---
+
+## fn refuses_unstamped_store_content_without_device_id
+
+**Identification** — tokio test; marker
+`// md:fn refuses_unstamped_store_content_without_device_id`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn refuses_unstamped_store_content_without_device_id
+#[tokio::test]
+async fn refuses_unstamped_store_content_without_device_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let note_path = dir.path().join("notes/note-1/note.md");
+    let attachment_path = dir.path().join("resources/resource-1/data");
+    tokio::fs::create_dir_all(note_path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::create_dir_all(attachment_path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(&note_path, b"existing note")
+        .await
+        .unwrap();
+    tokio::fs::write(&attachment_path, b"existing attachment")
+        .await
+        .unwrap();
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening unstamped store content without a device id must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string().to_lowercase();
+    assert!(message.contains("missing"), "{message}");
+    assert!(!dir.path().join(".keeplin/format_version").exists());
+    assert_eq!(tokio::fs::read(&note_path).await.unwrap(), b"existing note");
+    assert_eq!(
+        tokio::fs::read(&attachment_path).await.unwrap(),
+        b"existing attachment"
+    );
+}
+```
+
+**What it does** — Builds a store containing a note and legacy attachment but
+neither a format stamp nor a device id. Opening must report the missing stamp,
+must not stamp the content as current, and must preserve both payloads.
+
+**Dependencies** —
+
+- `FsBackend::new` — exercises startup classification; expects store content, rather than device-id presence, to prevent fresh-store stamping.
+- `tokio::fs` — creates and verifies the fixture; expects reads and writes to preserve exact payload bytes.
+
+**Used by** — regression coverage for ADR 0016's no-silent-relabel invariant.
+
+**Repeated context** — Device identity and filesystem-format identity are independent.
 
 ---
 
@@ -834,6 +995,9 @@ Repo-tooling metadata, not a code block.
 | 11 | `fn attachments_live_as_content_hashed_knrs_in_their_note_folder` | `// md:fn attachments_live_as_content_hashed_knrs_in_their_note_folder` |
 | 12 | `fn identical_attachments_in_a_note_share_one_blob` | `// md:fn identical_attachments_in_a_note_share_one_blob` |
 | 13 | `fn fresh_store_is_stamped_current_version` | `// md:fn fresh_store_is_stamped_current_version` |
-| 14 | `fn refuses_pre_v8_store_without_touching_legacy_attachment` | `// md:fn refuses_pre_v8_store_without_touching_legacy_attachment` |
-| 15 | `fn refuses_unparsable_format_stamp_without_relabelling_it` | `// md:fn refuses_unparsable_format_stamp_without_relabelling_it` |
-| 16 | `fn refuses_to_open_a_newer_format` | `// md:fn refuses_to_open_a_newer_format` |
+| 14 | `fn current_store_opens_without_rewriting_stamp` | `// md:fn current_store_opens_without_rewriting_stamp` |
+| 15 | `fn refuses_missing_format_stamp_without_creating_one` | `// md:fn refuses_missing_format_stamp_without_creating_one` |
+| 16 | `fn refuses_pre_v8_store_without_touching_legacy_attachment` | `// md:fn refuses_pre_v8_store_without_touching_legacy_attachment` |
+| 17 | `fn refuses_unparsable_format_stamp_without_relabelling_it` | `// md:fn refuses_unparsable_format_stamp_without_relabelling_it` |
+| 18 | `fn refuses_unstamped_store_content_without_device_id` | `// md:fn refuses_unstamped_store_content_without_device_id` |
+| 19 | `fn refuses_to_open_a_newer_format` | `// md:fn refuses_to_open_a_newer_format` |

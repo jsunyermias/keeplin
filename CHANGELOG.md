@@ -10,6 +10,20 @@ version and the wire protocol version move independently.
 
 ## [Unreleased]
 
+### Pre-release filesystem format refusal (ADR 0016, #207)
+
+- Existing filesystem stores below format v8, or with a missing or unparsable format stamp, are
+  now refused before any stamp or payload write. The error names the found stamp state, expected
+  version, and the honest choices of retaining the untouched store for manual recovery, starting a
+  new store, or restoring a backup already in v8. Current stores still open, future-format stores
+  retain the downgrade refusal, and genuinely fresh stores are stamped v8.
+- The false v2–v8 no-op migration ladder and its success log are removed. No migration or recovery
+  tool for those pre-release layouts is implied.
+- CI now requires a future `FORMAT_VERSION` bump to visibly change the migration dispatcher and add
+  a preservation test named for its source and target versions, or cite a separately accepted ADR
+  for a bounded exception. The gate also makes `.github/keeplin-release-boundary.json` immutable
+  after its first commit and explicitly disclaims judging substantive data preservation.
+
 ### Trusted review-loop evaluation (keeplin ADR 0008)
 
 - The authoritative evaluator now runs from a default-branch `workflow_run` workflow with no

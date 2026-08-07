@@ -3268,7 +3268,12 @@
           {
             "basis": "authored-invariant",
             "origin": "INFERRED",
-            "value": "Filesystem behavior remains unchanged."
+            "value": "A format stamp always identifies an existing format; without one, only a store with no entries in known data directories is fresh."
+          },
+          {
+            "basis": "authored-invariant",
+            "origin": "INFERRED",
+            "value": "Existing filesystem formats below version 8 are refused without relabelling or migration."
           }
         ]
       },
@@ -3282,8 +3287,8 @@
           "impl FsBackend > fn scan_sync_conflicts",
           "impl FsBackend > fn sweep_tmp_in_dir",
           "impl FsBackend > fn format_version_path",
+          "impl FsBackend > fn has_store_content",
           "impl FsBackend > fn ensure_format_version",
-          "impl FsBackend > fn apply_format_migration",
           "impl FsBackend > fn read_or_create_device_id"
         ]
       },
@@ -3293,7 +3298,8 @@
       },
       "risk": {
         "basis": [
-          "format_version"
+          "format_version",
+          "migration"
         ],
         "origin": "INFERRED",
         "value": "migration"
@@ -4028,8 +4034,11 @@
           "fn attachments_live_as_content_hashed_knrs_in_their_note_folder",
           "fn identical_attachments_in_a_note_share_one_blob",
           "fn fresh_store_is_stamped_current_version",
+          "fn current_store_opens_without_rewriting_stamp",
+          "fn refuses_missing_format_stamp_without_creating_one",
           "fn refuses_pre_v8_store_without_touching_legacy_attachment",
           "fn refuses_unparsable_format_stamp_without_relabelling_it",
+          "fn refuses_unstamped_store_content_without_device_id",
           "fn refuses_to_open_a_newer_format"
         ]
       },

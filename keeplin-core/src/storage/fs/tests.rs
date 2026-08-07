@@ -428,6 +428,66 @@ async fn fresh_store_is_stamped_current_version() {
     );
 }
 
+// md:fn current_store_opens_without_rewriting_stamp
+#[tokio::test]
+async fn current_store_opens_without_rewriting_stamp() {
+    let dir = tempfile::tempdir().unwrap();
+    let stamp_path = {
+        let backend = FsBackend::new(dir.path()).await.unwrap();
+        backend.format_version_path()
+    };
+    let current_with_newline = format!("{}\n", FsBackend::FORMAT_VERSION);
+    tokio::fs::write(&stamp_path, current_with_newline.as_bytes())
+        .await
+        .unwrap();
+
+    FsBackend::new(dir.path()).await.unwrap();
+
+    assert_eq!(
+        tokio::fs::read(&stamp_path).await.unwrap(),
+        current_with_newline.as_bytes()
+    );
+}
+
+// md:fn refuses_missing_format_stamp_without_creating_one
+#[tokio::test]
+async fn refuses_missing_format_stamp_without_creating_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let metadata_dir = dir.path().join(".keeplin");
+    let stamp_path = metadata_dir.join("format_version");
+    tokio::fs::create_dir_all(&metadata_dir).await.unwrap();
+    tokio::fs::write(metadata_dir.join("device_id"), "existing-device")
+        .await
+        .unwrap();
+    tokio::fs::create_dir_all(dir.path().join("notes/existing-note"))
+        .await
+        .unwrap();
+    tokio::fs::write(
+        dir.path().join("notes/existing-note/note.md"),
+        "existing note",
+    )
+    .await
+    .unwrap();
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening an existing store with a missing format stamp must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string().to_lowercase();
+    assert!(
+        message.contains("missing"),
+        "error must name missing stamp: {message}"
+    );
+    assert!(
+        message.contains(&FsBackend::FORMAT_VERSION.to_string()),
+        "error must name expected version: {message}"
+    );
+    assert!(message.contains("manual recovery"), "{message}");
+    assert!(message.contains("new store"), "{message}");
+    assert!(message.contains("backup"), "{message}");
+    assert!(!stamp_path.exists());
+}
+
 // md:fn refuses_pre_v8_store_without_touching_legacy_attachment
 #[tokio::test]
 async fn refuses_pre_v8_store_without_touching_legacy_attachment() {
@@ -449,6 +509,12 @@ async fn refuses_pre_v8_store_without_touching_legacy_attachment() {
     tokio::fs::create_dir_all(stamp_path.parent().unwrap())
         .await
         .unwrap();
+    tokio::fs::write(
+        stamp_path.parent().unwrap().join("device_id"),
+        "legacy-device",
+    )
+    .await
+    .unwrap();
     tokio::fs::create_dir_all(&note_dir).await.unwrap();
     tokio::fs::create_dir_all(&resource_dir).await.unwrap();
     tokio::fs::write(&stamp_path, b"7").await.unwrap();
@@ -488,6 +554,9 @@ async fn refuses_pre_v8_store_without_touching_legacy_attachment() {
         message.contains('8'),
         "error must name version 8: {message}"
     );
+    assert!(message.contains("manual recovery"), "{message}");
+    assert!(message.contains("new store"), "{message}");
+    assert!(message.contains("backup"), "{message}");
     assert_eq!(tokio::fs::read(&stamp_path).await.unwrap(), b"7");
     assert_eq!(tokio::fs::read(&attachment_path).await.unwrap(), attachment);
 }
@@ -500,6 +569,12 @@ async fn refuses_unparsable_format_stamp_without_relabelling_it() {
     tokio::fs::create_dir_all(stamp_path.parent().unwrap())
         .await
         .unwrap();
+    tokio::fs::write(
+        stamp_path.parent().unwrap().join("device_id"),
+        "existing-device",
+    )
+    .await
+    .unwrap();
     tokio::fs::write(&stamp_path, b"not-a-version")
         .await
         .unwrap();
@@ -520,6 +595,39 @@ async fn refuses_unparsable_format_stamp_without_relabelling_it() {
     assert_eq!(
         tokio::fs::read(&stamp_path).await.unwrap(),
         b"not-a-version"
+    );
+}
+
+// md:fn refuses_unstamped_store_content_without_device_id
+#[tokio::test]
+async fn refuses_unstamped_store_content_without_device_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let note_path = dir.path().join("notes/note-1/note.md");
+    let attachment_path = dir.path().join("resources/resource-1/data");
+    tokio::fs::create_dir_all(note_path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::create_dir_all(attachment_path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(&note_path, b"existing note")
+        .await
+        .unwrap();
+    tokio::fs::write(&attachment_path, b"existing attachment")
+        .await
+        .unwrap();
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening unstamped store content without a device id must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string().to_lowercase();
+    assert!(message.contains("missing"), "{message}");
+    assert!(!dir.path().join(".keeplin/format_version").exists());
+    assert_eq!(tokio::fs::read(&note_path).await.unwrap(), b"existing note");
+    assert_eq!(
+        tokio::fs::read(&attachment_path).await.unwrap(),
+        b"existing attachment"
     );
 }
 

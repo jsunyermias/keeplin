@@ -14,6 +14,8 @@ impl FsBackend {
     // md:impl FsBackend > fn new
     pub async fn new(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root: PathBuf = root.into();
+        let fresh = !root.join(".keeplin").join("format_version").exists()
+            && !Self::has_store_content(&root).await?;
 
         for dir in &[
             "notes",
@@ -52,7 +54,7 @@ impl FsBackend {
             );
         }
 
-        let (device_id, fresh) = Self::read_or_create_device_id(&root).await?;
+        let device_id = Self::read_or_create_device_id(&root).await?;
         let backend = Self {
             root,
             device_id,
@@ -177,6 +179,30 @@ impl FsBackend {
         self.root.join(".keeplin").join("format_version")
     }
 
+    // md:impl FsBackend > fn has_store_content
+    pub(super) async fn has_store_content(root: &Path) -> Result<bool, StorageError> {
+        for dir in [
+            "notes",
+            "resources",
+            "logs",
+            "notebooks",
+            "tags",
+            "note_tags",
+            ".keeplin/offsets",
+        ] {
+            match tokio::fs::read_dir(root.join(dir)).await {
+                Ok(mut entries) => {
+                    if entries.next_entry().await?.is_some() {
+                        return Ok(true);
+                    }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
+        Ok(false)
+    }
+
     // md:impl FsBackend > fn ensure_format_version
     pub(super) async fn ensure_format_version(&self, fresh: bool) -> Result<(), StorageError> {
         let path = self.format_version_path();
@@ -187,13 +213,22 @@ impl FsBackend {
         }
 
         let current = if path.exists() {
-            tokio::fs::read_to_string(&path)
-                .await?
-                .trim()
-                .parse::<u32>()
-                .unwrap_or(1)
+            let stamp = tokio::fs::read_to_string(&path).await?;
+            stamp.trim().parse::<u32>().map_err(|_| {
+                StorageError::InvalidState(format!(
+                    "on-disk format stamp is unparsable; expected version {}. Retain the \
+                     untouched store for manual recovery, start a new store, or restore a \
+                     backup already in the expected format",
+                    Self::FORMAT_VERSION
+                ))
+            })?
         } else {
-            1
+            return Err(StorageError::InvalidState(format!(
+                "on-disk format stamp is missing (implied version 1); expected version {}. \
+                 Retain the untouched store for manual recovery, start a new store, or restore \
+                 a backup already in the expected format",
+                Self::FORMAT_VERSION
+            )));
         };
 
         if current > Self::FORMAT_VERSION {
@@ -204,38 +239,28 @@ impl FsBackend {
             )));
         }
 
-        for version in (current + 1)..=Self::FORMAT_VERSION {
-            self.apply_format_migration(version).await?;
-            tokio::fs::write(&path, version.to_string()).await?;
-            tracing::info!(version, "Applied filesystem format migration");
+        if current < Self::FORMAT_VERSION {
+            return Err(StorageError::InvalidState(format!(
+                "on-disk format version {current} is older than the expected version {}. Retain \
+                 the untouched store for manual recovery, start a new store, or restore a \
+                 backup already in the expected format",
+                Self::FORMAT_VERSION
+            )));
         }
 
-        tokio::fs::write(&path, Self::FORMAT_VERSION.to_string()).await?;
         Ok(())
     }
 
-    // md:impl FsBackend > fn apply_format_migration
-    pub(super) async fn apply_format_migration(&self, version: u32) -> Result<(), StorageError> {
-        match version {
-            2..=8 => Ok(()),
-            other => Err(StorageError::InvalidState(format!(
-                "no filesystem migration defined for format version {other}"
-            ))),
-        }
-    }
-
     // md:impl FsBackend > fn read_or_create_device_id
-    pub(super) async fn read_or_create_device_id(
-        root: &Path,
-    ) -> Result<(String, bool), StorageError> {
+    pub(super) async fn read_or_create_device_id(root: &Path) -> Result<String, StorageError> {
         let path = root.join(".keeplin").join("device_id");
         if path.exists() {
             let id = tokio::fs::read_to_string(&path).await?;
-            Ok((id.trim().to_string(), false))
+            Ok(id.trim().to_string())
         } else {
             let id = new_id().to_string();
             tokio::fs::write(&path, &id).await?;
-            Ok((id, true))
+            Ok(id)
         }
     }
 }

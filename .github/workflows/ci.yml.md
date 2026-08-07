@@ -36,10 +36,11 @@ Runs on `ubuntu-latest`.
 
 | Step | Action / Command | Purpose |
 |------|-----------------|---------|
-| Checkout | `actions/checkout@v4` | Clones the repository at the triggering commit |
+| Checkout | `actions/checkout@v4` with full history | Clones the repository at the triggering commit and retains the history needed to inspect format-policy changes commit by commit |
 | Prove pull-request token cannot rewrite check runs | API `GET` plus `PATCH` canary (pull requests only) | Requires a successful check-run lookup and HTTP 403 from the mutation attempt; lookup failure, missing ID, or successful mutation fails CI |
 | Check pull-request review governance | `actions/github-script@v7` (non-draft pull requests only) | Requires either an independent review with evidence, or a complete maintainer waiver whose exact PR is recorded in the changed `docs/review-debt.md` |
 | Install Python | `actions/setup-python@v5` (`3.12`) | Provides the standard-library runtime used by the deterministic companion checks |
+| Check filesystem format policy | `./scripts/check-filesystem-format-policy.py` over the event base and head SHAs | Syntactically requires migration-dispatch and source/target-named preservation-test evidence for a `FORMAT_VERSION` bump (or a cited accepted bounded-exception ADR), and makes the tracked release-boundary latch immutable; substantive data preservation remains a review obligation |
 | Check companion docs | `./scripts/check-docs.sh` | Enforces structure, exact source↔fence fidelity and the generated context manifest (the two-layer navigation model) |
 | Test companion tooling | `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` | Exercises syntax fixtures, drift/error detection, fence-only sync and reproducible packs |
 | Install Rust | `dtolnay/rust-toolchain@stable` with `clippy, rustfmt` | Installs the latest stable Rust toolchain including the Clippy linter and `rustfmt` formatter |
@@ -103,6 +104,7 @@ rebuilt from scratch.
 
 - `.github/scripts/check-review-loop.js` — the convergence and stagnation evaluator
 - `.github/scripts/check-review-governance.js` — the independent-review and waiver evaluator
+- `scripts/check-filesystem-format-policy.py` — the syntactic filesystem-format bump and immutable release-latch gate
 - `docs/adr/0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md` — accepted decision
 - `.github/workflows/review-loop-evaluator.yml` — default-branch authoritative evaluator
 - `docs/review-stalls.md` — the durable record of escalated loops
