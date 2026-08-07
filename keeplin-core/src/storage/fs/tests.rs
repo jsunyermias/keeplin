@@ -428,29 +428,99 @@ async fn fresh_store_is_stamped_current_version() {
     );
 }
 
-// md:fn migrates_a_legacy_stamp_and_preserves_data
+// md:fn refuses_pre_v8_store_without_touching_legacy_attachment
 #[tokio::test]
-async fn migrates_a_legacy_stamp_and_preserves_data() {
+async fn refuses_pre_v8_store_without_touching_legacy_attachment() {
     let dir = tempfile::tempdir().unwrap();
+    let note = Note::new("legacy", "kept");
+    let attachment = b"pre-v8 attachment bytes";
+    let resource = Resource::new(
+        note.id,
+        "legacy attachment",
+        "application/octet-stream",
+        "legacy.bin",
+        attachment.len() as u64,
+    );
+    let stamp_path = dir.path().join(".keeplin").join("format_version");
+    let note_dir = dir.path().join("notes").join(note.id.to_string());
+    let resource_dir = dir.path().join("resources").join(resource.id.to_string());
+    let attachment_path = resource_dir.join("data");
 
-    let note_id = {
-        let be = FsBackend::new(dir.path()).await.unwrap();
-        let note = be.create_note(Note::new("legacy", "kept")).await.unwrap();
-        tokio::fs::write(be.format_version_path(), "1")
-            .await
-            .unwrap();
-        note.id
-    };
-
-    let be = FsBackend::new(dir.path()).await.unwrap();
-    let stamp = tokio::fs::read_to_string(be.format_version_path())
+    tokio::fs::create_dir_all(stamp_path.parent().unwrap())
         .await
         .unwrap();
-    assert_eq!(
-        stamp.trim().parse::<u32>().unwrap(),
-        FsBackend::FORMAT_VERSION
+    tokio::fs::create_dir_all(&note_dir).await.unwrap();
+    tokio::fs::create_dir_all(&resource_dir).await.unwrap();
+    tokio::fs::write(&stamp_path, b"7").await.unwrap();
+    tokio::fs::write(note_dir.join("note.md"), note.body.as_bytes())
+        .await
+        .unwrap();
+    let mut projected_note = note.clone();
+    projected_note.body.clear();
+    let mut note_meta = serde_json::to_vec(&serde_json::json!({
+        "note": projected_note,
+        "vv": VersionVector::new(),
+    }))
+    .unwrap();
+    note_meta.push(b'\n');
+    tokio::fs::write(note_dir.join("meta.ndjson"), note_meta)
+        .await
+        .unwrap();
+    let mut resource_meta = serde_json::to_vec(&resource).unwrap();
+    resource_meta.push(b'\n');
+    tokio::fs::write(resource_dir.join("meta.ndjson"), resource_meta)
+        .await
+        .unwrap();
+    tokio::fs::write(&attachment_path, attachment)
+        .await
+        .unwrap();
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening a format 7 store must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string();
+    assert!(
+        message.contains('7'),
+        "error must name version 7: {message}"
     );
-    assert_eq!(be.read_note(note_id).await.unwrap().body, "kept");
+    assert!(
+        message.contains('8'),
+        "error must name version 8: {message}"
+    );
+    assert_eq!(tokio::fs::read(&stamp_path).await.unwrap(), b"7");
+    assert_eq!(tokio::fs::read(&attachment_path).await.unwrap(), attachment);
+}
+
+// md:fn refuses_unparsable_format_stamp_without_relabelling_it
+#[tokio::test]
+async fn refuses_unparsable_format_stamp_without_relabelling_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let stamp_path = dir.path().join(".keeplin").join("format_version");
+    tokio::fs::create_dir_all(stamp_path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(&stamp_path, b"not-a-version")
+        .await
+        .unwrap();
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening a store with an unparsable format stamp must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string();
+    assert!(
+        message.to_lowercase().contains("unparsable"),
+        "error must name the unparsable stamp: {message}"
+    );
+    assert!(
+        message.contains('8'),
+        "error must name version 8: {message}"
+    );
+    assert_eq!(
+        tokio::fs::read(&stamp_path).await.unwrap(),
+        b"not-a-version"
+    );
 }
 
 // md:fn refuses_to_open_a_newer_format

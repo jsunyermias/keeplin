@@ -4028,7 +4028,8 @@
           "fn attachments_live_as_content_hashed_knrs_in_their_note_folder",
           "fn identical_attachments_in_a_note_share_one_blob",
           "fn fresh_store_is_stamped_current_version",
-          "fn migrates_a_legacy_stamp_and_preserves_data",
+          "fn refuses_pre_v8_store_without_touching_legacy_attachment",
+          "fn refuses_unparsable_format_stamp_without_relabelling_it",
           "fn refuses_to_open_a_newer_format"
         ]
       },
