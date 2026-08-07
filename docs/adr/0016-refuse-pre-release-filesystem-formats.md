@@ -1,12 +1,12 @@
 # 0016 — Refuse pre-release filesystem formats instead of silently relabelling them
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-08-07
 - Decision owners: `jsunyermias`
 - Scope: keeplin
-- Issue: [keeplin#162](https://github.com/jsunyermias/keeplin/issues/162), pending
-  maintainer decision 1; blocks [keeplin#207](https://github.com/jsunyermias/keeplin/issues/207)
-- Acceptance PR: none yet
+- Issue: [keeplin#162](https://github.com/jsunyermias/keeplin/issues/162); unblocks
+  [keeplin#207](https://github.com/jsunyermias/keeplin/issues/207)
+- Acceptance PR: pending; link after the accepting pull request is opened
 - Supersedes: none. Narrowly amends the `FsBackend` pre-release migration policy in
   [0003](0003-versioned-persistence.md); all other decisions in 0003 remain in force
 - Superseded by: none
@@ -125,8 +125,8 @@ automatically.
 
 ## Decision and justification
 
-> `proposed`. The maintainer has ruled for Option C, but implementation remains blocked until the
-> maintainer accepts this ADR.
+The maintainer accepts Option C. [keeplin#207](https://github.com/jsunyermias/keeplin/issues/207)
+is unblocked for implementation.
 
 For `FsBackend` only, opening an existing store whose parsed or implied stamp is below
 `FsBackend::FORMAT_VERSION` must fail before performing any migration or writing the stamp. The
@@ -226,12 +226,15 @@ Implementations must verify the source store before any operator-directed conver
    authorizing a bounded exception. The check also refuses to delete or modify
    `.github/keeplin-release-boundary.json` after it first appears. This syntactic gate makes the
    required implementation and coverage mechanically visible; review still assesses whether the
-   transformation and assertions are substantively sufficient.
+   transformation and assertions are substantively sufficient. The gate lands in keeplin#207.
 9. Before acceptance, rerun `git tag -l`, query the canonical repository's GitHub releases API for
    non-draft releases and their `tag_name`, confirm the workspace version, and have the maintainer
-   reconfirm the absence of real stores.
+   reconfirm the absence of real stores. This check was rerun on 2026-08-07 at 20:13 UTC against
+   `jsunyermias/keeplin`: `git tag -l` was empty, the GitHub releases API returned an empty list
+   with no releases of any kind, the workspace version in `Cargo.toml` was `0.1.0`, and the
+   maintainer reconfirmed that no real stores exist and every store is development.
 10. Run `./scripts/check-docs.sh` for the ADR and registry change. Implementation checks belong to
-    keeplin#207 and must not be added by this proposed ADR.
+    keeplin#207 and must not be added by this acceptance recording.
 
 ## Equivalent decision in the other repository
 
