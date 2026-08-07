@@ -40,7 +40,8 @@ Runs on `ubuntu-latest`.
 | Prove pull-request token cannot rewrite check runs | API `GET` plus `PATCH` canary (pull requests only) | Requires a successful check-run lookup and HTTP 403 from the mutation attempt; lookup failure, missing ID, or successful mutation fails CI |
 | Check pull-request review governance | `actions/github-script@v7` (non-draft pull requests only) | Requires either an independent review with evidence, or a complete maintainer waiver whose exact PR is recorded in the changed `docs/review-debt.md` |
 | Install Python | `actions/setup-python@v5` (`3.12`) | Provides the standard-library runtime used by the deterministic companion checks |
-| Check filesystem format policy | `./scripts/check-filesystem-format-policy.py` over the event base and head SHAs | Fails closed if the lifecycle constant disappears; syntactically requires migration-dispatch and source/target-named preservation-test evidence for a `FORMAT_VERSION` bump (or a cited, accepted ADR carrying the exact-transition authorization marker), and makes the tracked release-boundary latch and the gate script immutable after introduction; substantive data preservation remains a review obligation |
+| Determine filesystem format policy range | Event-aware shell resolver over the checked-out full history | Uses the pull-request base and head for pull requests, the previous and current commits for pushes to the default branch, and the merge base with `origin/<default branch>` plus the pushed commit for working-branch pushes. Missing commits, an unavailable default-branch ref, an all-zero default-branch predecessor, a failed merge-base, and unsupported events fail closed. |
+| Check filesystem format policy | `./scripts/check-filesystem-format-policy.py` over the resolved base and head SHAs | Fails closed if the lifecycle constant disappears; syntactically requires migration-dispatch and source/target-named preservation-test evidence for a `FORMAT_VERSION` bump (or a cited, accepted ADR carrying the exact-transition authorization marker), and makes the tracked release-boundary latch and the gate script immutable after introduction; substantive data preservation remains a review obligation |
 | Check companion docs | `./scripts/check-docs.sh` | Enforces structure, exact source↔fence fidelity and the generated context manifest (the two-layer navigation model) |
 | Test companion tooling | `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` | Exercises syntax fixtures, drift/error detection, fence-only sync and reproducible packs |
 | Install Rust | `dtolnay/rust-toolchain@stable` with `clippy, rustfmt` | Installs the latest stable Rust toolchain including the Clippy linter and `rustfmt` formatter |
@@ -99,6 +100,11 @@ rebuilt from scratch.
 - The workflow runs tests for each crate separately (`-p keeplin-core`, `-p keeplin-daemon`,
   rather than `--workspace` because the suites are logically independent and
   this makes it easier to identify which crate a failure belongs to.
+- Filesystem-format policy ranges deliberately differ by event. A working branch is compared
+  with its merge base against the remote default branch, allowing a file introduced on that
+  branch to be refined in later commits. A default-branch push is compared with its immediate
+  predecessor so the immutable policy still protects direct default-branch history. A pull
+  request uses the immutable base and proposed head recorded in its payload.
 
 ## Related files
 
