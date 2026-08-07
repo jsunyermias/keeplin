@@ -139,12 +139,18 @@ class FilesystemFormatPolicyCheck(unittest.TestCase):
         self.write(POLICY.LATCH, '{"tag":"v0.1.0"}\n')
         self.assertEqual(self.evaluate(self.commit("add latch")), [])
 
-    def test_latch_cannot_be_modified_in_a_later_commit(self):
+    def test_latch_absent_at_base_can_be_created_then_modified(self):
         self.write(POLICY.LATCH, '{"tag":"v0.1.0"}\n')
         self.commit("add latch")
         self.write(POLICY.LATCH, '{"tag":"v0.1.1"}\n')
+        self.assertEqual(self.evaluate(self.commit("modify new latch")), [])
+
+    def test_latch_existing_at_base_cannot_be_modified(self):
+        self.write(POLICY.LATCH, '{"tag":"v0.1.0"}\n')
+        self.base = self.commit("latched base")
+        self.write(POLICY.LATCH, '{"tag":"v0.1.1"}\n')
         failures = self.evaluate(self.commit("modify latch"))
-        self.assertIn("immutable", failures[0])
+        self.assertTrue(any(POLICY.LATCH in failure for failure in failures))
 
     def test_latch_existing_at_base_cannot_be_deleted(self):
         self.write(POLICY.LATCH, '{"tag":"v0.1.0"}\n')
@@ -152,13 +158,27 @@ class FilesystemFormatPolicyCheck(unittest.TestCase):
         (self.root / POLICY.LATCH).unlink()
         self.git("add", "-u")
         failures = self.evaluate(self.commit("delete latch"))
-        self.assertIn("immutable", failures[0])
+        self.assertTrue(any(POLICY.LATCH in failure for failure in failures))
+
+    def test_latch_existing_at_base_can_remain_unchanged(self):
+        self.write(POLICY.LATCH, '{"tag":"v0.1.0"}\n')
+        self.base = self.commit("latched base")
+        self.write("README.md", "unrelated\n")
+        self.assertEqual(self.evaluate(self.commit("retain latch")), [])
 
     def test_policy_can_be_added_once(self):
         (self.root / POLICY.POLICY).unlink()
         self.base = self.commit("base without policy")
         self.write(POLICY.POLICY, "initial policy\n")
         self.assertEqual(self.evaluate(self.commit("add policy")), [])
+
+    def test_policy_absent_at_base_can_be_created_then_modified(self):
+        (self.root / POLICY.POLICY).unlink()
+        self.base = self.commit("base without policy")
+        self.write(POLICY.POLICY, "initial policy\n")
+        self.commit("add policy")
+        self.write(POLICY.POLICY, "revised policy\n")
+        self.assertEqual(self.evaluate(self.commit("modify new policy")), [])
 
     def test_policy_cannot_be_modified_in_a_later_commit(self):
         self.write(POLICY.POLICY, "changed policy\n")
@@ -170,6 +190,10 @@ class FilesystemFormatPolicyCheck(unittest.TestCase):
         self.git("add", "-u")
         failures = self.evaluate(self.commit("delete policy"))
         self.assertTrue(any(POLICY.POLICY in failure for failure in failures))
+
+    def test_policy_existing_at_base_can_remain_unchanged(self):
+        self.write("README.md", "unrelated\n")
+        self.assertEqual(self.evaluate(self.commit("retain policy")), [])
 
 
 if __name__ == "__main__":

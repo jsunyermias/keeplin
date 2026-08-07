@@ -97,27 +97,13 @@ def _accepted_exception(
 
 
 def _latch_is_immutable(root: Path, base: str, head: str) -> bool:
-    revisions = _git(root, "rev-list", "--reverse", f"{base}..{head}").splitlines()
-    for revision in revisions:
-        current = _file_at(root, revision, LATCH)
-        parents = _git(root, "show", "-s", "--format=%P", revision).split()
-        for parent in parents:
-            previous = _file_at(root, parent, LATCH)
-            if previous is not None and current != previous:
-                return False
-    return True
+    previous = _file_at(root, base, LATCH)
+    return previous is None or _file_at(root, head, LATCH) == previous
 
 
 def _policy_is_immutable(root: Path, base: str, head: str) -> bool:
-    revisions = _git(root, "rev-list", "--reverse", f"{base}..{head}").splitlines()
-    for revision in revisions:
-        current = _file_at(root, revision, POLICY)
-        parents = _git(root, "show", "-s", "--format=%P", revision).split()
-        for parent in parents:
-            previous = _file_at(root, parent, POLICY)
-            if previous is not None and current != previous:
-                return False
-    return True
+    previous = _file_at(root, base, POLICY)
+    return previous is None or _file_at(root, head, POLICY) == previous
 
 
 def evaluate(root: Path, base: str, head: str) -> list[str]:
