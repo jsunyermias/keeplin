@@ -61,6 +61,9 @@ unless the code in its area changed. See
 States: `open` · `resolved` · `dismissed` · `advisory`. An `open` finding must name a failing
 check; leave `Reified by` as `advisory` only for a finding that is not blocking.
 
+IDs are `F-` plus at least three digits and are never reused. `Round` is an integer from 1.
+`State` is exactly `open`, `resolved`, `dismissed` or `advisory`.
+
 | ID | Round | Reified by | State | Resolution |
 |---|---|---|---|---|
 
