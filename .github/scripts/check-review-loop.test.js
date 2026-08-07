@@ -545,8 +545,11 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments, option
   const github = {
     request: async () => ({ status: 200, data: [{ login: "maintainer" }], headers: {} }),
     paginate: async (endpoint, _parameters, mapPage) => {
-      if (endpoint === endpoints.associatedPulls) return [{ number: 200, state: "open", head: { sha: "ccc" } }];
-      if (endpoint === endpoints.comments) return comments;
+      if (options.paginateError && endpoint === endpoints[options.paginateError.endpoint]) {
+        throw options.paginateError.error;
+      }
+      if (endpoint === endpoints.associatedPulls) return options.associatedPulls ?? [{ number: 200, state: "open", head: { sha: "ccc" } }];
+      if (endpoint === endpoints.comments) return options.commentItems ?? comments;
       if (endpoint === endpoints.checks && options.checkPages) {
         const items = [];
         for (const page of options.checkPages) {
@@ -561,7 +564,8 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments, option
         }
         return items;
       }
-      if (endpoint === endpoints.reviews || endpoint === endpoints.checks || endpoint === endpoints.files) return [];
+      if (endpoint === endpoints.files) return options.fileItems ?? [];
+      if (endpoint === endpoints.reviews || endpoint === endpoints.checks) return [];
       if (endpoint === endpoints.jobs) return [
         { name: "Check, Test & Lint", status: "completed", conclusion: "success" },
         { name: "Knowledge graph up to date", status: "completed", conclusion: "success" },
@@ -609,13 +613,15 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments, option
     repo: { owner: "jsunyermias", repo: "keeplin" },
     payload: {
       repository: { id: 7, full_name: "jsunyermias/keeplin", default_branch: "main", owner: { login: "maintainer" } },
-      workflow_run: { id: 77, run_attempt: 1, event: "pull_request", workflow_id: 88, head_sha: "ccc" },
+      workflow_run: { id: 77, run_attempt: 1, event: "pull_request", workflow_id: options.runWorkflowId ?? 88, head_sha: "ccc" },
     },
   };
   const failures = [];
   const core = { info: () => {}, setFailed: (message) => failures.push(message) };
   const priorWorkflowId = process.env.CI_WORKFLOW_ID;
-  process.env.CI_WORKFLOW_ID = "88";
+  if (options.ciWorkflowId === undefined) process.env.CI_WORKFLOW_ID = "88";
+  else if (options.ciWorkflowId === null) delete process.env.CI_WORKFLOW_ID;
+  else process.env.CI_WORKFLOW_ID = options.ciWorkflowId;
   try {
     const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
     await new AsyncFunction("github", "context", "core", "require", trustedWorkflowScript(repositoryRoot))(github, context, core, require);
@@ -2034,6 +2040,64 @@ test("trusted workflow publishes an exact ledger parse failure without journalin
   assert.equal(outcome.reportedCheck.output.summary, parserMessage);
 });
 
+for (const invalidConfiguration of [
+  { label: "missing", value: null },
+  { label: "malformed", value: "not-a-workflow-id" },
+]) {
+  test(`trusted workflow publishes evaluation-unavailable when CI_WORKFLOW_ID is ${invalidConfiguration.label}`, async () => {
+    const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+    const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+      expectJournal: false,
+      ciWorkflowId: invalidConfiguration.value,
+    });
+
+    assert.equal(outcome.postedBody, undefined);
+    assert.deepEqual(outcome.failures, ["CI_WORKFLOW_ID repository variable is missing or malformed."]);
+    assert.equal(outcome.reportedCheck.head_sha, "ccc");
+    assert.equal(outcome.reportedCheck.conclusion, "failure");
+    assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
+    assert.equal(outcome.reportedCheck.output.summary, "CI_WORKFLOW_ID repository variable is missing or malformed.");
+  });
+}
+
+test("trusted workflow publishes evaluation-unavailable when the triggering CI workflow ID mismatches", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+    expectJournal: false,
+    runWorkflowId: 89,
+  });
+
+  assert.equal(outcome.postedBody, undefined);
+  const mismatchSummary = "The triggering CI workflow ID does not match CI_WORKFLOW_ID; the recorded repository variable may be stale.";
+  assert.deepEqual(outcome.failures, [mismatchSummary]);
+  assert.equal(outcome.reportedCheck.head_sha, "ccc");
+  assert.equal(outcome.reportedCheck.conclusion, "failure");
+  assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
+  assert.equal(outcome.reportedCheck.output.summary, mismatchSummary);
+  assert.notEqual(outcome.reportedCheck.output.summary, "CI_WORKFLOW_ID repository variable is missing or malformed.");
+});
+
+for (const malformedEvidence of [
+  { label: "associated pull requests", options: { associatedPulls: [{ number: 200, state: "open" }] }, summary: "Unable to read associated pull requests: malformed paginated item." },
+  { label: "review comments", options: { commentItems: [null] }, summary: "Unable to read review comments: malformed paginated item." },
+  { label: "changed files", options: { fileItems: [null] }, summary: "Unable to read changed files: malformed paginated item." },
+]) {
+  test(`trusted workflow publishes evaluation-unavailable for malformed ${malformedEvidence.label} items`, async () => {
+    const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+    const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+      expectJournal: false,
+      ...malformedEvidence.options,
+    });
+
+    assert.equal(outcome.postedBody, undefined);
+    assert.deepEqual(outcome.failures, [malformedEvidence.summary]);
+    assert.equal(outcome.reportedCheck.head_sha, "ccc");
+    assert.equal(outcome.reportedCheck.conclusion, "failure");
+    assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
+    assert.equal(outcome.reportedCheck.output.summary, malformedEvidence.summary);
+  });
+}
+
 test("trusted workflow publishes evaluation-unavailable when the identified pull request cannot be fetched", async () => {
   const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
   const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
@@ -2049,6 +2113,31 @@ test("trusted workflow publishes evaluation-unavailable when the identified pull
   assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
   assert.equal(outcome.reportedCheck.output.summary, "Unable to read pull request 200: transport failed");
 });
+
+for (const evidenceFailure of [
+  { endpoint: "associatedPulls", label: "associated pull requests", summary: "Unable to read associated pull requests: transport failed" },
+  { endpoint: "comments", label: "review comments", summary: "Unable to read review comments: transport failed" },
+  { endpoint: "reviews", label: "pull request reviews", summary: "Unable to read pull request reviews: transport failed" },
+  { endpoint: "jobs", label: "workflow jobs", summary: "Unable to read workflow jobs: transport failed" },
+  { endpoint: "checks", label: "check runs", summary: "Unable to read check runs: transport failed" },
+  { endpoint: "files", label: "changed files", summary: "Unable to read changed files: transport failed" },
+]) {
+  test(`trusted workflow publishes evaluation-unavailable when it cannot read ${evidenceFailure.label}`, async () => {
+    const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+    const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+      expectJournal: false,
+      paginateError: { endpoint: evidenceFailure.endpoint, error: new Error("transport failed") },
+    });
+
+    assert.equal(outcome.postedBody, undefined);
+    assert.deepEqual(outcome.failures, [evidenceFailure.summary]);
+    assert.equal(outcome.reportedCheck.name, "Review loop converged");
+    assert.equal(outcome.reportedCheck.head_sha, "ccc");
+    assert.equal(outcome.reportedCheck.conclusion, "failure");
+    assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
+    assert.equal(outcome.reportedCheck.output.summary, evidenceFailure.summary);
+  });
+}
 
 test("normal blocking evaluation still appends, reports failure and fails the workflow", async () => {
   const calls = { appended: 0, conclusions: [], failures: [] };
