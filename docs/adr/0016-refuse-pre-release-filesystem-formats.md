@@ -4,7 +4,8 @@
 - Date: 2026-08-07
 - Decision owners: `jsunyermias`
 - Scope: keeplin
-- Issue: [keeplin#162](https://github.com/jsunyermias/keeplin/issues/162); unblocks
+- Issue: [keeplin#162](https://github.com/jsunyermias/keeplin/issues/162); resolves maintainer
+  decision 1; unblocks
   [keeplin#207](https://github.com/jsunyermias/keeplin/issues/207)
 - Acceptance PR: [keeplin#228](https://github.com/jsunyermias/keeplin/pull/228)
 - Supersedes: none. Narrowly amends the `FsBackend` pre-release migration policy in
@@ -226,7 +227,8 @@ Implementations must verify the source store before any operator-directed conver
    authorizing a bounded exception. The check also refuses to delete or modify
    `.github/keeplin-release-boundary.json` after it first appears. This syntactic gate makes the
    required implementation and coverage mechanically visible; review still assesses whether the
-   transformation and assertions are substantively sufficient. The gate lands in keeplin#207.
+   transformation and assertions are substantively sufficient. The gate lands in keeplin#207 per
+   [the scope decision recorded there](https://github.com/jsunyermias/keeplin/issues/207#issuecomment-5221690506).
 9. Before acceptance, rerun `git tag -l`, query the canonical repository's GitHub releases API for
    non-draft releases and their `tag_name`, confirm the workspace version, and have the maintainer
    reconfirm the absence of real stores. This check was rerun on 2026-08-07 at 20:13 UTC against
