@@ -578,13 +578,16 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments, option
         listPullRequestsAssociatedWithCommit: endpoints.associatedPulls,
       },
       pulls: {
-        get: async () => ({ data: {
-          number: 200,
-          body: pullBody,
-          user: { login: "author" },
-          head: { sha: "ccc", repo: { id: options.headRepositoryId ?? 7 } },
-          base: { repo: { id: 7 } },
-        } }),
+        get: async () => {
+          if (options.pullGetError) throw options.pullGetError;
+          return { data: {
+            number: 200,
+            body: pullBody,
+            user: { login: "author" },
+            head: { sha: "ccc", repo: { id: options.headRepositoryId ?? 7 } },
+            base: { repo: { id: 7 } },
+          } };
+        },
         listReviews: endpoints.reviews,
         listFiles: endpoints.files,
       },
@@ -1381,7 +1384,7 @@ test("reopened_finding_accepts_fresh_authorization_for_new_disposition", () => {
   const first = makeJournalRecord({ ...TRUST, observation: 1, headSha: "aaa", stateHash: "one", blocking: 0, findingIds: ["F-905"], findings: [dismissed] });
   const second = makeJournalRecord({ ...TRUST, observation: 2, headSha: "bbb", stateHash: "two", blocking: 1, priorDigest: first.digest, findingIds: ["F-905"], findings: [{ id: "F-905", reified: true, state: "open" }] });
   const resolvedBody = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-905", state: "resolved", reason: "reopened defect now passes" })} -->`;
-  const resolved = { id: "F-905", reified: true, state: "resolved", evidence: { referenceId: 906, author: "maintainer", bodyDigest: sha256(resolvedBody), checkRunId: 6, checkName: "Check, Test & Lint" } };
+  const resolved = { id: "F-905", reified: true, state: "resolved", evidence: { referenceId: 906, author: "maintainer", bodyDigest: sha256(resolvedBody), checkName: "Check, Test & Lint" } };
   const reference = { id: 906, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "MEMBER", created_at: "2026-08-03T00:03:00Z", body: resolvedBody };
   const check = { id: 6, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
   const result = trusted({
@@ -1672,7 +1675,7 @@ test("unknown_principal_enumeration_refuses_the_authorizing_transition_product",
           let result;
           let rejection;
           if (transition.state === "resolved") {
-            result = trusted({ pull: explicitPull, findings: [{ id: ids.resolved, reified: true, state: "resolved", evidence: { ...authorization.evidence, checkRunId: 31, checkName: "Check, Test & Lint" } }], references: [authorization.reference], checks: [validResolutionCheck], principalEnumeration });
+            result = trusted({ pull: explicitPull, findings: [{ id: ids.resolved, reified: true, state: "resolved", evidence: { ...authorization.evidence, checkName: "Check, Test & Lint" } }], references: [authorization.reference], checks: [validResolutionCheck], principalEnumeration });
             rejection = result.projectedFindings[0];
           } else if (transition.state === "dismissed") {
             result = trusted({ pull: explicitPull, findings: [{ id: ids.dismissed, reified: true, state: "dismissed", evidence: authorization.evidence }], references: [authorization.reference], principalEnumeration });
@@ -1766,15 +1769,50 @@ test("prior_reified_finding_cannot_be_reclassified_advisory_without_verified_aut
   assert.match(result.projectedFindings[0].disposalError, /authorization/);
 });
 
-test("resolved evidence is bound to current head, named job, workflow and App", () => {
+test("resolved evidence derives one successful required check from the evaluated run", () => {
   const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-013", state: "resolved", reason: "test passes" })} -->`;
   const reference = { id: 92, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
-  const finding = { id: "F-013", reified: true, state: "resolved", evidence: { referenceId: 92, author: "maintainer", bodyDigest: sha256(body), checkRunId: 5, checkName: "Check, Test & Lint" } };
+  const finding = { id: "F-013", reified: true, state: "resolved", evidence: { referenceId: 92, author: "maintainer", bodyDigest: sha256(body), checkName: "Check, Test & Lint" } };
   const check = { id: 5, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
   assert.equal(trusted({ findings: [finding], references: [reference], checks: [check] }).state, "converged");
-  for (const mutation of [{ head_sha: "old" }, { workflow_id: 99 }, { workflow_run_id: 66 }, { app_id: 1 }, { conclusion: "neutral" }]) {
+  for (const mutation of [{ status: "in_progress" }, { head_sha: "old" }, { workflow_id: 99 }, { workflow_run_id: 66 }, { app_slug: "other-app" }, { app_id: 1 }, { conclusion: "neutral" }]) {
     assert.equal(trusted({ findings: [finding], references: [reference], checks: [{ ...check, ...mutation }] }).projectedFindings[0].state, "open");
   }
+});
+
+test("resolved evidence fails explicitly when the evaluated run has zero or multiple named checks", () => {
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-016", state: "resolved", reason: "test passes" })} -->`;
+  const finding = { id: "F-016", reified: true, state: "resolved", evidence: { referenceId: 95, author: "maintainer", bodyDigest: sha256(body), checkName: "Check, Test & Lint" } };
+  const reference = { id: 95, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
+  const check = { id: 15, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
+
+  const absent = trusted({ findings: [finding], references: [reference], checks: [] });
+  assert.equal(absent.projectedFindings[0].state, "open");
+  assert.match(absent.projectedFindings[0].disposalError, /absent from the evaluated workflow run/i);
+
+  const duplicate = trusted({ findings: [finding], references: [reference], checks: [check, { ...check, id: 16 }] });
+  assert.equal(duplicate.projectedFindings[0].state, "open");
+  assert.match(duplicate.projectedFindings[0].disposalError, /ambiguous within the evaluated workflow run/i);
+});
+
+test("resolved evidence rejects a successful non-required check from the evaluated run", () => {
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-018", state: "resolved", reason: "test passes" })} -->`;
+  const finding = { id: "F-018", reified: true, state: "resolved", evidence: { referenceId: 97, author: "maintainer", bodyDigest: sha256(body), checkName: "Untrusted Helper" } };
+  const reference = { id: 97, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
+  const check = { id: 18, name: "Untrusted Helper", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
+
+  const result = trusted({ findings: [finding], references: [reference], checks: [check] });
+  assert.notEqual(result.state, "converged");
+  assert.equal(result.projectedFindings[0].state, "open");
+  assert.match(result.projectedFindings[0].disposalError, /not an explicitly required job/i);
+});
+
+test("legacy checkRunId is ignored while the evaluator derives current-run proof", () => {
+  const body = `${DIRECTIVE_MARKER}${JSON.stringify({ finding: "F-017", state: "resolved", reason: "test passes" })} -->`;
+  const finding = { id: "F-017", reified: true, state: "resolved", evidence: { referenceId: 96, author: "maintainer", bodyDigest: sha256(body), checkRunId: 999, checkName: "Check, Test & Lint" } };
+  const reference = { id: 96, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
+  const check = { id: 17, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
+  assert.equal(trusted({ findings: [finding], references: [reference], checks: [check] }).state, "converged");
 });
 
 test("unchanged_resolved_disposition_uses_current_run_resolution_proof", () => {
@@ -1782,7 +1820,7 @@ test("unchanged_resolved_disposition_uses_current_run_resolution_proof", () => {
   const authorization = { referenceId: 920, author: "maintainer", bodyDigest: sha256(body) };
   const recorded = { id: "F-913", reified: true, state: "resolved", evidence: { ...authorization, checkRunId: 7, checkName: "Check, Test & Lint" } };
   const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "ccc", stateHash: "one", blocking: 0, findingIds: [recorded.id], findings: [recorded] });
-  const current = { ...recorded, evidence: { ...authorization, checkRunId: 8, checkName: "Check, Test & Lint" } };
+  const current = { ...recorded, evidence: { ...authorization, checkName: "Check, Test & Lint" } };
   const reference = { id: 920, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
   const priorCheck = { id: 7, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
   const currentCheck = { ...priorCheck, id: 8, workflow_run_id: 78 };
@@ -1793,7 +1831,7 @@ test("unchanged_resolved_disposition_uses_current_run_resolution_proof", () => {
 
   assert.equal(result.ok, true, result.message);
   assert.equal(result.projectedFindings[0].state, "resolved");
-  assert.equal(result.projectedFindings[0].evidence.checkRunId, 8);
+  assert.equal(result.projectedFindings[0].evidence.checkRunId, undefined);
 });
 
 test("unchanged_resolved_disposition_keeps_recorded_authorization_with_current_proof", () => {
@@ -1801,7 +1839,7 @@ test("unchanged_resolved_disposition_keeps_recorded_authorization_with_current_p
   const authorization = { referenceId: 922, author: "maintainer", bodyDigest: sha256(body) };
   const recorded = { id: "F-915", reified: true, state: "resolved", evidence: { ...authorization, checkRunId: 11, checkName: "Check, Test & Lint" } };
   const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "ccc", stateHash: "one", blocking: 0, findingIds: [recorded.id], findings: [recorded] });
-  const current = { ...recorded, evidence: { referenceId: 999, author: "replacement", bodyDigest: "replacement", checkRunId: 12, checkName: "Check, Test & Lint" } };
+  const current = { ...recorded, evidence: { referenceId: 999, author: "replacement", bodyDigest: "replacement", checkName: "Check, Test & Lint" } };
   const reference = { id: 922, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
   const priorCheck = { id: 11, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
   const currentCheck = { ...priorCheck, id: 12, workflow_run_id: 78 };
@@ -1811,7 +1849,7 @@ test("unchanged_resolved_disposition_keeps_recorded_authorization_with_current_p
   });
 
   assert.equal(result.ok, true, result.message);
-  assert.deepEqual(result.projectedFindings[0].evidence, { ...authorization, checkRunId: 12, checkName: "Check, Test & Lint" });
+  assert.deepEqual(result.projectedFindings[0].evidence, { ...authorization, checkName: "Check, Test & Lint" });
 });
 
 test("unchanged_resolved_disposition_rejects_current_failed_resolution_proof", () => {
@@ -1819,10 +1857,10 @@ test("unchanged_resolved_disposition_rejects_current_failed_resolution_proof", (
   const authorization = { referenceId: 921, author: "maintainer", bodyDigest: sha256(body) };
   const recorded = { id: "F-914", reified: true, state: "resolved", evidence: { ...authorization, checkRunId: 9, checkName: "Check, Test & Lint" } };
   const record = makeJournalRecord({ ...TRUST, observation: 1, headSha: "ccc", stateHash: "one", blocking: 0, findingIds: [recorded.id], findings: [recorded] });
-  const current = { ...recorded, evidence: { ...authorization, checkRunId: 10, checkName: "Check, Test & Lint" } };
+  const current = { ...recorded, evidence: { ...authorization, checkName: "Check, Test & Lint" } };
   const reference = { id: 921, kind: "comment", repositoryId: 7, pullNumber: 200, user: { login: "maintainer" }, author_association: "OWNER", body };
-  const priorCheck = { id: 9, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 77, app_slug: "github-actions", app_id: 15368 };
-  const failedCurrentCheck = { ...priorCheck, id: 10, conclusion: "failure" };
+  const priorCheck = { id: 9, name: "Check, Test & Lint", status: "completed", conclusion: "success", head_sha: "ccc", workflow_id: 88, workflow_run_id: 76, app_slug: "github-actions", app_id: 15368 };
+  const failedCurrentCheck = { ...priorCheck, id: 10, workflow_run_id: 77, conclusion: "failure" };
   const result = trusted({
     journalComments: [journalComment(record, TRUST)], findings: [current], references: [reference],
     checks: [priorCheck, failedCurrentCheck],
@@ -1882,7 +1920,7 @@ test("trusted_adapter_fails_closed_on_malformed_job_or_check_pagination_evidence
 test("trusted_adapter_fails_closed_on_malformed_metadata_or_check_lookup", () => {
   const workflow = fs.readFileSync(".github/workflows/review-loop-evaluator.yml", "utf8");
   assert.match(workflow, /Malformed trusted review-loop metadata/);
-  assert.match(workflow, /Unable to verify workflow identity for check run/);
+  assert.match(workflow, /Unable to verify workflow identity for a resolution check in the evaluated run/);
 });
 
 test("invalid_tombstone_identifier_is_refused_without_echoing_a_journal_marker", () => {
@@ -1981,6 +2019,36 @@ for (const refusal of [
     assert.equal(outcome.reportedCheck.output.summary, refusal.reason);
   });
 }
+
+test("trusted workflow publishes an exact ledger parse failure without journaling", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const parserMessage = "Review ledger: 'finding-1' is not a stable finding ID beginning with F- followed by at least three digits.";
+  const body = ledger(["| finding-1 | 1 | advisory | advisory | naming |"], []);
+  const outcome = await executeTrustedWorkflow(repositoryRoot, body, [], { expectJournal: false });
+
+  assert.equal(outcome.postedBody, undefined);
+  assert.deepEqual(outcome.failures, [parserMessage]);
+  assert.equal(outcome.reportedCheck.name, "Review loop converged");
+  assert.equal(outcome.reportedCheck.conclusion, "failure");
+  assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
+  assert.equal(outcome.reportedCheck.output.summary, parserMessage);
+});
+
+test("trusted workflow publishes evaluation-unavailable when the identified pull request cannot be fetched", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+    expectJournal: false,
+    pullGetError: new Error("transport failed"),
+  });
+
+  assert.equal(outcome.postedBody, undefined);
+  assert.deepEqual(outcome.failures, ["Unable to read pull request 200: transport failed"]);
+  assert.equal(outcome.reportedCheck.name, "Review loop converged");
+  assert.equal(outcome.reportedCheck.head_sha, "ccc");
+  assert.equal(outcome.reportedCheck.conclusion, "failure");
+  assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
+  assert.equal(outcome.reportedCheck.output.summary, "Unable to read pull request 200: transport failed");
+});
 
 test("normal blocking evaluation still appends, reports failure and fails the workflow", async () => {
   const calls = { appended: 0, conclusions: [], failures: [] };

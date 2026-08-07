@@ -37,7 +37,11 @@ malformed API evidence, so the adapter fails explicitly instead of treating the 
 as an empty green result. Workflow-run identity lookup failures are represented as unverifiable
 evidence and explicitly fail when the affected check is cited for resolution, rather than
 aborting the adapter with an uncaught exception. A present but malformed trusted-metadata marker
-also fails explicitly; absence alone retains the empty-metadata default.
+also fails explicitly; absence alone retains the empty-metadata default. Once a unique open pull
+request is identified, malformed pagination or item evidence, ledger syntax, trusted metadata,
+the identified pull request fetch, and cited-check workflow identity are report-only evaluation refusals: each creates a failing
+`Review loop converged` check with the exact refusal as its summary before failing the workflow,
+and none appends a journal observation.
 The evaluator's journal helper escapes HTML comment delimiters inside serialized record fields
 without changing their decoded values and neutralizes marker text in the appended human-readable
 message, so pull-request data cannot terminate the payload comment or create a second parseable
@@ -74,8 +78,9 @@ default branch and the candidate stall record from the pull-request head. `issue
 authorizes the issue-comment API used for the digest-chained journal, while
 `pull-requests: write` is also required because that API call targets a pull request; the latter
 also covers reading pull-request metadata, files and reviews. No other permission is granted.
-`publishEvaluation` owns the journal eligibility decision: `history-unverifiable` and
-`fork-refused` append no journal comment because their history cannot be trusted, but each still
+`publishEvaluation` owns the journal eligibility decision: `history-unverifiable`,
+`fork-refused` and `evaluation-unavailable` append no journal comment because their input cannot
+be trusted or evaluated, but each still
 creates a failing `Review loop converged` check whose summary is the evaluator's actual reason
 before failing the workflow. Every other result must journal unless that workflow run attempt is
 already recorded. Forks deliberately fail closed because the policy refuses partial evidence.
@@ -110,3 +115,7 @@ files byte-identically. Each repository configures its own numeric `CI_WORKFLOW_
 that value is deliberately not embedded in either workflow file. Only the server's unprivileged
 CI workflow may differ in Rust/PostgreSQL setup; the trigger name `CI`, required job names,
 permissions, action pin, schema and evaluator logic must remain identical.
+The pull-request templates deliberately differ in one phrase: Keeplin qualifies the four ordinary
+`State` values with “In the ledger table” so they cannot be mistaken for the separate round-log
+states. This wording difference does not change the identical evaluator result required by ADR
+0006.

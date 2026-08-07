@@ -128,9 +128,12 @@ function verifyAuthorization({ finding, reference, pullAuthor, targetState, repo
 
 function verifyResolvedCheck({ finding, checks, headSha, config }) {
   const evidence = finding.evidence || {};
-  const check = (checks || []).find((candidate) => String(candidate.id) === String(evidence.checkRunId));
-  if (!check) return { ok: false, reason: "resolution check is unreachable" };
-  if (!REQUIRED_JOBS.includes(evidence.checkName) || check.name !== evidence.checkName || check.status !== "completed" || check.conclusion !== "success") return { ok: false, reason: "resolution check is not an explicitly required successful job" };
+  if (!REQUIRED_JOBS.includes(evidence.checkName)) return { ok: false, reason: "resolution check name is not an explicitly required job" };
+  const matches = (checks || []).filter((candidate) => candidate.name === evidence.checkName && candidate.workflow_run_id === config.runId);
+  if (matches.length === 0) return { ok: false, reason: "resolution check is absent from the evaluated workflow run" };
+  if (matches.length > 1) return { ok: false, reason: "resolution check is ambiguous within the evaluated workflow run" };
+  const [check] = matches;
+  if (check.status !== "completed" || check.conclusion !== "success") return { ok: false, reason: "resolution check is not an explicitly required successful job" };
   if (check.head_sha !== headSha || check.workflow_id !== config.workflowId || check.workflow_run_id !== config.runId || check.app_slug !== config.appSlug || check.app_id !== config.appId) return { ok: false, reason: "resolution check is not bound to this head, workflow and App" };
   return { ok: true };
 }
@@ -451,7 +454,7 @@ function journalComment(record, identity, message = "") {
 }
 
 async function publishEvaluation({ result, alreadyRecorded, appendJournal, reportCheck, setFailed, info }) {
-  const reportOnly = ["history-unverifiable", "fork-refused"].includes(result.state);
+  const reportOnly = ["history-unverifiable", "fork-refused", "evaluation-unavailable"].includes(result.state);
   const appendRequired = !reportOnly && !alreadyRecorded;
   if (appendRequired && typeof appendJournal !== "function") throw new Error(`Evaluation state ${result.state} requires a journal writer.`);
   if (appendRequired) await appendJournal();
@@ -552,7 +555,7 @@ function parseFindings(section) {
     if (!id) continue;
 
     if (!FINDING_ID.test(id)) {
-      return { error: `Review ledger: '${id}' is not a stable finding ID of the form F-001.` };
+      return { error: `Review ledger: '${id}' is not a stable finding ID beginning with F- followed by at least three digits.` };
     }
     if (seen.has(id)) {
       return { error: `Review ledger: finding ID ${id} appears more than once.` };
