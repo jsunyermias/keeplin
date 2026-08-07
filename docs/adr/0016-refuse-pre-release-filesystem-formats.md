@@ -43,9 +43,9 @@ changelog and ADR together would also have exposed the contradiction before merg
 ### Verified release boundary
 
 On 2026-08-07, `git tag -l` returned no tags and the workspace package version in `Cargo.toml` was
-`0.1.0`. The GitHub releases API was also reported to return an empty list; the attempt to repeat
-that API check from this environment could not reach the repository endpoint, so acceptance must
-rerun it. The maintainer states that no real stores exist and all stores are development data.
+`0.1.0`. On the same date, the independent reviewer queried the GitHub releases API for
+`jsunyermias/keeplin` and received an empty list. Acceptance must rerun that API check. The
+maintainer states that no real stores exist and all stores are development data.
 The repository facts are independently reproducible; the absence of real stores is an explicit
 maintainer assertion, not something the tree can prove. Together they are the factual basis for a
 pre-release clean break rather than a general licence to abandon user data.
@@ -60,7 +60,7 @@ a change to one version by guesswork.
 
 | Transition | Repository evidence | On-disk effect | Would a populated store need data transformation? |
 |---|---|---|---|
-| v1 → v2 | The v5 source says `LogEntry` gained `serde(alias = "note_id")` and defaults so old logs remained readable. The bump commit is absent from this grafted clone. | Serialized log fields evolved while readers retained the old names and missing-field defaults. | No indication of a required transformation: the surviving source expressly describes old logs as parse-compatible. |
+| v1 → v2 | The v5 source says `LogEntry` gained `serde(alias = "note_id")` and defaults so old logs remained readable. The assignment of that change to v2 is inferred from this surviving v5 inventory; the bump commit is absent from this grafted clone. | Serialized log fields evolved while readers retained the old names and missing-field defaults. | No indication of a required transformation: the surviving source expressly describes old logs as parse-compatible. |
 | v2 → v3 | The v5 source groups v3 and v4 as introducing versioned note/tag associations and resource tombstones, read through defaults on old records. It does not say which change belongs to which version, and the bump commits are absent. | One of v3/v4 changed empty association markers into versioned records; the other added resource tombstone fields. The surviving history does not identify the assignment. | No indication of a required transformation for either transition: empty or older records were deliberately interpreted through defaults. The precise v3 assignment is unknown. |
 | v3 → v4 | Same surviving v3/v4 statement as above; no individual bump commit is present. | The other of the association-state and resource-tombstone changes. | No indication of a required transformation; the precise v4 assignment is unknown. |
 | v4 → v5 | The v5 source says compacted global logs gained an optional `EpochHeader`, while offset cursors gained an `epoch:offset` form; headerless logs and bare offsets are interpreted as epoch 0. | New writes may carry an epoch header and two-part cursor, without invalidating the earlier forms. | No. The readers explicitly preserve the old representation as epoch 0. |
@@ -130,9 +130,11 @@ automatically.
 
 For `FsBackend` only, opening an existing store whose parsed or implied stamp is below
 `FsBackend::FORMAT_VERSION` must fail before performing any migration or writing the stamp. The
-error must name the version found, the version expected, and actionable choices: open the store
-with a compatible older build to export or recover it, start with a new store, or retain a backup
-for a future migration tool. The exact wording may evolve, but those three facts are invariant.
+error must name the version found, or the fact that the stamp is missing or unparsable; name the
+version expected; and state the honest choices: retain the untouched store for manual recovery,
+start with a new store, or restore a backup already in the expected format. The exact wording may
+evolve, but those three facts are invariant. This decision identifies no compatible older build
+and guarantees no export or recovery tool.
 
 The `2..=8 => Ok(())` migration arm must not survive in any form. No older version may be silently
 relabelled current, and no `Applied filesystem format migration` event may be emitted when no
@@ -146,12 +148,20 @@ instead. It does not change 0003 for SQLite, PostgreSQL, backups, downgrade refu
 contracts, or any other persistent format. It does not erase 0003's data-preservation rule; after
 expiry that rule governs every new filesystem format bump again.
 
-**Mechanical expiry.** The exception expires when the repository first has both (a) a git tag and
-(b) a published release artifact associated with that tag. This is checked from `git tag -l` and
-the GitHub releases API's published release and asset records. Beginning with the next
-`FORMAT_VERSION` change after that observable event, keeplin#153 and ADR 0003 require a real,
-data-preserving migration step and coverage. The expiry is prospective, not retroactive: it does
-not create migrations for v1 through v8 or make those layouts supported.
+**Mechanical expiry.** The exception expires when the canonical repository,
+`jsunyermias/keeplin`, first has both (a) a git tag and (b) a non-draft GitHub release whose
+`tag_name` is that tag. A published prerelease fires the boundary. The release itself, including
+GitHub's automatic source archives, is sufficient; uploaded asset records are not required. The
+observation is checked from `git tag -l` and the canonical repository's GitHub releases API. The
+first observation creates `.github/keeplin-release-boundary.json`, recording the tag and canonical
+release URL. That repository-tracked latch is immutable once committed: deletion or later removal
+of the tag or release does not clear it. A tag or release that exists only in a fork is irrelevant.
+
+Beginning with the next `FORMAT_VERSION` change after the latch is set, keeplin#153 and ADR 0003
+require a real, data-preserving migration step and populated-data preservation coverage. Before
+the latch is set, every later `FORMAT_VERSION` bump likewise requires either that migration and
+coverage or a separately accepted ADR defining a bounded exception. The expiry is prospective,
+not retroactive: it does not create migrations for v1 through v8 or make those layouts supported.
 
 The v2 through v7 transitions remain investigated and documented even though the refusal means
 they cannot execute. Once a published release exists, later format evolution will need real
@@ -162,8 +172,8 @@ a release deadline.
 
 Opening a pre-v8 development store fails loudly without changing its stamp or bytes. Users cannot
 mistake a log line or updated stamp for successful preservation. Old bytes remain available for
-manual export, a compatible build, or a future one-off recovery tool; this ADR guarantees none of
-those tools exists.
+manual reading or a future one-off recovery tool. This ADR identifies no compatible older build
+and guarantees no export path or recovery tool exists.
 
 Development stores must be recreated or recovered deliberately. If the maintainer's assertion
 that no real stores exist is wrong, affected users are blocked from opening them with the current
@@ -174,10 +184,8 @@ The incomplete local provenance for v2 through v4 remains a residual risk. The i
 exactly what the surviving v5 source says and does not claim a transition assignment that the
 available history cannot prove.
 
-Follow-up implementation belongs to keeplin#207 only after acceptance. A mechanical repository
-check should then require each later `FORMAT_VERSION` bump to carry either a real migration and
-data-preservation test or an already accepted ADR defining a different boundary; after the first
-published artifact, the clean-break alternative is unavailable.
+Follow-up implementation belongs to keeplin#207 only after acceptance. After the release boundary
+is latched, the pre-release clean-break alternative is unavailable.
 
 ## Compatibility, migration, and rollback
 
@@ -190,31 +198,38 @@ read-only with respect to the format stamp and stored payloads and returns an er
 unchanged. A future-format store remains refused by the existing path.
 
 Rollback of the implementation would restore the dangerous successful no-op ladder, so it is not
-a safe operational recovery. Recovery means retaining the untouched old store and using a
-compatible older build, export path, backup copy, or future migration utility. Implementations
-must verify the source store before any operator-directed conversion.
+a safe operational recovery. Recovery means retaining the untouched old store for manual reading,
+restoring a backup already in the expected format, or using a future migration utility. This ADR
+identifies no build capable of opening each old version and establishes no export facility.
+Implementations must verify the source store before any operator-directed conversion.
 
 ## Verification plan
 
-1. A fresh root is stamped exactly `FORMAT_VERSION` and opens normally.
-2. A store already stamped `FORMAT_VERSION` opens without rewriting user data.
-3. For every old stamp from 1 through `FORMAT_VERSION - 1`, opening fails with an error containing
-   the found version, expected version, and recovery choices; the stamp and a sentinel payload are
-   byte-for-byte unchanged.
-4. A missing legacy stamp follows the same refusal path as implied version 1 and no stamp is
-   created. An unparsable stamp's behavior must be made explicit and tested rather than silently
-   treated as migrated.
-5. A stamp of `FORMAT_VERSION + 1` still fails through the existing newer-format refusal and its
-   current coverage remains green.
-6. No successful old-format path emits `Applied filesystem format migration`, and no no-op
-   migration dispatch remains.
-7. A v7 fixture containing MessagePack files and a v8-predecessor fixture containing the global
-   resource pool both fail without modifying or removing any fixture byte.
-8. A repository check couples future `FORMAT_VERSION` bumps to a real migration plus populated
-   data-preservation coverage after the mechanical release boundary.
-9. Before acceptance, rerun `git tag -l`, query the GitHub releases API for published releases and
-   assets, confirm the workspace version, and have the maintainer reconfirm the absence of real
-   stores.
+1. **Regression coverage:** a fresh root is stamped exactly `FORMAT_VERSION` and opens normally.
+2. **Regression coverage:** a store already stamped `FORMAT_VERSION` opens without rewriting user
+   data.
+3. **Decision verifier:** for every old stamp from 1 through `FORMAT_VERSION - 1`, opening fails
+   with an error containing the found version, expected version, and recovery choices; the stamp
+   and a sentinel payload are byte-for-byte unchanged.
+4. **Decision verifier:** a missing legacy stamp follows the same refusal path as implied version
+   1 and no stamp is created. An unparsable stamp has a distinct explicit refusal whose error names
+   the stamp as unparsable; it is tested and is not silently treated as migrated.
+5. **Regression coverage:** a stamp of `FORMAT_VERSION + 1` still fails through the existing
+   newer-format refusal and its current coverage remains green.
+6. **Decision verifier:** no successful old-format path emits `Applied filesystem format
+   migration`, and no no-op migration dispatch remains.
+7. **Decision verifier:** a v7 fixture containing MessagePack files and a v8-predecessor fixture
+   containing the global resource pool both fail without modifying or removing any fixture byte.
+8. **Mechanical policy gate:** a repository check inspects a `FORMAT_VERSION` change and requires
+   the same change to modify the migration dispatch and add a populated-data preservation test
+   whose test name identifies the source and target versions, or to cite a separately accepted ADR
+   authorizing a bounded exception. The check also refuses to delete or modify
+   `.github/keeplin-release-boundary.json` after it first appears. This syntactic gate makes the
+   required implementation and coverage mechanically visible; review still assesses whether the
+   transformation and assertions are substantively sufficient.
+9. Before acceptance, rerun `git tag -l`, query the canonical repository's GitHub releases API for
+   non-draft releases and their `tag_name`, confirm the workspace version, and have the maintainer
+   reconfirm the absence of real stores.
 10. Run `./scripts/check-docs.sh` for the ADR and registry change. Implementation checks belong to
     keeplin#207 and must not be added by this proposed ADR.
 

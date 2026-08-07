@@ -7,7 +7,8 @@
 - Issue: [keeplin#149](https://github.com/jsunyermias/keeplin/issues/149)
 - Acceptance PR: [keeplin#165](https://github.com/jsunyermias/keeplin/pull/165) (accepted); introduced by [keeplin#164](https://github.com/jsunyermias/keeplin/pull/164)
 - Supersedes: none
-- Superseded by: none
+- Superseded by: [0016](0016-refuse-pre-release-filesystem-formats.md) only for pre-release
+  `FsBackend` layouts until 0016's release boundary is permanently latched
 
 ## Context and problem
 
