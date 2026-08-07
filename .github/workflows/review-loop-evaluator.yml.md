@@ -9,9 +9,13 @@ pull-request content and evidence through GitHub APIs. Only a completed run whos
 `pull_request` counts as a review round; the same CI workflow's `push` runs are ignored.
 
 The repository variable `CI_WORKFLOW_ID` must contain the numeric database ID of this
-repository's `CI` workflow. The evaluator rejects a triggering run or referenced resolution
-check whose API-reported workflow ID differs from that separately configured value; it never
-copies the trigger's asserted identity onto fetched checks.
+repository's `CI` workflow. A missing or malformed value is a repository-wide configuration
+failure, so the adapter publishes `evaluation-unavailable` against the triggering run's
+`head_sha`. Because the trigger already selects the `CI` workflow by name, a triggering workflow
+ID that differs from the configured value indicates that the recorded ID is stale; the adapter
+publishes a distinct `evaluation-unavailable` result against the same SHA. A referenced resolution
+check whose API-reported workflow ID differs from the configured value is likewise refused; the
+adapter never copies the trigger's asserted identity onto fetched checks.
 
 ## Trust boundary
 
@@ -23,14 +27,18 @@ Malformed ledger data fails before evaluation. Comment and review references are
 the API request's repository and pull-request coordinates, then those coordinates are verified
 again inside the evaluator.
 
-If the associated-pull-request listing rejects before a pull request can be identified, the
-adapter reports `evaluation-unavailable` directly against the triggering run's `head_sha`. Once
-a unique open pull request is identified, rejection of the comments, reviews, jobs, check runs or
-changed-files listing reports the evidence-specific API failure against that pull request's head.
-The successful-listing case that produces anything other than one matching open pull request
-remains an informational no-op and publishes no check. Publishing is necessarily best effort: a
-rejection from the reporting `checks.create` call itself still escapes because the adapter cannot
-create a check while the checks API is unreachable.
+If the associated-pull-request listing rejects or contains a malformed item before a pull request
+can be identified, the adapter reports `evaluation-unavailable` directly against the triggering
+run's `head_sha`. Once a unique open pull request is identified, rejection of the comments,
+reviews, jobs, check runs or changed-files listing reports the evidence-specific API failure
+against that pull request's head. Malformed comment and changed-file items also report there;
+those are the two listings whose later direct property access would otherwise throw. Review items
+are object-spread into annotated reference objects before any downstream access, whose field
+reads are guarded or string-coerced, so malformed review items do not have that uncaught-throw
+path. The successful association listing that produces anything other than one matching open
+pull request remains an informational no-op and publishes no check. Publishing is necessarily
+best effort: a rejection from the reporting `checks.create` call itself still escapes because the
+adapter cannot create a check while the checks API is unreachable.
 
 Before evaluating any directive, the adapter enumerates repository collaborators with the same
 workflow `GITHUB_TOKEN`, `affiliation=all`, and explicit traversal of every `Link: rel="next"`.
@@ -40,10 +48,10 @@ disposition; it is never interpreted as zero or one principal. Owner self-author
 available only when the set contains no different login, regardless of whether the endpoint
 includes the owner itself.
 
-Job and check-run listings are paginated through Octokit's normalized page arrays. An empty page
-is legitimate and contributes no items. A non-array page or a non-object job or check-run item is
-malformed API evidence, so the adapter fails explicitly instead of treating the missing evidence
-as an empty green result. Workflow-run identity lookup failures are represented as unverifiable
+Listings are paginated through Octokit's normalized arrays. An empty listing is legitimate and
+contributes no items. A malformed associated-pull, comment, job, check-run or changed-file item is
+malformed API evidence, so the adapter fails explicitly instead of throwing or treating missing
+evidence as an empty green result. Workflow-run identity lookup failures are represented as unverifiable
 evidence and explicitly fail when the affected check is cited for resolution, rather than
 aborting the adapter with an uncaught exception. A present but malformed trusted-metadata marker
 also fails explicitly; absence alone retains the empty-metadata default. Once a unique open pull
