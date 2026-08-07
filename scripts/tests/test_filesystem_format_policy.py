@@ -4,6 +4,7 @@ import importlib.util
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -195,6 +196,25 @@ class FilesystemFormatPolicyCheck(unittest.TestCase):
         self.write("README.md", "unrelated\n")
         self.assertEqual(self.evaluate(self.commit("retain policy")), [])
 
+    def test_cli_rejects_a_non_repository_root_before_inspecting_versions(self):
+        outside = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        runner = outside / "check-filesystem-format-policy.py"
+        shutil.copy2(REPO / POLICY.POLICY, runner)
+        environment = os.environ.copy()
+        environment["FORMAT_POLICY_ROOT"] = str(outside)
+        result = subprocess.run(
+            [sys.executable, str(runner), self.base, self.base],
+            cwd=outside,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("is not a Git worktree root", result.stderr)
+        self.assertNotIn("cannot locate a decimal FORMAT_VERSION", result.stderr)
+
     def test_ci_loads_the_enforcing_copy_from_the_default_branch(self):
         workflow = (REPO / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertIn('git show "${default_ref}:${policy_path}"', workflow)
@@ -211,6 +231,7 @@ class FilesystemFormatPolicyCheck(unittest.TestCase):
         )
         self.assertIn("refusing non-bootstrap fallback", workflow)
         self.assertIn('cp "${policy_path}" "${policy_runner}"', workflow)
+        self.assertIn("FORMAT_POLICY_ROOT: ${{ github.workspace }}", workflow)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,9 @@ obligation and is stated in both success and failure output.
   `preserv` and the exact `v<source>_to_v<target>` transition.
 - If the decimal `FORMAT_VERSION` declaration cannot be found in the lifecycle module at either
   endpoint, evaluation fails closed instead of treating the constant as unchanged.
+- Before inspecting either endpoint, the checker verifies that `FORMAT_POLICY_ROOT` (or the current
+  directory when the variable is unset) is exactly a Git worktree root. A wrong root fails with a
+  repository-root diagnostic distinct from the missing-declaration diagnostic.
 - Instead of those two artifacts, the change may cite an ADR from its commit messages or added diff
   lines. The cited file must already exist as `accepted` at the comparison base and contain the
   deliberate marker `- Filesystem-format-exception: <source> -> <target>` for the exact transition;
@@ -34,11 +37,14 @@ the release-boundary latch; those are separate decisions and observations in ADR
 ```text
 ./scripts/check-filesystem-format-policy.py <base-sha> <head-sha>
 FORMAT_POLICY_BASE=<base-sha> FORMAT_POLICY_HEAD=<head-sha> ./scripts/check-filesystem-format-policy.py
+FORMAT_POLICY_ROOT=/path/to/checkout FORMAT_POLICY_BASE=<base-sha> FORMAT_POLICY_HEAD=<head-sha> /tmp/check-filesystem-format-policy.py
 ```
 
 CI supplies the pull-request base/head or push before/after SHAs after a full-history checkout.
 Once the default branch contains this file, CI copies that version to a temporary path and executes
-it, so a proposed edit cannot replace the policy judging the same change. Bootstrap is bounded:
+it with `FORMAT_POLICY_ROOT` set to the GitHub workspace, so a proposed edit cannot replace the
+policy judging the same change and the copied script does not infer its checkout from `__file__`.
+Normal checkout invocation defaults the root to the current directory. Bootstrap is bounded:
 when both the default branch and comparison base lack the file, CI executes the introducing head
 copy; a base-present/default-missing mismatch refuses fallback. Unit tests still import the
 checked-out copy to exercise proposed changes. This isolates the enforcing rule from an ordinary

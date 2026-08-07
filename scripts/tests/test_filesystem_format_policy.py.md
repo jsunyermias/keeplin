@@ -12,6 +12,9 @@ the compared history, while a file present at base must be byte-identical at hea
 modified or deleted. Structural workflow tests additionally pin both loader states: steady-state
 execution copies the policy from the default branch, while bootstrap falls back to the checked-out
 copy only after proving the comparison base lacks the policy and rejects a base-present mismatch.
+CLI coverage copies the checker outside the repository and supplies a non-repository root, proving
+root validation fails with its own diagnostic before endpoint files are inspected. The workflow
+structure test pins the explicit GitHub workspace passed to temporary policy copies.
 
 ## Dependencies
 

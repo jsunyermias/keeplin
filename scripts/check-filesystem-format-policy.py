@@ -31,6 +31,21 @@ def _git(root: Path, *arguments: str, check: bool = True) -> str:
     return result.stdout
 
 
+def _repository_root(candidate: str) -> Path:
+    root = Path(candidate).resolve()
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=root if root.is_dir() else None,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    discovered = Path(result.stdout.strip()).resolve() if result.returncode == 0 else None
+    if discovered != root:
+        raise RuntimeError(f"repository root {root} is not a Git worktree root")
+    return root
+
+
 def _file_at(root: Path, revision: str, path: str) -> str | None:
     result = subprocess.run(
         ["git", "show", f"{revision}:{path}"],
@@ -160,7 +175,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if len(arguments) not in (0, 2):
         print("usage: check-filesystem-format-policy.py [base head]", file=sys.stderr)
         return 2
-    root = Path(__file__).resolve().parents[1]
+    root_candidate = os.environ.get("FORMAT_POLICY_ROOT", os.getcwd())
     if arguments:
         base, head = arguments
     else:
@@ -170,6 +185,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("FORMAT POLICY: FORMAT_POLICY_BASE is required", file=sys.stderr)
             return 2
     try:
+        root = _repository_root(root_candidate)
         failures = evaluate(root, base, head)
     except RuntimeError as error:
         print(f"FORMAT POLICY: cannot inspect {base}..{head}: {error}", file=sys.stderr)
