@@ -6,7 +6,7 @@
 - Scope: keeplin
 - Issue: [keeplin#162](https://github.com/jsunyermias/keeplin/issues/162); unblocks
   [keeplin#207](https://github.com/jsunyermias/keeplin/issues/207)
-- Acceptance PR: pending; link after the accepting pull request is opened
+- Acceptance PR: [keeplin#228](https://github.com/jsunyermias/keeplin/pull/228)
 - Supersedes: none. Narrowly amends the `FsBackend` pre-release migration policy in
   [0003](0003-versioned-persistence.md); all other decisions in 0003 remain in force
 - Superseded by: none
