@@ -23,6 +23,15 @@ Malformed ledger data fails before evaluation. Comment and review references are
 the API request's repository and pull-request coordinates, then those coordinates are verified
 again inside the evaluator.
 
+If the associated-pull-request listing rejects before a pull request can be identified, the
+adapter reports `evaluation-unavailable` directly against the triggering run's `head_sha`. Once
+a unique open pull request is identified, rejection of the comments, reviews, jobs, check runs or
+changed-files listing reports the evidence-specific API failure against that pull request's head.
+The successful-listing case that produces anything other than one matching open pull request
+remains an informational no-op and publishes no check. Publishing is necessarily best effort: a
+rejection from the reporting `checks.create` call itself still escapes because the adapter cannot
+create a check while the checks API is unreachable.
+
 Before evaluating any directive, the adapter enumerates repository collaborators with the same
 workflow `GITHUB_TOKEN`, `affiliation=all`, and explicit traversal of every `Link: rel="next"`.
 The resulting exhaustive set is supplied to every authorization verification. Unreadable,
@@ -38,14 +47,15 @@ as an empty green result. Workflow-run identity lookup failures are represented 
 evidence and explicitly fail when the affected check is cited for resolution, rather than
 aborting the adapter with an uncaught exception. A present but malformed trusted-metadata marker
 also fails explicitly; absence alone retains the empty-metadata default. Once a unique open pull
-request is identified, the adapter converts the identified pull-request fetch failures and its
-explicit malformed-pagination, malformed-item, ledger-syntax, trusted-metadata and cited-check
-workflow-identity refusals into a failing `Review loop converged` check with the exact refusal as
-its summary before failing the workflow; none appends a journal observation. This reporting
-guarantee does not cover every exit: when commit association yields anything other than one
-matching open pull request, the adapter logs an informational no-op and publishes no check, and
-an exception thrown by any unwrapped API pagination or content fetch aborts the job before a
-result check is published.
+request is identified, malformed pagination or item evidence, ledger syntax, trusted metadata,
+the identified pull request fetch, evidence-listing rejection, and cited-check workflow identity
+are report-only evaluation refusals: each creates a failing
+`Review loop converged` check with the exact refusal as its summary before failing the workflow,
+and none appends a journal observation. This reporting guarantee does not cover every exit: when
+commit association yields anything other than one matching open pull request, the adapter logs
+an informational no-op and publishes no check; the source-loading `repos.getContent` call can
+reject before the evaluator module exists; and the reporting `checks.create` call can itself
+reject when a result check is attempted.
 The evaluator's journal helper escapes HTML comment delimiters inside serialized record fields
 without changing their decoded values and neutralizes marker text in the appended human-readable
 message, so pull-request data cannot terminate the payload comment or create a second parseable
@@ -86,9 +96,10 @@ also covers reading pull-request metadata, files and reviews. No other permissio
 `fork-refused` and `evaluation-unavailable` append no journal comment because their input cannot
 be trusted or evaluated, but each result that reaches `publishEvaluation` still creates a failing
 `Review loop converged` check whose summary is the evaluator's actual reason before failing the
-workflow. This promise does not extend to adapter exits or uncaught exceptions that occur before
-`publishEvaluation` is called. Every other result must journal unless that workflow run attempt
-is already recorded. Forks deliberately fail closed because the policy refuses partial evidence.
+workflow. This promise does not extend to the informational association no-op, source-loading
+failure before `publishEvaluation` exists, or rejection from the reporting check creation itself.
+Every other result must journal unless that workflow run attempt is already recorded. Forks
+deliberately fail closed because the policy refuses partial evidence.
 
 Workflow concurrency is grouped by pull-request number with cancellation disabled and
 `queue: max`, so delivered runs for one pull request cannot append sibling observations from the

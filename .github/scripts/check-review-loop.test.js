@@ -545,6 +545,9 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments, option
   const github = {
     request: async () => ({ status: 200, data: [{ login: "maintainer" }], headers: {} }),
     paginate: async (endpoint, _parameters, mapPage) => {
+      if (options.paginateError && endpoint === endpoints[options.paginateError.endpoint]) {
+        throw options.paginateError.error;
+      }
       if (endpoint === endpoints.associatedPulls) return [{ number: 200, state: "open", head: { sha: "ccc" } }];
       if (endpoint === endpoints.comments) return comments;
       if (endpoint === endpoints.checks && options.checkPages) {
@@ -2049,6 +2052,31 @@ test("trusted workflow publishes evaluation-unavailable when the identified pull
   assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
   assert.equal(outcome.reportedCheck.output.summary, "Unable to read pull request 200: transport failed");
 });
+
+for (const evidenceFailure of [
+  { endpoint: "associatedPulls", label: "associated pull requests", summary: "Unable to read associated pull requests: transport failed" },
+  { endpoint: "comments", label: "review comments", summary: "Unable to read review comments: transport failed" },
+  { endpoint: "reviews", label: "pull request reviews", summary: "Unable to read pull request reviews: transport failed" },
+  { endpoint: "jobs", label: "workflow jobs", summary: "Unable to read workflow jobs: transport failed" },
+  { endpoint: "checks", label: "check runs", summary: "Unable to read check runs: transport failed" },
+  { endpoint: "files", label: "changed files", summary: "Unable to read changed files: transport failed" },
+]) {
+  test(`trusted workflow publishes evaluation-unavailable when it cannot read ${evidenceFailure.label}`, async () => {
+    const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+    const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+      expectJournal: false,
+      paginateError: { endpoint: evidenceFailure.endpoint, error: new Error("transport failed") },
+    });
+
+    assert.equal(outcome.postedBody, undefined);
+    assert.deepEqual(outcome.failures, [evidenceFailure.summary]);
+    assert.equal(outcome.reportedCheck.name, "Review loop converged");
+    assert.equal(outcome.reportedCheck.head_sha, "ccc");
+    assert.equal(outcome.reportedCheck.conclusion, "failure");
+    assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
+    assert.equal(outcome.reportedCheck.output.summary, evidenceFailure.summary);
+  });
+}
 
 test("normal blocking evaluation still appends, reports failure and fails the workflow", async () => {
   const calls = { appended: 0, conclusions: [], failures: [] };
