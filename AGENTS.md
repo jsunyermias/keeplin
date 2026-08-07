@@ -220,7 +220,11 @@ comment format from evaluator code.
   with a digest-bound unauthenticated anchor, but synthetic `GENESIS` remains open and reified
   until the ordinary verified-authorization path authenticates it; only convergence is withheld.
 - Every finding is recorded in the pull request's **review ledger** with a stable ID and one
-  state: `open`, `resolved`, `dismissed` or `advisory`. A `dismissed` finding cites its reason
+  state: `open`, `resolved`, `dismissed` or `advisory`. The ID must be `F-` followed by at least
+  three digits, must not appear more than once in the ledger, and is never reused after it
+  disappears from the journal. `Round` must parse as a base-10 integer of at least 1. An invalid
+  ID must make `Review loop converged` fail and name the offending ID.
+  A `dismissed` finding cites its reason
   — a priority decision or an accepted ADR — and re-raising it does not reopen it and does not
   start a round unless the code in its area changed.
 - A finding that names a mechanical check is reified and cannot simultaneously have `advisory`
