@@ -69,18 +69,29 @@ jobs:
             }
             const open = pulls.filter((pull) => pull.state === 'open' && pull.head.sha === run.head_sha);
             if (open.length !== 1) return core.info('No unique open pull request matches the completed run; nothing was written.');
-            const publishUnavailable = async (message) => evaluator.publishEvaluation({
-              result: { ok: false, state: 'evaluation-unavailable', message },
+            const publishRefusal = async (state, message) => evaluator.publishEvaluation({
+              result: { ok: false, state, message },
               alreadyRecorded: false,
-              reportCheck: async (conclusion) => github.rest.checks.create({ owner: context.repo.owner, repo: context.repo.repo, name: 'Review loop converged', head_sha: open[0].head.sha, status: 'completed', conclusion, output: { title: 'evaluation-unavailable', summary: message } }),
+              reportCheck: async (conclusion) => github.rest.checks.create({ owner: context.repo.owner, repo: context.repo.repo, name: 'Review loop converged', head_sha: open[0].head.sha, status: 'completed', conclusion, output: { title: state, summary: message } }),
               setFailed: (failure) => core.setFailed(failure),
               info: (information) => core.info(information),
             });
+            const publishUnavailable = async (message) => publishRefusal('evaluation-unavailable', message);
             let pull;
             try {
               pull = (await github.rest.pulls.get({ owner: context.repo.owner, repo: context.repo.repo, pull_number: open[0].number })).data;
             } catch (error) {
               return publishUnavailable(`Unable to read pull request ${open[0].number}: ${error.message}`);
+            }
+            let ciWorkflow;
+            try {
+              const ci = await github.rest.repos.getContent({ owner: context.repo.owner, repo: context.repo.repo, path: '.github/workflows/ci.yml', ref: pull.head.sha });
+              ciWorkflow = Buffer.from(ci.data.content, 'base64').toString('utf8');
+            } catch (error) {
+              return publishUnavailable(`Unable to read .github/workflows/ci.yml at the pull-request head: ${error.message}`);
+            }
+            if (!evaluator.invokesFilesystemFormatPolicy(ciWorkflow)) {
+              return publishRefusal('policy-gate-removed', 'The pull-request head\'s .github/workflows/ci.yml no longer invokes scripts/check-filesystem-format-policy.py; restore that script invocation.');
             }
             const principalEnumeration = await evaluator.enumerateRepositoryPrincipals({
               request: (url) => github.request(url), owner: context.repo.owner, repo: context.repo.repo,

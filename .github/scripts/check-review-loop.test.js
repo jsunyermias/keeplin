@@ -29,6 +29,7 @@ const {
   enumerateRepositoryPrincipals,
   evaluateTrustedReviewLoop,
   journalComment,
+  invokesFilesystemFormatPolicy,
   makeJournalRecord,
   parseFindings,
   publishEvaluation,
@@ -574,11 +575,16 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments, option
     },
     rest: {
       repos: {
-        getContent: async ({ path: requestedPath }) => ({ data: { content: Buffer.from(
-          requestedPath === ".github/scripts/check-review-loop.js"
-            ? fs.readFileSync(path.join(repositoryRoot, requestedPath), "utf8")
-            : "",
-        ).toString("base64") } }),
+        getContent: async ({ path: requestedPath }) => {
+          if (requestedPath === ".github/workflows/ci.yml" && options.ciReadError) throw options.ciReadError;
+          return { data: { content: Buffer.from(
+            requestedPath === ".github/scripts/check-review-loop.js"
+              ? fs.readFileSync(path.join(repositoryRoot, requestedPath), "utf8")
+              : requestedPath === ".github/workflows/ci.yml"
+                ? options.ciContent ?? fs.readFileSync(path.join(repositoryRoot, requestedPath), "utf8")
+                : "",
+          ).toString("base64") } };
+        },
         listPullRequestsAssociatedWithCommit: endpoints.associatedPulls,
       },
       pulls: {
@@ -1964,6 +1970,16 @@ test("trusted_workflow_ignores_push_runs", () => {
   assert.match(workflow, /Only pull_request workflow runs are review rounds/);
 });
 
+test("filesystem format invocation detection survives YAML and shell reformatting", () => {
+  for (const workflow of [
+    "- run: python3 scripts/check-filesystem-format-policy.py --base HEAD^ --head HEAD\n",
+    "- run: 'python3 ./scripts/check-filesystem-format-policy.py'\n",
+    "- run: |\n    python3 \\\n+      scripts/check-filesystem-format-policy.py \\\n+      --base HEAD^\n",
+  ]) assert.equal(invokesFilesystemFormatPolicy(workflow), true, workflow);
+
+  assert.equal(invokesFilesystemFormatPolicy("- run: python3 scripts/check-filesystem-format-policy-v2.py\n"), false);
+});
+
 test("trusted_workflow_queues_pending_runs_and_documents_the_queue_bound", () => {
   const workflow = fs.readFileSync(".github/workflows/review-loop-evaluator.yml", "utf8");
   const workflowCompanion = fs.readFileSync(".github/workflows/review-loop-evaluator.yml.md", "utf8");
@@ -2112,6 +2128,38 @@ test("trusted workflow publishes evaluation-unavailable when the identified pull
   assert.equal(outcome.reportedCheck.conclusion, "failure");
   assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
   assert.equal(outcome.reportedCheck.output.summary, "Unable to read pull request 200: transport failed");
+});
+
+test("trusted workflow refuses a head CI workflow that no longer invokes the filesystem format gate", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+    expectJournal: false,
+    ciContent: "jobs:\n  test:\n    steps:\n      - run: python3 scripts/renamed-format-policy.py\n",
+  });
+
+  const summary = "The pull-request head's .github/workflows/ci.yml no longer invokes scripts/check-filesystem-format-policy.py; restore that script invocation.";
+  assert.equal(outcome.postedBody, undefined);
+  assert.deepEqual(outcome.failures, [summary]);
+  assert.equal(outcome.reportedCheck.conclusion, "failure");
+  assert.equal(outcome.reportedCheck.output.title, "policy-gate-removed");
+  assert.notEqual(outcome.reportedCheck.output.title, "evaluation-unavailable");
+  assert.equal(outcome.reportedCheck.output.summary, summary);
+});
+
+test("trusted workflow refuses an unreadable head CI workflow", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+    expectJournal: false,
+    ciReadError: new Error("transport failed"),
+  });
+
+  const summary = "Unable to read .github/workflows/ci.yml at the pull-request head: transport failed";
+  assert.equal(outcome.postedBody, undefined);
+  assert.deepEqual(outcome.failures, [summary]);
+  assert.equal(outcome.reportedCheck.conclusion, "failure");
+  assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
+  assert.notEqual(outcome.reportedCheck.output.title, "policy-gate-removed");
+  assert.equal(outcome.reportedCheck.output.summary, summary);
 });
 
 for (const evidenceFailure of [

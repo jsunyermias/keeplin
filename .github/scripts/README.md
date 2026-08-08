@@ -48,7 +48,11 @@ workflow dependency list and branch protection agree. It deliberately makes no b
 The default-branch `workflow_run` workflow is authoritative. It rejects malformed ledger
 parses and open findings without a named mechanical check. It verifies App, configured CI
 workflow, repository, pull-request and schema identity; collaborator authorization directives
-and body digests. Every directive verification consumes an exhaustive repository-collaborator
+and body digests. It also reads the head `.github/workflows/ci.yml` as data. An unreadable file
+reports `evaluation-unavailable`; a file that no longer contains the exact filesystem-format
+policy script path as a command token reports `policy-gate-removed`. Both are report-only and
+append no journal observation. Every directive verification consumes an exhaustive
+repository-collaborator
 enumeration fetched with the evaluator's existing `GITHUB_TOKEN`, `affiliation=all`, and explicit
 `Link: rel="next"` traversal. An unreadable or non-exhaustive enumeration refuses that disposition.
 The pull-request author may authorize only while no enumerated principal other than the repository
