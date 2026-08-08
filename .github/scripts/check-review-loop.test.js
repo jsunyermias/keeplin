@@ -575,6 +575,10 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments, option
     },
     rest: {
       repos: {
+        getBranch: async () => {
+          if (options.defaultBranchError) throw options.defaultBranchError;
+          return { data: { name: "main" } };
+        },
         getContent: async ({ path: requestedPath, ref }) => {
           if (requestedPath === "scripts/check-filesystem-format-policy.py") {
             if (options.policyReadError) throw options.policyReadError;
@@ -2156,6 +2160,21 @@ test("trusted workflow refuses a head CI workflow that no longer references both
   assert.equal(outcome.reportedCheck.output.summary, summary);
 });
 
+test("trusted workflow refuses a fork before probing its head policy markers", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+    expectJournal: false,
+    headRepositoryId: 8,
+    ciContent: "jobs:\n  test:\n    steps:\n      - run: python3 scripts/renamed-format-policy.py\n",
+    defaultBranchError: new Error("default branch must not be probed for a fork"),
+  });
+
+  const summary = "Fork pull requests deliberately fail closed: partial evidence is not evaluated.";
+  assert.deepEqual(outcome.failures, [summary]);
+  assert.equal(outcome.reportedCheck.output.title, "fork-refused");
+  assert.equal(outcome.reportedCheck.output.summary, summary);
+});
+
 test("trusted workflow refuses an unreadable head CI workflow", async () => {
   const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
   const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
@@ -2193,6 +2212,21 @@ test("trusted workflow skips the head CI policy check when the default branch ha
   });
 
   assert.equal(outcome.repositoryId, TRUST.repositoryId);
+});
+
+test("trusted workflow reports evaluation-unavailable when the default branch cannot be resolved", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+    expectJournal: false,
+    defaultBranchError: Object.assign(new Error("Not Found"), { status: 404 }),
+    policyPresent: false,
+    ciReadError: new Error("head CI must not be read"),
+  });
+
+  const summary = "Unable to resolve the default branch main: Not Found";
+  assert.deepEqual(outcome.failures, [summary]);
+  assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
+  assert.equal(outcome.reportedCheck.output.summary, summary);
 });
 
 test("trusted workflow reports evaluation-unavailable when the default-branch policy probe fails other than 404", async () => {

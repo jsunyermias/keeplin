@@ -45,13 +45,17 @@ The dependency result proves only the jobs named by `converge.needs`. GitHub bra
 required checks are configured outside this repository, so this script cannot prove that the
 workflow dependency list and branch protection agree. It deliberately makes no broader claim.
 
-The default-branch `workflow_run` workflow is authoritative. It rejects malformed ledger
+The default-branch `workflow_run` workflow is authoritative. It rejects fork pull requests
+immediately after fetching their metadata, before probing either repository policy or head
+workflow content. It rejects malformed ledger
 parses and open findings without a named mechanical check. It verifies App, configured CI
 workflow, repository, pull-request and schema identity; collaborator authorization directives
 and body digests. If the default branch contains `scripts/check-filesystem-format-policy.py`, it
 also reads the head `.github/workflows/ci.yml` as data and requires both that path reference and
 the `Check filesystem format policy` step name. A missing head workflow or marker reports
-`policy-gate-removed`; probe and read failures other than a 404 report `evaluation-unavailable`.
+`policy-gate-removed`. Before interpreting a policy-path 404 as absence, it resolves the
+API-reported default branch; an unresolvable branch and all non-404 probe or read failures report
+`evaluation-unavailable`.
 Both are report-only and append no journal observation. Every directive verification consumes an
 exhaustive repository-collaborator enumeration fetched with the evaluator's existing
 `GITHUB_TOKEN`, `affiliation=all`, and explicit

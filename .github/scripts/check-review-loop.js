@@ -9,6 +9,7 @@ const LEDGER_HEADING = "Review ledger";
 const ROUND_LOG_HEADING = "Round log";
 const STALLS_PATH = "docs/review-stalls.md";
 const FILESYSTEM_FORMAT_POLICY_PATH = "scripts/check-filesystem-format-policy.py";
+const FORK_REFUSAL_MESSAGE = "Fork pull requests deliberately fail closed: partial evidence is not evaluated.";
 const DEFAULT_STAGNATION_LIMIT = 3;
 const RESOLVED_CHECKBOX = "Blocking findings are resolved and conversations are closed";
 const ADVISORY = "advisory";
@@ -333,7 +334,7 @@ function referencesFilesystemFormatPolicy(workflow) {
 }
 
 function evaluateTrustedReviewLoop({ pull, findings = [], references = [], checks = [], journalComments = [], jobs = [], tombstones = [], genesisEvidence, principalEnumeration, changedFiles = [], stallsContent = "", diffSignature = "", stagnationLimit = DEFAULT_STAGNATION_LIMIT, config }) {
-  if (pull.headRepositoryId !== pull.baseRepositoryId) return { ok: false, state: "fork-refused", message: "Fork pull requests deliberately fail closed: partial evidence is not evaluated." };
+  if (pull.headRepositoryId !== pull.baseRepositoryId) return { ok: false, state: "fork-refused", message: FORK_REFUSAL_MESSAGE };
   if (!Array.isArray(findings) || findings.some((finding) => !finding || typeof finding !== "object" || typeof finding.id !== "string" || !FINDING_ID.test(finding.id))) return { ok: false, state: "history-unverifiable", message: "Review ledger contains an invalid finding identifier." };
   if (!Array.isArray(tombstones) || tombstones.some((entry) => !entry || typeof entry !== "object" || typeof entry.id !== "string" || !FINDING_ID.test(entry.id))) return { ok: false, state: "history-unverifiable", message: "Trusted metadata contains an invalid tombstone identifier." };
   const unreifiedOpen = findings.find((finding) => finding.state === "open" && !finding.reified);
@@ -956,6 +957,7 @@ function evaluateReviewLoop({
 
 module.exports = {
   DEFAULT_STAGNATION_LIMIT,
+  FORK_REFUSAL_MESSAGE,
   LEDGER_HEADING,
   STALLS_PATH,
   diffSignatureFromFiles,

@@ -7,7 +7,9 @@ This default-branch `workflow_run` workflow is the authoritative evaluator requi
 It correlates the completed unprivileged CI run to exactly one open pull request and reads all
 pull-request content and evidence through GitHub APIs. Only a completed run whose event is
 `pull_request` counts as a review round; the same CI workflow's `push` runs are ignored.
-Before evaluating the ledger, it probes the API-reported default branch for
+After fetching the unique pull request, it refuses a fork before reading any policy or head
+content. For a same-repository pull request, it first resolves the API-reported default branch,
+then probes that branch for
 `scripts/check-filesystem-format-policy.py`. Only when that file exists does it read
 `.github/workflows/ci.yml` at the exact pull-request head and require both the script-path
 reference and the `Check filesystem format policy` step name.
@@ -39,7 +41,9 @@ into a temporary runner; the live command executes that temporary path. Requirin
 catches partial deletion, but does not parse YAML or shell control flow: a path reference and step
 name in a comment or dead branch can satisfy it, while a live invocation renamed or assembled
 indirectly cannot. A 404 from the default-branch path probe means the repository has no such
-policy and the head check does not apply. Every other probe failure is `evaluation-unavailable`.
+policy and the head check does not apply only after the preceding branch-resolution request
+succeeds. Any failure to resolve that branch, including a 404, is `evaluation-unavailable`.
+Every non-404 path-probe failure is also `evaluation-unavailable`.
 When the policy applies, a 404 for the head workflow is `policy-gate-removed`; every other head
 read failure is `evaluation-unavailable`. Readable content missing either marker is the distinct
 report-only refusal `policy-gate-removed`; neither state journals.
@@ -126,7 +130,9 @@ Each result that reaches `publishEvaluation` still creates a failing
 workflow. This promise does not extend to the informational association no-op, source-loading
 failure before `publishEvaluation` exists, or rejection from the reporting check creation itself.
 Every other result must journal unless that workflow run attempt is already recorded. Forks
-deliberately fail closed because the policy refuses partial evidence.
+deliberately fail closed because the policy refuses partial evidence; the adapter applies that
+refusal before its policy probes and sources its message from the evaluator's exported constant,
+which the evaluator's own guard also uses.
 
 Workflow concurrency is grouped by pull-request number with cancellation disabled and
 `queue: max`, so delivered runs for one pull request cannot append sibling observations from the
