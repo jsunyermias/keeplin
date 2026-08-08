@@ -325,10 +325,11 @@ function referenceIssuedAt(reference) {
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
-function invokesFilesystemFormatPolicy(workflow) {
+function referencesFilesystemFormatPolicy(workflow) {
   if (typeof workflow !== "string") return false;
   const path = escapeRegex(FILESYSTEM_FORMAT_POLICY_PATH);
-  return new RegExp(`(?:^|[\\s\\\"'\\\`])(?:\\./)?${path}(?=$|[\\s\\\"'\\\`\\\\])`, "m").test(workflow);
+  const referencesPath = new RegExp(`(?:^|[\\s\\\"'\\\`])(?:\\./)?${path}(?=$|[\\s\\\"'\\\`\\\\])`, "m").test(workflow);
+  return referencesPath && workflow.includes("Check filesystem format policy");
 }
 
 function evaluateTrustedReviewLoop({ pull, findings = [], references = [], checks = [], journalComments = [], jobs = [], tombstones = [], genesisEvidence, principalEnumeration, changedFiles = [], stallsContent = "", diffSignature = "", stagnationLimit = DEFAULT_STAGNATION_LIMIT, config }) {
@@ -980,7 +981,7 @@ module.exports = {
   enumerateRepositoryPrincipals,
   evaluateTrustedReviewLoop,
   journalComment,
-  invokesFilesystemFormatPolicy,
+  referencesFilesystemFormatPolicy,
   levelTwoSection,
   makeJournalRecord,
   publishEvaluation,

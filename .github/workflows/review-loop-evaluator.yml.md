@@ -7,9 +7,10 @@ This default-branch `workflow_run` workflow is the authoritative evaluator requi
 It correlates the completed unprivileged CI run to exactly one open pull request and reads all
 pull-request content and evidence through GitHub APIs. Only a completed run whose event is
 `pull_request` counts as a review round; the same CI workflow's `push` runs are ignored.
-Before evaluating the ledger, it also reads `.github/workflows/ci.yml` at the exact pull-request
-head and refuses the result unless that text still names
-`scripts/check-filesystem-format-policy.py` as a command token.
+Before evaluating the ledger, it probes the API-reported default branch for
+`scripts/check-filesystem-format-policy.py`. Only when that file exists does it read
+`.github/workflows/ci.yml` at the exact pull-request head and require both the script-path
+reference and the `Check filesystem format policy` step name.
 
 The repository variable `CI_WORKFLOW_ID` must contain the numeric database ID of this
 repository's `CI` workflow. A missing or malformed value is a repository-wide configuration
@@ -32,12 +33,16 @@ again inside the evaluator.
 
 The head workflow check is lexical and dependency-free. It accepts the exact script path with an
 optional `./` prefix when bounded by whitespace, quotes, backticks, a shell continuation or the
-ends of the file, so indentation, quoting and splitting the command across shell lines do not
-matter. Renaming the script is detected. It does not parse YAML or shell control flow: a path
-mentioned in a non-executed command, comment or dead conditional can satisfy it, while an indirect
-invocation assembled from variables or delegated through a differently named wrapper cannot.
-Unreadable head content is `evaluation-unavailable`, while readable content without the
-invocation is the distinct report-only refusal `policy-gate-removed`; neither journals.
+ends of the file, and separately requires the exact step name. In Keeplin the sole path match is
+the `policy_path="scripts/check-filesystem-format-policy.py"` assignment that feeds `git show`
+into a temporary runner; the live command executes that temporary path. Requiring both markers
+catches partial deletion, but does not parse YAML or shell control flow: a path reference and step
+name in a comment or dead branch can satisfy it, while a live invocation renamed or assembled
+indirectly cannot. A 404 from the default-branch path probe means the repository has no such
+policy and the head check does not apply. Every other probe failure is `evaluation-unavailable`.
+When the policy applies, a 404 for the head workflow is `policy-gate-removed`; every other head
+read failure is `evaluation-unavailable`. Readable content missing either marker is the distinct
+report-only refusal `policy-gate-removed`; neither state journals.
 
 If the associated-pull-request listing rejects or contains a malformed item before a pull request
 can be identified, the adapter reports `evaluation-unavailable` directly against the triggering
@@ -157,5 +162,5 @@ The pull-request templates deliberately differ in one phrase: Keeplin qualifies 
 `State` values with “In the ledger table” so they cannot be mistaken for the separate round-log
 states. This wording difference does not change the identical evaluator result required by ADR
 0006.
-Because this workflow and evaluator are loaded from the default branch, the head-workflow
-invocation check is inert until the change introducing it merges to that branch.
+Because this workflow and evaluator are loaded from the default branch, the head-workflow marker
+check is inert until the change introducing it merges to that branch.

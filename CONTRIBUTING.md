@@ -53,7 +53,7 @@ up to date` jobs. Requiring a job by name prevents removal of the whole job from
 protection, but it does not inspect or protect the steps inside that job: a pull request could
 remove `Check filesystem format policy` while leaving `Check, Test & Lint` green. The default-branch
 `Review loop converged` evaluator closes that residue by reading the pull-request head's `ci.yml`
-as data and refusing success when it no longer invokes the format-policy script. Review of the
+as data and refusing success when it no longer contains both format-policy markers. Review of the
 introducing commit must also validate the initial gate and release-latch contents, because
 immutability only protects the bytes that introduction establishes.
 

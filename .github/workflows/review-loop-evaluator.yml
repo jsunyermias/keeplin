@@ -83,15 +83,25 @@ jobs:
             } catch (error) {
               return publishUnavailable(`Unable to read pull request ${open[0].number}: ${error.message}`);
             }
-            let ciWorkflow;
+            let policyApplies = true;
             try {
-              const ci = await github.rest.repos.getContent({ owner: context.repo.owner, repo: context.repo.repo, path: '.github/workflows/ci.yml', ref: pull.head.sha });
-              ciWorkflow = Buffer.from(ci.data.content, 'base64').toString('utf8');
+              await github.rest.repos.getContent({ owner: context.repo.owner, repo: context.repo.repo, path: 'scripts/check-filesystem-format-policy.py', ref: repository.default_branch });
             } catch (error) {
-              return publishUnavailable(`Unable to read .github/workflows/ci.yml at the pull-request head: ${error.message}`);
+              if (error && error.status === 404) policyApplies = false;
+              else return publishUnavailable(`Unable to determine whether the default branch contains scripts/check-filesystem-format-policy.py: ${error.message}`);
             }
-            if (!evaluator.invokesFilesystemFormatPolicy(ciWorkflow)) {
-              return publishRefusal('policy-gate-removed', 'The pull-request head\'s .github/workflows/ci.yml no longer invokes scripts/check-filesystem-format-policy.py; restore that script invocation.');
+            if (policyApplies) {
+              let ciWorkflow;
+              try {
+                const ci = await github.rest.repos.getContent({ owner: context.repo.owner, repo: context.repo.repo, path: '.github/workflows/ci.yml', ref: pull.head.sha });
+                ciWorkflow = Buffer.from(ci.data.content, 'base64').toString('utf8');
+              } catch (error) {
+                if (error && error.status === 404) return publishRefusal('policy-gate-removed', 'The pull-request head has no .github/workflows/ci.yml although the default branch contains scripts/check-filesystem-format-policy.py; restore the workflow and both filesystem-format policy markers.');
+                return publishUnavailable(`Unable to read .github/workflows/ci.yml at the pull-request head: ${error.message}`);
+              }
+              if (!evaluator.referencesFilesystemFormatPolicy(ciWorkflow)) {
+                return publishRefusal('policy-gate-removed', 'The pull-request head\'s .github/workflows/ci.yml no longer contains both filesystem-format policy markers: the step name \'Check filesystem format policy\' and the path scripts/check-filesystem-format-policy.py; restore both references.');
+              }
             }
             const principalEnumeration = await evaluator.enumerateRepositoryPrincipals({
               request: (url) => github.request(url), owner: context.repo.owner, repo: context.repo.repo,
