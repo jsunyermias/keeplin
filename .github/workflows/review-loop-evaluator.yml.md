@@ -7,6 +7,14 @@ This default-branch `workflow_run` workflow is the authoritative evaluator requi
 It correlates the completed unprivileged CI run to exactly one open pull request and reads all
 pull-request content and evidence through GitHub APIs. Only a completed run whose event is
 `pull_request` counts as a review round; the same CI workflow's `push` runs are ignored.
+After fetching the unique pull request, it validates both repository objects and their numeric
+identifiers before reading any policy or head content. Missing or unusable head or base repository
+metadata is `evaluation-unavailable`; only usable, unequal identifiers establish
+`fork-refused`. For a same-repository pull request, it first resolves the API-reported default
+branch, then probes that branch for
+`scripts/check-filesystem-format-policy.py`. Only when that file exists does it read
+`.github/workflows/ci.yml` at the exact pull-request head and require both the script-path
+reference and the `Check filesystem format policy` step name.
 
 The repository variable `CI_WORKFLOW_ID` must contain the numeric database ID of this
 repository's `CI` workflow. A missing or malformed value is a repository-wide configuration
@@ -26,6 +34,25 @@ jobs and check runs remain data; none is executed, imported or interpolated into
 Malformed ledger data fails before evaluation. Comment and review references are annotated with
 the API request's repository and pull-request coordinates, then those coordinates are verified
 again inside the evaluator.
+
+The head workflow check is a lexical allowlist of accepted textual spellings, not recognition of
+equivalent shell invocations. It accepts the exact script path with an optional `./` prefix when
+bounded by whitespace, quotes, backticks, a shell continuation or the ends of the file, and
+separately requires the exact step name. An otherwise unchanged direct invocation immediately
+followed by an operator, such as `scripts/check-filesystem-format-policy.py; echo ok` or
+`scripts/check-filesystem-format-policy.py|cat`, is rejected because that punctuation is not an
+accepted boundary. In Keeplin the sole path match is
+the `policy_path="scripts/check-filesystem-format-policy.py"` assignment that feeds `git show`
+into a temporary runner; the live command executes that temporary path. Requiring both markers
+catches partial deletion, but does not parse YAML or shell control flow: a path reference and step
+name in a comment or dead branch can satisfy it, while a live invocation renamed or assembled
+indirectly cannot. A 404 from the default-branch path probe means the repository has no such
+policy and the head check does not apply only after the preceding branch-resolution request
+succeeds. Any failure to resolve that branch, including a 404, is `evaluation-unavailable`.
+Every non-404 path-probe failure is also `evaluation-unavailable`.
+When the policy applies, a 404 for the head workflow is `policy-gate-removed`; every other head
+read failure is `evaluation-unavailable`. Readable content missing either marker is the distinct
+report-only refusal `policy-gate-removed`; neither state journals.
 
 If the associated-pull-request listing rejects or contains a malformed item before a pull request
 can be identified, the adapter reports `evaluation-unavailable` directly against the triggering
@@ -101,13 +128,18 @@ authorizes the issue-comment API used for the digest-chained journal, while
 `pull-requests: write` is also required because that API call targets a pull request; the latter
 also covers reading pull-request metadata, files and reviews. No other permission is granted.
 `publishEvaluation` owns the journal eligibility decision: `history-unverifiable`,
-`fork-refused` and `evaluation-unavailable` append no journal comment because their input cannot
-be trusted or evaluated, but each result that reaches `publishEvaluation` still creates a failing
+`fork-refused`, `evaluation-unavailable` and `policy-gate-removed` append no journal comment.
+The gate-removal refusal is a policy violation in the pull-request change rather than an
+observation of the review loop, so placing it in the digest chain would misclassify the event.
+Each result that reaches `publishEvaluation` still creates a failing
 `Review loop converged` check whose summary is the evaluator's actual reason before failing the
 workflow. This promise does not extend to the informational association no-op, source-loading
 failure before `publishEvaluation` exists, or rejection from the reporting check creation itself.
-Every other result must journal unless that workflow run attempt is already recorded. Forks
-deliberately fail closed because the policy refuses partial evidence.
+Every other result must journal unless that workflow run attempt is already recorded. Unavailable
+repository metadata and forks both fail closed before policy probes; unavailable metadata is
+`evaluation-unavailable`, while unequal usable repository IDs are `fork-refused`. The adapter
+sources the fork message from the evaluator's exported constant, which the evaluator's own guard
+also uses.
 
 Workflow concurrency is grouped by pull-request number with cancellation disabled and
 `queue: max`, so delivered runs for one pull request cannot append sibling observations from the
@@ -143,3 +175,5 @@ The pull-request templates deliberately differ in one phrase: Keeplin qualifies 
 `State` values with “In the ledger table” so they cannot be mistaken for the separate round-log
 states. This wording difference does not change the identical evaluator result required by ADR
 0006.
+Because this workflow and evaluator are loaded from the default branch, the head-workflow marker
+check is inert until the change introducing it merges to that branch.

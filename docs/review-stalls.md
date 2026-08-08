@@ -224,9 +224,31 @@ not the one this pull request adds. It becomes available to the *next* pull requ
 merges, and to this one never. Recorded here so that a reader who sees an implementation blocked by
 the defect it fixes knows it was understood rather than overlooked.
 
+[keeplin#232](https://github.com/jsunyermias/keeplin/pull/232) escalated on the repeated-state
+brake and cleared in the same session, and it is kept here because its root cause is one this
+file's readers can hit again. The cause was in the pull-request body rather than in the tree: the
+`Review evidence/link` field named only the round-1 reviewer's chat session, and the governance
+checker requires a `github.com` URL there. With no such link the review path cannot be satisfied,
+so the checker falls through to demanding a complete maintainer waiver — reporting a missing
+waiver field, which is the symptom rather than the cause — and `Check, Test & Lint` goes red on a
+body field while every test passes.
+
+It survived three green runs first, because that governance step only runs on `pull_request`
+events and every run until the pull request was marked ready for review had been a push. A body
+field that fails the loop is therefore first exercised late, after the author has stopped watching
+for it.
+
+`F-001`, `F-002`, `F-005`, `F-006` and `F-007` were stuck only as a consequence: a `resolved`
+finding may not cite a check that failed, so all five reopened the moment the job went red, and
+their directives then predated the reopening. Nothing about the findings or their fixes changed.
+The third observation repeated the second's hash because the intervening evaluation ran against an
+unchanged tree, which is the brake behaving correctly — the loop was not going to make progress
+without a change, and the change needed was to the body.
+
 ## Cleared
 
 | Detected | Pull request | Stuck on | Exit | Resolution |
 |---|---|---|---|---|
 | 2026-08-03 | [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198) | F-002 | dismissed | Accepted [ADR 0008](adr/0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md) bounds the claim; the three-probe follow-up is [tracked](review-loop-spike.md). |
 | 2026-08-03 | [keeplin#198](https://github.com/jsunyermias/keeplin/pull/198) | F-008<br>F-013 | resolved | Default-branch isolation and verified-disposal tests pass. |
+| 2026-08-08 | [keeplin#232](https://github.com/jsunyermias/keeplin/pull/232) | Check, Test & Lint<br>F-001<br>F-002<br>F-005<br>F-006<br>F-007 | resolved | The `Review evidence/link` field now names the [disposal comment](https://github.com/jsunyermias/keeplin/pull/232#issuecomment-5225489719) on `github.com`, so the governance checker's review path is satisfied and the job is green; the five findings were re-authorized by [directives](https://github.com/jsunyermias/keeplin/pull/232#issuecomment-5225538632) issued after the reopening. |

@@ -29,6 +29,7 @@ const {
   enumerateRepositoryPrincipals,
   evaluateTrustedReviewLoop,
   journalComment,
+  referencesFilesystemFormatPolicy,
   makeJournalRecord,
   parseFindings,
   publishEvaluation,
@@ -574,11 +575,25 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments, option
     },
     rest: {
       repos: {
-        getContent: async ({ path: requestedPath }) => ({ data: { content: Buffer.from(
-          requestedPath === ".github/scripts/check-review-loop.js"
-            ? fs.readFileSync(path.join(repositoryRoot, requestedPath), "utf8")
-            : "",
-        ).toString("base64") } }),
+        getBranch: async () => {
+          if (options.defaultBranchError) throw options.defaultBranchError;
+          return { data: { name: "main" } };
+        },
+        getContent: async ({ path: requestedPath, ref }) => {
+          if (requestedPath === "scripts/check-filesystem-format-policy.py") {
+            if (options.policyReadError) throw options.policyReadError;
+            if (options.policyPresent === false) throw Object.assign(new Error("Not Found"), { status: 404 });
+            return { data: { content: Buffer.from("policy").toString("base64") } };
+          }
+          if (requestedPath === ".github/workflows/ci.yml" && ref === "ccc" && options.ciReadError) throw options.ciReadError;
+          return { data: { content: Buffer.from(
+            requestedPath === ".github/scripts/check-review-loop.js"
+              ? fs.readFileSync(path.join(repositoryRoot, requestedPath), "utf8")
+              : requestedPath === ".github/workflows/ci.yml"
+                ? options.ciContent ?? "- name: Check filesystem format policy\n  run: python3 scripts/check-filesystem-format-policy.py\n"
+                : "",
+          ).toString("base64") } };
+        },
         listPullRequestsAssociatedWithCommit: endpoints.associatedPulls,
       },
       pulls: {
@@ -588,8 +603,8 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments, option
             number: 200,
             body: pullBody,
             user: { login: "author" },
-            head: { sha: "ccc", repo: { id: options.headRepositoryId ?? 7 } },
-            base: { repo: { id: 7 } },
+            head: { sha: "ccc", repo: options.headRepository === undefined ? { id: options.headRepositoryId ?? 7 } : options.headRepository },
+            base: { repo: options.baseRepository === undefined ? { id: 7 } : options.baseRepository },
           } };
         },
         listReviews: endpoints.reviews,
@@ -1964,6 +1979,23 @@ test("trusted_workflow_ignores_push_runs", () => {
   assert.match(workflow, /Only pull_request workflow runs are review rounds/);
 });
 
+test("filesystem format policy marker detection survives YAML and shell reformatting", () => {
+  for (const workflow of [
+    "- name: Check filesystem format policy\n  run: python3 scripts/check-filesystem-format-policy.py --base HEAD^ --head HEAD\n",
+    "- name: Check filesystem format policy\n  run: 'python3 ./scripts/check-filesystem-format-policy.py'\n",
+    "- name: Check filesystem format policy\n  run: |\n    python3 \\\n      scripts/check-filesystem-format-policy.py \\\n      --base HEAD^\n",
+  ]) assert.equal(referencesFilesystemFormatPolicy(workflow), true, workflow);
+
+  for (const workflow of [
+    "",
+    "- name: Check filesystem format policy\n  run: python3 scripts/check-filesystem-format-policy-v2.py\n",
+    "- name: Check filesystem format policy\n  run: python3 renamed-scripts/check-filesystem-format-policy.py\n",
+    "- name: Check filesystem format policy\n  run: python3 scripts/check-filesystem-format-policy.py; echo ok\n",
+    "- name: Check filesystem format policy\n  run: python3 scripts/check-filesystem-format-policy.py|cat\n",
+    "- run: python3 scripts/check-filesystem-format-policy.py\n",
+  ]) assert.equal(referencesFilesystemFormatPolicy(workflow), false, workflow);
+});
+
 test("trusted_workflow_queues_pending_runs_and_documents_the_queue_bound", () => {
   const workflow = fs.readFileSync(".github/workflows/review-loop-evaluator.yml", "utf8");
   const workflowCompanion = fs.readFileSync(".github/workflows/review-loop-evaluator.yml.md", "utf8");
@@ -2112,6 +2144,124 @@ test("trusted workflow publishes evaluation-unavailable when the identified pull
   assert.equal(outcome.reportedCheck.conclusion, "failure");
   assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
   assert.equal(outcome.reportedCheck.output.summary, "Unable to read pull request 200: transport failed");
+});
+
+test("trusted workflow refuses a head CI workflow that no longer references both filesystem format gate markers", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+    expectJournal: false,
+    ciContent: "jobs:\n  test:\n    steps:\n      - run: python3 scripts/renamed-format-policy.py\n",
+  });
+
+  const summary = "The pull-request head's .github/workflows/ci.yml no longer contains both filesystem-format policy markers: the step name 'Check filesystem format policy' and the path scripts/check-filesystem-format-policy.py; restore both references.";
+  assert.equal(outcome.postedBody, undefined);
+  assert.deepEqual(outcome.failures, [summary]);
+  assert.equal(outcome.reportedCheck.conclusion, "failure");
+  assert.equal(outcome.reportedCheck.output.title, "policy-gate-removed");
+  assert.notEqual(outcome.reportedCheck.output.title, "evaluation-unavailable");
+  assert.equal(outcome.reportedCheck.output.summary, summary);
+});
+
+test("trusted workflow refuses a fork before probing its head policy markers", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+    expectJournal: false,
+    headRepositoryId: 8,
+    ciContent: "jobs:\n  test:\n    steps:\n      - run: python3 scripts/renamed-format-policy.py\n",
+    defaultBranchError: new Error("default branch must not be probed for a fork"),
+    policyReadError: new Error("default-branch policy must not be probed for a fork"),
+    ciReadError: new Error("head CI must not be read for a fork"),
+  });
+
+  const summary = "Fork pull requests deliberately fail closed: partial evidence is not evaluated.";
+  assert.deepEqual(outcome.failures, [summary]);
+  assert.equal(outcome.reportedCheck.output.title, "fork-refused");
+  assert.equal(outcome.reportedCheck.output.summary, summary);
+});
+
+test("trusted workflow reports evaluation-unavailable for a deleted head repository before probing", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+    expectJournal: false,
+    headRepository: null,
+    defaultBranchError: new Error("default branch must not be probed without a head repository"),
+    policyReadError: new Error("default-branch policy must not be probed without a head repository"),
+    ciReadError: new Error("head CI must not be read without a head repository"),
+  });
+
+  const summary = "The pull-request head repository is unavailable.";
+  assert.equal(outcome.postedBody, undefined);
+  assert.deepEqual(outcome.failures, [summary]);
+  assert.equal(outcome.reportedCheck.conclusion, "failure");
+  assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
+  assert.equal(outcome.reportedCheck.output.summary, summary);
+});
+
+test("trusted workflow refuses an unreadable head CI workflow", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+    expectJournal: false,
+    ciReadError: new Error("transport failed"),
+  });
+
+  const summary = "Unable to read .github/workflows/ci.yml at the pull-request head: transport failed";
+  assert.equal(outcome.postedBody, undefined);
+  assert.deepEqual(outcome.failures, [summary]);
+  assert.equal(outcome.reportedCheck.conclusion, "failure");
+  assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
+  assert.notEqual(outcome.reportedCheck.output.title, "policy-gate-removed");
+  assert.equal(outcome.reportedCheck.output.summary, summary);
+});
+
+test("trusted workflow reports policy-gate-removed when the head CI workflow is absent", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+    expectJournal: false,
+    ciReadError: Object.assign(new Error("Not Found"), { status: 404 }),
+  });
+
+  const summary = "The pull-request head has no .github/workflows/ci.yml although the default branch contains scripts/check-filesystem-format-policy.py; restore the workflow and both filesystem-format policy markers.";
+  assert.deepEqual(outcome.failures, [summary]);
+  assert.equal(outcome.reportedCheck.output.title, "policy-gate-removed");
+  assert.equal(outcome.reportedCheck.output.summary, summary);
+});
+
+test("trusted workflow skips the head CI policy check when the default branch has no format policy", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+    policyPresent: false,
+    ciReadError: new Error("head CI must not be read"),
+  });
+
+  assert.equal(outcome.repositoryId, TRUST.repositoryId);
+});
+
+test("trusted workflow reports evaluation-unavailable when the default branch cannot be resolved", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+    expectJournal: false,
+    defaultBranchError: Object.assign(new Error("Not Found"), { status: 404 }),
+    policyReadError: new Error("policy must not be probed before branch resolution"),
+    ciReadError: new Error("head CI must not be read"),
+  });
+
+  const summary = "Unable to resolve the default branch main: Not Found";
+  assert.deepEqual(outcome.failures, [summary]);
+  assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
+  assert.equal(outcome.reportedCheck.output.summary, summary);
+});
+
+test("trusted workflow reports evaluation-unavailable when the default-branch policy probe fails other than 404", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+    expectJournal: false,
+    policyReadError: Object.assign(new Error("Forbidden"), { status: 403 }),
+  });
+
+  const summary = "Unable to determine whether the default branch contains scripts/check-filesystem-format-policy.py: Forbidden";
+  assert.deepEqual(outcome.failures, [summary]);
+  assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
+  assert.equal(outcome.reportedCheck.output.summary, summary);
 });
 
 for (const evidenceFailure of [
