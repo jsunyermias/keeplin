@@ -201,6 +201,7 @@ entry to Cleared with the exit that was taken and a link to it.
 | 2026-08-04 | [keeplin#203](https://github.com/jsunyermias/keeplin/pull/203) | GENESIS | 3 | |
 | 2026-08-05 | [keeplin#215](https://github.com/jsunyermias/keeplin/pull/215) | GENESIS | 3 | |
 | 2026-08-05 | [keeplin#217](https://github.com/jsunyermias/keeplin/pull/217) | GENESIS | 2 | |
+| 2026-08-08 | [keeplin#232](https://github.com/jsunyermias/keeplin/pull/232) | Check, Test & Lint<br>F-001<br>F-002<br>F-005<br>F-006<br>F-007 | 2 | |
 
 For [keeplin#203](https://github.com/jsunyermias/keeplin/pull/203), `GENESIS` is the
 unauthenticated genesis anchor. No procedure for authorizing a genesis directive exists in either
@@ -223,6 +224,24 @@ the **default branch**, so the authorization path that would close `GENESIS` is 
 not the one this pull request adds. It becomes available to the *next* pull request once this one
 merges, and to this one never. Recorded here so that a reader who sees an implementation blocked by
 the defect it fixes knows it was understood rather than overlooked.
+
+[keeplin#232](https://github.com/jsunyermias/keeplin/pull/232) escalated on the repeated-state
+brake, and its single root cause is in the pull-request body rather than in the tree. Its
+`Review evidence/link` field named only the round-1 reviewer's chat session, and the governance
+checker requires a `github.com` URL there. With no such link the review path cannot be satisfied,
+so the checker falls through to demanding a complete maintainer waiver, and `Check, Test & Lint`
+goes red on a body field while every test passes.
+
+`F-001`, `F-002`, `F-005`, `F-006` and `F-007` are stuck only as a consequence: a `resolved`
+finding may not cite a check that failed, so all five reopened the moment the job went red, and
+their directives then predated the reopening. Nothing about the findings or their fixes changed.
+The third observation repeated the second's hash because the intervening evaluation ran against an
+unchanged tree, which is the brake behaving correctly — the loop was not going to make progress
+without a change, and the change needed was to the body.
+
+The exit is to fix what fails: point the evidence field at the disposal comment, whose URL is on
+`github.com` and which is the actual record of both review rounds, and re-issue the five
+directives once the job is green again so each authorization postdates the reopening it answers.
 
 ## Cleared
 
