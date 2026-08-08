@@ -1,4 +1,5 @@
 // md:Overview
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -13,6 +14,48 @@ use crate::storage::{
 use super::io::atomic_write;
 use super::resources::content_hash;
 use super::FsBackend;
+
+// md:enum TreeEntryKind
+#[derive(Debug, Eq, PartialEq)]
+enum TreeEntryKind {
+    Directory,
+    File(Vec<u8>),
+    Symlink(PathBuf),
+    Other,
+}
+
+// md:fn snapshot_tree
+fn snapshot_tree(root: &Path) -> Vec<(PathBuf, TreeEntryKind)> {
+    fn visit(root: &Path, directory: &Path, entries: &mut Vec<(PathBuf, TreeEntryKind)>) {
+        let mut children = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .collect::<Vec<_>>();
+        children.sort_by_key(|entry| entry.file_name());
+        for child in children {
+            let path = child.path();
+            let relative = path.strip_prefix(root).unwrap().to_path_buf();
+            let file_type = child.file_type().unwrap();
+            if file_type.is_dir() {
+                entries.push((relative, TreeEntryKind::Directory));
+                visit(root, &path, entries);
+            } else if file_type.is_file() {
+                entries.push((relative, TreeEntryKind::File(std::fs::read(path).unwrap())));
+            } else if file_type.is_symlink() {
+                entries.push((
+                    relative,
+                    TreeEntryKind::Symlink(std::fs::read_link(path).unwrap()),
+                ));
+            } else {
+                entries.push((relative, TreeEntryKind::Other));
+            }
+        }
+    }
+
+    let mut entries = Vec::new();
+    visit(root, root, &mut entries);
+    entries
+}
 
 // md:fn concurrent_same_note_updates_keep_every_log_entry
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -428,29 +471,250 @@ async fn fresh_store_is_stamped_current_version() {
     );
 }
 
-// md:fn migrates_a_legacy_stamp_and_preserves_data
+// md:fn current_store_opens_without_rewriting_stamp
 #[tokio::test]
-async fn migrates_a_legacy_stamp_and_preserves_data() {
+async fn current_store_opens_without_rewriting_stamp() {
     let dir = tempfile::tempdir().unwrap();
-
-    let note_id = {
-        let be = FsBackend::new(dir.path()).await.unwrap();
-        let note = be.create_note(Note::new("legacy", "kept")).await.unwrap();
-        tokio::fs::write(be.format_version_path(), "1")
-            .await
-            .unwrap();
-        note.id
+    let stamp_path = {
+        let backend = FsBackend::new(dir.path()).await.unwrap();
+        backend.format_version_path()
     };
-
-    let be = FsBackend::new(dir.path()).await.unwrap();
-    let stamp = tokio::fs::read_to_string(be.format_version_path())
+    let current_with_newline = format!("{}\n", FsBackend::FORMAT_VERSION);
+    tokio::fs::write(&stamp_path, current_with_newline.as_bytes())
         .await
         .unwrap();
+
+    FsBackend::new(dir.path()).await.unwrap();
+
     assert_eq!(
-        stamp.trim().parse::<u32>().unwrap(),
-        FsBackend::FORMAT_VERSION
+        tokio::fs::read(&stamp_path).await.unwrap(),
+        current_with_newline.as_bytes()
     );
-    assert_eq!(be.read_note(note_id).await.unwrap().body, "kept");
+}
+
+// md:fn refuses_missing_format_stamp_without_creating_one
+#[tokio::test]
+async fn refuses_missing_format_stamp_without_creating_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let metadata_dir = dir.path().join(".keeplin");
+    tokio::fs::create_dir_all(&metadata_dir).await.unwrap();
+    tokio::fs::write(metadata_dir.join("device_id"), "existing-device")
+        .await
+        .unwrap();
+    tokio::fs::create_dir_all(dir.path().join("notes/existing-note"))
+        .await
+        .unwrap();
+    tokio::fs::write(
+        dir.path().join("notes/existing-note/note.md"),
+        "existing note",
+    )
+    .await
+    .unwrap();
+    let before = snapshot_tree(dir.path());
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening an existing store with a missing format stamp must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string().to_lowercase();
+    assert!(
+        message.contains("missing"),
+        "error must name missing stamp: {message}"
+    );
+    assert!(
+        message.contains(&FsBackend::FORMAT_VERSION.to_string()),
+        "error must name expected version: {message}"
+    );
+    assert!(message.contains("manual recovery"), "{message}");
+    assert!(message.contains("new store"), "{message}");
+    assert!(message.contains("backup"), "{message}");
+    assert_eq!(snapshot_tree(dir.path()), before);
+}
+
+// md:fn refuses_pre_v8_store_without_touching_legacy_attachment
+#[tokio::test]
+async fn refuses_pre_v8_store_without_touching_legacy_attachment() {
+    let dir = tempfile::tempdir().unwrap();
+    let note = Note::new("legacy", "kept");
+    let attachment = b"pre-v8 attachment bytes";
+    let resource = Resource::new(
+        note.id,
+        "legacy attachment",
+        "application/octet-stream",
+        "legacy.bin",
+        attachment.len() as u64,
+    );
+    let stamp_path = dir.path().join(".keeplin").join("format_version");
+    let note_dir = dir.path().join("notes").join(note.id.to_string());
+    let resource_dir = dir.path().join("resources").join(resource.id.to_string());
+    let attachment_path = resource_dir.join("data");
+    let orphan_path = note_dir.join("preserved.tmp");
+
+    tokio::fs::create_dir_all(stamp_path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(
+        stamp_path.parent().unwrap().join("device_id"),
+        "legacy-device",
+    )
+    .await
+    .unwrap();
+    tokio::fs::create_dir_all(&note_dir).await.unwrap();
+    tokio::fs::create_dir_all(&resource_dir).await.unwrap();
+    tokio::fs::write(&stamp_path, b"7").await.unwrap();
+    tokio::fs::write(note_dir.join("note.md"), note.body.as_bytes())
+        .await
+        .unwrap();
+    let mut projected_note = note.clone();
+    projected_note.body.clear();
+    let mut note_meta = serde_json::to_vec(&serde_json::json!({
+        "note": projected_note,
+        "vv": VersionVector::new(),
+    }))
+    .unwrap();
+    note_meta.push(b'\n');
+    tokio::fs::write(note_dir.join("meta.ndjson"), &note_meta)
+        .await
+        .unwrap();
+    let mut resource_meta = serde_json::to_vec(&resource).unwrap();
+    resource_meta.push(b'\n');
+    tokio::fs::write(resource_dir.join("meta.ndjson"), &resource_meta)
+        .await
+        .unwrap();
+    tokio::fs::write(&attachment_path, attachment)
+        .await
+        .unwrap();
+    tokio::fs::write(&orphan_path, b"pre-v8 tmp bytes")
+        .await
+        .unwrap();
+    let before = snapshot_tree(dir.path());
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening a format 7 store must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string();
+    assert!(
+        message.contains('7'),
+        "error must name version 7: {message}"
+    );
+    assert!(
+        message.contains('8'),
+        "error must name version 8: {message}"
+    );
+    assert!(message.contains("manual recovery"), "{message}");
+    assert!(message.contains("new store"), "{message}");
+    assert!(message.contains("backup"), "{message}");
+    assert_eq!(snapshot_tree(dir.path()), before);
+}
+
+// md:fn refuses_unparsable_format_stamp_without_relabelling_it
+#[tokio::test]
+async fn refuses_unparsable_format_stamp_without_relabelling_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let stamp_path = dir.path().join(".keeplin").join("format_version");
+    tokio::fs::create_dir_all(stamp_path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(
+        stamp_path.parent().unwrap().join("device_id"),
+        "existing-device",
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(&stamp_path, b"not-a-version")
+        .await
+        .unwrap();
+    let before = snapshot_tree(dir.path());
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening a store with an unparsable format stamp must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string();
+    assert!(
+        message.to_lowercase().contains("unparsable"),
+        "error must name the unparsable stamp: {message}"
+    );
+    assert!(
+        message.contains('8'),
+        "error must name version 8: {message}"
+    );
+    assert_eq!(snapshot_tree(dir.path()), before);
+}
+
+// md:fn refuses_unstamped_store_content_without_device_id
+#[tokio::test]
+async fn refuses_unstamped_store_content_without_device_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let note_path = dir.path().join("notes/note-1/note.md");
+    let attachment_path = dir.path().join("resources/resource-1/data");
+    tokio::fs::create_dir_all(note_path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::create_dir_all(attachment_path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(&note_path, b"existing note")
+        .await
+        .unwrap();
+    tokio::fs::write(&attachment_path, b"existing attachment")
+        .await
+        .unwrap();
+    let before = snapshot_tree(dir.path());
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening unstamped store content without a device id must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string().to_lowercase();
+    assert!(message.contains("missing"), "{message}");
+    assert!(message.contains("unexpected entry"), "{message}");
+    assert_eq!(snapshot_tree(dir.path()), before);
+}
+
+// md:fn refuses_unstamped_sync_state_without_device_id
+#[tokio::test]
+async fn refuses_unstamped_sync_state_without_device_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let metadata_dir = dir.path().join(".keeplin");
+    let sync_state_path = metadata_dir.join("sync_state.ndjson");
+    tokio::fs::create_dir_all(&metadata_dir).await.unwrap();
+    tokio::fs::write(&sync_state_path, b"existing sync state")
+        .await
+        .unwrap();
+    let before = snapshot_tree(dir.path());
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening unstamped sync state without a device id must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string().to_lowercase();
+    assert!(message.contains("missing"), "{message}");
+    assert!(message.contains("sync_state.ndjson"), "{message}");
+    assert_eq!(snapshot_tree(dir.path()), before);
+}
+
+// md:fn refuses_unstamped_v6_sync_state_byte_identically
+#[tokio::test]
+async fn refuses_unstamped_v6_sync_state_byte_identically() {
+    let dir = tempfile::tempdir().unwrap();
+    let sync_state_path = dir.path().join(".keeplin/sync_state.msgpack");
+    tokio::fs::create_dir_all(sync_state_path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(&sync_state_path, b"v6 sync state bytes")
+        .await
+        .unwrap();
+    let before = snapshot_tree(dir.path());
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening an unstamped v6 sync state must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string();
+    assert!(message.contains("sync_state.msgpack"), "{message}");
+    assert_eq!(snapshot_tree(dir.path()), before);
 }
 
 // md:fn refuses_to_open_a_newer_format
@@ -464,6 +728,7 @@ async fn refuses_to_open_a_newer_format() {
             .await
             .unwrap();
     }
+    let before = snapshot_tree(dir.path());
     let err = match FsBackend::new(dir.path()).await {
         Ok(_) => panic!("opening a newer on-disk format must be refused"),
         Err(e) => e,
@@ -472,4 +737,5 @@ async fn refuses_to_open_a_newer_format() {
         matches!(err, StorageError::InvalidState(ref m) if m.contains("newer than this build")),
         "got: {err:?}"
     );
+    assert_eq!(snapshot_tree(dir.path()), before);
 }

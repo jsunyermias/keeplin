@@ -36,10 +36,12 @@ Runs on `ubuntu-latest`.
 
 | Step | Action / Command | Purpose |
 |------|-----------------|---------|
-| Checkout | `actions/checkout@v4` | Clones the repository at the triggering commit |
+| Checkout | `actions/checkout@v4` with full history | Clones the repository at the triggering commit and retains the history needed to inspect format-policy changes commit by commit |
 | Prove pull-request token cannot rewrite check runs | API `GET` plus `PATCH` canary (pull requests only) | Requires a successful check-run lookup and HTTP 403 from the mutation attempt; lookup failure, missing ID, or successful mutation fails CI |
 | Check pull-request review governance | `actions/github-script@v7` (non-draft pull requests only) | Requires either an independent review with evidence, or a complete maintainer waiver whose exact PR is recorded in the changed `docs/review-debt.md` |
 | Install Python | `actions/setup-python@v5` (`3.12`) | Provides the standard-library runtime used by the deterministic companion checks |
+| Determine filesystem format policy range | Event-aware shell resolver over the checked-out full history | Uses the pull-request base and head for pull requests, the previous and current commits for pushes to the default branch, and the merge base with `origin/<default branch>` plus the pushed commit for working-branch pushes. Missing commits, an unavailable default-branch ref, an all-zero default-branch predecessor, a failed merge-base, and unsupported events fail closed. |
+| Check filesystem format policy | Default-branch `scripts/check-filesystem-format-policy.py` over the resolved base and head SHAs | Loads the enforcing script from `origin/<default branch>` once present and passes the GitHub workspace explicitly as its validated Git root, even though the executable copy lives in the runner temporary directory. During introduction only, if neither that ref nor the comparison base contains it, executes the checked-out head copy with an explicit bootstrap log; a base-present/default-missing mismatch fails. The policy then enforces the format-bump and immutable-latch rules; substantive preservation remains a review obligation. |
 | Check companion docs | `./scripts/check-docs.sh` | Enforces structure, exact source↔fence fidelity and the generated context manifest (the two-layer navigation model) |
 | Test companion tooling | `python3 -m unittest discover -s scripts/tests -p 'test_*.py'` | Exercises syntax fixtures, drift/error detection, fence-only sync and reproducible packs |
 | Install Rust | `dtolnay/rust-toolchain@stable` with `clippy, rustfmt` | Installs the latest stable Rust toolchain including the Clippy linter and `rustfmt` formatter |
@@ -98,11 +100,28 @@ rebuilt from scratch.
 - The workflow runs tests for each crate separately (`-p keeplin-core`, `-p keeplin-daemon`,
   rather than `--workspace` because the suites are logically independent and
   this makes it easier to identify which crate a failure belongs to.
+- Filesystem-format policy ranges deliberately differ by event. A working branch is compared
+  with its merge base against the remote default branch, allowing a file introduced on that
+  branch to be refined in later commits. A default-branch push is compared with its immediate
+  predecessor so the immutable policy still protects direct default-branch history. A pull
+  request uses the immutable base and proposed head recorded in its payload.
+- The default-branch policy copy is authoritative after bootstrap, while Python unit tests import
+  the pull request's checked-out copy to exercise proposed policy changes. This prevents a change
+  from replacing the script that judges it; the workflow remains head-controlled, and write access
+  to the default branch remains outside this protection. `FORMAT_POLICY_ROOT` identifies the
+  checkout independently of the temporary executable path, and the checker verifies it is exactly
+  a Git worktree root before reading endpoint files.
+- A rerun of a working-branch push after its head has already merged can produce
+  `merge-base == head`, so the evaluated range is empty and the result is knowingly vacuous. It
+  introduces no code beyond what passed when merged.
+- Merge queues are not enabled. Enabling one first requires a `merge_group` trigger and a dedicated
+  base derivation because its synthetic merge commit has neither `before` nor a pull-request base.
 
 ## Related files
 
 - `.github/scripts/check-review-loop.js` — the convergence and stagnation evaluator
 - `.github/scripts/check-review-governance.js` — the independent-review and waiver evaluator
+- `scripts/check-filesystem-format-policy.py` — the syntactic filesystem-format bump and immutable release-latch gate
 - `docs/adr/0008-trusted-evaluator-verified-disposal-and-a-bounded-history-claim.md` — accepted decision
 - `.github/workflows/review-loop-evaluator.yml` — default-branch authoritative evaluator
 - `docs/review-stalls.md` — the durable record of escalated loops

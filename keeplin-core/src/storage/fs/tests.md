@@ -12,6 +12,7 @@ Self-contained companion for `keeplin-core/src/storage/fs/tests.rs`. It document
 
 ```rust
 // md:Overview
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -35,6 +36,89 @@ use super::FsBackend;
 **Used by** — every test in this file.
 
 **Repeated context** — tests moved out of the former inline `mod tests`; assertions and fixtures are unchanged.
+
+---
+
+## enum TreeEntryKind
+
+**Identification** — recursive fixture snapshot entry kind; marker `// md:enum TreeEntryKind`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:enum TreeEntryKind
+#[derive(Debug, Eq, PartialEq)]
+enum TreeEntryKind {
+    Directory,
+    File(Vec<u8>),
+    Symlink(PathBuf),
+    Other,
+}
+```
+
+**What it does** — Records directory, regular-file bytes, symlink target, or another filesystem
+type so refusal tests compare more than selected payload files.
+
+**Dependencies** — `PathBuf` and `Vec<u8>` — preserve symlink targets and file bytes; expects exact
+equality to expose every mutation.
+
+**Used by** — `snapshot_tree` and every format-refusal fixture.
+
+**Repeated context** — refusal must preserve the complete store tree byte-identically.
+
+---
+
+## fn snapshot_tree
+
+**Identification** — recursive filesystem fixture snapshot; marker `// md:fn snapshot_tree`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn snapshot_tree
+fn snapshot_tree(root: &Path) -> Vec<(PathBuf, TreeEntryKind)> {
+    fn visit(root: &Path, directory: &Path, entries: &mut Vec<(PathBuf, TreeEntryKind)>) {
+        let mut children = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .collect::<Vec<_>>();
+        children.sort_by_key(|entry| entry.file_name());
+        for child in children {
+            let path = child.path();
+            let relative = path.strip_prefix(root).unwrap().to_path_buf();
+            let file_type = child.file_type().unwrap();
+            if file_type.is_dir() {
+                entries.push((relative, TreeEntryKind::Directory));
+                visit(root, &path, entries);
+            } else if file_type.is_file() {
+                entries.push((relative, TreeEntryKind::File(std::fs::read(path).unwrap())));
+            } else if file_type.is_symlink() {
+                entries.push((
+                    relative,
+                    TreeEntryKind::Symlink(std::fs::read_link(path).unwrap()),
+                ));
+            } else {
+                entries.push((relative, TreeEntryKind::Other));
+            }
+        }
+    }
+
+    let mut entries = Vec::new();
+    visit(root, root, &mut entries);
+    entries
+}
+```
+
+**What it does** — Walks a fixture in deterministic path order and captures every relative path,
+file type, file byte sequence, and symlink target. Comparing snapshots detects additions,
+removals, type changes, and payload changes anywhere below the root.
+
+**Dependencies** — `std::fs::{read_dir, read, read_link}` — reads fixture metadata and bytes;
+expects the isolated temporary tree to remain readable while a test runs.
+
+**Used by** — every filesystem-format refusal fixture.
+
+**Repeated context** — refusal is a no-mutation transaction over the whole tree.
 
 ---
 
@@ -632,42 +716,381 @@ async fn fresh_store_is_stamped_current_version() {
 
 ---
 
-## fn migrates_a_legacy_stamp_and_preserves_data
+## fn current_store_opens_without_rewriting_stamp
 
 **Identification** — tokio test; marker
-`// md:fn migrates_a_legacy_stamp_and_preserves_data`.
+`// md:fn current_store_opens_without_rewriting_stamp`.
 
 **Code** — complete and verbatim:
 
 ```rust
-// md:fn migrates_a_legacy_stamp_and_preserves_data
+// md:fn current_store_opens_without_rewriting_stamp
 #[tokio::test]
-async fn migrates_a_legacy_stamp_and_preserves_data() {
+async fn current_store_opens_without_rewriting_stamp() {
     let dir = tempfile::tempdir().unwrap();
-
-    let note_id = {
-        let be = FsBackend::new(dir.path()).await.unwrap();
-        let note = be.create_note(Note::new("legacy", "kept")).await.unwrap();
-        tokio::fs::write(be.format_version_path(), "1")
-            .await
-            .unwrap();
-        note.id
+    let stamp_path = {
+        let backend = FsBackend::new(dir.path()).await.unwrap();
+        backend.format_version_path()
     };
-
-    let be = FsBackend::new(dir.path()).await.unwrap();
-    let stamp = tokio::fs::read_to_string(be.format_version_path())
+    let current_with_newline = format!("{}\n", FsBackend::FORMAT_VERSION);
+    tokio::fs::write(&stamp_path, current_with_newline.as_bytes())
         .await
         .unwrap();
+
+    FsBackend::new(dir.path()).await.unwrap();
+
     assert_eq!(
-        stamp.trim().parse::<u32>().unwrap(),
-        FsBackend::FORMAT_VERSION
+        tokio::fs::read(&stamp_path).await.unwrap(),
+        current_with_newline.as_bytes()
     );
-    assert_eq!(be.read_note(note_id).await.unwrap().body, "kept");
 }
 ```
 
-**What it does** — A store rolled back to stamp 1 reopens through the ladder
-to the current stamp with data intact.
+**What it does** — Reopens a current-format store and proves the accepted stamp
+is not normalized or rewritten as a side effect.
+
+---
+
+## fn refuses_missing_format_stamp_without_creating_one
+
+**Identification** — tokio test; marker
+`// md:fn refuses_missing_format_stamp_without_creating_one`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn refuses_missing_format_stamp_without_creating_one
+#[tokio::test]
+async fn refuses_missing_format_stamp_without_creating_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let metadata_dir = dir.path().join(".keeplin");
+    tokio::fs::create_dir_all(&metadata_dir).await.unwrap();
+    tokio::fs::write(metadata_dir.join("device_id"), "existing-device")
+        .await
+        .unwrap();
+    tokio::fs::create_dir_all(dir.path().join("notes/existing-note"))
+        .await
+        .unwrap();
+    tokio::fs::write(
+        dir.path().join("notes/existing-note/note.md"),
+        "existing note",
+    )
+    .await
+    .unwrap();
+    let before = snapshot_tree(dir.path());
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening an existing store with a missing format stamp must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string().to_lowercase();
+    assert!(
+        message.contains("missing"),
+        "error must name missing stamp: {message}"
+    );
+    assert!(
+        message.contains(&FsBackend::FORMAT_VERSION.to_string()),
+        "error must name expected version: {message}"
+    );
+    assert!(message.contains("manual recovery"), "{message}");
+    assert!(message.contains("new store"), "{message}");
+    assert!(message.contains("backup"), "{message}");
+    assert_eq!(snapshot_tree(dir.path()), before);
+}
+```
+
+**What it does** — Treats a device-bearing store without a format stamp as
+existing legacy data, refuses it with every required recovery choice, and
+proves no stamp is invented.
+
+---
+
+## fn refuses_pre_v8_store_without_touching_legacy_attachment
+
+**Identification** — tokio test; marker
+`// md:fn refuses_pre_v8_store_without_touching_legacy_attachment`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn refuses_pre_v8_store_without_touching_legacy_attachment
+#[tokio::test]
+async fn refuses_pre_v8_store_without_touching_legacy_attachment() {
+    let dir = tempfile::tempdir().unwrap();
+    let note = Note::new("legacy", "kept");
+    let attachment = b"pre-v8 attachment bytes";
+    let resource = Resource::new(
+        note.id,
+        "legacy attachment",
+        "application/octet-stream",
+        "legacy.bin",
+        attachment.len() as u64,
+    );
+    let stamp_path = dir.path().join(".keeplin").join("format_version");
+    let note_dir = dir.path().join("notes").join(note.id.to_string());
+    let resource_dir = dir.path().join("resources").join(resource.id.to_string());
+    let attachment_path = resource_dir.join("data");
+    let orphan_path = note_dir.join("preserved.tmp");
+
+    tokio::fs::create_dir_all(stamp_path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(
+        stamp_path.parent().unwrap().join("device_id"),
+        "legacy-device",
+    )
+    .await
+    .unwrap();
+    tokio::fs::create_dir_all(&note_dir).await.unwrap();
+    tokio::fs::create_dir_all(&resource_dir).await.unwrap();
+    tokio::fs::write(&stamp_path, b"7").await.unwrap();
+    tokio::fs::write(note_dir.join("note.md"), note.body.as_bytes())
+        .await
+        .unwrap();
+    let mut projected_note = note.clone();
+    projected_note.body.clear();
+    let mut note_meta = serde_json::to_vec(&serde_json::json!({
+        "note": projected_note,
+        "vv": VersionVector::new(),
+    }))
+    .unwrap();
+    note_meta.push(b'\n');
+    tokio::fs::write(note_dir.join("meta.ndjson"), &note_meta)
+        .await
+        .unwrap();
+    let mut resource_meta = serde_json::to_vec(&resource).unwrap();
+    resource_meta.push(b'\n');
+    tokio::fs::write(resource_dir.join("meta.ndjson"), &resource_meta)
+        .await
+        .unwrap();
+    tokio::fs::write(&attachment_path, attachment)
+        .await
+        .unwrap();
+    tokio::fs::write(&orphan_path, b"pre-v8 tmp bytes")
+        .await
+        .unwrap();
+    let before = snapshot_tree(dir.path());
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening a format 7 store must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string();
+    assert!(
+        message.contains('7'),
+        "error must name version 7: {message}"
+    );
+    assert!(
+        message.contains('8'),
+        "error must name version 8: {message}"
+    );
+    assert!(message.contains("manual recovery"), "{message}");
+    assert!(message.contains("new store"), "{message}");
+    assert!(message.contains("backup"), "{message}");
+    assert_eq!(snapshot_tree(dir.path()), before);
+}
+```
+
+**What it does** — Builds a real v7 predecessor tree directly: a coherent note
+projection and a serialized resource sidecar live beside attachment bytes in
+the old global `resources/{id}/` pool. Opening must refuse versions 7 versus 8
+and leave the stamp, device id, note body, both metadata sidecars, attachment,
+and a sweep-shaped `*.tmp` sentinel byte-for-byte unchanged.
+
+---
+
+## fn refuses_unparsable_format_stamp_without_relabelling_it
+
+**Identification** — tokio test; marker
+`// md:fn refuses_unparsable_format_stamp_without_relabelling_it`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn refuses_unparsable_format_stamp_without_relabelling_it
+#[tokio::test]
+async fn refuses_unparsable_format_stamp_without_relabelling_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let stamp_path = dir.path().join(".keeplin").join("format_version");
+    tokio::fs::create_dir_all(stamp_path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(
+        stamp_path.parent().unwrap().join("device_id"),
+        "existing-device",
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(&stamp_path, b"not-a-version")
+        .await
+        .unwrap();
+    let before = snapshot_tree(dir.path());
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening a store with an unparsable format stamp must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string();
+    assert!(
+        message.to_lowercase().contains("unparsable"),
+        "error must name the unparsable stamp: {message}"
+    );
+    assert!(
+        message.contains('8'),
+        "error must name version 8: {message}"
+    );
+    assert_eq!(snapshot_tree(dir.path()), before);
+}
+```
+
+**What it does** — An unparsable format stamp must produce an explicit error
+that names the parsing failure and expected version 8, without rewriting the
+stamp as an invented legacy version or changing the existing device id.
+
+---
+
+## fn refuses_unstamped_store_content_without_device_id
+
+**Identification** — tokio test; marker
+`// md:fn refuses_unstamped_store_content_without_device_id`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn refuses_unstamped_store_content_without_device_id
+#[tokio::test]
+async fn refuses_unstamped_store_content_without_device_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let note_path = dir.path().join("notes/note-1/note.md");
+    let attachment_path = dir.path().join("resources/resource-1/data");
+    tokio::fs::create_dir_all(note_path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::create_dir_all(attachment_path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(&note_path, b"existing note")
+        .await
+        .unwrap();
+    tokio::fs::write(&attachment_path, b"existing attachment")
+        .await
+        .unwrap();
+    let before = snapshot_tree(dir.path());
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening unstamped store content without a device id must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string().to_lowercase();
+    assert!(message.contains("missing"), "{message}");
+    assert!(message.contains("unexpected entry"), "{message}");
+    assert_eq!(snapshot_tree(dir.path()), before);
+}
+```
+
+**What it does** — Builds a store containing a note and legacy attachment but
+neither a format stamp nor a device id. Opening must report the missing stamp,
+must not stamp the content as current, and must preserve both payloads.
+
+**Dependencies** —
+
+- `FsBackend::new` — exercises startup classification; expects store content, rather than device-id presence, to prevent fresh-store stamping.
+- `tokio::fs` — creates and verifies the fixture; expects reads and writes to preserve exact payload bytes.
+
+**Used by** — regression coverage for ADR 0016's no-silent-relabel invariant.
+
+**Repeated context** — Device identity and filesystem-format identity are independent.
+
+---
+
+## fn refuses_unstamped_sync_state_without_device_id
+
+**Identification** — tokio test; marker
+`// md:fn refuses_unstamped_sync_state_without_device_id`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn refuses_unstamped_sync_state_without_device_id
+#[tokio::test]
+async fn refuses_unstamped_sync_state_without_device_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let metadata_dir = dir.path().join(".keeplin");
+    let sync_state_path = metadata_dir.join("sync_state.ndjson");
+    tokio::fs::create_dir_all(&metadata_dir).await.unwrap();
+    tokio::fs::write(&sync_state_path, b"existing sync state")
+        .await
+        .unwrap();
+    let before = snapshot_tree(dir.path());
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening unstamped sync state without a device id must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string().to_lowercase();
+    assert!(message.contains("missing"), "{message}");
+    assert!(message.contains("sync_state.ndjson"), "{message}");
+    assert_eq!(snapshot_tree(dir.path()), before);
+}
+```
+
+**What it does** — Proves the sync-state sidecar alone makes an unstamped store non-fresh. Startup
+must refuse it before creating a device id and must preserve its bytes.
+
+**Dependencies** —
+
+- `FsBackend::new` — exercises exact-file freshness detection; expects `.keeplin/sync_state.ndjson` to count without making a device id count.
+- `tokio::fs` — creates and verifies the fixture; expects byte-exact reads and writes.
+
+**Used by** — regression coverage for historical/current writer-path completeness.
+
+**Repeated context** — Device identity and filesystem-format identity are independent.
+
+---
+
+## fn refuses_unstamped_v6_sync_state_byte_identically
+
+**Identification** — tokio regression test; marker
+`// md:fn refuses_unstamped_v6_sync_state_byte_identically`.
+
+**Code** — complete and verbatim:
+
+```rust
+// md:fn refuses_unstamped_v6_sync_state_byte_identically
+#[tokio::test]
+async fn refuses_unstamped_v6_sync_state_byte_identically() {
+    let dir = tempfile::tempdir().unwrap();
+    let sync_state_path = dir.path().join(".keeplin/sync_state.msgpack");
+    tokio::fs::create_dir_all(sync_state_path.parent().unwrap())
+        .await
+        .unwrap();
+    tokio::fs::write(&sync_state_path, b"v6 sync state bytes")
+        .await
+        .unwrap();
+    let before = snapshot_tree(dir.path());
+
+    let err = match FsBackend::new(dir.path()).await {
+        Ok(_) => panic!("opening an unstamped v6 sync state must be refused"),
+        Err(err) => err,
+    };
+    let message = err.to_string();
+    assert!(message.contains("sync_state.msgpack"), "{message}");
+    assert_eq!(snapshot_tree(dir.path()), before);
+}
+```
+
+**What it does** — Reproduces a v6 store whose sole surviving content is
+`.keeplin/sync_state.msgpack`. Startup must identify that exact unexpected path, refuse it, and
+leave the complete tree byte-identical.
+
+**Dependencies** —
+
+- `FsBackend::new` — exercises bounded fresh-skeleton classification; expects any historical file outside the current empty skeleton to prevent stamping.
+- `snapshot_tree` — compares all paths, types, and bytes; expects any mutation to fail the test.
+
+**Used by** — regression coverage for F-010 and ADR 0016's no-silent-relabel invariant.
+
+**Repeated context** — historical writer paths are not enumerated by production freshness logic.
 
 ---
 
@@ -690,6 +1113,7 @@ async fn refuses_to_open_a_newer_format() {
             .await
             .unwrap();
     }
+    let before = snapshot_tree(dir.path());
     let err = match FsBackend::new(dir.path()).await {
         Ok(_) => panic!("opening a newer on-disk format must be refused"),
         Err(e) => e,
@@ -698,6 +1122,7 @@ async fn refuses_to_open_a_newer_format() {
         matches!(err, StorageError::InvalidState(ref m) if m.contains("newer than this build")),
         "got: {err:?}"
     );
+    assert_eq!(snapshot_tree(dir.path()), before);
 }
 ```
 
@@ -735,17 +1160,25 @@ Repo-tooling metadata, not a code block.
 |---|----------------------|----------------|
 
 | 1 | `Overview` | `// md:Overview` |
-| 2 | `fn concurrent_same_note_updates_keep_every_log_entry` | `// md:fn concurrent_same_note_updates_keep_every_log_entry` |
-| 3 | `fn read_does_not_rewrite_projection` | `// md:fn read_does_not_rewrite_projection` |
-| 4 | `fn list_notes_pages_match_full_walk` | `// md:fn list_notes_pages_match_full_walk` |
-| 5 | `fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones` | `// md:fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones` |
-| 6 | `fn failed_atomic_write_cleans_up_its_temp_file` | `// md:fn failed_atomic_write_cleans_up_its_temp_file` |
-| 7 | `fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it` | `// md:fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it` |
-| 8 | `fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair` | `// md:fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair` |
-| 9 | `fn detects_syncthing_conflict_copies_without_removing_them` | `// md:fn detects_syncthing_conflict_copies_without_removing_them` |
-| 10 | `fn purge_reclaims_old_tombstoned_payloads_only` | `// md:fn purge_reclaims_old_tombstoned_payloads_only` |
-| 11 | `fn attachments_live_as_content_hashed_knrs_in_their_note_folder` | `// md:fn attachments_live_as_content_hashed_knrs_in_their_note_folder` |
-| 12 | `fn identical_attachments_in_a_note_share_one_blob` | `// md:fn identical_attachments_in_a_note_share_one_blob` |
-| 13 | `fn fresh_store_is_stamped_current_version` | `// md:fn fresh_store_is_stamped_current_version` |
-| 14 | `fn migrates_a_legacy_stamp_and_preserves_data` | `// md:fn migrates_a_legacy_stamp_and_preserves_data` |
-| 15 | `fn refuses_to_open_a_newer_format` | `// md:fn refuses_to_open_a_newer_format` |
+| 2 | `enum TreeEntryKind` | `// md:enum TreeEntryKind` |
+| 3 | `fn snapshot_tree` | `// md:fn snapshot_tree` |
+| 4 | `fn concurrent_same_note_updates_keep_every_log_entry` | `// md:fn concurrent_same_note_updates_keep_every_log_entry` |
+| 5 | `fn read_does_not_rewrite_projection` | `// md:fn read_does_not_rewrite_projection` |
+| 6 | `fn list_notes_pages_match_full_walk` | `// md:fn list_notes_pages_match_full_walk` |
+| 7 | `fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones` | `// md:fn startup_sweeps_orphaned_tmp_files_but_not_syncthing_ones` |
+| 8 | `fn failed_atomic_write_cleans_up_its_temp_file` | `// md:fn failed_atomic_write_cleans_up_its_temp_file` |
+| 9 | `fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it` | `// md:fn corrupt_assoc_state_is_weakest_priority_and_peer_state_recovers_it` |
+| 10 | `fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair` | `// md:fn compaction_declines_on_unreadable_sidecar_and_resumes_after_repair` |
+| 11 | `fn detects_syncthing_conflict_copies_without_removing_them` | `// md:fn detects_syncthing_conflict_copies_without_removing_them` |
+| 12 | `fn purge_reclaims_old_tombstoned_payloads_only` | `// md:fn purge_reclaims_old_tombstoned_payloads_only` |
+| 13 | `fn attachments_live_as_content_hashed_knrs_in_their_note_folder` | `// md:fn attachments_live_as_content_hashed_knrs_in_their_note_folder` |
+| 14 | `fn identical_attachments_in_a_note_share_one_blob` | `// md:fn identical_attachments_in_a_note_share_one_blob` |
+| 15 | `fn fresh_store_is_stamped_current_version` | `// md:fn fresh_store_is_stamped_current_version` |
+| 16 | `fn current_store_opens_without_rewriting_stamp` | `// md:fn current_store_opens_without_rewriting_stamp` |
+| 17 | `fn refuses_missing_format_stamp_without_creating_one` | `// md:fn refuses_missing_format_stamp_without_creating_one` |
+| 18 | `fn refuses_pre_v8_store_without_touching_legacy_attachment` | `// md:fn refuses_pre_v8_store_without_touching_legacy_attachment` |
+| 19 | `fn refuses_unparsable_format_stamp_without_relabelling_it` | `// md:fn refuses_unparsable_format_stamp_without_relabelling_it` |
+| 20 | `fn refuses_unstamped_store_content_without_device_id` | `// md:fn refuses_unstamped_store_content_without_device_id` |
+| 21 | `fn refuses_unstamped_sync_state_without_device_id` | `// md:fn refuses_unstamped_sync_state_without_device_id` |
+| 22 | `fn refuses_unstamped_v6_sync_state_byte_identically` | `// md:fn refuses_unstamped_v6_sync_state_byte_identically` |
+| 23 | `fn refuses_to_open_a_newer_format` | `// md:fn refuses_to_open_a_newer_format` |

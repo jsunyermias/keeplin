@@ -42,7 +42,7 @@ constants `FORMAT_VERSION = 8`, `NOTE_LOG_COMPACT_THRESHOLD = 256`,
 `GLOBAL_LOG_COMPACT_THRESHOLD = 512`, `GLOBAL_LOG_SOFT_BYTES = 64 KiB`
 (documented with the methods that use them).
 
-**Code** — container: members documented as sub-blocks below: fn new, fn sweep_orphan_tmp_files, fn scan_sync_conflicts, fn sweep_tmp_in_dir, fn format_version_path, fn ensure_format_version, fn apply_format_migration, fn read_or_create_device_id.
+**Code** — container: members documented as sub-blocks below: fn new, fn sweep_orphan_tmp_files, fn scan_sync_conflicts, fn sweep_tmp_in_dir, fn format_version_path, fn unexpected_fresh_store_entry, fn ensure_format_version, fn read_or_create_device_id.
 
 ---
 
@@ -57,6 +57,22 @@ marker `// md:impl FsBackend > fn new`.
     // md:impl FsBackend > fn new
     pub async fn new(root: impl Into<PathBuf>) -> Result<Self, StorageError> {
         let root: PathBuf = root.into();
+        let has_format_version = root.join(".keeplin").join("format_version").exists();
+        if !has_format_version {
+            if let Some(path) = Self::unexpected_fresh_store_entry(&root).await? {
+                let entry = path.strip_prefix(&root).unwrap_or(&path);
+                return Err(StorageError::InvalidState(format!(
+                    "on-disk format stamp is missing; unexpected entry {} prevents treating this \
+                     directory as a fresh store; expected version {}. Retain the untouched \
+                     directory for manual recovery, choose an empty directory for a new store, \
+                     or restore a backup already in the expected format",
+                    entry.display(),
+                    Self::FORMAT_VERSION
+                )));
+            }
+        }
+        let fresh = !has_format_version;
+        Self::ensure_format_version(&root, fresh).await?;
 
         for dir in &[
             "notes",
@@ -95,7 +111,7 @@ marker `// md:impl FsBackend > fn new`.
             );
         }
 
-        let (device_id, fresh) = Self::read_or_create_device_id(&root).await?;
+        let device_id = Self::read_or_create_device_id(&root).await?;
         let backend = Self {
             root,
             device_id,
@@ -103,17 +119,30 @@ marker `// md:impl FsBackend > fn new`.
             global_log_lock: Arc::new(Mutex::new(())),
             note_index: Arc::new(RwLock::new(None)),
         };
-        backend.ensure_format_version(fresh).await?;
+        if fresh {
+            tokio::fs::write(
+                backend.format_version_path(),
+                Self::FORMAT_VERSION.to_string(),
+            )
+            .await?;
+        }
         Ok(backend)
     }
 ```
 
-**What it does** — Creates the directory tree, sweeps orphaned `*.tmp` files,
+**What it does** — Classifies freshness and validates every non-fresh format stamp before any
+filesystem mutation. Only after that read-only gate succeeds does it create the directory tree, sweep orphaned `*.tmp` files,
 scans for Syncthing `*.sync-conflict-*` copies (reported at **error** level —
 in a single-writer-per-file store they are the signature of a replicated
 `.keeplin/` directory, i.e. two devices sharing one identity; nothing is
-deleted), loads or creates the device id, and runs `ensure_format_version`
-(`fresh` = the id was just created).
+deleted), load or create the device id independently, and stamp a genuinely fresh store. A refused
+store therefore cannot gain directories or a device id and cannot lose an old `*.tmp` file.
+
+**Dependencies** —
+
+- `Self::unexpected_fresh_store_entry` and `Self::ensure_format_version` — classify and validate without mutation; expects every refusal to return before directory creation, cleanup, and identity creation.
+- `tokio::fs::create_dir_all` and `tokio::fs::write` — initialize only an accepted store and stamp only the fresh path; expects the metadata directory to exist before the final stamp write.
+- `Self::sweep_orphan_tmp_files`, `Self::scan_sync_conflicts`, and `Self::read_or_create_device_id` — perform startup hygiene and identity setup after validation; expects none to run for a refused format.
 
 **Used by** — `main.rs::build_storage` (default mode); tests everywhere.
 
@@ -289,6 +318,82 @@ one directory, skipping Syncthing temporaries.
 
 ---
 
+### fn unexpected_fresh_store_entry
+
+**Identification** — marker `// md:impl FsBackend > fn unexpected_fresh_store_entry`.
+
+**Code** — complete and verbatim:
+
+```rust
+    // md:impl FsBackend > fn unexpected_fresh_store_entry
+    pub(super) async fn unexpected_fresh_store_entry(
+        root: &Path,
+    ) -> Result<Option<PathBuf>, StorageError> {
+        let allowed_root = [
+            "notes",
+            ".keeplin",
+            "logs",
+            "notebooks",
+            "tags",
+            "note_tags",
+        ];
+        let mut root_entries = match tokio::fs::read_dir(root).await {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        while let Some(entry) = root_entries.next_entry().await? {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !entry.file_type().await?.is_dir() || !allowed_root.contains(&name.as_ref()) {
+                return Ok(Some(entry.path()));
+            }
+            if name == ".keeplin" {
+                let mut metadata_entries = tokio::fs::read_dir(entry.path()).await?;
+                while let Some(metadata_entry) = metadata_entries.next_entry().await? {
+                    let metadata_name = metadata_entry.file_name();
+                    let metadata_type = metadata_entry.file_type().await?;
+                    if metadata_name == "device_id" && metadata_type.is_file() {
+                        continue;
+                    }
+                    if metadata_name != "offsets" || !metadata_type.is_dir() {
+                        return Ok(Some(metadata_entry.path()));
+                    }
+                    let mut offset_entries = tokio::fs::read_dir(metadata_entry.path()).await?;
+                    if let Some(offset_entry) = offset_entries.next_entry().await? {
+                        return Ok(Some(offset_entry.path()));
+                    }
+                }
+            } else {
+                let mut entries = tokio::fs::read_dir(entry.path()).await?;
+                if let Some(unexpected) = entries.next_entry().await? {
+                    return Ok(Some(unexpected.path()));
+                }
+            }
+        }
+        Ok(None)
+    }
+```
+
+**What it does** — Defines freshness from the bounded output of `new`: a missing root is fresh, as
+is an existing root containing only the empty `notes`, `.keeplin/offsets`, `logs`, `notebooks`,
+`tags`, and `note_tags` directory skeleton plus the regular `.keeplin/device_id` file that `new`
+can write before its final stamp. It returns the first path outside those exact initialization
+outputs, including historical Keeplin files and unrelated user content. I/O failures abort
+classification.
+
+**Dependencies** —
+
+- `tokio::fs::read_dir` and `ReadDir::next_entry` — inspect root and allowed scaffolding without mutation; expects missing root to mean fresh and all other I/O failures to remain fatal.
+- `DirEntry::file_type` — requires allowed entries to be directories; expects files, links, and special entries with allowed names to be rejected.
+
+**Used by** — `FsBackend::new`, before it creates the standard directory tree.
+
+**Repeated context** — Freshness is an allowlist of current empty scaffolding, never an enumeration
+of historical store content.
+
+---
+
 ### fn ensure_format_version
 
 **Identification** — marker `// md:impl FsBackend > fn ensure_format_version`.
@@ -297,22 +402,33 @@ one directory, skipping Syncthing temporaries.
 
 ```rust
     // md:impl FsBackend > fn ensure_format_version
-    pub(super) async fn ensure_format_version(&self, fresh: bool) -> Result<(), StorageError> {
-        let path = self.format_version_path();
+    pub(super) async fn ensure_format_version(
+        root: &Path,
+        fresh: bool,
+    ) -> Result<(), StorageError> {
+        let path = root.join(".keeplin").join("format_version");
 
         if fresh {
-            tokio::fs::write(&path, Self::FORMAT_VERSION.to_string()).await?;
             return Ok(());
         }
 
         let current = if path.exists() {
-            tokio::fs::read_to_string(&path)
-                .await?
-                .trim()
-                .parse::<u32>()
-                .unwrap_or(1)
+            let stamp = tokio::fs::read_to_string(&path).await?;
+            stamp.trim().parse::<u32>().map_err(|_| {
+                StorageError::InvalidState(format!(
+                    "on-disk format stamp is unparsable; expected version {}. Retain the \
+                     untouched store for manual recovery, start a new store, or restore a \
+                     backup already in the expected format",
+                    Self::FORMAT_VERSION
+                ))
+            })?
         } else {
-            1
+            return Err(StorageError::InvalidState(format!(
+                "on-disk format stamp is missing (implied version 1); expected version {}. \
+                 Retain the untouched store for manual recovery, start a new store, or restore \
+                 a backup already in the expected format",
+                Self::FORMAT_VERSION
+            )));
         };
 
         if current > Self::FORMAT_VERSION {
@@ -323,54 +439,31 @@ one directory, skipping Syncthing temporaries.
             )));
         }
 
-        for version in (current + 1)..=Self::FORMAT_VERSION {
-            self.apply_format_migration(version).await?;
-            tokio::fs::write(&path, version.to_string()).await?;
-            tracing::info!(version, "Applied filesystem format migration");
+        if current < Self::FORMAT_VERSION {
+            return Err(StorageError::InvalidState(format!(
+                "on-disk format version {current} is older than the expected version {}. Retain \
+                 the untouched store for manual recovery, start a new store, or restore a \
+                 backup already in the expected format",
+                Self::FORMAT_VERSION
+            )));
         }
 
-        tokio::fs::write(&path, Self::FORMAT_VERSION.to_string()).await?;
         Ok(())
     }
 ```
 
-**What it does** — Brings the store up to `FORMAT_VERSION` (8), stamping after
-**each** step so a crash mid-ladder resumes from the last completed step. A
-`fresh` store is stamped directly (no migration over empty data). A missing
-stamp on an existing store means format `1`; a stamp **newer** than this build
-is refused (`InvalidState`) so a downgrade cannot run against a layout it does
-not understand. A final stamp write covers the already-current case.
+**What it does** — Performs a read-only preflight: a genuinely fresh store is accepted for later
+initialization by `new`, while an existing store opens only when its stamp parses and equals the current
+version. A missing, unparsable, or older stamp is refused before any startup mutation;
+the error identifies the stamp state, expected version, and the three recovery
+choices required by ADR 0016. A stamp **newer** than this build retains the
+existing downgrade refusal unchanged. No historical migration dispatcher
+remains because versions 1 through 7 have no authorized data transformation.
 
----
+**Dependencies** —
 
-### fn apply_format_migration
-
-**Identification** — marker
-`// md:impl FsBackend > fn apply_format_migration`.
-
-**Code** — complete and verbatim:
-
-```rust
-    // md:impl FsBackend > fn apply_format_migration
-    pub(super) async fn apply_format_migration(&self, version: u32) -> Result<(), StorageError> {
-        match version {
-            2..=8 => Ok(()),
-            other => Err(StorageError::InvalidState(format!(
-                "no filesystem migration defined for format version {other}"
-            ))),
-        }
-    }
-```
-
-**What it does** — The per-version step. Every bump so far is a clean break with
-no data transform, so v2–v8 are no-ops that only advance the stamp: v2 =
-`LogEntry` serde aliases; v3/v4 = versioned associations + resource tombstones via
-`serde(default)`; v5 = optional `EpochHeader` + `epoch:offset` cursors (a
-pre-v5 log is epoch 0, a bare-integer cursor is `(0, offset)`); v8 = attachments
-moved from the global `resources/{uuid}/` pool into
-`notes/{note_id}/resources/{hash}.knrs` (issue #127) — the old pool is simply no
-longer read, so no code migrates it. A future breaking change gets a real body
-here.
+- `tokio::fs::read_to_string` — reads an existing stamp without changing it; expects read failures to abort startup.
+- `Self::FORMAT_VERSION` — defines the only accepted version; expects every mismatch to refuse rather than migrate or relabel.
 
 ---
 
@@ -383,26 +476,23 @@ here.
 
 ```rust
     // md:impl FsBackend > fn read_or_create_device_id
-    pub(super) async fn read_or_create_device_id(
-        root: &Path,
-    ) -> Result<(String, bool), StorageError> {
+    pub(super) async fn read_or_create_device_id(root: &Path) -> Result<String, StorageError> {
         let path = root.join(".keeplin").join("device_id");
         if path.exists() {
             let id = tokio::fs::read_to_string(&path).await?;
-            Ok((id.trim().to_string(), false))
+            Ok(id.trim().to_string())
         } else {
             let id = new_id().to_string();
             tokio::fs::write(&path, &id).await?;
-            Ok((id, true))
+            Ok(id)
         }
     }
 ```
 
-**What it does** — Reads `.keeplin/device_id`, or generates + persists a UUID
-v4. Returns `(id, fresh)` — the file is the first thing written on init, so
-its absence reliably means "never initialised" (used to stamp new stores at
-the current format). The id names this device's log file and is the Argon2id
-salt for `EncryptedBackend`; it must stay stable.
+**What it does** — Reads `.keeplin/device_id`, or generates and persists a UUID
+v4. The id names this device's log file and is the Argon2id salt for
+`EncryptedBackend`; it must stay stable. It does not classify the filesystem
+format or decide whether the store is fresh.
 
 ---
 
@@ -427,7 +517,8 @@ Repo-tooling metadata, not a code block.
 
 - This split does not change the on-disk format; `FsBackend::FORMAT_VERSION` remains 8.
 - The public backend path remains `crate::storage::fs::FsBackend`.
-- Filesystem behavior remains unchanged.
+- A format stamp always identifies an existing format; without one, only an empty root or the exact directory/device-id outputs created by a partially completed `new` are fresh.
+- Existing filesystem formats below version 8 are refused without relabelling or migration.
 
 ---
 
@@ -443,6 +534,6 @@ Repo-tooling metadata, not a code block.
 | 5 | `fn scan_sync_conflicts` | `// md:impl FsBackend > fn scan_sync_conflicts` |
 | 6 | `fn sweep_tmp_in_dir` | `// md:impl FsBackend > fn sweep_tmp_in_dir` |
 | 7 | `fn format_version_path` | `// md:impl FsBackend > fn format_version_path` |
-| 8 | `fn ensure_format_version` | `// md:impl FsBackend > fn ensure_format_version` |
-| 9 | `fn apply_format_migration` | `// md:impl FsBackend > fn apply_format_migration` |
+| 8 | `fn unexpected_fresh_store_entry` | `// md:impl FsBackend > fn unexpected_fresh_store_entry` |
+| 9 | `fn ensure_format_version` | `// md:impl FsBackend > fn ensure_format_version` |
 | 10 | `fn read_or_create_device_id` | `// md:impl FsBackend > fn read_or_create_device_id` |
