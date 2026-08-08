@@ -7,9 +7,11 @@ This default-branch `workflow_run` workflow is the authoritative evaluator requi
 It correlates the completed unprivileged CI run to exactly one open pull request and reads all
 pull-request content and evidence through GitHub APIs. Only a completed run whose event is
 `pull_request` counts as a review round; the same CI workflow's `push` runs are ignored.
-After fetching the unique pull request, it refuses a fork before reading any policy or head
-content. For a same-repository pull request, it first resolves the API-reported default branch,
-then probes that branch for
+After fetching the unique pull request, it validates both repository objects and their numeric
+identifiers before reading any policy or head content. Missing or unusable head or base repository
+metadata is `evaluation-unavailable`; only usable, unequal identifiers establish
+`fork-refused`. For a same-repository pull request, it first resolves the API-reported default
+branch, then probes that branch for
 `scripts/check-filesystem-format-policy.py`. Only when that file exists does it read
 `.github/workflows/ci.yml` at the exact pull-request head and require both the script-path
 reference and the `Check filesystem format policy` step name.
@@ -33,9 +35,13 @@ Malformed ledger data fails before evaluation. Comment and review references are
 the API request's repository and pull-request coordinates, then those coordinates are verified
 again inside the evaluator.
 
-The head workflow check is lexical and dependency-free. It accepts the exact script path with an
-optional `./` prefix when bounded by whitespace, quotes, backticks, a shell continuation or the
-ends of the file, and separately requires the exact step name. In Keeplin the sole path match is
+The head workflow check is a lexical allowlist of accepted textual spellings, not recognition of
+equivalent shell invocations. It accepts the exact script path with an optional `./` prefix when
+bounded by whitespace, quotes, backticks, a shell continuation or the ends of the file, and
+separately requires the exact step name. An otherwise unchanged direct invocation immediately
+followed by an operator, such as `scripts/check-filesystem-format-policy.py; echo ok` or
+`scripts/check-filesystem-format-policy.py|cat`, is rejected because that punctuation is not an
+accepted boundary. In Keeplin the sole path match is
 the `policy_path="scripts/check-filesystem-format-policy.py"` assignment that feeds `git show`
 into a temporary runner; the live command executes that temporary path. Requiring both markers
 catches partial deletion, but does not parse YAML or shell control flow: a path reference and step
@@ -129,10 +135,11 @@ Each result that reaches `publishEvaluation` still creates a failing
 `Review loop converged` check whose summary is the evaluator's actual reason before failing the
 workflow. This promise does not extend to the informational association no-op, source-loading
 failure before `publishEvaluation` exists, or rejection from the reporting check creation itself.
-Every other result must journal unless that workflow run attempt is already recorded. Forks
-deliberately fail closed because the policy refuses partial evidence; the adapter applies that
-refusal before its policy probes and sources its message from the evaluator's exported constant,
-which the evaluator's own guard also uses.
+Every other result must journal unless that workflow run attempt is already recorded. Unavailable
+repository metadata and forks both fail closed before policy probes; unavailable metadata is
+`evaluation-unavailable`, while unequal usable repository IDs are `fork-refused`. The adapter
+sources the fork message from the evaluator's exported constant, which the evaluator's own guard
+also uses.
 
 Workflow concurrency is grouped by pull-request number with cancellation disabled and
 `queue: max`, so delivered runs for one pull request cannot append sibling observations from the

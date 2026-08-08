@@ -603,8 +603,8 @@ async function executeTrustedWorkflow(repositoryRoot, pullBody, comments, option
             number: 200,
             body: pullBody,
             user: { login: "author" },
-            head: { sha: "ccc", repo: { id: options.headRepositoryId ?? 7 } },
-            base: { repo: { id: 7 } },
+            head: { sha: "ccc", repo: options.headRepository === undefined ? { id: options.headRepositoryId ?? 7 } : options.headRepository },
+            base: { repo: options.baseRepository === undefined ? { id: 7 } : options.baseRepository },
           } };
         },
         listReviews: endpoints.reviews,
@@ -1990,6 +1990,8 @@ test("filesystem format policy marker detection survives YAML and shell reformat
     "",
     "- name: Check filesystem format policy\n  run: python3 scripts/check-filesystem-format-policy-v2.py\n",
     "- name: Check filesystem format policy\n  run: python3 renamed-scripts/check-filesystem-format-policy.py\n",
+    "- name: Check filesystem format policy\n  run: python3 scripts/check-filesystem-format-policy.py; echo ok\n",
+    "- name: Check filesystem format policy\n  run: python3 scripts/check-filesystem-format-policy.py|cat\n",
     "- run: python3 scripts/check-filesystem-format-policy.py\n",
   ]) assert.equal(referencesFilesystemFormatPolicy(workflow), false, workflow);
 });
@@ -2167,11 +2169,31 @@ test("trusted workflow refuses a fork before probing its head policy markers", a
     headRepositoryId: 8,
     ciContent: "jobs:\n  test:\n    steps:\n      - run: python3 scripts/renamed-format-policy.py\n",
     defaultBranchError: new Error("default branch must not be probed for a fork"),
+    policyReadError: new Error("default-branch policy must not be probed for a fork"),
+    ciReadError: new Error("head CI must not be read for a fork"),
   });
 
   const summary = "Fork pull requests deliberately fail closed: partial evidence is not evaluated.";
   assert.deepEqual(outcome.failures, [summary]);
   assert.equal(outcome.reportedCheck.output.title, "fork-refused");
+  assert.equal(outcome.reportedCheck.output.summary, summary);
+});
+
+test("trusted workflow reports evaluation-unavailable for a deleted head repository before probing", async () => {
+  const repositoryRoot = process.env.REVIEW_LOOP_REPO || ".";
+  const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
+    expectJournal: false,
+    headRepository: null,
+    defaultBranchError: new Error("default branch must not be probed without a head repository"),
+    policyReadError: new Error("default-branch policy must not be probed without a head repository"),
+    ciReadError: new Error("head CI must not be read without a head repository"),
+  });
+
+  const summary = "The pull-request head repository is unavailable.";
+  assert.equal(outcome.postedBody, undefined);
+  assert.deepEqual(outcome.failures, [summary]);
+  assert.equal(outcome.reportedCheck.conclusion, "failure");
+  assert.equal(outcome.reportedCheck.output.title, "evaluation-unavailable");
   assert.equal(outcome.reportedCheck.output.summary, summary);
 });
 
@@ -2219,7 +2241,7 @@ test("trusted workflow reports evaluation-unavailable when the default branch ca
   const outcome = await executeTrustedWorkflow(repositoryRoot, "", [], {
     expectJournal: false,
     defaultBranchError: Object.assign(new Error("Not Found"), { status: 404 }),
-    policyPresent: false,
+    policyReadError: new Error("policy must not be probed before branch resolution"),
     ciReadError: new Error("head CI must not be read"),
   });
 

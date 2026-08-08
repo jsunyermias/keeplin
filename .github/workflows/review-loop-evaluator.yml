@@ -83,7 +83,12 @@ jobs:
             } catch (error) {
               return publishUnavailable(`Unable to read pull request ${open[0].number}: ${error.message}`);
             }
-            if (pull.head.repo.id !== pull.base.repo.id) return publishRefusal('fork-refused', evaluator.FORK_REFUSAL_MESSAGE);
+            const hasUsableRepositoryId = (candidate) => candidate && typeof candidate === 'object' && !Array.isArray(candidate) && Number.isSafeInteger(candidate.id) && candidate.id > 0;
+            const headRepository = pull && pull.head && pull.head.repo;
+            const baseRepository = pull && pull.base && pull.base.repo;
+            if (!hasUsableRepositoryId(headRepository)) return publishUnavailable('The pull-request head repository is unavailable.');
+            if (!hasUsableRepositoryId(baseRepository)) return publishUnavailable('The pull-request base repository is unavailable.');
+            if (headRepository.id !== baseRepository.id) return publishRefusal('fork-refused', evaluator.FORK_REFUSAL_MESSAGE);
             try {
               await github.rest.repos.getBranch({ owner: context.repo.owner, repo: context.repo.repo, branch: repository.default_branch });
             } catch (error) {
@@ -207,7 +212,7 @@ jobs:
             }
             const config = { repositoryId: repository.id, repository: repository.full_name, pullNumber: pull.number, maintainerLogin: repository.owner.login, workflowId: configuredCiWorkflowId, runId: run.id, runAttempt: run.run_attempt, appSlug: 'github-actions', appId: 15368 };
             const result = evaluator.evaluateTrustedReviewLoop({
-              pull: { number: pull.number, author: pull.user.login, headSha: pull.head.sha, headRepositoryId: pull.head.repo.id, baseRepositoryId: pull.base.repo.id },
+              pull: { number: pull.number, author: pull.user.login, headSha: pull.head.sha, headRepositoryId: headRepository.id, baseRepositoryId: baseRepository.id },
               findings, references, checks: mappedChecks, principalEnumeration,
               journalComments: comments.map((item) => ({ ...item, app_slug: item.performed_via_github_app && item.performed_via_github_app.slug, app_id: item.performed_via_github_app && item.performed_via_github_app.id })), jobs,
               tombstones: trustedMetadata.tombstones || [], genesisEvidence: trustedMetadata.genesisEvidence, config,
